@@ -15,10 +15,10 @@
 </p>
 
 <p align="center">
-  <a href="https://devileya.github.io/DevCat/home/"><b>Website</b></a> ·
-  <a href="https://devileya.github.io/DevCat/home/docs/"><b>Docs</b></a> ·
+  <a href="https://devcat.ai.id"><b>Website</b></a> ·
+  <a href="https://devcat.ai.id/docs/"><b>Docs</b></a> ·
   <a href="https://github.com/devileya/DevCat/releases/latest"><b>Download</b></a> ·
-  <a href="https://devileya.github.io/DevCat/home/docs/shortcuts.html"><b>Shortcuts</b></a> ·
+  <a href="https://devcat.ai.id/docs/shortcuts.html"><b>Shortcuts</b></a> ·
   <a href="https://github.com/devileya/DevCat/issues"><b>Report a bug</b></a>
 </p>
 
@@ -51,13 +51,13 @@ Grab the latest installer for macOS, Windows or Linux from the
 ```sh
 # The app
 brew install --cask devileya/devcat/devcat                                     # macOS (Homebrew)
-curl -fsSL https://devileya.github.io/DevCat/install.sh | sh -s -- --app       # macOS, Linux (AppImage)
-& ([scriptblock]::Create((irm https://devileya.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
+curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh -s -- --app       # macOS, Linux (AppImage)
+& ([scriptblock]::Create((irm https://devcathq.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
 
 # Only the CLI (`devcat serve`, no window: servers, SSH; see below)
 brew install devileya/devcat/devcat-cli                                        # macOS, Linux (Homebrew)
-curl -fsSL https://devileya.github.io/DevCat/install.sh | sh                   # macOS, Linux → ~/.local/bin
-irm https://devileya.github.io/DevCat/install.ps1 | iex                        # Windows (PowerShell)
+curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh                   # macOS, Linux → ~/.local/bin
+irm https://devcathq.github.io/DevCat/install.ps1 | iex                        # Windows (PowerShell)
 ```
 
 The script checks the download's SHA-256 and installs for your user only (no `sudo`); `--version v0.7.0`
@@ -151,9 +151,9 @@ needs `libdbus` (installed almost everywhere).
 
 ## Features
 
-Below is the short list. The [docs](https://devileya.github.io/DevCat/home/docs/) explain how to use each
+Below is the short list. The [docs](https://devcat.ai.id/docs/) explain how to use each
 of these step by step, with every keyboard shortcut on
-[one page](https://devileya.github.io/DevCat/home/docs/shortcuts.html).
+[one page](https://devcat.ai.id/docs/shortcuts.html).
 
 - **Projects**: group connections into projects and focus on one project at a time.
 - **Hide the sidebar**: click the active icon in the left bar, the toggle at its bottom, or press ⌘B (Ctrl+B).
@@ -304,8 +304,8 @@ cd src-tauri && cargo test -- --ignored
 
 ### Website and docs
 
-The landing page and the docs live in `site/` and are published with GitHub Pages at
-`/home/` (the root stays the hosted DevCat Mobile web app, so pairing links keep working). Docs pages are
+The landing page and the docs live in `site/`; the website is [devcat.ai.id](https://devcat.ai.id). GitHub Pages
+also publishes them at `/home/` (the root stays the hosted DevCat Mobile web app, so pairing links keep working). Docs pages are
 Markdown in `site/docs/pages/`, listed in order in `site/docs/nav.json`; `site/docs/build.mjs` turns them into
 HTML with a sidebar, search and an "On this page" list. To preview locally:
 
