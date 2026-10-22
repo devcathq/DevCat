@@ -17,6 +17,17 @@ const SERVICE: &str = "dev.devcat.app";
 const VAULT: &str = "vault";
 
 static CACHE: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Secrets live in memory only (tests, and the dev-only browser bridge with its throwaway data).
+static MEMORY_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(test));
+
+/// Never touch the OS keychain in this process (dev bridge).
+pub fn memory_only() {
+    MEMORY_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn in_memory() -> bool {
+    MEMORY_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 fn item(key: &str) -> Option<String> {
     keyring::Entry::new(SERVICE, key).ok()?.get_password().ok()
@@ -70,7 +81,7 @@ pub fn get(key: &str) -> Option<String> {
     if let Some(v) = CACHE.lock().get(key) {
         return Some(v.clone());
     }
-    if cfg!(test) {
+    if in_memory() {
         return None; // tests never touch the real keychain
     }
     #[cfg(target_os = "macos")]
@@ -83,7 +94,7 @@ pub fn get(key: &str) -> Option<String> {
 
 /// Store `value`; an empty value deletes the entry.
 pub fn set(key: &str, value: &str) -> AppResult<()> {
-    if cfg!(test) {
+    if in_memory() {
         if value.is_empty() { CACHE.lock().remove(key); } else { CACHE.lock().insert(key.into(), value.into()); }
         return Ok(());
     }
@@ -101,7 +112,7 @@ pub fn set(key: &str, value: &str) -> AppResult<()> {
 
 pub fn delete(key: &str) {
     CACHE.lock().remove(key);
-    if cfg!(test) {
+    if in_memory() {
         return;
     }
     // macOS: marked deleted in the vault (an older version's separate item is left alone:

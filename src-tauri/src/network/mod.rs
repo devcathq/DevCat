@@ -196,7 +196,8 @@ pub(crate) async fn ensure_for(cfg: &ConnectionConfig) -> AppResult<()> {
     ensure(id).await
 }
 
-async fn ensure(id: &str) -> AppResult<()> {
+/// Connect a VPN / tunnel profile (if it isn't yet) and wait for it.
+pub(crate) async fn ensure(id: &str) -> AppResult<()> {
     check_id(id)?;
     let profile = store()?
         .find(id)

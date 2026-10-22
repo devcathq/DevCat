@@ -2,10 +2,12 @@
 
 export type ConnectionKind =
   | "postgres" | "mysql" | "sqlite" | "mssql" | "mongodb" | "redis"
-  | "kubernetes" | "rabbitmq";
+  | "kubernetes" | "rabbitmq"
+  /** Saved SSH login (terminal, SFTP, agents on the host). Desktop only: see CLAUDE.md. */
+  | "ssh";
 
 export const DATABASE_KINDS: ConnectionKind[] = ["postgres", "mysql", "sqlite", "mssql", "mongodb", "redis"];
-export const INFRA_KINDS: ConnectionKind[] = ["kubernetes", "rabbitmq"];
+export const INFRA_KINDS: ConnectionKind[] = ["kubernetes", "rabbitmq", "ssh"];
 
 export interface SshConfig {
   enabled: boolean;
@@ -38,7 +40,8 @@ export interface ConnectionConfig {
   group?: string | null;
   /** Project (sidebar folder) this connection belongs to. */
   projectId?: string | null;
-  /** Kubernetes: { context }. RabbitMQ: { managementPort, useTls }. */
+  /** Kubernetes: { context }. RabbitMQ: { managementPort, useTls }.
+   *  SSH: { keyPath, jump, startDir, startup } (host = name, IP or ~/.ssh/config alias). */
   options: Record<string, string>;
   readOnly: boolean;
 }
@@ -300,6 +303,9 @@ export interface NetHelperStatus {
   wireguardIssue?: string | null;
 }
 
+/** A saved SSH session's port forward (options.forwards). "local" = -L, "remote" = -R, "dynamic" = -D. */
+export interface SessionForward { kind: "local" | "remote" | "dynamic"; localPort: number; remoteHost: string; remotePort: number }
+export interface ForwardStatus { connId: string; state: "starting" | "running" | "stopped" | "error"; error: string | null; forwards: string[] }
 export interface SshConfigHost { alias: string; host: string; port: number; user?: string | null; identityFile?: string | null }
 
 /** One traffic sample (1/s) for a connected network profile; live via the "net-traffic" event. */

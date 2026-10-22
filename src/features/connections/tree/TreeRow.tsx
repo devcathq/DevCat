@@ -3,8 +3,9 @@ import { AlertTriangle, ChevronRight, Folder, FolderOpen, Loader2, Lock, Plus, S
 import { memo, type MouseEvent } from "react";
 import { KindIcon } from "../../../components/ui/KindIcon";
 import { NetBadge } from "../../network/NetBadge";
+import { ForwardBadge } from "../../ssh/ForwardBadge";
 import { isNoteNode, NodeIcon } from "./icons";
-import { bookmarkHint, type Row } from "./rows";
+import { bookmarkHint, isInfra, type Row } from "./rows";
 
 export const ROW_H = 24;
 const INDENT = 14;
@@ -120,9 +121,10 @@ export const TreeRow = memo(function TreeRow({ row, selected, focused, isOpen, c
 
   if (row.type === "conn") {
     const c = row.conn;
-    const infra = c.kind === "kubernetes" || c.kind === "rabbitmq";
+    const infra = isInfra(c);
+    const where = c.kind === "ssh" && c.user ? `${c.user}@${c.host}` : c.host;
     return (
-      <div {...common} draggable title={c.host ? `${c.name} — ${c.host}${c.port ? `:${c.port}` : ""}` : c.name}>
+      <div {...common} draggable title={c.host ? `${c.name} — ${where}${c.port ? `:${c.port}` : ""}` : c.name}>
         {c.color && <span className="absolute inset-y-0.5 left-0 w-[3px] rounded-r" style={{ background: c.color }} />}
         <Chevron expanded={row.expanded} visible={!infra} loading={connecting} onClick={() => onToggle(row)} />
         <span className="relative shrink-0">
@@ -130,6 +132,7 @@ export const TreeRow = memo(function TreeRow({ row, selected, focused, isOpen, c
           {isOpen && <span className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-ok ring-1 ring-panel" />}
         </span>
         <span className={clsx("min-w-0 flex-1 truncate", isOpen || infra ? "text-fg" : "text-fg/80")}>{c.name}</span>
+        {c.kind === "ssh" && <ForwardBadge connId={c.id} />}
         {c.options?.networkId && <NetBadge id={c.options.networkId} />}
         {c.readOnly && <Lock className="size-3 shrink-0 text-faint" aria-label="Read-only" />}
       </div>

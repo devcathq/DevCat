@@ -1,13 +1,13 @@
 // What a tab is, at a glance: an icon (the connection's kind for connection tabs) and a short
 // label for its tooltip, so agent chats, terminals, queries and files don't get mixed up.
 import {
-  ArrowLeftRight, Code2, FileCode2, GitBranch, GitCompare, History, Home, NotebookPen, PencilRuler, Shield, SquareTerminal, Table2, Workflow,
+  ArrowDownUp, ArrowLeftRight, Code2, FileCode2, GitBranch, GitCompare, History, Home, NotebookPen, PencilRuler, Shield, SquareTerminal, Table2, Workflow,
 } from "lucide-react";
 import { KindIcon } from "../components/ui/KindIcon";
 import { AiTerminalIcon } from "../components/ui/AppIcons";
 import { FileIcon } from "../features/files/FileIcon";
 import { useConnections } from "../store/connections";
-import { remoteHost, isRemote } from "../lib/remotePath";
+import { displayPath, remoteHost, isRemote } from "../lib/remotePath";
 import { tabConnId, type Tab } from "./types";
 
 const CLS = "size-3.5 shrink-0";
@@ -18,6 +18,7 @@ export function TabIcon({ tab }: { tab: Tab }) {
   switch (tab.type) {
     case "claude": return <AiTerminalIcon className={`${CLS} text-accent`} />;
     case "terminal": return <SquareTerminal className={`${CLS} text-ok`} />;
+    case "sftp": return <ArrowDownUp className={`${CLS} text-ok`} />;
     case "query": return <Code2 className={`${CLS} text-info`} />;
     case "table-design": return <PencilRuler className={`${CLS} text-muted`} />;
     case "ddl": return <FileCode2 className={`${CLS} text-muted`} />;
@@ -41,7 +42,8 @@ export function tabKindLabel(tab: Tab, connName?: string): string {
   const on = connName ? ` · ${connName}` : "";
   switch (tab.type) {
     case "claude": return `Agent chat · ${isRemote(tab.cwd) ? `${remoteHost(tab.cwd)}: ` : ""}${tab.cwd.split("/").pop()}`;
-    case "terminal": return `Terminal · ${tab.cwd}`;
+    case "terminal": return `Terminal · ${displayPath(tab.cwd)}`;
+    case "sftp": return `SFTP · ${displayPath(tab.cwd)}`;
     case "query": return `SQL query${on}`;
     case "table-data": return `Table data${on}`;
     case "table-design": return `Table design${on}`;

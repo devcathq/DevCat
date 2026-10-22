@@ -2,6 +2,10 @@
 #![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
 
 fn main() {
+    // ssh asking for a saved SSH session's password: see claude/remote.rs.
+    if let Some(code) = devcat_lib::askpass_main() {
+        std::process::exit(code);
+    }
     // Helper mode runs before (and instead of) anything Tauri: see network/helper.rs.
     if std::env::args_os().nth(1).is_some_and(|a| a == "--vpn-helper") {
         let args: Option<Vec<String>> = std::env::args_os().skip(2).map(|a| a.into_string().ok()).collect();

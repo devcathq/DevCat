@@ -1,6 +1,6 @@
 // Context menu builders for every tree row type.
 import {
-  AppWindow, ArrowDown, ArrowLeftRight, Crosshair, LogOut, ArrowUp, Check, Code, Copy, CopyPlus, Eraser, ExternalLink, FilePlus, Folder, FolderInput,
+  AppWindow, ArrowDown, ArrowDownUp, ArrowLeftRight, Bot, Crosshair, LogOut, ArrowUp, Check, Code, Copy, CopyPlus, Eraser, ExternalLink, FilePlus, Folder, FolderInput,
   FolderMinus, FolderPlus, GitCompare, Network, Palette, Pencil, PencilRuler, Play, Plug, Plus, RefreshCw, SquareTerminal,
   Star, StarOff, Table2, Trash2, Unplug,
 } from "lucide-react";
@@ -21,6 +21,8 @@ import {
   openSchemaCompare, openTableData, openTableDesign,
 } from "../openers";
 import { isSqlKind, selectTop } from "../../table/sqlDialect";
+import { openSftp, openSshAgent, openSshTerminal, sessionUri } from "../../ssh/open";
+import { forwardsActive, parseForwards, startForwards, stopForwards, useForwards } from "../../ssh/forwards";
 import {
   activateConnection, copyText, deleteConnection, deleteRedisKey, disconnect, dropCollection, dropObject,
   duplicateConnection, refreshAll, truncateTable,
@@ -97,6 +99,16 @@ function connectionMenu(conn: ConnectionConfig): MenuItem[] {
     { label: "Duplicate", icon: ic(CopyPlus), onClick: () => duplicateConnection(conn) },
     { label: "Delete", icon: ic(Trash2), danger: true, onClick: () => deleteConnection(conn) },
   ];
+  if (conn.kind === "ssh") {
+    return [
+      { label: "Open terminal", icon: ic(SquareTerminal), onClick: () => openSshTerminal(conn) },
+      { label: "Open SFTP", icon: ic(ArrowDownUp), onClick: () => openSftp(sessionUri(conn)) },
+      { label: "AI workspace on this host", icon: ic(Bot), onClick: () => openSshAgent(conn) },
+      ...forwardItems(conn),
+      "separator",
+      ...edit,
+    ];
+  }
   if (isInfra(conn)) {
     return [{ label: "Open", icon: ic(ExternalLink), onClick: () => openInfra(conn.id, conn.kind === "kubernetes" ? "k8s" : "rabbitmq") }, "separator", ...edit];
   }
@@ -268,4 +280,20 @@ export function backgroundMenu(): MenuItem[] {
     { label: "Refresh all", icon: ic(RefreshCw), onClick: () => void refreshAll() },
     { label: "Collapse all", onClick: () => useTree.getState().collapseAll() },
   ];
+}
+
+/** Start / stop an SSH session's port forwards (or a hint to add some). */
+function forwardItems(conn: ConnectionConfig): MenuItem[] {
+  const saved = parseForwards(conn.options.forwards);
+  if (!saved.length) {
+    return [{ label: "Add port forwards…", icon: ic(ArrowLeftRight), onClick: () => useUi.getState().openConnectionDialog(conn.id) }];
+  }
+  const status = useForwards.getState().byConn[conn.id];
+  const n = saved.length === 1 ? "port forward" : `${saved.length} port forwards`;
+  return forwardsActive(status)
+    ? [
+        { label: `Stop ${n}`, icon: ic(ArrowLeftRight), onClick: () => stopForwards(conn) },
+        { label: "Restart port forwards", icon: ic(RefreshCw), onClick: () => void startForwards(conn) },
+      ]
+    : [{ label: `Start ${n}`, icon: ic(ArrowLeftRight), onClick: () => void startForwards(conn) }];
 }
