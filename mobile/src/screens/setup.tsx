@@ -1,7 +1,8 @@
 // First launch and pairing: welcome guide, QR scan, paste link, approval wait, computer list.
 import { Clipboard, Laptop, Monitor, Plus, QrCode, Smartphone } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { IS_HOSTED, IS_WEB, isPairLink } from "../lib/env";
+import { readQr } from "../lib/qr";
 import { errMsg, onPair, phone } from "../lib/rpc";
 import { loadMachines, nav, selectMachine, toast, useApp } from "../lib/store";
 import { appLink, parseLink } from "../web/client";
@@ -18,6 +19,35 @@ function StepRow({ n, title, meta }: { n: number; title: string; meta: string })
   );
 }
 
+/** Browser: pair from a photo of the QR code, right in this browser (no hand-over from the
+ *  camera app's in-app browser, which doesn't keep the pairing). */
+function WebScan() {
+  const picker = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const scan = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const link = await readQr(file);
+      if (!link) { toast("No QR code found. Fill the photo with the code and try again.", "err"); return; }
+      if (link.trim().startsWith("devcat://")) { toast("That QR code is for the DevCat app. On the computer turn on Allow phone browsers in DevCat → Mobile, then try again.", "err"); return; }
+      if (!isPairLink(link) || !parseLink(link)) { toast("That QR code isn't a DevCat pairing code.", "err"); return; }
+      if (new URL(link).origin === location.origin) nav.reset([{ s: "weblanding", link }]);
+      else location.href = link;
+    } catch {
+      toast("Couldn't read that photo. Try again.", "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <input ref={picker} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; void scan(f); }} />
+      <Btn variant="primary" block disabled={busy} onClick={() => picker.current?.click()}>{busy ? <Spinner /> : <QrCode className="size-5" />}Scan QR code</Btn>
+    </>
+  );
+}
+
 export function Welcome() {
   return (
     <div className="flex h-full flex-col gap-3 px-5" style={{ paddingTop: "max(36px, env(safe-area-inset-top))", paddingBottom: "max(20px, env(safe-area-inset-bottom))" }}>
@@ -30,7 +60,10 @@ export function Welcome() {
       <StepRow n={3} title={IS_WEB ? "Scan the QR code with your camera" : "Scan the QR code it shows"} meta={IS_WEB ? "it opens this page, ready to pair" : "then click Allow on the computer"} />
       <div className="flex-1" />
       {IS_WEB ? (
-        <Note>This browser isn't paired yet. On the computer click <b>Show pairing code</b>, then point your phone's <b>camera app</b> at the QR code and open the link.</Note>
+        <>
+          <Note>This browser isn't paired yet. On the computer click <b>Show pairing code</b>, then take a photo of the QR code here.</Note>
+          <WebScan />
+        </>
       ) : (
         <>
           <Btn variant="primary" block onClick={() => nav.push({ s: "scan" })}><QrCode className="size-5" />Scan QR code</Btn>

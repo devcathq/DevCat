@@ -190,3 +190,71 @@ async fn unknown_tools_and_bad_arguments_are_reported_to_the_model() {
     assert!(errs[0].contains("no tool named `teleport`") && errs[1].contains("weren't valid JSON"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn compacts_when_the_context_fills_up_and_continues_from_the_summary() {
+    let (dir, mut session) = project().await;
+    // every scripted step reports 110 tokens; a 120-token window compacts above 96
+    let model = Scripted::new(vec![
+        vec![tool("t1", "read", json!({ "path": "notes.txt" }))],
+        vec![text("1. Request: bump the version.\n5. State now: notes.txt read, version = 1.")],
+        vec![text("The version is 1.")],
+    ]);
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Ask, Arc::new(DenyAll), "system".into());
+    agent.context_window = Some(120);
+    let mut events = Vec::new();
+    agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+
+    // step 1, then the summary request (whole conversation + the ask), then a step from the summary only
+    assert_eq!(*model.seen.lock().unwrap(), vec![1, 3, 1]);
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Compacted { summary, .. } if summary.contains("State now"))));
+    let msgs = session.messages();
+    assert!(msgs[0].text().starts_with("This session continues an earlier conversation") && msgs[0].text().contains("version = 1"));
+    assert_eq!(msgs.last().unwrap().text(), "The version is 1.");
+    // the full history is still in the log, and resuming keeps the summary as the start
+    let resumed = Session::open(session.path()).await.unwrap();
+    assert!(resumed.events().iter().any(|e| matches!(e, SessionEvent::User { text, .. } if text == "what's the version?")));
+    assert_eq!(resumed.messages().len(), msgs.len());
+    // the summary step counts in the session's usage
+    assert_eq!(resumed.usage().input_tokens, 300);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn compact_on_request_and_nothing_to_compact() {
+    let (dir, mut session) = project().await;
+    let model = Scripted::new(vec![vec![text("hi")], vec![text("Summary: greeted.")]]);
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Ask, Arc::new(DenyAll), "system".into());
+    assert!(agent.compact(&mut session, None, &Cancel::default(), &mut |_| {}).await.is_err());
+    agent.turn(&mut session, "hello", &Cancel::default(), &mut |_| {}).await.unwrap();
+    agent.compact(&mut session, Some("the greeting"), &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert_eq!(session.messages().len(), 1);
+    assert!(session.messages()[0].text().contains("Summary: greeted."));
+    assert!(session.context_tokens() < 20);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn todo_list_needs_no_approval_and_fetch_asks() {
+    let (dir, mut session) = project().await;
+    let model = Scripted::new(vec![
+        vec![tool("t1", "todo_write", json!({ "todos": [{ "content": "Read", "status": "completed" }, { "content": "Fix", "status": "in_progress" }] }))],
+        vec![tool("t2", "web_fetch", json!({ "url": "https://example.invalid/x" }))],
+        vec![text("done")],
+    ]);
+    let approver = Arc::new(Answer(Decision::Deny { reason: None }, Mutex::default()));
+    let mut agent = Agent::new(model, Registry::standard(), Policy::AutoEdit, approver.clone(), "s".into());
+    let mut results = Vec::new();
+    agent
+        .turn(&mut session, "plan it", &Cancel::default(), &mut |e| {
+            if let AgentEvent::ToolResult { content, .. } = e {
+                results.push(content);
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(*approver.1.lock().unwrap(), vec!["web_fetch: https://example.invalid/x"]);
+    assert_eq!(results[0], "Todo list updated:\n[x] Read\n[>] Fix");
+    assert!(results[1].starts_with("The user declined"));
+    let _ = std::fs::remove_dir_all(dir);
+}

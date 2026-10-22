@@ -5,7 +5,13 @@ import { Button, Dialog } from "../../components/ui";
 import { Markdown } from "../claude/Markdown";
 import { useUpdate } from "./store";
 
-const RELEASES_URL = "https://github.com/devileya/DevCat/releases/latest";
+const RELEASES_URL = "https://github.com/devcathq/DevCat/releases/latest";
+const CHANGELOG_URL = "https://github.com/devcathq/DevCat/blob/master/CHANGELOG.md";
+
+/** What's new in the release: its notes above the download instructions (scripts/release-notes.sh). */
+function whatsNew(notes: string | null | undefined) {
+  return (notes ?? "").split("<!-- downloads -->")[0].trim();
+}
 
 function fmtMb(n: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
@@ -16,6 +22,7 @@ export function UpdateDialog() {
   if (!info) return null;
   const busy = phase === "downloading" || phase === "restarting";
   const pct = total ? Math.min(100, Math.round((downloaded / total) * 100)) : null;
+  const news = whatsNew(info.notes);
 
   return (
     <Dialog
@@ -50,9 +57,15 @@ export function UpdateDialog() {
           {info.date && <> Released {new Date(info.date).toLocaleDateString()}.</>}
           {!info.canInstall && <> This installation (.deb / .rpm) can't update itself; download the new package.</>}
         </div>
-        {info.notes && (
-          <div className="max-h-72 overflow-y-auto rounded-md border border-line bg-app/60 px-3 py-2">
-            <Markdown text={info.notes} cwd="" className="text-[12.5px]" />
+        {news && (
+          <div>
+            <div className="mb-1.5 flex items-baseline justify-between">
+              <span className="text-[12px] font-semibold text-fg">What's new in {info.version}</span>
+              <button className="text-[11.5px] text-accent hover:underline" onClick={() => void openUrl(CHANGELOG_URL)}>All changes</button>
+            </div>
+            <div className="max-h-72 overflow-y-auto rounded-md border border-line bg-app/60 px-3 py-2">
+              <Markdown text={news} cwd="" className="text-[12.5px]" />
+            </div>
           </div>
         )}
         {phase === "downloading" && (

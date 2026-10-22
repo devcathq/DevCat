@@ -32,6 +32,14 @@ pub enum SessionEvent {
     Interrupted { reason: String },
     /// Free-form title, e.g. set by the user. The last one wins.
     Title { title: String },
+    /// The conversation so far was summarized to free the context window: from here on the model
+    /// gets `summary` instead of the events before it (they stay in the log).
+    Compacted { summary: String, model: String, usage: Usage, tokens_before: u64 },
+}
+
+/// The first user message after a compaction: the summary of everything before it.
+pub fn summary_message(summary: &str) -> String {
+    format!("This session continues an earlier conversation that was summarized to free the context window. The summary:\n\n{summary}")
 }
 
 pub struct Session {
@@ -115,6 +123,10 @@ impl Session {
         let mut out: Vec<Message> = Vec::new();
         for e in &self.events {
             match e {
+                SessionEvent::Compacted { summary, .. } => {
+                    out.clear();
+                    push(&mut out, Role::User, vec![Block::Text { text: summary_message(summary) }]);
+                }
                 SessionEvent::User { text, images } => {
                     close_dangling(&mut out);
                     let mut content = vec![Block::Text { text: text.clone() }];
@@ -134,11 +146,35 @@ impl Session {
     pub fn usage(&self) -> Usage {
         let mut u = Usage::default();
         for e in &self.events {
-            if let SessionEvent::Assistant { usage, .. } = e {
+            if let SessionEvent::Assistant { usage, .. } | SessionEvent::Compacted { usage, .. } = e {
                 u += *usage;
             }
         }
         u
+    }
+
+    /// About how many tokens the next request takes: what the provider counted for the last step
+    /// (input + output), plus an estimate (4 characters a token) for what came after it. Before
+    /// any step, or right after a compaction, it's all estimated.
+    pub fn context_tokens(&self) -> u64 {
+        let mut tokens = 0u64;
+        let mut chars = 0usize;
+        for e in &self.events {
+            match e {
+                SessionEvent::Assistant { usage, .. } => {
+                    tokens = usage.input_tokens + usage.output_tokens;
+                    chars = 0;
+                }
+                SessionEvent::Compacted { summary, .. } => {
+                    tokens = 0;
+                    chars = summary.len();
+                }
+                SessionEvent::User { text, images } => chars += text.len() + images.len() * 6_000,
+                SessionEvent::ToolResults { results } => chars += results.iter().map(block_chars).sum::<usize>(),
+                _ => {}
+            }
+        }
+        tokens + (chars / 4) as u64
     }
 
     /// The title: the last `Title` event, else the start of the first user message.
@@ -159,6 +195,15 @@ impl Session {
 }
 
 /// Merge into the previous message when the role repeats (providers want alternating roles).
+fn block_chars(b: &Block) -> usize {
+    match b {
+        Block::Text { text } | Block::Thinking { text, .. } => text.len(),
+        Block::ToolResult { content, .. } => content.len(),
+        Block::ToolUse { input, .. } => input.to_string().len(),
+        Block::Image { .. } => 6_000,
+    }
+}
+
 fn push(out: &mut Vec<Message>, role: Role, content: Vec<Block>) {
     match out.last_mut() {
         Some(m) if m.role == role => m.content.extend(content),

@@ -1212,7 +1212,14 @@ impl Driver for MssqlDriver {
         let started = Instant::now();
         let (db, schema, name) = self.table_parts(&req.table)?;
         let full = format!("{}.{}.{}", q(db), q(schema), q(name));
-        let where_sql = req.filter.as_deref().map(str::trim).filter(|f| !f.is_empty()).map(|f| format!(" WHERE {f}")).unwrap_or_default();
+        let filter = req.filter.as_deref().map(str::trim).filter(|f| !f.is_empty());
+        // T-SQL needs no `;` between statements, so check the filter as a whole batch.
+        if let Some(f) = filter
+            && (split_statements(Dialect::Mssql, f).len() > 1 || !is_read_only_sql(&format!("SELECT 1 WHERE {f}")))
+        {
+            return Err(AppError::msg("The filter must be a single read-only SQL expression"));
+        }
+        let where_sql = filter.map(|f| format!(" WHERE ({f})")).unwrap_or_default();
         let pk = self.primary_key(db, schema, name).await.unwrap_or_default();
         let order = if !req.sort.is_empty() {
             req.sort.iter().map(|s| format!("{} {}", q(&s.column), if s.desc { "DESC" } else { "ASC" })).collect::<Vec<_>>().join(", ")
@@ -1649,6 +1656,10 @@ fn is_read_only_sql(sql: &str) -> bool {
     if first == "DBCC" && !words.get(1).is_some_and(|w| matches!(*w, "SHOW_STATISTICS" | "USEROPTIONS" | "SQLPERF")) {
         return false;
     }
+    // dynamic SQL later in the batch (`SELECT 1 EXEC('DELETE …')`) hides its text in a string
+    if words.iter().skip(1).any(|w| matches!(*w, "EXEC" | "EXECUTE" | "SP_EXECUTESQL" | "OPENROWSET" | "OPENQUERY" | "OPENDATASOURCE")) {
+        return false;
+    }
     const WRITES: &[&str] = &[
         "INSERT", "UPDATE", "DELETE", "MERGE", "DROP", "ALTER", "CREATE", "TRUNCATE", "GRANT", "REVOKE", "DENY", "INTO",
         "BACKUP", "RESTORE", "KILL", "SHUTDOWN", "BULK", "RECONFIGURE",
@@ -1714,6 +1725,9 @@ mod tests {
         assert!(!is_read_only_sql("UPDATE t SET a = 1"));
         assert!(!is_read_only_sql("EXEC dbo.do_stuff"));
         assert!(is_read_only_sql("EXEC sp_helptext 'x'"));
+        assert!(!is_read_only_sql("SELECT 1 EXEC('DELETE FROM t')"));
+        assert!(!is_read_only_sql("DECLARE @s nvarchar(99) = N'DROP TABLE t'; EXEC sp_executesql @s"));
+        assert!(!is_read_only_sql("SELECT * FROM OPENQUERY(srv, 'DELETE FROM t')"));
     }
 
     #[test]
@@ -1899,6 +1913,15 @@ mod mssql_it {
             .unwrap();
         assert_eq!(page.total, Some(1));
         assert_eq!(page.primary_key, vec!["id".to_string()]);
+        // a filter can't smuggle in another statement
+        let all = TableDataRequest { table: items.clone(), offset: 0, limit: 10, filter: None, sort: vec![] };
+        let before = d.table_data(&all).await.unwrap().result.rows.len();
+        assert!(before > 0);
+        for f in ["1=0) DELETE FROM [app].[items] --", "1=0; DELETE FROM [app].[items]", "1=1 EXEC('DELETE FROM [app].[items]')"] {
+            let req = TableDataRequest { table: items.clone(), offset: 0, limit: 10, filter: Some(f.into()), sort: vec![] };
+            assert!(d.table_data(&req).await.is_err(), "{f}");
+        }
+        assert_eq!(d.table_data(&all).await.unwrap().result.rows.len(), before);
 
         // apply_changes: insert (identity skipped), update, delete in one transaction
         let mut ins = Map::new();

@@ -137,11 +137,11 @@ impl Rmq {
     }
 
     pub async fn bindings_of(&self, vhost: &str, kind: &str, name: &str) -> AppResult<Value> {
-        let (v, n) = (vh(vhost), enc(name));
+        let (v, n, x) = (vh(vhost), enc(name), enc(exchange_name(name)));
         let path = match kind {
             "queue" => format!("/queues/{v}/{n}/bindings"),
-            "source" => format!("/exchanges/{v}/{n}/bindings/source"),
-            "destination" => format!("/exchanges/{v}/{n}/bindings/destination"),
+            "source" => format!("/exchanges/{v}/{x}/bindings/source"),
+            "destination" => format!("/exchanges/{v}/{x}/bindings/destination"),
             _ => return Err(AppError::msg(format!("Unknown binding kind: {kind}"))),
         };
         self.get(&path, &[]).await

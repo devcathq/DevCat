@@ -354,15 +354,28 @@ fn line_ending(text: &str) -> &'static str {
     if crlf * 2 > lf { "crlf" } else { "lf" }
 }
 
-/// Version token for conflict detection: modification time (ns) + length.
-fn version_of(meta: &fs::Metadata) -> String {
+/// Files up to this size also get a content hash in their version token.
+const VERSION_HASH_MAX: u64 = 16 * 1024 * 1024;
+
+/// Version token for conflict detection: modification time (ns) + length, plus a content hash
+/// for files small enough to edit. mtime alone misses same-size rewrites that land within one
+/// timestamp tick (coarse-grained filesystems, or two saves in quick succession).
+fn version_of(path: &Path, meta: &fs::Metadata) -> String {
+    use sha2::{Digest, Sha256};
     let mtime = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("{mtime}-{}", meta.len())
+    let hash = (meta.is_file() && meta.len() <= VERSION_HASH_MAX)
+        .then(|| fs::read(path).ok())
+        .flatten()
+        .map(|b| hex::encode(&Sha256::digest(&b)[..8]));
+    match hash {
+        Some(h) => format!("{mtime}-{}-{h}", meta.len()),
+        None => format!("{mtime}-{}", meta.len()),
+    }
 }
 
 fn format_float(f: f64) -> String {
@@ -514,7 +527,7 @@ pub(super) fn preview_sync(path: &str) -> AppResult<FilePreview> {
     }
     // taken before reading: a write racing the read makes the token stale (→ conflict), never newer
     let mut pv = preview_kind(path, meta.len())?;
-    pv.version = Some(version_of(&meta));
+    pv.version = Some(version_of(Path::new(path), &meta));
     Ok(pv)
 }
 
@@ -616,7 +629,7 @@ fn write_text_sync(path: &str, content: &str, expected_version: Option<&str>, eo
     };
     match (&existing, expected_version) {
         (Some(m), _) if !m.is_file() => return Err(AppError::msg(format!("{path} is not a regular file"))),
-        (Some(m), Some(v)) if version_of(m) != v => {
+        (Some(m), Some(v)) if version_of(&target, m) != v => {
             return Err(AppError::msg(format!("{CONFLICT} {path} was changed on disk since it was opened.")))
         }
         (None, Some(_)) => return Err(AppError::msg(format!("{CONFLICT} {path} was deleted or moved since it was opened."))),
@@ -655,7 +668,7 @@ fn write_text_sync(path: &str, content: &str, expected_version: Option<&str>, eo
         }
         fs::write(&target, &bytes).map_err(|e| AppError::msg(format!("Cannot save {path}: {e}")))?;
     }
-    Ok(version_of(&fs::metadata(&target)?))
+    Ok(version_of(&target, &fs::metadata(&target)?))
 }
 
 /// Save text to a file atomically (temp file + rename, original permissions kept).

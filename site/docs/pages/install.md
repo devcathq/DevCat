@@ -4,7 +4,7 @@ Download DevCat for your computer, install the CLI on a server, and keep both up
 
 ## Download the app
 
-Get the installer for your system from the [latest release](https://github.com/devileya/DevCat/releases/latest):
+Get the installer for your system from the [latest release](https://github.com/devcathq/DevCat/releases/latest):
 
 | System | File |
 | --- | --- |
@@ -18,8 +18,8 @@ Or install from a terminal:
 
 ```sh
 brew install --cask devileya/devcat/devcat                                          # macOS (Homebrew)
-curl -fsSL https://devileya.github.io/DevCat/install.sh | sh -s -- --app            # macOS, Linux (AppImage)
-& ([scriptblock]::Create((irm https://devileya.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
+curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh -s -- --app            # macOS, Linux (AppImage)
+& ([scriptblock]::Create((irm https://devcathq.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
 ```
 
 The scripts check the download's SHA-256 and install for your user only, without `sudo`. Add `--version v0.7.0`
@@ -40,8 +40,8 @@ The CLI runs [`devcat serve`](devcat-serve.md) without a window, for servers and
 
 ```sh
 brew install devileya/devcat/devcat-cli                          # macOS, Linux (Homebrew)
-curl -fsSL https://devileya.github.io/DevCat/install.sh | sh     # macOS, Linux → ~/.local/bin
-irm https://devileya.github.io/DevCat/install.ps1 | iex          # Windows (PowerShell)
+curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh     # macOS, Linux → ~/.local/bin
+irm https://devcathq.github.io/DevCat/install.ps1 | iex          # Windows (PowerShell)
 ```
 
 Add `--dir <folder>` to choose where the CLI goes.

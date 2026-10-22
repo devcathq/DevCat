@@ -57,7 +57,8 @@ pub(crate) struct GitOut {
 pub(crate) fn git_command(cwd: &Path) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&*GIT_BIN);
     cmd.arg("-C").arg(cwd);
-    cmd.args(["-c", "core.quotepath=false", "-c", "color.ui=false", "--no-pager"]);
+    // core.fsmonitor in an untrusted repo's .git/config would run an arbitrary command on `git status`
+    cmd.args(["-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "core.fsmonitor=false", "--no-pager"]);
     cmd.env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_PAGER", "cat")
         .env("GIT_TERMINAL_PROMPT", "0")

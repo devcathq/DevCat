@@ -1,7 +1,7 @@
 // Optional extras; the page works without them. Download links point at the files of the latest
 // release (their names carry the version), the main button at this computer's installer, and the
 // install commands get a Copy button.
-const RELEASES = "https://api.github.com/repos/devileya/DevCat/releases/latest";
+const RELEASES = "https://api.github.com/repos/devcathq/DevCat/releases/latest";
 
 function platform() {
   const ua = navigator.userAgent;

@@ -9,7 +9,24 @@ on:
     tags: ["v*"]
 
 jobs:
+  # The release notes: this version's section of CHANGELOG.md, then how to download
+  # (scripts/release-notes.sh). The release and latest.json (the app's update dialog) use them.
+  notes:
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.notes.outputs.body }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          { echo "body<<DEVCAT_NOTES_EOF"; scripts/release-notes.sh "$version"; echo "DEVCAT_NOTES_EOF"; } >> "$GITHUB_OUTPUT"
+          scripts/release-notes.sh "$version" >> "$GITHUB_STEP_SUMMARY"
+
   build:
+    needs: notes
     strategy:
       fail-fast: false
       matrix:
@@ -91,21 +108,7 @@ jobs:
         with:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: DevCat ${{ github.ref_name }}
-          releaseBody: |
-            Downloads for this release are below. Already on v0.3.0 or later? DevCat offers the update itself.
-
-            - **macOS (Apple Silicon):** `DevCat_*_aarch64.dmg`
-            - **macOS (Intel):** `DevCat_*_x64.dmg`
-            - **Windows:** `DevCat_*_x64-setup.exe` or `DevCat_*_x64_en-US.msi` (OpenVPN and WireGuard installers included; DevCat offers them the first time you connect)
-            - **Linux:** `.AppImage`, `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/RHEL)
-            - **CLI only** (`devcat serve`: phones and browsers without the app; servers, SSH): `devcat-cli-<platform>.tar.gz` / `.zip`, or
-              `curl -fsSL https://devileya.github.io/DevCat/install.sh | sh` · `brew install devileya/devcat/devcat-cli`
-
-            The builds are not notarized by Apple / signed for Windows yet.
-            **macOS:** after dragging DevCat to Applications, open it once; when macOS says it can't verify
-            the developer, go to *System Settings → Privacy & Security* and click **Open Anyway**
-            (or run `xattr -dr com.apple.quarantine /Applications/DevCat.app` in Terminal).
-            **Windows:** SmartScreen may warn: choose "More info" → "Run anyway".
+          releaseBody: ${{ needs.notes.outputs.body }}
           releaseDraft: false
           # latest.json: what the in-app updater reads (releases/latest/download/latest.json)
           includeUpdaterJson: true

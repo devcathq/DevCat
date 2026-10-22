@@ -1,0 +1,71 @@
+# Changelog
+
+What changed in each DevCat release. The release notes on GitHub and the "new version" dialog in
+the app show the section of that version.
+
+When a pull request changes something users notice, add a line under **Unreleased**. At release
+time, rename **Unreleased** to the version (`## 0.8.2 - 2026-10-23`) and start a new empty
+**Unreleased** above it. A version without a section gets the list of merged pull requests instead.
+Plain Markdown only: the app's dialog doesn't render HTML tags.
+
+## Unreleased
+
+## 0.8.2 - 2026-10-22
+
+- **DevCat Agent:**
+  - Long chats are summarized automatically when the context window fills up, or on demand with
+    `/compact` (#32).
+  - The agent can fetch web pages, and keeps a plan you can follow above the message box (#32).
+  - It can read your DevCat connections: database schemas and queries, Kubernetes resources and
+    logs, with your approval first (#33).
+- **Browser version:** the on-screen keyboard no longer hides the terminal, and you can pair by
+  taking a photo of the QR code (#25).
+- **HTML preview:** a page that needs JavaScript says so, with a **Run scripts** button (#37).
+- **AI workspace:** the header fits narrow windows, and nothing wraps or spills over (#29).
+- **Updates:** the "new version" dialog shows what changed in that version, with a link to the
+  whole changelog.
+
+## 0.8.1 - 2026-10-22
+
+- **DevCat has a new home:** [github.com/devcathq/DevCat](https://github.com/devcathq/DevCat).
+  Updates, downloads and the pairing page for the browser version
+  ([devcathq.github.io/DevCat](https://devcathq.github.io/DevCat/)) come from there. Old links
+  forward to it (#41).
+- **Website and docs:** [devcat.ai.id](https://devcat.ai.id) (#40).
+- A phone that paired through the browser at the old address pairs once more at the new one.
+
+## 0.8.0 - 2026-10-22
+
+- **DevCat Agent:** a coding agent built into DevCat, with its own chat in the AI workspace. It
+  asks before edits and commands, asks you questions, takes attachments, and uses your MCP
+  servers, rules and skills (#22, #24).
+- **Bookmarks** in the Connections tab, for databases, schemas, tables and other objects (#16).
+- **Zoom:** ⌘/Ctrl `+` `-` `0` for the whole window, and for terminals when one has focus. There's
+  also a setting under Appearance (#14, #17).
+- **Fonts:**
+  - code fonts are bundled, so Claude Code's status line looks right on Windows;
+  - the font pickers list your installed fonts;
+  - dropdowns are readable on Windows (#13, #14, #21).
+- **Copy files** to the clipboard from the Files tree and the file preview, to paste into
+  Finder, Explorer or Slack (#19).
+- **Browser version on phones:** pair once and install it as an app, with an easier terminal (#23).
+- **Pod shell:** copy and paste with the keyboard (#30).
+- **Website and user docs**, with step-by-step guides (#20).
+
+## 0.7.1 - 2026-10-20
+
+- **Tabs** can be dragged to reorder them.
+- **New chat** always opens a new tab.
+- **macOS:** DevCat appears under *Open With* for code and text files, and opens them in an editor
+  tab.
+
+## 0.7.0 - 2026-10-19
+
+- **DevCat CLI (`devcat serve`):** pair DevCat Mobile and phone browsers with a computer that has
+  no window, such as a server or a machine you reach over SSH. The pairing QR code shows in the
+  terminal.
+- **Install from a terminal:**
+  - `curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh` (macOS, Linux);
+  - `irm https://devcathq.github.io/DevCat/install.ps1 | iex` (Windows);
+  - Homebrew: `brew install devileya/devcat/devcat-cli`, or `--cask devileya/devcat/devcat` for
+    the app.

@@ -153,7 +153,8 @@ export const api = {
   fontsList: () => invoke<{ name: string; mono: boolean }[]>("fonts_list"),
   // DevCat Agent (crates/harness): chats report through the `agent-event` event.
   agentOpen: (cwd: string, providerId: string, sessionId: string | null) => invoke<AgentOpened>("agent_open", { cwd, providerId, sessionId }),
-  agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[]) => invoke<void>("agent_send", { sessionId, text, policy, model, attachments }),
+  agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[], contextWindow: number | null) =>
+    invoke<void>("agent_send", { sessionId, text, policy, model, attachments, contextWindow }),
   agentAnswer: (sessionId: string, toolUseId: string, answer: string) => invoke<void>("agent_answer", { sessionId, toolUseId, answer }),
   /** Save a dropped / pasted file (base64) for the chat; returns its path. */
   agentAttach: (sessionId: string, name: string, data: string) => invoke<string>("agent_attach", { sessionId, name, data }),

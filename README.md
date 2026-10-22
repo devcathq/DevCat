@@ -7,19 +7,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/devileya/DevCat/releases/latest"><img src="https://img.shields.io/github/v/release/devileya/DevCat?label=release&color=f5a524" alt="Latest release"></a>
-  <a href="https://github.com/devileya/DevCat/releases"><img src="https://img.shields.io/github/downloads/devileya/DevCat/total?color=3b82f6" alt="Downloads"></a>
-  <a href="https://github.com/devileya/DevCat/actions/workflows/build.yml"><img src="https://github.com/devileya/DevCat/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="https://github.com/devcathq/DevCat/releases/latest"><img src="https://img.shields.io/github/v/release/devcathq/DevCat?label=release&color=f5a524" alt="Latest release"></a>
+  <a href="https://github.com/devcathq/DevCat/releases"><img src="https://img.shields.io/github/downloads/devcathq/DevCat/total?color=3b82f6" alt="Downloads"></a>
+  <a href="https://github.com/devcathq/DevCat/actions/workflows/build.yml"><img src="https://github.com/devcathq/DevCat/actions/workflows/build.yml/badge.svg" alt="Build"></a>
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-555" alt="Platforms: macOS, Windows, Linux, Android">
   <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db" alt="Built with Tauri 2"></a>
 </p>
 
 <p align="center">
-  <a href="https://devileya.github.io/DevCat/home/"><b>Website</b></a> ·
-  <a href="https://devileya.github.io/DevCat/home/docs/"><b>Docs</b></a> ·
-  <a href="https://github.com/devileya/DevCat/releases/latest"><b>Download</b></a> ·
-  <a href="https://devileya.github.io/DevCat/home/docs/shortcuts.html"><b>Shortcuts</b></a> ·
-  <a href="https://github.com/devileya/DevCat/issues"><b>Report a bug</b></a>
+  <a href="https://devcat.ai.id"><b>Website</b></a> ·
+  <a href="https://devcat.ai.id/docs/"><b>Docs</b></a> ·
+  <a href="https://github.com/devcathq/DevCat/releases/latest"><b>Download</b></a> ·
+  <a href="https://devcat.ai.id/docs/shortcuts.html"><b>Shortcuts</b></a> ·
+  <a href="https://github.com/devcathq/DevCat/issues"><b>Report a bug</b></a>
 </p>
 
 DevCat is a cross-platform developer workbench. It runs your AI coding agent (Claude Code, Codex, Gemini CLI and
@@ -47,18 +47,18 @@ RabbitMQ brokers and VPN / SSH tunnels in the same window, grouped by project. I
 ## Download
 
 Grab the latest installer for macOS, Windows or Linux from the
-[Releases page](https://github.com/devileya/DevCat/releases/latest), or from a terminal:
+[Releases page](https://github.com/devcathq/DevCat/releases/latest), or from a terminal:
 
 ```sh
 # The app
 brew install --cask devileya/devcat/devcat                                     # macOS (Homebrew)
-curl -fsSL https://devileya.github.io/DevCat/install.sh | sh -s -- --app       # macOS, Linux (AppImage)
-& ([scriptblock]::Create((irm https://devileya.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
+curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh -s -- --app       # macOS, Linux (AppImage)
+& ([scriptblock]::Create((irm https://devcathq.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
 
 # Only the CLI (`devcat serve`, no window: servers, SSH; see below)
 brew install devileya/devcat/devcat-cli                                        # macOS, Linux (Homebrew)
-curl -fsSL https://devileya.github.io/DevCat/install.sh | sh                   # macOS, Linux → ~/.local/bin
-irm https://devileya.github.io/DevCat/install.ps1 | iex                        # Windows (PowerShell)
+curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh                   # macOS, Linux → ~/.local/bin
+irm https://devcathq.github.io/DevCat/install.ps1 | iex                        # Windows (PowerShell)
 ```
 
 The script checks the download's SHA-256 and installs for your user only (no `sudo`); `--version v0.7.0`
@@ -152,9 +152,9 @@ needs `libdbus` (installed almost everywhere).
 
 ## Features
 
-Below is the short list. The [docs](https://devileya.github.io/DevCat/home/docs/) explain how to use each
+Below is the short list. The [docs](https://devcat.ai.id/docs/) explain how to use each
 of these step by step, with every keyboard shortcut on
-[one page](https://devileya.github.io/DevCat/home/docs/shortcuts.html).
+[one page](https://devcat.ai.id/docs/shortcuts.html).
 
 - **Projects**: group connections into projects and focus on one project at a time.
 - **Hide the sidebar**: click the active icon in the left bar, the toggle at its bottom, or press ⌘B (Ctrl+B).
@@ -305,8 +305,8 @@ cd src-tauri && cargo test -- --ignored
 
 ### Website and docs
 
-The landing page and the docs live in `site/` and are published with GitHub Pages at
-`/home/` (the root stays the hosted DevCat Mobile web app, so pairing links keep working). Docs pages are
+The landing page and the docs live in `site/`; the website is [devcat.ai.id](https://devcat.ai.id). GitHub Pages
+also publishes them at `/home/` (the root stays the hosted DevCat Mobile web app, so pairing links keep working). Docs pages are
 Markdown in `site/docs/pages/`, listed in order in `site/docs/nav.json`; `site/docs/build.mjs` turns them into
 HTML with a sidebar, search and an "On this page" list. To preview locally:
 
@@ -346,6 +346,11 @@ run that workflow by hand to get the APK. The install scripts
 ([devileya/homebrew-devcat](https://github.com/devileya/homebrew-devcat), source in `packaging/homebrew-tap/`)
 picks up each release by itself within the hour.
 
+**Releasing:** in `CHANGELOG.md`, rename *Unreleased* to the new version and date. Then set the version in
+`package.json`, `src-tauri/tauri.conf.json` and `mobile/src-tauri/tauri.conf.json`, merge, and push the `vX.Y.Z` tag.
+The release notes, and the "new version" dialog in the app, show that version's changelog section
+(`scripts/release-notes.sh`; without a section, the list of merged pull requests).
+
 macOS release builds are signed with DevCat's self-signed certificate (`.github/devcat-codesign.crt`, so the Keychain
 remembers "Always Allow" across updates; CI needs the `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` secrets, else it falls
 back to ad-hoc signing) but not notarized, so allow DevCat once via *System Settings → Privacy & Security →
@@ -357,7 +362,7 @@ notarization ([macOS](https://tauri.app/distribute/sign/macos/), [Windows](https
 
 Bug reports, ideas and pull requests are welcome.
 
-- **Found a bug?** [Open an issue](https://github.com/devileya/DevCat/issues/new) with your OS, the DevCat version
+- **Found a bug?** [Open an issue](https://github.com/devcathq/DevCat/issues/new) with your OS, the DevCat version
   (shown in the status bar) and the steps to reproduce it.
 - **Changing code?** See [Development](#development) to run the app locally. Keep pull requests focused on one
   change and describe how you tested it.

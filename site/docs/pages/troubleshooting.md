@@ -47,5 +47,5 @@ works in a terminal without a prompt. Then try again in DevCat.
 
 ## Still stuck?
 
-[Open an issue](https://github.com/devileya/DevCat/issues/new) with your system, DevCat version (in the status bar)
+[Open an issue](https://github.com/devcathq/DevCat/issues/new) with your system, DevCat version (in the status bar)
 and what you see.
