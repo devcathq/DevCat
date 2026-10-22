@@ -107,11 +107,9 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       // ⌘/Ctrl + = / - / 0: terminal font size (every terminal; same setting as Appearance → Fonts).
       if (terminalZoomKey(e)) return false;
       if (terminalEditKey(term, e)) return false;
-      // The image paste key of Claude Code and friends on an SSH host (Ctrl+V or Alt+V on macOS,
-      // Alt+V elsewhere, where Ctrl+V pastes). The host can't see this computer's clipboard, so
-      // copy the image there and type its path instead.
-      const imageKey = IS_MAC ? e.ctrlKey !== e.altKey : e.altKey && !e.ctrlKey;
-      if (isRemote(cb.current.cwd) && e.code === "KeyV" && !e.metaKey && !e.shiftKey && imageKey) {
+      // Ctrl+V / Alt+V on an SSH host: the image paste keys of Claude Code and friends. The host
+      // can't see this computer's clipboard, so copy the image there and type its path instead.
+      if (isRemote(cb.current.cwd) && e.code === "KeyV" && !e.metaKey && !e.shiftKey && e.ctrlKey !== e.altKey) {
         e.preventDefault();
         void pasteRemoteImage(null, e.ctrlKey ? "\x16" : "\x1bv");
         return false;
