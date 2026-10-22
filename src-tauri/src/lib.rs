@@ -2,6 +2,7 @@
 #![cfg_attr(not(feature = "gui"), allow(dead_code, unused_imports))]
 
 mod agent;
+mod agent_tools;
 mod ai;
 mod bookmarks;
 mod claude;
@@ -14,6 +15,7 @@ mod db;
 pub mod devbridge;
 mod error;
 mod events;
+mod fonts;
 mod gitx;
 mod history;
 mod infra;
@@ -117,6 +119,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // keep awake
             keep_awake::keep_awake_status,
+            fonts::fonts_list,
             keep_awake::keep_awake_set,
             // updates
             updater::update_check,

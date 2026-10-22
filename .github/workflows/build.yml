@@ -14,12 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS builds run on our own Mac (a self-hosted runner; packaging/self-hosted-runner.md).
-          - platform: [self-hosted, macOS, ARM64, mac-server]
+          - platform: macos-latest
             args: --target aarch64-apple-darwin
             rust_targets: aarch64-apple-darwin
             label: macos-arm64
-          - platform: [self-hosted, macOS, ARM64, mac-server]
+          - platform: macos-latest
             args: --target x86_64-apple-darwin
             rust_targets: x86_64-apple-darwin
             label: macos-x64
@@ -100,7 +99,7 @@ jobs:
             - **Windows:** `DevCat_*_x64-setup.exe` or `DevCat_*_x64_en-US.msi` (OpenVPN and WireGuard installers included; DevCat offers them the first time you connect)
             - **Linux:** `.AppImage`, `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/RHEL)
             - **CLI only** (`devcat serve`: phones and browsers without the app; servers, SSH): `devcat-cli-<platform>.tar.gz` / `.zip`, or
-              `curl -fsSL https://devileya.github.io/DevCat/install.sh | sh` · `brew install devileya/devcat/devcat-cli`
+              `curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh` · `brew install devileya/devcat/devcat-cli`
 
             The builds are not notarized by Apple / signed for Windows yet.
             **macOS:** after dragging DevCat to Applications, open it once; when macOS says it can't verify
@@ -195,8 +194,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: [self-hosted, macOS, ARM64, mac-server], target: aarch64-apple-darwin }
-          - { platform: [self-hosted, macOS, ARM64, mac-server], target: x86_64-apple-darwin }
+          - { platform: macos-latest, target: aarch64-apple-darwin }
+          - { platform: macos-latest, target: x86_64-apple-darwin }
           - { platform: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
           - { platform: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
           - { platform: windows-latest, target: x86_64-pc-windows-msvc }

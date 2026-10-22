@@ -2,7 +2,7 @@
 // items a chat draws, and how those items read (step rows, folded runs of steps). Shared by the
 // desktop chat (./AgentChat.tsx) and the phone / browser version (mobile/src/screens/agentchat.tsx),
 // so nothing here may import Tauri.
-import { FilePen, FilePlus, FileText, FolderSearch, MessageCircleQuestion, Plug, Search, SquareTerminal, Wrench } from "lucide-react";
+import { Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, Globe, ListTodo, MessageCircleQuestion, Plug, ScrollText, Search, SquareTerminal, Wrench } from "lucide-react";
 import type { AgentApprovalRequest, AgentBlock, AgentContext, AgentLiveEvent, AgentModel, AgentPolicy, AgentQuestion, AgentSessionEvent, AgentUsage } from "../../lib/types";
 
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
@@ -11,7 +11,9 @@ export type Item =
   | { kind: "user"; key: string; text: string; attachments: string[] }
   | { kind: "answer"; key: string; text: string; thinking: string; streaming: boolean; thinkingMs: number | null; thinkingStart: number | null }
   | { kind: "tool"; key: string; id: string; name: string; input: Record<string, unknown> | null; status: ToolStatus; output: string; request: AgentApprovalRequest | null; question?: AgentQuestion | null }
-  | { kind: "end"; key: string; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; elapsedMs: number | null; tokens: number };
+  | { kind: "end"; key: string; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; elapsedMs: number | null; tokens: number }
+  /** The conversation before it was summarized (automatically, or `/compact`). */
+  | { kind: "compacted"; key: string; state: "running" | "done" | "failed"; summary: string; tokensBefore: number };
 
 export type ToolItem = Extract<Item, { kind: "tool" }>;
 
@@ -52,6 +54,8 @@ export function itemsFromLog(events: AgentSessionEvent[]): Item[] {
     } else if (e.event === "approval" && !e.allowed) {
       const t = tools.get(e.tool_use_id);
       if (t) t.status = "denied";
+    } else if (e.event === "compacted") {
+      items.push({ kind: "compacted", key: key(), state: "done", summary: e.summary, tokensBefore: e.tokens_before });
     } else if (e.event === "interrupted") {
       items.push({ kind: "end", key: key(), end: e.reason.startsWith("Stopped by") ? "stopped" : "error", error: e.reason.startsWith("Stopped by") ? null : e.reason, elapsedMs: null, tokens: 0 });
     }
@@ -64,6 +68,7 @@ export function lastContext(events: AgentSessionEvent[]): number {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (e.event === "assistant") return e.usage.input_tokens + e.usage.output_tokens;
+    if (e.event === "compacted") return Math.round(e.summary.length / 4);
   }
   return 0;
 }
@@ -180,6 +185,17 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
     case "toolCall":
       setTool(e.id, (t) => ({ status: t.status === "question" ? "question" : "running", request: null, input: e.input }));
       return { items };
+    case "compacting":
+      items.push({ kind: "compacted", key: key(), state: "running", summary: "", tokensBefore: e.tokens_before });
+      return { items };
+    case "compacted": {
+      const i = items.map((x) => x.kind === "compacted" && x.state === "running").lastIndexOf(true);
+      const done = { kind: "compacted" as const, key: i >= 0 ? items[i].key : key(), state: "done" as const, summary: e.summary, tokensBefore: e.tokens_before };
+      if (i >= 0) items[i] = done;
+      else items.push(done);
+      const usage = { input_tokens: c.usage.input_tokens + e.usage.input_tokens, output_tokens: c.usage.output_tokens + e.usage.output_tokens, cache_read_tokens: c.usage.cache_read_tokens + e.usage.cache_read_tokens };
+      return { items, usage, contextTokens: Math.round(e.summary.length / 4) };
+    }
     case "toolResult":
       setTool(e.id, (t) => ({
         output: e.content,
@@ -189,7 +205,10 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
       }));
       return { items };
     case "turnEnd": {
-      const closed = items.map((i) => (i.kind === "answer" && i.streaming ? { ...i, streaming: false } : i.kind === "tool" && (i.status === "pending" || i.status === "running" || i.status === "approval" || i.status === "question") ? { ...i, status: "error" as const, request: null, question: null } : i));
+      const closed = items.map((i): Item => (i.kind === "answer" && i.streaming ? { ...i, streaming: false }
+        : i.kind === "tool" && (i.status === "pending" || i.status === "running" || i.status === "approval" || i.status === "question") ? { ...i, status: "error" as const, request: null, question: null }
+        : i.kind === "compacted" && i.state === "running" ? { ...i, state: "failed" }
+        : i));
       const tokens = e.usage.input_tokens + e.usage.output_tokens;
       closed.push({ kind: "end", key: key(), end: e.end, error: e.error, elapsedMs: e.elapsedMs, tokens });
       return { items: closed, busy: false, usage: e.usage, title: e.title };
@@ -220,6 +239,10 @@ export function rel(path: string, cwd?: string) {
   return fold(path).startsWith(fold(base) + "/") ? path.slice(base.length + 1) : path;
 }
 
+/** The agent's checklist in a `todo_write` call. */
+export type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
+export const todoList = (input: Record<string, unknown> | null): Todo[] => (Array.isArray(input?.todos) ? (input.todos as Todo[]).filter((t) => t && typeof t.content === "string") : []);
+
 /** How a tool step reads: icon, verb, target and changed lines. */
 export function describe(name: string, input: Record<string, unknown> | null, status: ToolStatus, cwd?: string) {
   const done = status === "done" || status === "error" || status === "denied";
@@ -232,6 +255,16 @@ export function describe(name: string, input: Record<string, unknown> | null, st
     case "grep": return { icon: Search, verb: done ? "Searched" : "Searching", target: str(i.pattern) };
     case "shell": return { icon: SquareTerminal, verb: done ? "Ran" : "Running", target: str(i.command) };
     case "ask_user": return { icon: MessageCircleQuestion, verb: done ? "Asked" : "Asking", target: str(i.question) };
+    case "web_fetch": return { icon: Globe, verb: done ? "Fetched" : "Fetching", target: str(i.url) };
+    case "devcat_connections": return { icon: Database, verb: done ? "Listed connections" : "Listing connections", target: "" };
+    case "db_schema": return { icon: Database, verb: done ? "Read the schema of" : "Reading the schema of", target: [str(i.connection), str(i.table)].filter(Boolean).join(" · ") };
+    case "db_query": return { icon: Database, verb: done ? "Queried" : "Querying", target: `${str(i.connection)}: ${str(i.query).replace(/\s+/g, " ")}` };
+    case "k8s_get": return { icon: Boxes, verb: done ? "Got" : "Getting", target: `${str(i.connection)}: ${[str(i.kind), str(i.name)].filter(Boolean).join(" ")}${i.namespace ? ` -n ${str(i.namespace)}` : ""}` };
+    case "k8s_logs": return { icon: ScrollText, verb: done ? "Read logs of" : "Reading logs of", target: `${str(i.connection)}: ${str(i.namespace)}/${str(i.pod)}` };
+    case "todo_write": {
+      const todos = todoList(i);
+      return { icon: ListTodo, verb: "Updated the plan", target: todos.length ? `${todos.filter((t) => t.status === "completed").length}/${todos.length} done` : "" };
+    }
     default:
       if (name.startsWith("mcp__")) {
         const [, server, tool] = name.split("__");
@@ -285,7 +318,7 @@ export function toBlocks(items: Item[]): Block[] {
 /** "read 6 files · 14 searches · ran 3 commands · 2 failed" for a group of steps. */
 export function summarize(items: Item[]) {
   const reads = new Set<string>(), edits = new Set<string>();
-  let searches = 0, commands = 0, tools = 0, failed = 0, thinkingMs = 0;
+  let searches = 0, commands = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0;
   for (const it of items) {
     if (it.kind === "answer") thinkingMs += it.thinkingMs ?? 0;
     if (it.kind !== "tool") continue;
@@ -295,7 +328,10 @@ export function summarize(items: Item[]) {
     else if (it.name === "edit" || it.name === "write") edits.add(target);
     else if (it.name === "glob" || it.name === "grep") searches++;
     else if (it.name === "shell") commands++;
-    else tools++;
+    else if (it.name === "web_fetch") fetches++;
+    else if (it.name === "db_query" || it.name === "db_schema" || it.name === "k8s_get" || it.name === "k8s_logs") queries++;
+    else if (it.name === "devcat_connections") continue;
+    else if (it.name !== "todo_write") tools++;
   }
   const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
   const parts = [
@@ -303,10 +339,12 @@ export function summarize(items: Item[]) {
     edits.size && `edited ${n(edits.size, "file")}`,
     searches && n(searches, "search", "searches"),
     commands && `ran ${n(commands, "command")}`,
+    fetches && `fetched ${n(fetches, "page")}`,
+    queries && n(queries, "query", "queries"),
     tools && `used ${n(tools, "tool")}`,
   ].filter(Boolean) as string[];
   if (!parts.length && thinkingMs) parts.push(`thought for ${fmtDuration(thinkingMs)}`);
-  return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools };
+  return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools && !queries };
 }
 
 /** Files a chat changed, with lines added / removed. */

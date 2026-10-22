@@ -5,7 +5,7 @@ import { Button, Dialog } from "../../components/ui";
 import { Markdown } from "../claude/Markdown";
 import { useUpdate } from "./store";
 
-const RELEASES_URL = "https://github.com/devileya/DevCat/releases/latest";
+const RELEASES_URL = "https://github.com/devcathq/DevCat/releases/latest";
 
 function fmtMb(n: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;

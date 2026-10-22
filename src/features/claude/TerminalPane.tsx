@@ -13,12 +13,11 @@ import { api, errMsg } from "../../lib/api";
 import { ptyEventsReady, subscribePty } from "./pty";
 import { openFile } from "./util";
 import { glassOn, onPaletteChange, palette } from "../appearance/store";
-import { onFontsChange, terminalFont, zoomTerminal } from "../appearance/fonts";
+import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
 import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
+import { IS_MAC, terminalEditKey } from "../../lib/terminalKeys";
 import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
-
-const IS_MAC = navigator.platform.toLowerCase().includes("mac");
 
 
 const CODE_EXT = new Set(("ts tsx js jsx mjs cjs json md mdx css scss html rs go py rb java kt swift c h cpp hpp cs php sh zsh bash yml yaml toml " +
@@ -99,34 +98,11 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
 
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
-      const mod = IS_MAC ? e.metaKey : e.ctrlKey && e.shiftKey;
       // App shortcuts (⌥⇧⌘1/2/3 view switch) belong to the app.
       if (e.altKey && e.shiftKey && (e.metaKey || e.ctrlKey) && /^Digit\d$/.test(e.code)) return false;
       // ⌘/Ctrl + = / - / 0: terminal font size (every terminal; same setting as Appearance → Fonts).
-      const zoomMod = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-      if (zoomMod && !e.altKey && ["Equal", "NumpadAdd", "Minus", "NumpadSubtract", "Digit0", "Numpad0"].includes(e.code)) {
-        e.preventDefault();
-        zoomTerminal(e.code === "Equal" || e.code === "NumpadAdd" ? 1 : e.code === "Minus" || e.code === "NumpadSubtract" ? -1 : 0);
-        return false;
-      }
-      if (mod && e.code === "KeyC") {
-        const sel = term.getSelection();
-        if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
-        e.preventDefault();
-        return false;
-      }
-      // ⌘V / Ctrl+Shift+V: let the native paste event reach xterm's textarea.
-      if (mod && e.code === "KeyV") return false;
-      if (mod && e.code === "KeyK") {
-        e.preventDefault();
-        term.clear();
-        return false;
-      }
-      if (mod && e.code === "KeyA") {
-        e.preventDefault();
-        term.selectAll();
-        return false;
-      }
+      if (terminalZoomKey(e)) return false;
+      if (terminalEditKey(term, e)) return false;
       // Shift+Enter → newline in claude's prompt (same as iTerm2 after /terminal-setup).
       if (shiftEnterNewline && e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();

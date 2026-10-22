@@ -52,14 +52,16 @@ function BranchChip({ tabId, onClick }: { tabId: string; onClick: () => void }) 
   if (!git) return null;
   if (!git.isRepo) return <span className="text-[11px] text-faint">no git</span>;
   const n = git.files.length;
+  const plural = (k: number, w: string) => `${k} ${w}${k === 1 ? "" : "s"}`;
+  const counts = [git.ahead && `${plural(git.ahead, "commit")} ahead`, git.behind && `${plural(git.behind, "commit")} behind`, n && plural(n, "changed file")].filter(Boolean);
   return (
-    <button type="button" onClick={onClick} title={`${git.root ?? ""}${n ? ` — ${n} changed file${n === 1 ? "" : "s"}` : ""}`}
-      className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-raised px-2 text-[11px] text-muted hover:bg-hover">
-      <GitBranch className="size-3" />
-      <span className="max-w-40 truncate text-fg/90">{git.branch ?? "detached"}</span>
-      {git.ahead > 0 && <span className="inline-flex items-center text-info"><ArrowUp className="size-3" />{git.ahead}</span>}
-      {git.behind > 0 && <span className="inline-flex items-center text-warn"><ArrowDown className="size-3" />{git.behind}</span>}
-      {n > 0 && <span className="text-warn">• {n}</span>}
+    <button type="button" onClick={onClick} title={[git.branch ?? "detached HEAD", git.root, counts.join(", ")].filter(Boolean).join("\n")}
+      className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-raised px-2 text-[11px] whitespace-nowrap text-muted hover:bg-hover">
+      <GitBranch className="size-3 shrink-0" />
+      <span className="max-w-40 truncate text-fg/90 @max-5xl:max-w-24">{git.branch ?? "detached"}</span>
+      {git.ahead > 0 && <span className="inline-flex shrink-0 items-center text-info"><ArrowUp className="size-3" />{git.ahead}</span>}
+      {git.behind > 0 && <span className="inline-flex shrink-0 items-center text-warn"><ArrowDown className="size-3" />{git.behind}</span>}
+      {n > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 text-warn"><span className="size-1.5 rounded-full bg-current" />{n}</span>}
     </button>
   );
 }
@@ -136,9 +138,9 @@ function AgentChip({ tabId, cwd, provider }: { tabId: string; cwd: string; provi
           menu.show({ clientX: r.left, clientY: r.bottom + 2 }, providerMenu(provider.id, pick));
         }}
         title={`AI connection of this tab: ${provider.name}${st === "missing" ? " (not installed)" : ""} — switching restarts the chat`}
-        className="inline-flex h-6 max-w-40 items-center gap-1.5 rounded-md border border-line bg-raised px-2 text-[11px] text-muted hover:bg-hover">
+        className="inline-flex h-6 max-w-40 shrink-0 items-center gap-1.5 rounded-md border border-line bg-raised px-2 text-[11px] whitespace-nowrap text-muted hover:bg-hover">
         <Bot className="size-3 shrink-0" />
-        <span className="truncate text-fg/90">{provider.name}</span>
+        <span className="truncate text-fg/90 @max-5xl:hidden">{provider.name}</span>
         <ChevronDown className="size-3 shrink-0" />
       </button>
       {menu.element}
@@ -156,12 +158,12 @@ function LaunchOptions({ tabId, onBypass }: { tabId: string; onBypass: () => voi
   const changed = !!launched && (launched.model !== options.model || launched.permissionMode !== options.permissionMode);
   return (
     <>
-      <Select className="h-6 w-24 text-xs" value={options.model} title="Model claude starts with (use /model to switch mid-session)"
+      <Select className="h-6 w-24 shrink-0 text-xs" value={options.model} title="Model claude starts with (use /model to switch mid-session)"
         onChange={(e) => setLaunchOptions(tabId, { model: e.target.value })}>
         {models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
       </Select>
       <Select
-        className={clsx("h-6 w-36 text-xs", options.permissionMode === "bypassPermissions" && "border-danger/60 text-danger")}
+        className={clsx("h-6 w-36 shrink-0 text-xs", options.permissionMode === "bypassPermissions" && "border-danger/60 text-danger")}
         value={options.permissionMode}
         title="Permission mode claude starts with (⇧Tab cycles modes in the TUI)"
         onChange={(e) => {
@@ -174,8 +176,8 @@ function LaunchOptions({ tabId, onBypass }: { tabId: string; onBypass: () => voi
         {PERMISSION_MODES.filter((m) => m.value !== "manual").map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
       </Select>
       {changed && (
-        <Button size="sm" variant="primary" onClick={() => void restartClaude(tabId)} title="Restart claude with these options, resuming the session">
-          <RotateCcw className="size-3" />Restart claude
+        <Button size="sm" variant="primary" className="shrink-0" onClick={() => void restartClaude(tabId)} title="Restart claude with these options, resuming the session">
+          <RotateCcw className="size-3" /><span className="@max-6xl:hidden">Restart claude</span>
         </Button>
       )}
     </>
@@ -186,7 +188,7 @@ function SessionChip({ tabId }: { tabId: string }) {
   const sid = useClaude((s) => s.tabs[tabId]?.sessionId);
   if (!sid) return null;
   return (
-    <span className="inline-flex items-center text-[10px] text-faint" title={`Session ${sid}`}>
+    <span className="inline-flex shrink-0 items-center text-[10px] whitespace-nowrap text-faint @max-[104rem]:hidden" title={`Session ${sid}`}>
       <span className="font-mono">{sid.slice(0, 8)}</span><CopyButton text={sid} />
     </span>
   );
@@ -315,10 +317,15 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-app">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line bg-panel px-3">
-        <div className="flex min-w-0 max-w-56 flex-col leading-tight">
+      {/* As the header narrows, its parts give way in this order: the shortcut hints, the button
+          labels (icons stay, with tooltips), the folder path and session id, the branch name gets
+          shorter, then the folder name and connection name go (the tab title has them). Past that, whole items
+          move to a second line; a chip never breaks. */}
+      <div className="@container shrink-0 border-b border-line bg-panel">
+      <div className="flex min-h-10 min-w-0 items-center gap-x-2 gap-y-1 overflow-hidden px-3 py-1.5 @max-[56rem]:flex-wrap">
+        <div className="flex max-w-56 min-w-12 shrink flex-col leading-tight @max-5xl:hidden" title={tab.cwd}>
           <span className="truncate text-[13px] font-semibold">{basename(tab.cwd)}</span>
-          <span className="truncate text-[10px] text-faint" title={tab.cwd}>{tab.cwd}</span>
+          <span className="truncate text-[10px] text-faint @max-6xl:hidden">{tab.cwd}</span>
         </div>
         <div className="ml-1 flex h-7 shrink-0 items-center rounded-md border border-line bg-app p-0.5">
           {views.map((v) => (
@@ -327,40 +334,41 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
               type="button"
               title={`${v.label} (${IS_MAC ? "⌥⇧⌘" : "Ctrl+Alt+Shift+"}${v.key})`}
               onClick={() => setView(v.id)}
-              className={clsx("flex h-6 items-center gap-1.5 rounded px-2.5 text-xs", view === v.id ? "bg-raised text-fg shadow-sm" : "text-muted hover:text-fg")}
+              className={clsx("flex h-6 items-center gap-1.5 rounded px-2.5 text-xs whitespace-nowrap", view === v.id ? "bg-raised text-fg shadow-sm" : "text-muted hover:text-fg")}
             >
               {v.id === "chat" && activity.working && <Sparkle className="size-3 animate-spin text-accent [animation-duration:2.4s]" />}
               {v.label}
-              <span className="text-[9px] text-faint">{IS_MAC ? `⌥⇧⌘${v.key}` : `^⌥⇧${v.key}`}</span>
+              <span className="text-[9px] text-faint @max-[104rem]:hidden">{IS_MAC ? `⌥⇧⌘${v.key}` : `^⌥⇧${v.key}`}</span>
             </button>
           ))}
         </div>
-        <Button size="sm" title={`Open a terminal in this folder, in its own tab (${IS_MAC ? "⌥⇧⌘T" : "Ctrl+Alt+Shift+T"})`} onClick={() => openTerminal(tab.cwd)}>
-          <SquareTerminal className="size-3.5" />Terminal
+        <Button size="sm" className="shrink-0" title={`Open a terminal in this folder, in its own tab (${IS_MAC ? "⌥⇧⌘T" : "Ctrl+Alt+Shift+T"})`} onClick={() => openTerminal(tab.cwd)}>
+          <SquareTerminal className="size-3.5" /><span className="@max-7xl:hidden">Terminal</span>
         </Button>
         {provider && <AgentChip tabId={tabId} cwd={tab.cwd} provider={provider} />}
         <BranchChip tabId={tabId} onClick={() => setView("diff")} />
         {isClaude && <ReviewBadge tabId={tabId} onClick={() => setView("review")} />}
         <div className="flex-1" />
-        {(isAgent ? agentBusy : activity.working) && <span className="shimmer-text text-[11px] font-medium" title={`${agent} is working`}>working</span>}
-        {!isAgent && <span className={clsx("size-1.5 rounded-full", activity.working ? "bg-accent" : running ? "bg-ok" : "bg-faint")} title={activity.working ? `${agent} is working` : running ? `${agent} is running` : `${agent} is not running`} />}
+        {(isAgent ? agentBusy : activity.working) && <span className="shimmer-text shrink-0 text-[11px] font-medium whitespace-nowrap" title={`${agent} is working`}>working</span>}
+        {!isAgent && <span className={clsx("size-1.5 shrink-0 rounded-full", activity.working ? "bg-accent" : running ? "bg-ok" : "bg-faint")} title={activity.working ? `${agent} is working` : running ? `${agent} is running` : `${agent} is not running`} />}
         {isClaude && <SessionChip tabId={tabId} />}
         {isClaude && <LaunchOptions tabId={tabId} onBypass={() => setConfirmBypass(true)} />}
         {provider && !isClaude && (
-          <Button size="sm" variant="ghost" title={isAgent ? `Ask ${agent} to review the uncommitted changes` : `Ask ${agent} to review the uncommitted changes (typed into its terminal)`} onClick={reviewNow}>
-            <ScanSearch className="size-3.5" />Review
+          <Button size="sm" variant="ghost" className="shrink-0" title={isAgent ? `Ask ${agent} to review the uncommitted changes` : `Ask ${agent} to review the uncommitted changes (typed into its terminal)`} onClick={reviewNow}>
+            <ScanSearch className="size-3.5" /><span className="@max-7xl:hidden">Review</span>
           </Button>
         )}
-        <Button size="sm" variant="ghost" disabled={!provider} title={`Start a new ${agent} session`} onClick={() => {
+        <Button size="sm" variant="ghost" className="shrink-0" disabled={!provider} title={`Start a new ${agent} session`} onClick={() => {
           setView("chat");
           if (isAgent) void closeChat(tabId).then(() => useTabs.getState().update(tabId, { sessionId: null } as never));
           else newSession(tabId);
         }}>
-          <MessageSquarePlus className="size-3.5" />New session
+          <MessageSquarePlus className="size-3.5" /><span className="@max-7xl:hidden">New session</span>
         </Button>
         {view === "diff" && provider && (
           <IconButton title={`Ask ${agent} to review`} onClick={reviewNow}><ScanSearch className="size-3.5" /></IconButton>
         )}
+      </div>
       </div>
       <div className="relative min-h-0 flex-1">
         <div className={clsx("absolute inset-0", view !== "chat" && "invisible")}>

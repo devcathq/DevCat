@@ -7,7 +7,7 @@ import { create } from "zustand";
 import { useConnections } from "../../store/connections";
 import { Button, Dialog, Input, Select } from "../../components/ui";
 import { IS_MAC } from "../../lib/windows";
-import { FONT_DEFAULTS, MONO_CHOICES, SANS_CHOICES, UI_ZOOMS, fontInstalled, monoStack, useFonts, type Fonts } from "./fonts";
+import { FONT_DEFAULTS, MONO_CHOICES, SANS_CHOICES, UI_ZOOMS, fontInstalled, installedFonts, monoStack, BUNDLED_MONO, useFonts, type Fonts, type InstalledFont } from "./fonts";
 import { Segmented } from "../connections/dialog/formBits";
 import { GLASS_SUPPORTED, effectiveOf, useAppearance, type Appearance, type Glass, type GlassStyle, type Mode } from "./store";
 import { DARK_PRESETS, LIGHT_PRESETS, type Palette } from "./themes";
@@ -161,14 +161,26 @@ function NumberField({ label, value, min, max, step, onChange, placeholder }: { 
   );
 }
 
-function FontPicker({ label, value, choices, placeholder, onChange }: { label: string; value: string; choices: string[]; placeholder: string; onChange: (v: string) => void }) {
-  const installed = useMemo(() => choices.filter(fontInstalled), [choices]);
+/** The installed fonts for a picker: monospaced families for code, every family for the UI. Falls back to the
+ *  well-known names found by measuring when the computer's fonts can't be listed (browser / demo mode). */
+function useFontChoices(mono: boolean, fallback: string[]): string[] {
+  const [list, setList] = useState<InstalledFont[] | null>(null);
+  useEffect(() => { void installedFonts().then(setList); }, []);
+  return useMemo(() => {
+    const names = list ? list.filter((f) => !mono || f.mono).map((f) => f.name) : fallback.filter(fontInstalled);
+    // The code font DevCat ships works everywhere, installed or not.
+    return mono ? [BUNDLED_MONO, ...names.filter((n) => n !== BUNDLED_MONO)] : names;
+  }, [list, mono, fallback]);
+}
+
+function FontPicker({ label, value, mono, fallback, placeholder, onChange }: { label: string; value: string; mono: boolean; fallback: string[]; placeholder: string; onChange: (v: string) => void }) {
+  const installed = useFontChoices(mono, fallback);
   const id = `fonts-${label.replace(/\W/g, "")}`;
   return (
     <label className="flex items-center gap-3 text-[12px]">
       <span className="w-28 text-muted">{label}</span>
       <Input list={id} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} className="flex-1" />
-      <datalist id={id}>{installed.map((f) => <option key={f} value={f} />)}</datalist>
+      <datalist id={id}>{installed.map((f) => <option key={f} value={f} label={f === BUNDLED_MONO ? "Bundled with DevCat" : undefined} />)}</datalist>
     </label>
   );
 }
@@ -179,17 +191,17 @@ function FontsSection() {
   const custom = (Object.keys(FONT_DEFAULTS) as (keyof Fonts)[]).some((k) => f[k] !== FONT_DEFAULTS[k]);
   return (
     <Section title="Fonts"
-      hint={<>For every project. Type any installed font; the list shows the common ones found on this computer. An empty size uses the default.{" "}
+      hint={<>For every project. Type a font name or pick one installed on this computer (Code font lists the monospaced ones). An empty size uses the default.{" "}
         {custom && <button className="text-accent hover:underline" onClick={f.reset}>Default fonts</button>}</>}>
       <div className="space-y-2">
-        <FontPicker label="Code font" value={f.mono} choices={MONO_CHOICES} placeholder="Default (JetBrains Mono, Cascadia Mono, …)" onChange={(mono) => f.set({ mono })} />
+        <FontPicker label="Code font" value={f.mono} mono fallback={MONO_CHOICES} placeholder="Default (JetBrains Mono, Cascadia Mono, …)" onChange={(mono) => f.set({ mono })} />
         <div className="rounded-md border border-line bg-app px-2.5 py-1.5 text-fg" style={{ fontFamily: monoStack(f), fontSize: f.terminalSize, lineHeight: f.terminalLineHeight }}>
           {"const x = 0; // 0O 1lI {} => ▁▂▃▅▇ ━┃╭╮ ◐ ✓ ⏵"}
         </div>
         <NumberField label="Terminal size" value={f.terminalSize} min={8} max={32} step={0.5} onChange={(terminalSize) => f.set({ terminalSize: terminalSize || FONT_DEFAULTS.terminalSize })} />
         <NumberField label="Line height" value={f.terminalLineHeight} min={1} max={2} step={0.05} onChange={(terminalLineHeight) => f.set({ terminalLineHeight: terminalLineHeight || FONT_DEFAULTS.terminalLineHeight })} />
         <NumberField label="Editor size" value={f.editorSize || ""} min={0} max={32} step={0.5} placeholder="Default" onChange={(editorSize) => f.set({ editorSize })} />
-        <FontPicker label="UI font" value={f.sans} choices={SANS_CHOICES} placeholder="Default (Inter, system)" onChange={(sans) => f.set({ sans })} />
+        <FontPicker label="UI font" value={f.sans} mono={false} fallback={SANS_CHOICES} placeholder="Default (Inter, system)" onChange={(sans) => f.set({ sans })} />
         <label className="flex items-center gap-3 text-[12px]">
           <span className="w-28 text-muted">UI zoom</span>
           <Select value={f.uiZoom} onChange={(e) => f.set({ uiZoom: Number(e.target.value) })} className="w-24">

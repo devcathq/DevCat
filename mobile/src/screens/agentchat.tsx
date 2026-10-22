@@ -132,7 +132,8 @@ export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; 
   const send = async (text: string): Promise<boolean> => {
     if (!chat || chat.busy || (!text.trim() && !attachments.length)) return false;
     try {
-      await host("agent_send", { sessionId: chat.sessionId, text: text.trim(), policy, model: chat.model || null, attachments });
+      // the window decides when the conversation gets summarized
+      await host("agent_send", { sessionId: chat.sessionId, text: text.trim(), policy, model: chat.model || null, attachments, contextWindow: contextWindow(chat.model, models).tokens });
       setAttachments([]);
       return true;
     } catch (e) {
@@ -326,6 +327,16 @@ const ItemView = memo(function ItemView({ item, ctx, working }: { item: Item; ct
       return <ToolRow item={item} cwd={ctx.cwd} working={working} />;
     case "end":
       return <TurnEnd item={item} />;
+    case "compacted":
+      return (
+        <div className="flex items-center gap-2 text-[12px] text-muted">
+          <span className="h-px flex-1 bg-line" />
+          {item.state === "running" ? <><Spinner className="size-3.5" />Summarizing the conversation…</>
+            : item.state === "failed" ? <span className="text-danger">Couldn't summarize the conversation</span>
+            : <>Conversation summarized{item.tokensBefore ? ` (${fmtTokens(item.tokensBefore)} tokens)` : ""}</>}
+          <span className="h-px flex-1 bg-line" />
+        </div>
+      );
   }
 });
 
@@ -434,20 +445,23 @@ function Diff({ before, after, max = 200 }: { before: string; after: string; max
 function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
   const req = item.request!;
   const i = item.input ?? {};
-  const title = req.kind === "exec" ? "Run this command?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+  const title = item.name === "db_query" ? (req.kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`)
+    : req.kind === "query" ? `Read from ${str(i.connection)}?`
+    : req.kind === "exec" ? "Run this command?" : req.kind === "fetch" ? "Fetch this page?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
   return (
     <div className="rounded-xl border border-accent/40 bg-accent/5 p-3">
       <div className="mb-2 flex items-center gap-2 text-[14px] font-semibold"><ShieldAlert className="size-4 text-accent" />{title}</div>
       {item.name === "shell" && <Code>{str(i.command)}</Code>}
       {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
-      {!["shell", "edit", "write"].includes(item.name) && <Code>{req.summary}</Code>}
+      {item.name === "db_query" && <Code>{str(i.query)}</Code>}
+      {!["shell", "edit", "write", "db_query"].includes(item.name) && <Code>{req.summary}</Code>}
       {ctx.readonly ? (
         <div className="mt-2 text-[12px] text-muted">Waiting for an answer on the computer or a phone with full access.</div>
       ) : (
         <div className="mt-2.5 flex flex-col gap-2">
           <Btn variant="primary" block onClick={() => ctx.onDecide(item.id, { decision: "allow" })}>Allow</Btn>
-          <Btn block onClick={() => ctx.onDecide(item.id, { decision: "allow-for-session" })}>Always allow {item.name === "shell" ? "commands" : "edits"} in this chat</Btn>
+          <Btn block onClick={() => ctx.onDecide(item.id, { decision: "allow-for-session" })}>Always allow {item.name === "shell" ? "commands" : item.name === "web_fetch" ? "fetching pages" : item.name === "db_query" ? "queries" : item.name.startsWith("k8s_") ? "cluster reads" : item.name.startsWith("mcp__") ? "this tool" : "edits"} in this chat</Btn>
           <Btn variant="ghost" block onClick={() => ctx.onDecide(item.id, { decision: "deny" })}>Deny</Btn>
         </div>
       )}

@@ -69,6 +69,8 @@ pub struct AgentContext {
     pub notices: Vec<String>,
     /// MCP servers are still starting (their tools come when they're ready).
     pub mcp_loading: bool,
+    /// DevCat connections the agent can use (names).
+    pub connections: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -281,7 +283,11 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     context.skills = skills(dir, home.as_deref()).into_iter().map(|s| s.name).collect();
     let configured = !devcat_harness::mcp::configured(dir, home.as_deref()).0.is_empty();
     context.mcp_loading = configured;
-    let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), Registry::standard(), Policy::Ask, approver.clone(), system);
+    // the user's DevCat connections: databases, Redis, MongoDB, clusters
+    let mut tools = Registry::standard();
+    crate::agent_tools::add(&mut tools);
+    context.connections = crate::agent_tools::names();
+    let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
     let log = Snapshot::of(&agent, &session);
     let run = Arc::new(Run {
         id,
@@ -483,7 +489,7 @@ pub async fn agent_answer(session_id: String, tool_use_id: String, answer: Strin
 /// `model` switches the chat's model from this message on (None = keep it). `attachments` are
 /// file paths: images are shown to the model, every file is listed with its path.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>) -> AppResult<()> {
+pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>) -> AppResult<()> {
     let run = run_of(&session_id)?;
     let attachments = attachments.unwrap_or_default();
     if text.trim().is_empty() && attachments.is_empty() {
@@ -507,7 +513,14 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
         if let Some(m) = model.filter(|m| !m.trim().is_empty() && *m != agent.model.name()) {
             agent.model = Arc::new(Llm::new(devcat_harness::LlmConfig { model: m, ..run.cfg.clone() }));
         }
-        let res = agent.turn_with_images(session, &message, images, &cancel, &mut |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null))).await;
+        agent.context_window = context_window.filter(|&w| w > 0);
+        let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
+        // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
+        let compact = text.trim().strip_prefix("/compact").filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+        let res = match compact {
+            Some(focus) if attachments.is_empty() => agent.compact(session, Some(focus), &cancel, &mut on).await.map(|_| devcat_harness::TurnEnd::Answered),
+            _ => agent.turn_with_images(session, &message, images, &cancel, &mut on).await,
+        };
         let (end, error) = match res {
             Ok(end) => (serde_json::to_value(end).unwrap_or(Value::Null), None),
             Err(devcat_harness::Error::Cancelled) => (json!("stopped"), None),

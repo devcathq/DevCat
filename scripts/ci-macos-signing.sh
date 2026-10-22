@@ -5,8 +5,8 @@
 #   ci-macos-signing.sh setup     # needs CERT_P12, CERT_PASSWORD; prints the identity
 #   ci-macos-signing.sh cleanup   # run with `if: always()`
 #
-# Works on GitHub's throwaway runners and on the self-hosted Mac (which keeps its state between
-# jobs): the signing keychain lives in $RUNNER_TEMP and cleanup takes it off the search list again.
+# The signing keychain lives in $RUNNER_TEMP, and cleanup takes it off the search list again (so
+# the script also suits a runner that keeps its state between jobs).
 set -euo pipefail
 
 kc="$RUNNER_TEMP/devcat-signing.keychain-db"
@@ -20,12 +20,12 @@ case "${1:-}" in
   setup)
     # codesign signs with an untrusted certificate too, but then the designated requirement names
     # it as the leaf instead of the root ("certificate root = H…", as in every release so far),
-    # and the release check below fails. GitHub's runners have passwordless sudo; the self-hosted
-    # Mac was set up once (packaging/self-hosted-runner.md).
+    # and the release check fails. GitHub's runners have passwordless sudo; on another Mac, trust it
+    # once in Keychain Access (System → DevCat Self-Signed → Trust → Code Signing: Always Trust).
     if ! security verify-cert -q -L -c "$crt" -p codeSign > /dev/null 2>&1 \
       && ! security dump-trust-settings -d 2> /dev/null | grep -q 'DevCat Self-Signed'; then
       sudo -n security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$crt" \
-        || { echo "::error::$crt isn't trusted for code signing on this runner; see packaging/self-hosted-runner.md"; exit 1; }
+        || { echo "::error::$crt isn't trusted for code signing on this runner; trust it once for code signing (Keychain Access → System → DevCat Self-Signed)"; exit 1; }
     fi
     # Our own keychain: Tauri's APPLE_CERTIFICATE import only accepts Apple-issued names
     # ("Developer ID Application: …"). With just APPLE_SIGNING_IDENTITY set, Tauri runs

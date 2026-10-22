@@ -1,7 +1,7 @@
 # Install DevCat from PowerShell (Windows):
 #
-#   irm https://devileya.github.io/DevCat/install.ps1 | iex                                   # the CLI (devcat serve)
-#   & ([scriptblock]::Create((irm https://devileya.github.io/DevCat/install.ps1))) -App       # the desktop app
+#   irm https://devcathq.github.io/DevCat/install.ps1 | iex                                   # the CLI (devcat serve)
+#   & ([scriptblock]::Create((irm https://devcathq.github.io/DevCat/install.ps1))) -App       # the desktop app
 #
 # The CLI goes to %LOCALAPPDATA%\Programs\DevCat CLI and onto your user PATH (no admin needed).
 param(
@@ -11,7 +11,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$repo = "devileya/DevCat"
+$repo = "devcathq/DevCat"
 if ($Version) {
     if (-not $Version.StartsWith("v")) { $Version = "v$Version" }
     $base = "https://github.com/$repo/releases/download/$Version"

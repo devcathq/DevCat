@@ -4,6 +4,7 @@
 // terminals and editors follow through `onFontsChange`.
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
+import { api } from "../../lib/api";
 
 export interface Fonts {
   /** Code font family (terminals, editors); "" = the default stack. */
@@ -32,7 +33,7 @@ const SANS_FALLBACK = '"Inter", ui-sans-serif, system-ui, -apple-system, "Segoe 
 export const FONT_DEFAULTS: Fonts = { mono: "", sans: "", terminalSize: 13, terminalLineHeight: 1.15, editorSize: 0, uiZoom: 1 };
 const KEY = "devcat.fonts";
 
-/** Well-known fonts offered in the pickers (only the installed ones are listed). */
+/** Well-known fonts offered in the pickers when the installed ones can't be listed (only those found are shown). */
 export const MONO_CHOICES = ["JetBrains Mono", "Cascadia Mono", "Cascadia Code", "Fira Code", "Source Code Pro", "Hack", "IBM Plex Mono",
   "Ubuntu Mono", "DejaVu Sans Mono", "Menlo", "SF Mono", "Monaco", "Consolas", "Lucida Console", "MesloLGS NF", "JetBrainsMono Nerd Font",
   "CaskaydiaCove Nerd Font", "FiraCode Nerd Font"];
@@ -80,6 +81,19 @@ export function zoomTerminal(step: 1 | -1 | 0) {
   set({ terminalSize: Math.min(TERMINAL_SIZES.max, Math.max(TERMINAL_SIZES.min, next)) });
 }
 
+const ZOOM_KEYS: Record<string, 1 | -1 | 0> = { Equal: 1, NumpadAdd: 1, Minus: -1, NumpadSubtract: -1, Digit0: 0, Numpad0: 0 };
+/** In a terminal's key handler: ⌘/Ctrl + = / - / 0 zoom the terminal font. Returns true when the key was a zoom
+ *  key (the xterm handler should then return false). */
+export function terminalZoomKey(e: KeyboardEvent): boolean {
+  const mac = navigator.platform.toLowerCase().includes("mac");
+  const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+  const step = ZOOM_KEYS[e.code];
+  if (!mod || e.altKey || step === undefined) return false;
+  e.preventDefault();
+  zoomTerminal(step);
+  return true;
+}
+
 /** UI zoom steps (the same as Chrome and VS Code). */
 export const UI_ZOOMS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 /** UI zoom (⌘/Ctrl + = / - / 0 outside terminals): the next step up or down, or back to 100%. */
@@ -93,6 +107,14 @@ export function zoomUi(step: 1 | -1 | 0) {
 /** Monaco options for the current fonts (size only when the user set one). */
 export function editorFont(f: Fonts = fonts()): { fontFamily: string; fontSize?: number } {
   return f.editorSize > 0 ? { fontFamily: monoStack(f), fontSize: f.editorSize } : { fontFamily: monoStack(f) };
+}
+
+export interface InstalledFont { name: string; mono: boolean }
+let installedList: Promise<InstalledFont[] | null> | null = null;
+/** The font families installed on this computer (asked once per window); null when they can't be listed. */
+export function installedFonts(): Promise<InstalledFont[] | null> {
+  installedList ??= api.fontsList().then((l) => (l.length ? l : null), () => null);
+  return installedList;
 }
 
 const installed = new Map<string, boolean>();

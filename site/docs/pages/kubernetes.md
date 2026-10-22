@@ -33,7 +33,7 @@ Right-click a row (or use its **Actions** button):
 | Action | What it does |
 | --- | --- |
 | **Logs** | Follow the logs. Search them, choose how many **Lines of history**, or see the **previous (crashed) container** |
-| **Shell** | Open a shell inside the container |
+| **Shell** | Open a shell inside the container. <kbd>⌘=</kbd> / <kbd>⌘-</kbd> / <kbd>⌘0</kbd> (<kbd>Ctrl</kbd> on Windows and Linux) change its font size |
 | **Port forward…** | Forward the pod or service to a port on your computer |
 | **Scale…** | Change the number of replicas |
 | **Restart** | Roll the workload's pods |

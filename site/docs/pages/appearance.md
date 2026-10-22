@@ -21,11 +21,11 @@ The **Fonts** section applies to every project and window on this computer.
 
 | Setting | What it changes |
 | --- | --- |
-| **Code font** | Terminals and editors. Type any installed font; the list suggests common ones found on your computer |
+| **Code font** | Terminals and editors. Type a name, or pick one of the monospaced fonts installed on your computer (JetBrains Mono, bundled with DevCat, is first) |
 | **Terminal size** | Font size in terminals (8–32) |
 | **Line height** | Space between terminal lines |
 | **Editor size** | Font size in editors; empty uses each editor's own size |
-| **UI font** | Menus, lists and buttons |
+| **UI font** | Menus, lists and buttons. The list shows every font installed on your computer |
 
 **Default fonts** puts everything back.
 

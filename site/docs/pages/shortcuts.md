@@ -28,7 +28,7 @@ Every shortcut in one place. On Windows and Linux, ⌘ is Ctrl and ⌥ is Alt.
 | Paste | <kbd>⌘V</kbd> | <kbd>Ctrl+Shift+V</kbd> |
 | Clear | <kbd>⌘K</kbd> | <kbd>Ctrl+Shift+K</kbd> |
 | Select all | <kbd>⌘A</kbd> | <kbd>Ctrl+Shift+A</kbd> |
-| Bigger, smaller, default font size | <kbd>⌘=</kbd> <kbd>⌘-</kbd> <kbd>⌘0</kbd> | <kbd>Ctrl+=</kbd> <kbd>Ctrl+-</kbd> <kbd>Ctrl+0</kbd> |
+| Bigger, smaller, default font size (also in a Kubernetes pod shell) | <kbd>⌘=</kbd> <kbd>⌘-</kbd> <kbd>⌘0</kbd> | <kbd>Ctrl+=</kbd> <kbd>Ctrl+-</kbd> <kbd>Ctrl+0</kbd> |
 | New line in the agent's prompt | <kbd>⇧↵</kbd> | <kbd>Shift+Enter</kbd> |
 
 ## SQL editor

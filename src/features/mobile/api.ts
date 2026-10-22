@@ -137,6 +137,6 @@ export function ntfyLink(s: NotifySettings): string {
   return `${s.server.replace(/\/+$/, "")}/${s.topic}`;
 }
 
-export const MOBILE_RELEASES_URL = "https://github.com/devileya/DevCat/releases/latest";
+export const MOBILE_RELEASES_URL = "https://github.com/devcathq/DevCat/releases/latest";
 export const NTFY_IOS_URL = "https://apps.apple.com/app/ntfy/id1625396347";
 export const NTFY_ANDROID_URL = "https://play.google.com/store/apps/details?id=io.heckel.ntfy";

@@ -80,6 +80,9 @@ async fn main() {
             }
             AgentEvent::Step { usage, .. } => eprintln!("\n[{} in / {} out tokens]", usage.input_tokens, usage.output_tokens),
             AgentEvent::ToolStart { .. } => {}
+            AgentEvent::Compacting { tokens_before } => eprintln!("
+[compacting {tokens_before} tokens of conversation…]"),
+            AgentEvent::Compacted { summary, .. } => eprintln!("[compacted to {} characters]", summary.len()),
         })
         .await;
     println!("\n== {end:?}; total {:?}", session.usage());

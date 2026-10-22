@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, Layers, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, X,
+  ArrowUp, Ban, BookOpen, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
@@ -14,7 +14,7 @@ import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { POLICIES, SUGGESTIONS, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, str, summarize, toBlocks, type Item, type ToolItem, type ToolStatus } from "./model";
+import { POLICIES, SUGGESTIONS, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent } from "./store";
 
 export default function AgentChat({ tabId, cwd, provider, visible, onReview }: { tabId: string; cwd: string; provider: AiProvider; visible: boolean; onReview: () => void }) {
@@ -109,6 +109,7 @@ function ChatBody({ tabId, cwd, visible, onReview, provider }: { tabId: string; 
           </div>
         </div>
       )}
+      <TodoPanel items={chat.items} busy={chat.busy} />
       <EditedFiles items={chat.items} onReview={onReview} />
       <Composer tabId={tabId} visible={visible} provider={provider} />
     </div>
@@ -184,6 +185,8 @@ const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: I
       return <ToolRow item={item} tabId={tabId} cwd={cwd} working={working} />;
     case "end":
       return <TurnEnd item={item} />;
+    case "compacted":
+      return <CompactedRow item={item} cwd={cwd} />;
   }
 });
 
@@ -204,6 +207,7 @@ function ContextLine({ tabId }: { tabId: string }) {
   if (ctx.rules.length) parts.push(<span key="r" title={ctx.rules.join("\n")} className="flex items-center gap-1"><BookOpen className="size-3" />{ctx.rules.length === 1 ? ctx.rules[0] : `${ctx.rules.length} rule files`}</span>);
   if (ctx.skills.length) parts.push(<span key="s" title={ctx.skills.join("\n")}>{ctx.skills.length} skill{ctx.skills.length === 1 ? "" : "s"}</span>);
   for (const m of ctx.mcp) parts.push(<span key={`m${m.name}`} className="flex items-center gap-1"><Plug className="size-3" />{m.name} ({m.tools} tool{m.tools === 1 ? "" : "s"})</span>);
+  if (ctx.connections?.length) parts.push(<span key="c" title={ctx.connections.join("\n")} className="flex items-center gap-1"><Database className="size-3" />{ctx.connections.length} DevCat connection{ctx.connections.length === 1 ? "" : "s"}</span>);
   if (ctx.mcpLoading) parts.push(<span key="ml" className="flex items-center gap-1"><Spinner className="size-3" />connecting MCP servers…</span>);
   return (
     <div className="flex flex-col items-center gap-1 text-[11.5px] text-faint">
@@ -319,7 +323,9 @@ function Diff({ before, after, max = 200 }: { before: string; after: string; max
 function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
   const req = item.request!;
   const i = item.input ?? {};
-  const title = req.kind === "exec" ? "Run this command?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+  const title = item.name === "db_query" ? (req.kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`)
+    : req.kind === "query" ? `Read from ${str(i.connection)}?`
+    : req.kind === "exec" ? "Run this command?" : req.kind === "fetch" ? "Fetch this page?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
   const deny = () => void answer(tabId, item.id, { decision: "deny" });
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); deny(); }
@@ -328,13 +334,14 @@ function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
     <div onKeyDown={onKey} className="rounded-lg border border-accent/40 bg-accent/5 p-3">
       <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-fg"><ShieldAlert className="size-4 text-accent" />{title}</div>
       {item.name === "shell" && <Code>{str(i.command)}</Code>}
+      {item.name === "db_query" && <Code>{str(i.query)}</Code>}
       {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
-      {!["shell", "edit", "write"].includes(item.name) && <Code>{req.summary}</Code>}
+      {!["shell", "edit", "write", "db_query"].includes(item.name) && <Code>{req.summary}</Code>}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <Button autoFocus size="sm" variant="primary" onClick={() => void answer(tabId, item.id, { decision: "allow" })}>Allow <kbd className="ml-1 opacity-60">↵</kbd></Button>
         <Button size="sm" onClick={() => void answer(tabId, item.id, { decision: "allow-for-session" })}>
-          Always allow {item.name === "shell" ? "commands" : "edits"} in this chat
+          Always allow {item.name === "shell" ? "commands" : item.name === "web_fetch" ? "fetching pages" : item.name === "db_query" ? "queries" : item.name.startsWith("k8s_") ? "cluster reads" : item.name.startsWith("mcp__") ? "this tool" : "edits"} in this chat
         </Button>
         <Button size="sm" variant="ghost" onClick={deny}>Deny <kbd className="ml-1 opacity-60">Esc</kbd></Button>
       </div>
@@ -369,6 +376,66 @@ function QuestionCard({ item, tabId }: { item: ToolItem; tabId: string }) {
           className="h-8 min-w-0 flex-1 rounded-md border border-line bg-panel px-2.5 text-[12.5px] text-fg outline-none placeholder:text-faint focus:border-accent/60 focus-visible:outline-none" />
         <Button size="sm" variant="primary" type="submit" disabled={!own.trim()}>Answer</Button>
       </form>
+    </div>
+  );
+}
+
+/** Where the conversation was summarized: from here on the model works from the summary. */
+function CompactedRow({ item, cwd }: { item: Extract<Item, { kind: "compacted" }>; cwd: string }) {
+  const [open, setOpen] = useState(false);
+  const label = item.state === "running" ? "Summarizing the conversation to free the context window…"
+    : item.state === "failed" ? "Couldn't summarize the conversation"
+    : `Conversation summarized${item.tokensBefore ? ` (${fmtTokens(item.tokensBefore)} tokens)` : ""}: the model continues from the summary`;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button disabled={item.state !== "done"} onClick={() => setOpen(!open)} aria-expanded={open}
+        className={clsx("flex items-center gap-2 text-[12px]", item.state === "failed" ? "text-danger" : "text-muted hover:text-fg")}>
+        <span className="h-px flex-1 bg-line" />
+        {item.state === "running" ? <Spinner className="size-3.5" /> : <FoldVertical className="size-3.5" />}
+        <span>{label}</span>
+        {item.state === "done" && <ChevronRight className={clsx("size-3 transition-transform", open && "rotate-90")} />}
+        <span className="h-px flex-1 bg-line" />
+      </button>
+      {open && <div className="rounded-md border border-line bg-panel/60 px-3 py-2"><Markdown text={item.summary} cwd={cwd} className="text-[12.5px]" /></div>}
+    </div>
+  );
+}
+
+/** The agent's checklist (its latest `todo_write`), above the composer while there's work in it. */
+function TodoPanel({ items, busy }: { items: Item[]; busy: boolean }) {
+  const [open, setOpen] = useState(true);
+  const todos = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "user") return [];
+      if (it.kind === "tool" && it.name === "todo_write" && it.status !== "denied") return todoList(it.input);
+    }
+    return [];
+  }, [items]);
+  if (!todos.length || (!busy && todos.every((t) => t.status === "completed"))) return null;
+  const done = todos.filter((t) => t.status === "completed").length;
+  const current = todos.find((t) => t.status === "in_progress");
+  return (
+    <div className="mx-auto mt-2 w-full max-w-[780px] px-5">
+      <div className="rounded-xl border border-line bg-panel/70 text-[12px]">
+        <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left">
+          <ListTodo className="size-3.5 shrink-0 text-muted" />
+          <span className="shrink-0 text-fg">Plan</span>
+          <span className="shrink-0 text-faint">{done}/{todos.length}</span>
+          {!open && current && <span className="min-w-0 truncate text-muted">· {current.content}</span>}
+          <ChevronDown className={clsx("ml-auto size-3 shrink-0 text-faint transition-transform", !open && "-rotate-90")} />
+        </button>
+        {open && (
+          <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto px-3 pb-2">
+            {todos.map((t, n) => (
+              <li key={n} className={clsx("flex items-start gap-2", t.status === "completed" ? "text-faint line-through" : t.status === "in_progress" ? "text-fg" : "text-muted")}>
+                {t.status === "completed" ? <CircleCheck className="mt-px size-3.5 shrink-0 text-ok" /> : t.status === "in_progress" ? <CircleDot className="mt-px size-3.5 shrink-0 text-accent" /> : <Circle className="mt-px size-3.5 shrink-0" />}
+                <span>{t.content}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -448,6 +515,7 @@ function ContextMeter({ tabId, models }: { tabId: string; models: AgentModel[] }
               <Row label="From cache">{fmtTokens(u.cache_read_tokens)} ({rate}%)</Row>
               <Row label="Rules">{ctx?.rules.length ? <span title={ctx.rules.join("\n")}>{ctx.rules.length} file{ctx.rules.length === 1 ? "" : "s"}</span> : "none"}</Row>
               <Row label="Skills">{ctx?.skills.length ? <span title={ctx.skills.join("\n")}>{ctx.skills.length}</span> : "none"}</Row>
+              <Row label="Connections">{ctx?.connections?.length ? <span title={ctx.connections.join("\n")}>{ctx.connections.length}</span> : "none"}</Row>
               <Row label="MCP">{ctx?.mcpLoading ? "connecting…" : ctx?.mcp.length ? <span title={ctx.mcp.map((m) => `${m.name}: ${m.tools} tools`).join("\n")}>{ctx.mcp.length} server{ctx.mcp.length === 1 ? "" : "s"} · {mcpTools} tools</span> : "none"}</Row>
             </div>
           </div>
@@ -507,7 +575,7 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
             const files = [...e.clipboardData.files];
             if (files.length) { e.preventDefault(); void attach(tabId, files); }
           }}
-          placeholder={chat.busy ? "Working… type your next message" : "Ask DevCat Agent to build, fix or explain something"}
+          placeholder={chat.busy ? "Working… type your next message" : "Ask DevCat Agent to build, fix or explain something  ·  /compact to summarize the chat"}
           className="block max-h-[240px] min-h-[52px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[13.5px] leading-relaxed text-fg outline-none placeholder:text-faint focus-visible:outline-none"
           // the composer's border shows focus; no second outline around the text box
           style={{ outline: "none", boxShadow: "none" }}

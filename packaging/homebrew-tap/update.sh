@@ -3,7 +3,7 @@
 # SHA256SUMS.txt. Run by .github/workflows/update.yml; `./update.sh v0.7.0` for one version.
 # SUMS_FILE=<file> uses a local checksum list instead of downloading it (testing).
 set -euo pipefail
-REPO=devileya/DevCat
+REPO=devcathq/DevCat
 cd "$(dirname "$0")"
 
 tag=${1:-$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)}

@@ -4,14 +4,16 @@
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, errMsg } from "../../lib/api";
+import { useProviders } from "../claude/providers";
 import type { AiProvider, AgentModel, AgentDecision, AgentLiveEvent, AgentPolicy } from "../../lib/types";
-import { ZERO, applyAll, itemsFromLog, lastContext, type ChatView } from "./model";
+import { ZERO, applyAll, contextWindow, itemsFromLog, lastContext, type ChatView } from "./model";
 
 export { contextWindow, type Item, type ToolStatus } from "./model";
 
-
 export interface Chat extends ChatView {
   sessionId: string | null;
+  /** The DevCat Agent connection (for its model list). */
+  providerId: string;
   model: string;
   providerName: string;
   opening: boolean;
@@ -31,7 +33,7 @@ function savedPolicy(): AgentPolicy {
   }
 }
 
-const emptyChat = (): Chat => ({ sessionId: null, title: "", model: "", providerName: "", busy: false, opening: true, error: null, items: [], usage: ZERO, policy: savedPolicy(), context: null, attachments: [], contextTokens: 0 });
+const emptyChat = (): Chat => ({ sessionId: null, providerId: "", title: "", model: "", providerName: "", busy: false, opening: true, error: null, items: [], usage: ZERO, policy: savedPolicy(), context: null, attachments: [], contextTokens: 0 });
 
 export const useAgent = create<{ chats: Record<string, Chat> }>(() => ({ chats: {} }));
 
@@ -97,7 +99,7 @@ export async function openChat(tabId: string, cwd: string, providerId: string, s
     lastSeq.set(o.sessionId, o.seq ?? 0);
     // A turn still running: its events so far come after the log.
     patch(tabId, (c) => applyAll({
-      ...c, sessionId: o.sessionId, title: o.title, model: o.model, providerName: o.providerName, busy: o.busy, opening: false,
+      ...c, sessionId: o.sessionId, providerId, title: o.title, model: o.model, providerName: o.providerName, busy: o.busy, opening: false,
       items: itemsFromLog(o.events), usage: o.usage, context: o.context, contextTokens: lastContext(o.events),
     }, o.live ?? []));
     // then what was sent while it opened (minus what `live` already had)
@@ -129,7 +131,10 @@ export async function send(tabId: string, text: string): Promise<boolean> {
   const c = useAgent.getState().chats[tabId];
   if (!c?.sessionId || c.busy || (!text.trim() && !c.attachments.length)) return false;
   try {
-    await api.agentSend(c.sessionId, text.trim(), c.policy, c.model || null, c.attachments);
+    // the window decides when the conversation gets summarized
+    const provider = useProviders.getState().providers.find((p) => p.id === c.providerId);
+    const models = provider ? await connectionModels(provider) : [];
+    await api.agentSend(c.sessionId, text.trim(), c.policy, c.model || null, c.attachments, contextWindow(c.model, models).tokens);
     patch(tabId, () => ({ attachments: [] }));
     return true;
   } catch (e) {
