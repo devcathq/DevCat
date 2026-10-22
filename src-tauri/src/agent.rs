@@ -113,7 +113,8 @@ fn now_ms() -> u64 {
 /// question, `agent_answer`).
 struct UiApprover {
     session_id: String,
-    pending: Mutex<HashMap<String, oneshot::Sender<Decision>>>,
+    /// Approvals waiting; the answer comes with who gave it ("user" in the app, "phone: <name>").
+    pending: Mutex<HashMap<String, oneshot::Sender<(Decision, String)>>>,
     questions: Mutex<HashMap<String, oneshot::Sender<String>>>,
     live: Mutex<Live>,
 }
@@ -126,7 +127,7 @@ impl Approver for UiApprover {
         self.send(json!({ "type": "approval", "request": req }));
         chat_changed(&self.session_id);
         match rx.await {
-            Ok(d) => (d, "user".into()),
+            Ok(answer) => answer,
             // the tab was closed or the turn stopped: fail closed
             Err(_) => (Decision::Deny { reason: Some("Nobody answered.".into()) }, "closed".into()),
         }
@@ -555,10 +556,15 @@ pub async fn agent_stop(session_id: String) -> AppResult<()> {
 /// Answer an approval request.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_approve(session_id: String, tool_use_id: String, decision: Decision) -> AppResult<()> {
-    let run = run_of(&session_id)?;
-    let tx = run.approver.pending.lock().remove(&tool_use_id).ok_or_else(|| AppError::msg("That request was already answered"))?;
-    let _ = tx.send(decision);
-    chat_changed(&session_id);
+    approve_as(&session_id, &tool_use_id, decision, "user")
+}
+
+/// Answer an approval; `by` is who answered. The session log keeps it in its `approval` event.
+pub fn approve_as(session_id: &str, tool_use_id: &str, decision: Decision, by: &str) -> AppResult<()> {
+    let run = run_of(session_id)?;
+    let tx = run.approver.pending.lock().remove(tool_use_id).ok_or_else(|| AppError::msg("That request was already answered"))?;
+    let _ = tx.send((decision, by.to_string()));
+    chat_changed(session_id);
     Ok(())
 }
 
@@ -677,5 +683,23 @@ mod tests {
         ap.send(json!({ "type": "turnStart", "text": "again" }));
         let live = ap.live.lock();
         assert_eq!((live.seq, live.events.len()), (4, 1));
+    }
+
+    #[tokio::test]
+    async fn an_approval_records_who_gave_it() {
+        let ap = UiApprover { session_id: "S".into(), pending: Mutex::default(), questions: Mutex::default(), live: Mutex::default() };
+        let req = ApprovalRequest { tool_use_id: "t1".into(), tool: "shell".into(), kind: devcat_harness::approval::Kind::Exec, summary: "ls".into(), input: json!({}) };
+        let answer = async {
+            // the request is registered before the agent waits on it
+            let tx = loop {
+                if let Some(tx) = ap.pending.lock().remove("t1") {
+                    break tx;
+                }
+                tokio::task::yield_now().await;
+            };
+            let _ = tx.send((Decision::Allow, "phone: Pixel".into()));
+        };
+        let ((decision, by), ()) = tokio::join!(ap.decide(&req), answer);
+        assert_eq!((decision, by.as_str()), (Decision::Allow, "phone: Pixel"));
     }
 }

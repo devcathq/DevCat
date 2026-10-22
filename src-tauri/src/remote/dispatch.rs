@@ -226,7 +226,10 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         }
         "agent_attach" => out(crate::agent::agent_attach(a!("sessionId"), a!("name"), a!("data")).await),
         "agent_stop" => out(crate::agent::agent_stop(a!("sessionId")).await),
-        "agent_approve" => out(crate::agent::agent_approve(a!("sessionId"), a!("toolUseId"), a!("decision")).await),
+        "agent_approve" => {
+            let (session, tool_use, decision): (String, String, devcat_harness::Decision) = (a!("sessionId"), a!("toolUseId"), a!("decision"));
+            out(crate::agent::approve_as(&session, &tool_use, decision, &format!("phone: {}", client.device.name)))
+        }
         "agent_answer" => out(crate::agent::agent_answer(a!("sessionId"), a!("toolUseId"), a!("answer")).await),
         "agent_close" => {
             // Only the phone that started the chat ends it: one in a desktop tab stays open there.
@@ -363,6 +366,17 @@ fn expand_home(p: &str) -> String {
     }
 }
 
+/// A chat id as people see it: its first 8 characters.
+fn short(id: &str) -> String {
+    format!("chat {}", id.chars().take(8).collect::<String>())
+}
+
+/// `s` on one line, cut to `max` characters.
+fn clip(s: &str, max: usize) -> String {
+    let s: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.chars().count() > max { format!("{}…", s.chars().take(max).collect::<String>()) } else { s }
+}
+
 /// One line for the audit log: the call and its most telling arguments (never passwords).
 pub fn audit_detail(cmd: &str, args: &Value) -> Option<String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
@@ -390,6 +404,15 @@ pub fn audit_detail(cmd: &str, args: &Value) -> Option<String> {
             Some(v)
         }
         "k8s_logs_start" => s("pod"),
+        // DevCat Agent: which chat, and what was decided or said
+        "agent_approve" => Some(format!("{}: {}", short(&s("sessionId").unwrap_or_default()), args.pointer("/decision/decision").and_then(Value::as_str).unwrap_or("?"))),
+        "agent_answer" => Some(format!("{}: answered \"{}\"", short(&s("sessionId").unwrap_or_default()), clip(&s("answer").unwrap_or_default(), 80))),
+        "agent_send" => Some(format!("{}: {}", short(&s("sessionId").unwrap_or_default()), clip(&s("text").unwrap_or_default(), 120))),
+        "agent_open" => Some(match s("sessionId") {
+            Some(id) => format!("{} in {}", short(&id), s("cwd").unwrap_or_default()),
+            None => format!("new chat in {}", s("cwd").unwrap_or_default()),
+        }),
+        "agent_stop" | "agent_close" => s("sessionId").map(|id| short(&id)),
         _ => None,
     };
     let conn = s("connId").map(|c| format!("[{c}] "));
@@ -399,6 +422,16 @@ pub fn audit_detail(cmd: &str, args: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_calls_say_which_chat_and_what() {
+        let id = "0123456789abcdef";
+        assert_eq!(audit_detail("agent_approve", &json!({ "sessionId": id, "decision": { "decision": "allow-for-session" } })).as_deref(), Some("chat 01234567: allow-for-session"));
+        assert_eq!(audit_detail("agent_answer", &json!({ "sessionId": id, "answer": "plus" })).as_deref(), Some("chat 01234567: answered \"plus\""));
+        assert_eq!(audit_detail("agent_send", &json!({ "sessionId": id, "text": "fix
+  the  tests" })).as_deref(), Some("chat 01234567: fix the tests"));
+        assert_eq!(audit_detail("agent_open", &json!({ "cwd": "~/proj" })).as_deref(), Some("new chat in ~/proj"));
+    }
 
     #[test]
     fn audit_lines() {
