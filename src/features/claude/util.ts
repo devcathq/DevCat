@@ -7,10 +7,11 @@ export { basename };
 const isAbs = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\");
 
 export function resolvePath(cwd: string, p: string): string {
-  if (isAbs(p)) return p;
   if (p.startsWith("~")) return p;
   const sep = cwd.includes("\\") && !cwd.includes("/") ? "\\" : "/";
-  return `${cwd.replace(/[\\/]+$/, "")}${sep}${p.replace(/^\.[\\/]/, "")}`;
+  const abs = isAbs(p) ? p : `${cwd.replace(/[\\/]+$/, "")}${sep}${p.replace(/^\.[\\/]/, "")}`;
+  // Windows: backslashes only, so C:/x/a.ts (as CLIs print it) and C:\x\a.ts are the same tab
+  return /^[A-Za-z]:[\\/]/.test(abs) ? abs.replace(/\//g, "\\") : abs;
 }
 
 export function relPath(cwd: string, p: string): string {

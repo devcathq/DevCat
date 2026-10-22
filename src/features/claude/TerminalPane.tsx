@@ -1,5 +1,5 @@
-// xterm.js terminal bound to a backend PTY (iTerm2-like): DevCat palette, ⌘C/⌘V/⌘K,
-// Option-as-Meta, clickable URLs and file paths, restart on Enter after the process exits.
+// xterm.js terminal bound to a backend PTY (iTerm2-like): DevCat palette, ⌘C/⌘V/⌘K (Windows: Ctrl+C
+// copies a selection, Ctrl+V pastes), Option-as-Meta, clickable URLs and file paths, restart on Enter after the process exits.
 // The PTY lives as long as the component (tabs stay mounted) and restarts when `startKey` changes.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FitAddon } from "@xterm/addon-fit";
@@ -11,7 +11,8 @@ import { useEffect, useRef, useState } from "react";
 import { ActivityDetector } from "./activity";
 import { api, errMsg } from "../../lib/api";
 import { ptyEventsReady, subscribePty } from "./pty";
-import { openFile } from "./util";
+import { openFile, resolvePath } from "./util";
+import { openExternally } from "../files/format";
 import { glassOn, onPaletteChange, palette } from "../appearance/store";
 import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
 import { terminalTheme } from "../appearance/themes";
@@ -22,8 +23,8 @@ import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
 
 const CODE_EXT = new Set(("ts tsx js jsx mjs cjs json md mdx css scss html rs go py rb java kt swift c h cpp hpp cs php sh zsh bash yml yaml toml " +
   "ini sql lua dart scala vue svelte txt lock xml gradle env conf proto graphql").split(" "));
-// path(:line(:col)?)? preceded by start / whitespace / quote / bracket
-const PATH_RE = /(^|[\s'"`(\[{<])((?:~|\.{1,2})?\/?(?:[\w.@+-]+\/)*[\w@+-][\w.@+-]*\.([A-Za-z][\w]{0,7}))(?::(\d+)(?::(\d+))?)?/g;
+// path(:line(:col)?)? preceded by start / whitespace / quote / bracket; Windows paths too (C:/x/y.html, C:\x\y.html, src\a.ts)
+const PATH_RE = /(^|[\s'"`(\[{<])((?:[A-Za-z]:[\\/]|(?:~|\.{1,2})?[\\/]?)(?:[\w.@+-]+[\\/])*[\w@+-][\w.@+-]*\.([A-Za-z][\w]{0,7}))(?::(\d+)(?::(\d+))?)?/g;
 
 export interface TerminalPaneProps {
   cwd: string;
@@ -88,7 +89,8 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon((_e, uri) => void openUrl(uri).catch(() => {})));
+    // xterm also activates a link at the end of a drag over it: a selection (to copy) doesn't open it
+    term.loadAddon(new WebLinksAddon((_e, uri) => { if (!term.hasSelection()) void openUrl(uri).catch(() => {}); }));
     const uni = new Unicode11Addon();
     term.loadAddon(uni);
     term.unicode.activeVersion = "11";
@@ -114,23 +116,29 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       return true;
     });
 
-    // File paths (src/foo.ts:12) → file preview tab.
+    // File paths (src/foo.ts:12) → file preview tab (.html renders there); ⌘/Ctrl+click → the default app.
     const links = term.registerLinkProvider({
       provideLinks(y, done) {
-        const line = term.buffer.active.getLine(y - 1)?.translateToString(true) ?? "";
+        const { line, at } = logicalLine(term, y);
         const out: ILink[] = [];
         PATH_RE.lastIndex = 0;
         let m: RegExpExecArray | null;
         while ((m = PATH_RE.exec(line))) {
           const [, pre, path, ext] = m;
-          if (!path.includes("/") && !CODE_EXT.has(ext.toLowerCase())) continue;
+          if (!/[\\/]/.test(path) && !CODE_EXT.has(ext.toLowerCase())) continue;
           const start = m.index + pre.length;
           const text = m[0].slice(pre.length);
+          const range = { start: at(start), end: at(start + text.length - 1) };
+          if (range.end.y < y || range.start.y > y) continue;
           out.push({
-            range: { start: { x: start + 1, y }, end: { x: start + text.length, y } },
+            range,
             text,
             decorations: { underline: true, pointerCursor: true },
-            activate: () => openFile(cb.current.cwd, path),
+            activate: (ev) => {
+              if (term.hasSelection()) return;
+              if (IS_MAC ? ev.metaKey : ev.ctrlKey) void openExternally(resolvePath(cb.current.cwd, path));
+              else openFile(cb.current.cwd, path);
+            },
           });
         }
         done(out.length ? out : undefined);
@@ -276,6 +284,22 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       )}
     </div>
   );
+}
+
+/** Row `y` (1-based) with the rows the terminal wrapped it onto, so a long path is one link; `at`
+ *  maps an index in `line` to its cell. Falls back to the row alone when wide characters would shift cells. */
+function logicalLine(term: Terminal, y: number): { line: string; at: (i: number) => { x: number; y: number } } {
+  const buf = term.buffer.active;
+  let first = y - 1;
+  while (first > 0 && y - 1 - first < 20 && buf.getLine(first)?.isWrapped) first--;
+  let last = y - 1;
+  while (last - first < 40 && buf.getLine(last + 1)?.isWrapped) last++;
+  const rows: string[] = [];
+  for (let i = first; i <= last; i++) rows.push(buf.getLine(i)?.translateToString(i === last) ?? "");
+  if (rows.slice(0, -1).some((r) => r.length !== term.cols)) {
+    return { line: buf.getLine(y - 1)?.translateToString(true) ?? "", at: (i) => ({ x: i + 1, y }) };
+  }
+  return { line: rows.join(""), at: (i) => ({ x: (i % term.cols) + 1, y: first + Math.floor(i / term.cols) + 1 }) };
 }
 
 function useNonce(): [number, () => void] {
