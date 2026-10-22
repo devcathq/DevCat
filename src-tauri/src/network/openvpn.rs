@@ -525,8 +525,10 @@ pub async fn connect(id: String, generation: u64, profile: NetProfile, store: &N
     if !paths.config.exists() {
         return Err(AppError::msg("The OpenVPN configuration file is missing; edit the profile and paste it again"));
     }
+    let stored = paths.config.clone();
+    paths.config = run_config(&id, &stored, &dir)?;
     // A daemon left running by a DevCat that crashed is stopped first (in the same admin prompt).
-    let leftover = leftover_pid(&paths.pid, &paths.config);
+    let leftover = leftover_pid(&paths.pid, &stored).or_else(|| leftover_pid(&paths.pid, &paths.config));
     if let Some(pid) = leftover {
         registry::log(&id, &format!("An OpenVPN from an earlier DevCat session is still running (pid {pid}); it will be stopped first"));
     }
@@ -591,6 +593,61 @@ pub async fn connect(id: String, generation: u64, profile: NetProfile, store: &N
         Err(_) => {}
     }
     Ok(())
+}
+
+/// `config` with `user` / `group` commented out, or `None` when it has neither. Lines inside
+/// inline `<tag>` blocks are left alone.
+pub fn without_privilege_drop(config: &str) -> Option<String> {
+    let mut block: Option<String> = None;
+    let mut changed = false;
+    let out: Vec<String> = config
+        .split('\n')
+        .map(|line| {
+            let t = line.trim_start();
+            let lower = t.to_ascii_lowercase();
+            if let Some(close) = &block {
+                if lower.starts_with(close.as_str()) {
+                    block = None;
+                }
+                return line.to_string();
+            }
+            if lower.starts_with('<') && !lower.starts_with("</") {
+                if let Some(end) = lower.find('>') {
+                    block = Some(format!("</{}>", &lower[1..end]));
+                }
+                return line.to_string();
+            }
+            let toks = helper::ovpn_tokens(line);
+            let name = toks.first().map(|t| t.strip_prefix("--").unwrap_or(t).to_ascii_lowercase());
+            if matches!(name.as_deref(), Some("user" | "group")) {
+                changed = true;
+                return format!("# {line}  (ignored by DevCat: OpenVPN must stay root to remove its routes)");
+            }
+            line.to_string()
+        })
+        .collect();
+    changed.then(|| out.join("\n"))
+}
+
+/// The config file OpenVPN is started with. On macOS / Linux, OpenVPN that dropped root with
+/// `user` / `group` can't delete its routes on disconnect, and the host route to the server
+/// (KEEP_SERVER_ROUTE) is left behind; once the Wi-Fi address changes it blocks every app from
+/// reaching the server ("Can't assign requested address"). Such configs run from a copy
+/// (`<id>.run.ovpn`) without those lines; the profile itself is left as imported.
+fn run_config(id: &str, stored: &Path, dir: &Path) -> AppResult<PathBuf> {
+    let run = dir.join(format!("{id}.run.ovpn"));
+    let text = std::fs::read_to_string(stored).unwrap_or_default();
+    match without_privilege_drop(&text) {
+        Some(copy) if !cfg!(windows) => {
+            write_private(&run, copy.as_bytes())?;
+            registry::log(id, "Ignoring `user` / `group` in this config so OpenVPN can remove its routes when it disconnects");
+            Ok(run)
+        }
+        _ => {
+            let _ = std::fs::remove_file(&run);
+            Ok(stored.to_path_buf())
+        }
+    }
 }
 
 /// Start the daemon elevated with the OS password prompt.
@@ -792,6 +849,17 @@ mod tests {
         let mut m = Machine::new(None, None);
         assert_eq!(m.on_line(">STATE:1,EXITING,SIGTERM,,,,,"), vec![Action::Error("OpenVPN exited (SIGTERM)".into())]);
         assert_eq!(Machine::new(None, None).exit_message(), "OpenVPN exited unexpectedly (see the log)");
+    }
+
+    #[test]
+    fn privilege_drop_is_commented_out() {
+        assert_eq!(without_privilege_drop("client\nremote a 1194\n"), None);
+        let out = without_privilege_drop("client\nuser nobody\n  group nogroup\n<key>\nuser x\n</key>\npersist-tun\n").unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "client");
+        assert!(lines[1].starts_with("# user nobody"));
+        assert!(lines[2].starts_with("#   group nogroup"));
+        assert_eq!(&lines[3..], ["<key>", "user x", "</key>", "persist-tun"]);
     }
 
     #[test]
