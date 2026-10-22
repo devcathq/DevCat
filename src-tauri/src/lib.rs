@@ -238,6 +238,7 @@ pub fn run() {
             claude::sessions::claude_sessions,
             claude::sessions::claude_transcript,
             claude::files::fs_list,
+            claude::files::fs_find_files,
             claude::remote::remote_resolve_dir,
             claude::files::fs_preview,
             claude::files::fs_write_text,

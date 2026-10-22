@@ -32,6 +32,7 @@ import { startUpdateChecks, useUpdate } from "../../features/update/store";
 import { IS_MAC, IS_MAIN_WINDOW, NEW_WINDOW_SHORTCUT, openNewWindow, takeLaunchTab, type TabTransfer } from "../../lib/windows";
 import "../../store/projectFolders";
 import "../../features/files/openedFiles";
+import { openQuickOpen, QuickOpen, useQuickOpen } from "../../features/files/QuickOpen";
 import { openTab, useTabs } from "../../store/tabs";
 import { useUi, type SidebarView } from "../../store/ui";
 import { TabContent } from "../../tabs/registry";
@@ -99,6 +100,23 @@ export default function AppShell() {
     return () => window.removeEventListener("keydown", h, true);
   }, []);
 
+  // ⌘P / Ctrl+P: Go to File (instead of the webview's Print). In a terminal on Windows / Linux,
+  // Ctrl+P stays with the shell (previous command).
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const mod = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (!mod || e.shiftKey || e.altKey || e.key.toLowerCase() !== "p") return;
+      if (!IS_MAC && (e.target as HTMLElement | null)?.closest?.(".xterm")) return;
+      e.preventDefault();
+      // while it's open, Ctrl+P is the palette's own "move up" (Windows / Linux)
+      if (useQuickOpen.getState().open) return;
+      e.stopPropagation();
+      openQuickOpen();
+    };
+    window.addEventListener("keydown", h, true);
+    return () => window.removeEventListener("keydown", h, true);
+  }, []);
+
   // ⌘/Ctrl + = / - / 0: UI zoom. Inside a terminal the same keys change the terminal font size instead.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -148,6 +166,7 @@ export default function AppShell() {
       <MobileDialog />
       <AppearanceDialog />
       <PairPrompt />
+      <QuickOpen />
       <Toaster theme={toastTheme} position="bottom-right" richColors closeButton />
     </div>
   );
