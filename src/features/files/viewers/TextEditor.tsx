@@ -196,7 +196,7 @@ export function TextEditor({ preview, slot, tabId, hidden, reload, onDirty, onSa
           <Button size="sm" variant="ghost" onClick={() => setSaveError(null)}>Dismiss</Button>
         </Banner>
       )}
-      {showPreview && <HtmlPreview html={previewText} scripts={scripts} title={basename(path)} />}
+      {showPreview && <HtmlPreview html={previewText} scripts={scripts} setScripts={setScripts} title={basename(path)} />}
       {/* stays mounted while previewing so edits (and undo) survive */}
       <div className={showPreview ? "hidden" : "min-h-0 flex-1"}>
         <Editor
