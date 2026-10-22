@@ -137,6 +137,32 @@ impl AutoPass {
     }
 }
 
+/// Is this input only the terminal answering the program, not someone typing? Windows' console
+/// asks where the cursor is as it starts (ESC[6n → ESC[row;colR) and turns on focus reports
+/// (ESC[I / ESC[O); xterm.js answers device queries (ESC[?…c), modes (…$y) and colours (ESC]…).
+fn is_terminal_reply(data: &str) -> bool {
+    let mut rest = data;
+    while !rest.is_empty() {
+        let Some(seq) = rest.strip_prefix('\x1b') else { return false };
+        rest = if let Some(csi) = seq.strip_prefix('[') {
+            let end = csi.find(|c: char| !(c.is_ascii_digit() || matches!(c, ';' | '?' | '>' | '$')));
+            match end.map(|i| (i, csi.as_bytes()[i])) {
+                Some((i, b'R' | b'c' | b'n' | b'I' | b'O' | b't' | b'y')) => &csi[i + 1..],
+                _ => return false,
+            }
+        } else if let Some(osc) = seq.strip_prefix(']').or_else(|| seq.strip_prefix('P')) {
+            match osc.find(['\x07', '\x1b']) {
+                Some(i) if osc[i..].starts_with('\x07') => &osc[i + 1..],
+                Some(i) if osc[i..].starts_with("\x1b\\") => &osc[i + 2..],
+                _ => return false,
+            }
+        } else {
+            return false;
+        };
+    }
+    !data.is_empty()
+}
+
 /// Is this program Claude Code ("claude" or a path to the claude binary)?
 fn is_claude(program: Option<&str>) -> bool {
     program.is_some_and(|p| Path::new(p).file_stem().and_then(|s| s.to_str()) == Some("claude"))
@@ -360,7 +386,9 @@ pub async fn pty_open(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn pty_write(id: String, data: String) -> AppResult<()> {
     let pty = get(&id)?;
-    pty.typed.store(true, std::sync::atomic::Ordering::Relaxed);
+    if !is_terminal_reply(&data) {
+        pty.typed.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut w = pty.writer.lock();
     let w = w.as_mut().ok_or_else(|| AppError::msg("Terminal input is closed"))?;
     w.write_all(data.as_bytes())?;
@@ -609,6 +637,16 @@ mod tests {
         assert_eq!(jumped.feed(b"password: ", t0, false).as_deref(), Some("s3cret\r"));
 
         assert_eq!(AutoPass::new(None, me_at_box()).feed(prompt, t0, false), None);
+    }
+
+    #[test]
+    fn terminal_replies_arent_typing() {
+        for reply in ["\x1b[12;1R", "\x1b[I", "\x1b[O", "\x1b[?1;2c", "\x1b[>0;276;0c", "\x1b[?2004;2$y", "\x1b]11;rgb:1e1e/1e1e/1e1e\x07", "\x1b[1;1R\x1b[I"] {
+            assert!(is_terminal_reply(reply), "{reply:?}");
+        }
+        for typed in ["", "a", "yes\r", "\x1b[A", "\x1b", "\x1bv", "\x03", "\x1b[200~text\x1b[201~", "\x1b[12;1Rx"] {
+            assert!(!is_terminal_reply(typed), "{typed:?}");
+        }
     }
 
     #[test]
