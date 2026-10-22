@@ -97,7 +97,11 @@ export default function SftpTab({ tab }: { tab: SftpTabT }) {
         bump(isRemotePath(job.dstDir) ? "remote" : "local");
       }),
     ];
-    return () => offs.forEach((o) => void o.then((f) => f()));
+    return () => {
+      offs.forEach((o) => void o.then((f) => f()));
+      // The tab was closed: nothing could show or cancel these copies any more.
+      for (const j of jobsRef.current) if (j.state === "running") api.sftpCancel(j.id).catch(() => {});
+    };
   }, []);
 
   /** Copy `paths` into the folder `dstDir` (the other side). */

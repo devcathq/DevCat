@@ -86,6 +86,9 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "sftp_delete" => out(c!(crate::claude::sftp::sftp_delete, "paths")),
         "sftp_transfer" => out(c!(crate::claude::sftp::sftp_transfer, "jobId", "items")),
         "sftp_cancel" => out(c!(crate::claude::sftp::sftp_cancel, "jobId")),
+        "ssh_forward_start" => out(c!(crate::claude::ssh_forward::ssh_forward_start, "connId")),
+        "ssh_forward_stop" => out(c!(crate::claude::ssh_forward::ssh_forward_stop, "connId")),
+        "ssh_forward_list" => out(c!(crate::claude::ssh_forward::ssh_forward_list)),
         "fs_list" => out(c!(files::fs_list, "dir", "showIgnored")),
         "remote_resolve_dir" => out(c!(crate::claude::remote::remote_resolve_dir, "uri")),
         "fs_preview" => out(c!(files::fs_preview, "path")),
@@ -142,7 +145,7 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
     let _ = std::fs::create_dir_all(&d);
     crate::state::init(d);
     crate::events::add_tap(|event, payload| {
-        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done") {
+        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward") {
             let mut q = EVENTS.lock();
             if q.len() < 20_000 {
                 q.push(json!({ "event": event, "payload": payload }));

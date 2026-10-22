@@ -47,6 +47,8 @@ pub struct Session {
     pub password: Option<String>,
     /// VPN / tunnel profile connected first.
     pub network_id: Option<String>,
+    /// Port forwards started from the sidebar (`ssh_forward`).
+    pub forwards: Vec<super::ssh_forward::SessionForward>,
 }
 
 impl std::fmt::Debug for Session {
@@ -87,11 +89,12 @@ impl Session {
             startup: opt(c, "startup"),
             password: c.password.clone().filter(|p| !p.is_empty()),
             network_id: opt(c, "networkId"),
+            forwards: super::ssh_forward::parse(opt(c, "forwards").as_deref())?,
         })
     }
 
     /// The saved session `devcat-<id>` (with its password from the keychain).
-    fn load(alias: &str) -> Option<Session> {
+    pub(crate) fn load(alias: &str) -> Option<Session> {
         let id = alias.strip_prefix(SESSION_PREFIX)?;
         let st = crate::state::St::try_get()?;
         let c = st.store.get(id).ok().filter(|c| c.kind == ConnectionKind::Ssh)?;
@@ -200,21 +203,41 @@ fn sh_path(p: &str) -> String {
     }
 }
 
-/// Where master connections' sockets live: short (Unix socket paths max out around 104 bytes,
-/// and macOS' temp dir is long), per user, private.
-fn control_dir() -> std::path::PathBuf {
+/// Where master connections' sockets and one-shot password files live: short (Unix socket paths
+/// max out around 104 bytes, and macOS' temp dir is long), per user, private. None when the
+/// folder isn't safely ours (someone else made `/tmp/devcat-ssh-<uid>`, or it's a symlink).
+pub(crate) fn private_dir() -> Option<std::path::PathBuf> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-        let uid = dirs::home_dir().and_then(|h| std::fs::metadata(h).ok()).map(|m| m.uid()).unwrap_or(0);
-        std::path::PathBuf::from(format!("/tmp/devcat-ssh-{uid}"))
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        let uid = unsafe { libc::geteuid() };
+        let dir = std::path::PathBuf::from(format!("/tmp/devcat-ssh-{uid}"));
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+        let m = std::fs::symlink_metadata(&dir).ok()?;
+        if !m.is_dir() || m.uid() != uid {
+            return None;
+        }
+        if m.mode() & 0o077 != 0 {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok()?;
+        }
+        Some(dir)
     }
     #[cfg(not(unix))]
-    std::env::temp_dir().join("devcat-ssh")
+    {
+        let dir = std::env::temp_dir().join("devcat-ssh");
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    }
 }
 
 /// `ssh` options shared by file commands and terminals.
 pub fn ssh_args(t: &Target, interactive: bool) -> Vec<String> {
+    ssh_args_with(t, interactive, true)
+}
+
+/// `ssh_args`, optionally without the shared master connection (`mux`): a port-forward process
+/// keeps its own connection, so stopping it never touches terminals.
+pub(crate) fn ssh_args_with(t: &Target, interactive: bool, mux: bool) -> Vec<String> {
     let mut a: Vec<String> = vec!["-o".into(), "ConnectTimeout=15".into(), "-o".into(), "ServerAliveInterval=30".into()];
     let askpass = !interactive && t.session.as_ref().is_some_and(|s| s.password.is_some());
     if !interactive && !askpass {
@@ -224,22 +247,17 @@ pub fn ssh_args(t: &Target, interactive: bool) -> Vec<String> {
         // One try: a wrong saved password shouldn't lock the account out.
         a.extend(["-o".into(), "NumberOfPasswordPrompts=1".into()]);
     }
-    if cfg!(unix) {
-        let dir = control_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    if cfg!(unix) && mux {
+        if let Some(dir) = private_dir() {
+            a.extend([
+                "-o".into(),
+                "ControlMaster=auto".into(),
+                "-o".into(),
+                format!("ControlPath={}/%C", dir.display()),
+                "-o".into(),
+                "ControlPersist=600".into(),
+            ]);
         }
-        a.extend([
-            "-o".into(),
-            "ControlMaster=auto".into(),
-            "-o".into(),
-            format!("ControlPath={}/%C", dir.display()),
-            "-o".into(),
-            "ControlPersist=600".into(),
-        ]);
     }
     let session = t.session.as_deref();
     if let Some(s) = session {
@@ -278,8 +296,10 @@ pub fn askpass_env(t: &Target) -> (Vec<(String, String)>, Askpass) {
     let (Some(pw), Ok(exe)) = (t.session.as_ref().and_then(|s| s.password.clone()), std::env::current_exe()) else {
         return (vec![], Askpass::default());
     };
-    let dir = if cfg!(unix) { control_dir() } else { std::env::temp_dir().join("devcat-ssh") };
-    let _ = std::fs::create_dir_all(&dir);
+    let Some(dir) = private_dir() else {
+        return (vec![], Askpass::default());
+    };
+    let prompt = LoginPrompt::for_target(t);
     let file = dir.join(format!("pw-{}", uuid::Uuid::new_v4().simple()));
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create_new(true);
@@ -294,25 +314,118 @@ pub fn askpass_env(t: &Target) -> (Vec<(String, String)>, Askpass) {
         // Older OpenSSH only uses SSH_ASKPASS with a DISPLAY.
         ("DISPLAY".into(), std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into())),
         (ASKPASS_FILE.into(), file.to_string_lossy().into_owned()),
+        (ASKPASS_FOR.into(), prompt.dests.join("\n")),
+        (ASKPASS_KEY.into(), prompt.key.unwrap_or_default()),
     ];
     (env, Askpass(Some(file)))
 }
 
 const ASKPASS_FILE: &str = "DEVCAT_ASKPASS_FILE";
+/// The `user@host` names (newline-separated) whose login prompt the saved password answers.
+const ASKPASS_FOR: &str = "DEVCAT_ASKPASS_FOR";
+/// The session's private key: its passphrase prompt is answered too.
+const ASKPASS_KEY: &str = "DEVCAT_ASKPASS_KEY";
 
-/// DevCat started by ssh as SSH_ASKPASS: print the saved password for a password / passphrase
-/// prompt, refuse anything else (an unknown host key must be accepted in a terminal).
-/// Returns the exit code, or None when this process isn't an askpass call.
+/// DevCat started by ssh as SSH_ASKPASS: print the saved password for the session's own login
+/// prompt, refuse anything else: a jump host's password prompt (it must never see the target's
+/// password) or an unknown host key (accepted in a terminal). Returns the exit code, or None when
+/// this process isn't an askpass call.
 pub fn askpass_main() -> Option<i32> {
     let file = std::env::var_os(ASKPASS_FILE)?;
-    let prompt = std::env::args().nth(1).unwrap_or_default().to_lowercase();
+    let prompt = std::env::args().nth(1).unwrap_or_default();
+    let expected = LoginPrompt {
+        dests: std::env::var(ASKPASS_FOR).unwrap_or_default().lines().map(str::to_string).filter(|d| !d.is_empty()).collect(),
+        key: std::env::var(ASKPASS_KEY).ok().filter(|k| !k.is_empty()),
+    };
     match std::fs::read_to_string(file) {
-        Ok(pw) if prompt.contains("password") || prompt.contains("passphrase") => {
+        Ok(pw) if expected.matches(&prompt) => {
             println!("{pw}");
             Some(0)
         }
         _ => Some(1),
     }
+}
+
+/// The local ssh client's login prompts for one destination: `me@host's password:`,
+/// `(me@host) Password:` (keyboard-interactive, OpenSSH 8.6+) and `Enter passphrase for key
+/// '<the session's key>':`. A jump host's prompt names the jump host, so it doesn't match; nor does
+/// a remote program's (`Password:` from su, sudo, mysql…).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LoginPrompt {
+    /// Lowercase `user@host` as ssh prints it.
+    pub dests: Vec<String>,
+    pub key: Option<String>,
+}
+
+/// `ssh -G` answers, cached briefly: the askpass env is built for every file command.
+static RESOLVED: once_cell::sync::Lazy<parking_lot::Mutex<std::collections::HashMap<Vec<String>, (std::time::Instant, Vec<String>)>>> =
+    once_cell::sync::Lazy::new(Default::default);
+
+impl LoginPrompt {
+    /// What ssh will print for `t`: the user and host after ~/.ssh/config is applied (`ssh -G`;
+    /// an alias's HostName, a config User), plus the session's own spelling as a fallback.
+    pub fn for_target(t: &Target) -> LoginPrompt {
+        let s = t.session.as_deref();
+        let mut dests = Vec::new();
+        let mut args = ssh_args_with(t, false, false);
+        args.extend(["-G".into(), "--".into(), t.ssh_dest().to_string()]);
+        let cached = RESOLVED.lock().get(&args).filter(|(at, _)| at.elapsed() < Duration::from_secs(60)).map(|(_, d)| d.clone());
+        let resolved = cached.unwrap_or_else(|| {
+            let mut d = Vec::new();
+            if let Ok(out) = std::process::Command::new("ssh").args(&args).stdin(Stdio::null()).stderr(Stdio::null()).output() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()));
+                if let Some(user) = get("user ") {
+                    for host in [get("hostname "), get("hostkeyalias ")].into_iter().flatten() {
+                        d.push(format!("{user}@{host}"));
+                    }
+                }
+            }
+            RESOLVED.lock().insert(args, (std::time::Instant::now(), d.clone()));
+            d
+        });
+        dests.extend(resolved);
+        if let Some(s) = s {
+            let user = s.user.clone().or_else(|| std::env::var("USER").ok()).or_else(|| std::env::var("USERNAME").ok());
+            if let Some(u) = user {
+                dests.push(format!("{u}@{}", s.host));
+            }
+        }
+        let mut dests: Vec<String> = dests.into_iter().map(|d| d.to_lowercase()).collect();
+        dests.dedup();
+        LoginPrompt { dests, key: s.and_then(|s| s.key_path.clone()) }
+    }
+
+    /// Is `out`'s last line this destination's login prompt?
+    pub fn matches(&self, out: &str) -> bool {
+        let line = out.trim_end().rsplit(['\n', '\r']).next().unwrap_or("").trim().to_lowercase();
+        let named = |d: &String| line == format!("{d}'s password:") || (line.starts_with(&format!("({d}) ")) && line.ends_with("password:"));
+        if self.dests.iter().any(named) {
+            return true;
+        }
+        let key = self.key.as_deref().map(str::to_lowercase);
+        key.is_some_and(|k| line == format!("enter passphrase for key '{k}':"))
+    }
+}
+
+/// A saved SSH session is being edited or deleted: let go of its master connection (so its old
+/// login isn't reused) and stop its port forwards. No-op for other connections.
+pub async fn forget_session(id: &str) {
+    let Some(s) = Session::load(&format!("{SESSION_PREFIX}{id}")) else { return };
+    super::ssh_forward::stop(id);
+    let t = Target::for_session(s, "~");
+    let _ = tokio::task::spawn_blocking(move || release_master(&t)).await;
+}
+
+/// Stop accepting new commands on `t`'s shared master connection, so the next one logs in afresh
+/// (after the session's host, user or password changed). Running terminals keep their connection.
+pub fn release_master(t: &Target) {
+    if !cfg!(unix) {
+        return;
+    }
+    let mut args = ssh_args_with(t, false, true);
+    args.extend(["-O".into(), "stop".into(), "--".into(), t.ssh_dest().to_string()]);
+    let _ = std::process::Command::new("ssh").args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 /// An `ssh` running `script` (POSIX sh) on the host with `args` as $1…; stdio not set up.
@@ -575,6 +688,8 @@ pub async fn test_session(c: &ConnectionConfig) -> AppResult<String> {
         s.id = "test".into();
     }
     let t = Target::for_session(s, "~");
+    // A master left by the session's old settings would answer for the new ones.
+    release_master(&t);
     let out = run(&t, r#"printf '%s on %s (%s)' "$(id -un)" "$(hostname)" "$(uname -srm)""#, &[], None).await?;
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }

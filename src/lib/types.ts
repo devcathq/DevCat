@@ -303,6 +303,9 @@ export interface NetHelperStatus {
   wireguardIssue?: string | null;
 }
 
+/** A saved SSH session's port forward (options.forwards). "local" = -L, "remote" = -R, "dynamic" = -D. */
+export interface SessionForward { kind: "local" | "remote" | "dynamic"; localPort: number; remoteHost: string; remotePort: number }
+export interface ForwardStatus { connId: string; state: "starting" | "running" | "stopped" | "error"; error: string | null; forwards: string[] }
 export interface SshConfigHost { alias: string; host: string; port: number; user?: string | null; identityFile?: string | null }
 
 /** One traffic sample (1/s) for a connected network profile; live via the "net-traffic" event. */

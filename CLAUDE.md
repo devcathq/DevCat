@@ -2,10 +2,11 @@
 
 ## Rule: the SSH workbench is desktop-only
 
-The Xshell-style features (SSH sessions in the sidebar, SFTP tab, quick-command bar, and pasting or
-dropping images into a terminal on an SSH host) live in the desktop app only. **Don't add them to
-DevCat Mobile** (`mobile/`), the phone dispatcher (`src-tauri/src/remote/dispatch.rs`) or the browser
-version, unless you've read the limitations below and the change handles each one explicitly.
+The Xshell-style features (SSH sessions in the sidebar, SFTP tab, quick-command bar, session port
+forwards, and pasting or dropping images into a terminal on an SSH host) live in the desktop app
+only. **Don't add them to DevCat Mobile** (`mobile/`), the phone dispatcher
+(`src-tauri/src/remote/dispatch.rs`) or the browser version, unless you've read the limitations
+below and the change handles each one explicitly.
 
 Why the phone can't simply reuse the desktop flow:
 
@@ -19,6 +20,9 @@ Why the phone can't simply reuse the desktop flow:
 - **Saved passwords.** SSH sessions keep their password in the computer's keychain and DevCat types
   it into the login prompt (`pty.rs`, `AutoPass`). Letting a paired phone open a session would let it
   log in to the server with that password; that needs its own consent and audit design first.
+- **Port forwards listen on the computer.** A session's forwards (`claude/ssh_forward.rs`) bind
+  127.0.0.1 on the computer, so a phone starting one would open a port it can't reach, and log in
+  with the saved password (see above).
 - **Transfers are long-running.** SFTP jobs stream over the computer's `ssh` and report progress as
   desktop window events (`sftp-progress`), which the phone protocol doesn't carry.
 

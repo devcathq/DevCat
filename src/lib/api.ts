@@ -8,7 +8,7 @@ import type {
   GitRepo, GitLogQuery, GitCommit, GitCommitDetail, GitBlame, GitRefs, GitStash, CommitAction, RemoteOpts,
   AiDetect, AiProvider,
   ClaudeInfo, ClaudeProject, ClaudeStartOptions, FileEntry, FilePreview, FileVersions, GitStatus, SessionMeta,
-  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, SshConfigHost, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
+  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
   SavedQuery, SchemaSnapshot, TableDataPage, TableDataRequest, TableRef, TableStructure, TreeNode, Bookmark,
 } from "./types";
 
@@ -140,6 +140,9 @@ export const api = {
   /** Copy files / folders between this computer and an SSH host; events "sftp-progress", "sftp-done". */
   sftpTransfer: (jobId: string, items: { src: string; dstDir: string }[]) => invoke<void>("sftp_transfer", { jobId, items }),
   sftpCancel: (jobId: string) => invoke<void>("sftp_cancel", { jobId }),
+  sshForwardStart: (connId: string) => invoke<ForwardStatus>("ssh_forward_start", { connId }),
+  sshForwardStop: (connId: string) => invoke<void>("ssh_forward_stop", { connId }),
+  sshForwardList: () => invoke<ForwardStatus[]>("ssh_forward_list"),
   /** Atomic save; returns the new version. Rejects with "CONFLICT: …" when the file changed on disk
    *  since `expectedVersion` (pass null to overwrite). lineEnding normalizes line breaks. */
   fsWriteText: (path: string, content: string, expectedVersion: string | null, lineEnding?: "lf" | "crlf" | null) =>

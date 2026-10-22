@@ -5,6 +5,7 @@
 //!   `pty-output` → { id, data }   (raw bytes, base64; batched ~12ms / 16KB)
 //!   `pty-exit`   → { id, code }
 use super::locate;
+use super::remote::LoginPrompt;
 use super::runner::Sink;
 use crate::error::{AppError, AppResult};
 use base64::Engine;
@@ -87,40 +88,41 @@ fn default_shell() -> CommandBuilder {
     }
 }
 
-/// Does this output end with the local ssh client's own login prompt? Only its formats:
-/// `me@host's password:`, `(me@host) Password:` (keyboard-interactive, OpenSSH 8.6+) and
-/// `Enter passphrase for key '…':`, never a remote program's (`Password:` from su, sudo, mysql…).
-fn is_login_prompt(out: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(out);
-    let line = text.trim_end().rsplit(['\n', '\r']).next().unwrap_or("").trim().to_lowercase();
-    (line.ends_with("'s password:") && line.contains('@'))
-        || (line.starts_with('(') && line.contains('@') && line.ends_with(") password:"))
-        || (line.starts_with("enter passphrase for key") && line.ends_with(':'))
-}
-
 /// Answers ssh's login prompt with a saved SSH session's password: once, only at the start of the
-/// session, and never after the user typed something (then they're past the login, or doing it).
+/// session, only for the session's own prompt (`LoginPrompt`: never a jump host's or a remote
+/// program's), and never after the user typed something (then they're past the login, or doing
+/// it). Answering "yes" to an unknown host key is the one exception.
 struct AutoPass {
     password: Option<String>,
+    prompt: LoginPrompt,
     seen: usize,
     started: Instant,
+    /// ssh's "continue connecting (yes/no)?" is on screen.
+    host_key_question: bool,
 }
 
 impl AutoPass {
-    fn new(password: Option<String>) -> Self {
-        AutoPass { password, seen: 0, started: Instant::now() }
+    fn new(password: Option<String>, prompt: LoginPrompt) -> Self {
+        AutoPass { password, prompt, seen: 0, started: Instant::now(), host_key_question: false }
     }
 
-    /// The next output batch; returns what to type, if anything.
-    fn feed(&mut self, batch: &[u8], now: Instant, user_typed: bool) -> Option<String> {
+    /// The next output batch, and whether input was written since the previous one; returns
+    /// what to type, if anything.
+    fn feed(&mut self, batch: &[u8], now: Instant, typed: bool) -> Option<String> {
         self.password.as_ref()?;
         self.seen += batch.len();
-        if user_typed || self.seen > AUTOPASS_BYTES || now.duration_since(self.started) > AUTOPASS_WINDOW {
+        if (typed && !self.host_key_question) || self.seen > AUTOPASS_BYTES || now.duration_since(self.started) > AUTOPASS_WINDOW {
             self.password = None;
             return None;
         }
+        let text = String::from_utf8_lossy(batch);
+        // The question stays up while the answer is echoed; a new line ends it.
+        if text.contains(['\n', '\r']) || !self.host_key_question {
+            let last = text.trim_end().rsplit(['\n', '\r']).next().unwrap_or("").trim_start().to_lowercase();
+            self.host_key_question = last.starts_with("are you sure you want to continue connecting");
+        }
         // Once: a second prompt means it was wrong; the user types from there.
-        is_login_prompt(batch).then(|| format!("{}\r", self.password.take().unwrap_or_default()))
+        self.prompt.matches(&text).then(|| format!("{}\r", self.password.take().unwrap_or_default()))
     }
 }
 
@@ -180,10 +182,13 @@ pub(crate) async fn open(
         return Err(AppError::msg(format!("Not a directory: {cwd}")));
     }
     // A saved SSH session: its VPN / tunnel first; its password answers ssh's login prompt.
-    let mut autopass = None;
+    let mut autopass = AutoPass::new(None, LoginPrompt::default());
     if let Some(t) = &remote {
         t.ready().await?;
-        autopass = t.session.as_ref().and_then(|s| s.password.clone());
+        if let Some(pw) = t.session.as_ref().and_then(|s| s.password.clone()) {
+            let prompt = { let t = t.clone(); tokio::task::spawn_blocking(move || LoginPrompt::for_target(&t)).await.unwrap_or_default() };
+            autopass = AutoPass::new(Some(pw), prompt);
+        }
     }
     let uid = uuid::Uuid::new_v4();
     let id = uid.to_string();
@@ -267,7 +272,6 @@ pub(crate) async fn open(
         }
     });
     let (s, pid) = (sink.clone(), id.clone());
-    let mut autopass = AutoPass::new(autopass);
     let batcher = std::thread::spawn(move || {
         let emit = |data: &[u8]| {
             {
@@ -290,7 +294,7 @@ pub(crate) async fn open(
                 }
             }
             emit(&batch);
-            if let Some(answer) = autopass.feed(&batch, Instant::now(), pty.typed.load(std::sync::atomic::Ordering::Relaxed)) {
+            if let Some(answer) = autopass.feed(&batch, Instant::now(), pty.typed.swap(false, std::sync::atomic::Ordering::Relaxed)) {
                 if let Some(w) = pty.writer.lock().as_mut() {
                     let _ = w.write_all(answer.as_bytes()).and_then(|_| w.flush());
                 }
@@ -477,40 +481,74 @@ mod tests {
         assert!(open(sink, "/definitely/not/here", None, vec![], vec![], 80, 24, "desktop").await.is_err());
     }
 
+    fn me_at_box() -> LoginPrompt {
+        LoginPrompt { dests: vec!["me@box".into(), "me@10.0.0.5".into()], key: Some("/Users/me/.ssh/id_ed25519".into()) }
+    }
+
     #[test]
-    fn spots_ssh_login_prompts() {
-        assert!(is_login_prompt(b"me@10.0.0.5's password: "));
-        assert!(is_login_prompt(b"Warning: Permanently added 'x' (ED25519) to the list of known hosts.\r\n(me@box) Password:"));
-        for remote in [&b"Password:"[..], b"[sudo] password for me: ", b"Enter password: ", b"me@box:~$ su\r\nPassword: "] {
-            assert!(!is_login_prompt(remote), "{}", String::from_utf8_lossy(remote));
+    fn spots_the_sessions_login_prompt_only() {
+        let p = me_at_box();
+        assert!(p.matches("me@10.0.0.5's password: "));
+        assert!(p.matches("Warning: Permanently added 'x' (ED25519) to the list of known hosts.\r\n(me@box) Password:"));
+        assert!(p.matches("Enter passphrase for key '/Users/me/.ssh/id_ed25519': "));
+        for other in [
+            "Password:",
+            "[sudo] password for me: ",
+            "Enter password: ",
+            "me@box:~$ su\r\nPassword: ",
+            "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            "password: hunter2 was rejected\r\nme@box:~$ ",
+            // A jump host asking: it must not get the target's password.
+            "me@bastion's password: ",
+            "(ops@bastion) Password:",
+            "Enter passphrase for key '/Users/me/.ssh/other': ",
+        ] {
+            assert!(!p.matches(other), "{other}");
         }
-        assert!(is_login_prompt(b"Enter passphrase for key '/Users/me/.ssh/id_ed25519': "));
-        assert!(!is_login_prompt(b"Are you sure you want to continue connecting (yes/no/[fingerprint])? "));
-        assert!(!is_login_prompt(b"password: hunter2 was rejected\r\nme@box:~$ "));
+        assert!(!LoginPrompt::default().matches("me@box's password: "));
     }
 
     #[test]
     fn autopass_answers_once_and_only_early() {
         let t0 = Instant::now();
         let prompt = b"me@box's password: ";
-        let mut a = AutoPass::new(Some("s3cret".into()));
+        let pass = || AutoPass::new(Some("s3cret".into()), me_at_box());
+        let mut a = pass();
         assert_eq!(a.feed(b"Warning: Permanently added '[box]:22' to known hosts.\r\n", t0, false), None);
         assert_eq!(a.feed(prompt, t0, false).as_deref(), Some("s3cret\r"));
         assert_eq!(a.feed(b"Permission denied, please try again.\r\nme@box's password: ", t0, false), None, "never twice");
 
-        let mut late = AutoPass::new(Some("s3cret".into()));
+        let mut late = pass();
         assert_eq!(late.feed(prompt, t0 + AUTOPASS_WINDOW + Duration::from_secs(1), false), None);
         assert_eq!(late.feed(prompt, t0, false), None, "gone once the window passed");
 
-        let mut chatty = AutoPass::new(Some("s3cret".into()));
+        let mut chatty = pass();
         assert_eq!(chatty.feed(&vec![b'x'; AUTOPASS_BYTES + 1], t0, false), None);
         assert_eq!(chatty.feed(prompt, t0, false), None, "gone after the login output");
 
-        let mut typed = AutoPass::new(Some("s3cret".into()));
+        let mut typed = pass();
         assert_eq!(typed.feed(prompt, t0, true), None, "the user is typing it");
         assert_eq!(typed.feed(prompt, t0, false), None);
 
-        assert_eq!(AutoPass::new(None).feed(prompt, t0, false), None);
+        let mut jump = pass();
+        assert_eq!(jump.feed(b"me@bastion's password: ", t0, false), None, "not the jump host's");
+
+        // First connection: typing "yes" at the host key question keeps it armed.
+        let mut first = pass();
+        assert_eq!(first.feed(b"The authenticity of host 'box' can't be established.\r\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ", t0, false), None);
+        for echo in [&b"y"[..], b"e", b"s"] {
+            assert_eq!(first.feed(echo, t0, true), None);
+        }
+        assert_eq!(first.feed(b"\r\nWarning: Permanently added 'box' to the list of known hosts.\r\n", t0, true), None);
+        assert_eq!(first.feed(prompt, t0, false).as_deref(), Some("s3cret\r"));
+        // …but typing anything once the question is gone still disarms it.
+        let mut after = pass();
+        after.feed(b"Are you sure you want to continue connecting (yes/no/[fingerprint])? ", t0, false);
+        after.feed(b"yes\r\nWarning: Permanently added 'box'.\r\n", t0, true);
+        assert_eq!(after.feed(b"x", t0, true), None);
+        assert_eq!(after.feed(prompt, t0, false), None);
+
+        assert_eq!(AutoPass::new(None, me_at_box()).feed(prompt, t0, false), None);
     }
 
     #[test]

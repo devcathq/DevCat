@@ -24,6 +24,7 @@ pub async fn save_connection(state: St, config: ConnectionConfig) -> AppResult<C
     if config.kind == crate::models::ConnectionKind::Ssh {
         crate::claude::remote::Session::from_config(&config)?;
     }
+    crate::claude::remote::forget_session(&config.id).await;
     let mut config = config;
     config.group = None;
     if let Some(pid) = &config.project_id {
@@ -40,6 +41,7 @@ pub async fn delete_connection(state: St, id: String) -> AppResult<()> {
         d.close().await;
     }
     drop_infra_clients(&id).await;
+    crate::claude::remote::forget_session(&id).await;
     state.store.delete(&id)?;
     if let Err(e) = state.bookmarks.remove_for_connection(&id) {
         eprintln!("bookmark cleanup for {id} failed: {e}");

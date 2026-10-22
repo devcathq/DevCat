@@ -83,6 +83,7 @@ fn init_backend(dir: std::path::PathBuf) {
 /// Stop what must not outlive DevCat (VPNs, the remote server, agent runs, keep-awake).
 fn shutdown_backend() {
     network::shutdown();
+    claude::ssh_forward::stop_all();
     crate::rt::block_on(remote::shutdown());
     claude::runner::shutdown_all();
     agent::shutdown_all();
@@ -250,6 +251,9 @@ pub fn run() {
             claude::sftp::sftp_delete,
             claude::sftp::sftp_transfer,
             claude::sftp::sftp_cancel,
+            claude::ssh_forward::ssh_forward_start,
+            claude::ssh_forward::ssh_forward_stop,
+            claude::ssh_forward::ssh_forward_list,
             claude::files::fs_preview,
             claude::files::fs_write_text,
             claude::open_external::fs_open_external,

@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronRight, Folder, FolderOpen, Loader2, Lock, Plus, S
 import { memo, type MouseEvent } from "react";
 import { KindIcon } from "../../../components/ui/KindIcon";
 import { NetBadge } from "../../network/NetBadge";
+import { ForwardBadge } from "../../ssh/ForwardBadge";
 import { isNoteNode, NodeIcon } from "./icons";
 import { bookmarkHint, isInfra, type Row } from "./rows";
 
@@ -131,6 +132,7 @@ export const TreeRow = memo(function TreeRow({ row, selected, focused, isOpen, c
           {isOpen && <span className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-ok ring-1 ring-panel" />}
         </span>
         <span className={clsx("min-w-0 flex-1 truncate", isOpen || infra ? "text-fg" : "text-fg/80")}>{c.name}</span>
+        {c.kind === "ssh" && <ForwardBadge connId={c.id} />}
         {c.options?.networkId && <NetBadge id={c.options.networkId} />}
         {c.readOnly && <Lock className="size-3 shrink-0 text-faint" aria-label="Read-only" />}
       </div>

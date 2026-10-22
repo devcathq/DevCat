@@ -405,11 +405,19 @@ fn plan_upload(src: &Path, dst_dir: &str) -> AppResult<Vec<Step>> {
     Ok(steps)
 }
 
+/// Is `name` (one remote path part) a plain file name here too? A host's file may be called
+/// `..\\..\\x` or `C:\\x`: legal on Linux, but a path that leaves the folder on Windows.
+fn plain_local_name(name: &str) -> bool {
+    let mut parts = Path::new(name).components();
+    matches!(parts.next(), Some(std::path::Component::Normal(n)) if n == name) && parts.next().is_none()
+}
+
 /// Remote tree (paths relative to `remote_parent`) → steps with local destinations under `dst_dir`.
+/// Items whose names wouldn't stay inside `dst_dir` on this computer are skipped.
 fn plan_download(tree: &[remote::TreeItem], remote_parent: &str, dst_dir: &Path) -> Vec<Step> {
     let parent = remote_parent.trim_end_matches('/');
     tree.iter()
-        .filter(|i| !i.rel.split('/').any(|c| c == ".." || c.is_empty()))
+        .filter(|i| i.rel.split('/').all(plain_local_name))
         .map(|i| {
             let local = i.rel.split('/').fold(dst_dir.to_path_buf(), |p, c| p.join(c)).to_string_lossy().into_owned();
             if i.is_dir {
@@ -542,11 +550,26 @@ mod tests {
     }
 
     #[test]
+    fn local_names_stay_in_the_folder() {
+        for ok in ["a.txt", "..x", "x..", "name with spaces"] {
+            assert!(plain_local_name(ok), "{ok}");
+        }
+        for bad in ["", ".", "..", "/etc"] {
+            assert!(!plain_local_name(bad), "{bad}");
+        }
+        // Backslashes and drive letters are path syntax on Windows only.
+        for name in [r"..\..\x", r"C:\x", r"C:x", r"\\server\share"] {
+            assert_eq!(plain_local_name(name), !cfg!(windows), "{name}");
+        }
+    }
+
+    #[test]
     fn plans_downloads_inside_the_target_folder() {
         let tree = vec![
             remote::TreeItem { rel: "app".into(), is_dir: true, size: 0 },
             remote::TreeItem { rel: "app/a.txt".into(), is_dir: false, size: 3 },
             remote::TreeItem { rel: "app/../../etc/passwd".into(), is_dir: false, size: 1 },
+            remote::TreeItem { rel: "app/".into(), is_dir: false, size: 1 },
         ];
         let steps = plan_download(&tree, "/srv/", Path::new("/tmp/dl"));
         assert_eq!(steps.len(), 2, "{steps:?}");
@@ -653,6 +676,71 @@ mod host_tests {
             }
         }
         assert!(out.contains("STARTUP-RAN") && out.contains("PWD=/") && out.contains("/devcat-itest"), "{out}");
+
+        // port forwards: the host's sshd at a local port (-L), a local listener on the host (-R)
+        use crate::claude::ssh_forward as fwd;
+        use tokio::io::AsyncReadExt as _;
+        let here = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let here_port = here.local_addr().unwrap().port();
+        let free = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+        let mut cfg = crate::state::St::get().store.get("itest").unwrap();
+        let sshd_port = std::env::var("DEVCAT_SSH_INNER_PORT").unwrap_or_else(|_| "22".into());
+        cfg.options.insert(
+            "forwards".into(),
+            json!([
+                { "kind": "local", "localPort": free, "remoteHost": "localhost", "remotePort": sshd_port.parse::<u16>().unwrap() },
+                { "kind": "remote", "localPort": here_port, "remotePort": 18080 },
+            ])
+            .to_string(),
+        );
+        crate::state::St::get().store.save(cfg).unwrap();
+        let mut events = {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            crate::events::add_tap(move |e, v| {
+                if e == "ssh-forward" {
+                    let _ = tx.send(v.clone());
+                }
+            });
+            rx
+        };
+        fwd::ssh_forward_start("itest".into()).await.unwrap();
+        loop {
+            let v = tokio::time::timeout(Duration::from_secs(20), events.recv()).await.expect("forward timeout").unwrap();
+            assert_ne!(v["state"], "error", "{v}");
+            if v["state"] == "running" {
+                break;
+            }
+        }
+        let mut banner = [0u8; 7];
+        let mut c = tokio::net::TcpStream::connect(("127.0.0.1", free)).await.unwrap();
+        c.read_exact(&mut banner).await.unwrap();
+        assert_eq!(&banner, b"SSH-2.0", "-L reaches the host's sshd");
+        let accept = tokio::spawn(async move {
+            let (mut s, _) = here.accept().await.unwrap();
+            let mut b = [0u8; 13];
+            s.read_exact(&mut b).await.unwrap();
+            String::from_utf8_lossy(&b).into_owned()
+        });
+        let (mut cmd, _guard) = remote::ssh_command(&home, "printf from-the-host | nc -w 2 127.0.0.1 18080", &[]);
+        let out = cmd.output().await.unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(tokio::time::timeout(Duration::from_secs(10), accept).await.unwrap().unwrap(), "from-the-host", "-R reaches this computer");
+        fwd::ssh_forward_stop("itest".into()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", free)).await.is_err(), "stopped");
+        // a port that's taken: an error, not a silent half-start
+        let taken = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut cfg = crate::state::St::get().store.get("itest").unwrap();
+        cfg.options.insert("forwards".into(), json!([{ "kind": "local", "localPort": taken.local_addr().unwrap().port(), "remoteHost": "localhost", "remotePort": 22 }]).to_string());
+        crate::state::St::get().store.save(cfg).unwrap();
+        fwd::ssh_forward_start("itest".into()).await.unwrap();
+        loop {
+            let v = tokio::time::timeout(Duration::from_secs(20), events.recv()).await.expect("forward timeout").unwrap();
+            if v["state"] == "error" {
+                assert!(v["error"].as_str().unwrap().contains("in use"), "{v}");
+                break;
+            }
+        }
 
         sftp_delete(vec![base.into()]).await.unwrap();
         let _ = std::fs::remove_dir_all(&data);
