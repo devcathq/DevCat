@@ -29,7 +29,9 @@ function WebScan() {
     setBusy(true);
     try {
       const link = await readQr(file);
-      if (!link || !isPairLink(link)) { toast(link ? "That QR code isn't a DevCat pairing code." : "No QR code found. Fill the photo with the code and try again.", "err"); return; }
+      if (!link) { toast("No QR code found. Fill the photo with the code and try again.", "err"); return; }
+      if (link.trim().startsWith("devcat://")) { toast("That QR code is for the DevCat app. On the computer turn on Allow phone browsers in DevCat → Mobile, then try again.", "err"); return; }
+      if (!isPairLink(link) || !parseLink(link)) { toast("That QR code isn't a DevCat pairing code.", "err"); return; }
       if (new URL(link).origin === location.origin) nav.reset([{ s: "weblanding", link }]);
       else location.href = link;
     } catch {

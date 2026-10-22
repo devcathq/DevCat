@@ -7,6 +7,8 @@ import "./index.css";
 const vv = window.visualViewport;
 if (vv) {
   const fit = () => {
+    // Pinch-zoomed: the visible area shrinks and pans, but the layout shouldn't follow it.
+    if (vv.scale > 1.01) return;
     document.documentElement.style.setProperty("--app-h", `${vv.height}px`);
     window.scrollTo(0, 0);
   };
