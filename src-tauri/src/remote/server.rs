@@ -23,7 +23,7 @@ const PAIR_MAX_ATTEMPTS: u32 = 5;
 const MAX_QUEUED_OUTPUT: usize = 4 * 1024 * 1024;
 
 /// Events every phone gets.
-const BROADCAST_EVENTS: &[&str] = &["pty-exit", "agent-status", "agent-gone", "net-status", "net-traffic", "net-log", "keep-awake", "remote-pty-opened"];
+const BROADCAST_EVENTS: &[&str] = &["pty-exit", "agent-status", "agent-gone", "agent-chat", "agent-chat-gone", "net-status", "net-traffic", "net-log", "keep-awake", "remote-pty-opened"];
 /// Events only the phone that started the stream gets (matched on `streamId`).
 const STREAM_EVENTS: &[&str] = &["k8s-log", "k8s-log-end", "k8s-watch"];
 
@@ -93,6 +93,9 @@ impl Client {
         let field = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or("");
         let wanted = if event == "pty-output" {
             self.attached.lock().contains(field("id"))
+        } else if event == "agent-event" {
+            // DevCat Agent chats the phone has open (attached by session id)
+            self.attached.lock().contains(field("sessionId"))
         } else if STREAM_EVENTS.contains(&event) {
             self.streams.lock().contains(field("streamId"))
         } else {
@@ -666,6 +669,17 @@ pub(crate) mod tests {
         assert_eq!(e1, HostMsg::Event { event: "pty-output".into(), payload: json!({ "id": "T1", "data": "aGk=" }) });
         let e2: HostMsg = read_frame(&mut p.recv).await.unwrap().unwrap();
         assert!(matches!(e2, HostMsg::Event { ref event, .. } if event == "agent-status"));
+
+        // DevCat Agent chats: events only for the chats the phone opened.
+        write_frame(&mut p.send, &ClientMsg::Call { id: 9, cmd: "attach".into(), args: json!({ "id": "S1" }) }).await.unwrap();
+        let _: HostMsg = read_frame(&mut p.recv).await.unwrap().unwrap();
+        host.broadcast("agent-event", &json!({ "sessionId": "S2", "event": { "type": "text", "text": "no" }, "seq": 1 }));
+        host.broadcast("agent-event", &json!({ "sessionId": "S1", "event": { "type": "text", "text": "yes" }, "seq": 1 }));
+        host.broadcast("agent-chat", &json!({ "sessionId": "S2", "busy": true }));
+        let e3: HostMsg = read_frame(&mut p.recv).await.unwrap().unwrap();
+        assert!(matches!(e3, HostMsg::Event { ref event, ref payload } if event == "agent-event" && payload["sessionId"] == "S1"), "{e3:?}");
+        let e4: HostMsg = read_frame(&mut p.recv).await.unwrap().unwrap();
+        assert!(matches!(e4, HostMsg::Event { ref event, .. } if event == "agent-chat"), "{e4:?}");
 
         // Reconnect with the same key: no code needed any more.
         let (_p2, m) = phone(&key, &host_id, port, None).await;

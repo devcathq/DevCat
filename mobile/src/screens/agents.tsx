@@ -4,12 +4,12 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import clsx from "clsx";
-import { AlertTriangle, CheckCircle2, ChevronRight, Clock, FolderOpen, ImagePlus, Keyboard, Laptop, MoreVertical, Plus, Send, Smartphone, Square, TerminalSquare } from "lucide-react";
+import { AlertTriangle, Bot, CheckCircle2, ChevronRight, Clock, FolderOpen, ImagePlus, Keyboard, Laptop, MoreVertical, Plus, Send, Smartphone, Square, TerminalSquare } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { onEvent } from "../lib/rpc";
 import { host, nav, refreshAgents, toast, toastErr, useApp } from "../lib/store";
 import { uploadPasteImage } from "../lib/transfer";
-import type { AgentStatus, AiProvider, ClaudeProject, PtyInfo, SessionMeta } from "../lib/types";
+import type { AgentChatInfo, AgentStatus, AiProvider, ClaudeProject, PtyInfo, SessionMeta } from "../lib/types";
 import { Btn, Card, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Screen, Section, Seg, Sheet, Spinner, TextArea, ago, duration, folderName, useLoad } from "../ui";
 
 const THEME = {
@@ -38,11 +38,21 @@ function statusLine(t: PtyInfo, a: AgentStatus | undefined): string {
   return `${t.program} · ${origin}`;
 }
 
+/** "storefront · working 2m · from Pixel" for a DevCat Agent chat. */
+function chatLine(c: AgentChatInfo): string {
+  const origin = c.origin.startsWith("phone:") ? `from ${c.origin.slice(6)}` : "on the computer";
+  if (c.busy) return `${folderName(c.cwd)} · working ${duration(Date.now() - c.since)} · ${origin}`;
+  return `${folderName(c.cwd)} · finished ${ago(c.since)}`;
+}
+
+const openChat = (c: AgentChatInfo) => nav.push({ s: "agentchat", cwd: c.cwd, providerId: c.providerId, sessionId: c.sessionId });
+
 // ------------------------------------------------------------------ list
 
 export function Agents() {
   const terms = useApp((s) => s.terms);
   const agents = useApp((s) => s.agents);
+  const chats = useApp((s) => s.chats);
   const conn = useApp((s) => s.conn[s.current ?? ""]);
   const machine = useApp((s) => s.machines.find((m) => m.id === s.current));
   const [, tick] = useState(0);
@@ -60,8 +70,11 @@ export function Agents() {
       working: agentTerms.filter((t) => st(t) === "working"),
       done: agentTerms.filter((t) => st(t) !== "waiting" && st(t) !== "working"),
       other: terms.filter((t) => !t.agent),
+      chatsWaiting: chats.filter((c) => c.waiting),
+      chatsWorking: chats.filter((c) => c.busy && !c.waiting),
+      chatsDone: chats.filter((c) => !c.busy && !c.waiting),
     };
-  }, [terms, agents]);
+  }, [terms, agents, chats]);
   const open = (t: PtyInfo) => nav.push({ s: "terminal", id: t.id });
   const offline = conn?.state !== "online";
 
@@ -75,21 +88,33 @@ export function Agents() {
       tab="agents"
     >
       {offline && conn?.error && <ErrorBox error={conn.error} onRetry={() => void refreshAgents()} />}
-      {terms.length === 0 && !offline && (
+      {terms.length === 0 && chats.length === 0 && !offline && (
         <Empty icon={<TerminalSquare className="size-8" />} title="No agents running">Start one with <b className="text-fg">New</b>. It runs on the computer and keeps going when you close this app.</Empty>
       )}
-      {groups.waiting.length > 0 && <Section>Needs you</Section>}
+      {groups.waiting.length + groups.chatsWaiting.length > 0 && <Section>Needs you</Section>}
+      {groups.chatsWaiting.map((c) => (
+        <Card key={c.sessionId} tone="warn" onClick={() => openChat(c)}>
+          <div className="flex items-center gap-2"><AlertTriangle className="size-4 text-warn" /><b className="min-w-0 flex-1 truncate">{folderName(c.cwd)}</b><span className="text-[11px] text-muted">{c.providerName}</span></div>
+          <div className="mt-1 line-clamp-2 text-[12.5px]">{c.waiting}</div>
+        </Card>
+      ))}
       {groups.waiting.map((t) => (
         <Card key={t.id} tone="warn" onClick={() => open(t)}>
           <div className="flex items-center gap-2"><AlertTriangle className="size-4 text-warn" /><b className="min-w-0 flex-1 truncate">{folderName(cwdOf(t, agents[t.id]))}</b><span className="text-[11px] text-muted">{t.program} · <OriginIcon t={t} /></span></div>
           <div className="mt-1 text-[12.5px]">{agents[t.id]?.message ?? "Waiting for you"}</div>
         </Card>
       ))}
-      {groups.working.length > 0 && <Section>Working</Section>}
+      {groups.working.length + groups.chatsWorking.length > 0 && <Section>Working</Section>}
+      {groups.chatsWorking.map((c) => (
+        <Item key={c.sessionId} onClick={() => openChat(c)} icon={<Spinner className="size-4 text-warn" />} title={c.title || folderName(c.cwd)} meta={chatLine(c)} chevron />
+      ))}
       {groups.working.map((t) => (
         <Item key={t.id} onClick={() => open(t)} icon={<Spinner className="size-4 text-warn" />} title={folderName(cwdOf(t, agents[t.id]))} meta={statusLine(t, agents[t.id])} chevron />
       ))}
-      {groups.done.length > 0 && <Section>{groups.done.some((t) => agents[t.id]) ? "Done" : "Agents"}</Section>}
+      {groups.done.length + groups.chatsDone.length > 0 && <Section>{groups.done.some((t) => agents[t.id]) || groups.chatsDone.length ? "Done" : "Agents"}</Section>}
+      {groups.chatsDone.map((c) => (
+        <Item key={c.sessionId} onClick={() => openChat(c)} icon={<Bot className="size-4 text-ok" />} title={c.title || folderName(c.cwd)} meta={chatLine(c)} chevron />
+      ))}
       {groups.done.map((t) => (
         <Item key={t.id} onClick={() => open(t)} icon={agents[t.id] ? <CheckCircle2 className="size-4 text-ok" /> : <Clock className="size-4" />} title={folderName(cwdOf(t, agents[t.id]))} meta={statusLine(t, agents[t.id])} chevron />
       ))}
@@ -351,7 +376,14 @@ export function NewChat({ cwd: initial }: { cwd?: string }) {
   useEffect(() => { if (!cwd && recent[0]) setCwd(recent[0].cwd); }, [recent, cwd]);
   const folder = other.trim() || cwd;
 
+  const agent = (providers.data ?? []).find((p) => p.id === provider)?.kind === "agent";
+
   const start = async () => {
+    if (agent) {
+      // DevCat Agent: a chat, not a terminal
+      nav.replace({ s: "agentchat", cwd: folder, providerId: provider, sessionId: null, first: msg.trim() || undefined });
+      return;
+    }
     setBusy(true);
     try {
       const cols = Math.max(30, Math.floor((window.innerWidth - 24) / (11 * CELL)));
@@ -402,8 +434,14 @@ export function Sessions({ cwd: initial }: { cwd?: string }) {
   const [cwd, setCwd] = useState(initial ?? "");
   useEffect(() => { if (!cwd && sorted[0]) setCwd(sorted[0].cwd); }, [sorted, cwd]);
   const sessions = useLoad(() => (cwd ? host<SessionMeta[]>("claude_sessions", { cwd }) : Promise.resolve([] as SessionMeta[])), [cwd]);
+  const providers = useLoad(() => host<AiProvider[]>("ai_providers_list"), []);
+  const agentProvider = (providers.data ?? []).find((p) => p.kind === "agent");
+  // DevCat Agent chats (a computer without agent_sessions has none)
+  const chats = useLoad(() => (cwd && agentProvider ? host<AgentSession[]>("agent_sessions", { cwd }).catch(() => []) : Promise.resolve([] as AgentSession[])), [cwd, agentProvider?.id]);
+  const [kind, setKind] = useState<"claude" | "agent">("claude");
   const [q, setQ] = useState("");
   const list = (sessions.data ?? []).filter((s) => !q || s.title.toLowerCase().includes(q.toLowerCase()));
+  const chatList = (chats.data ?? []).filter((s) => !q || s.title.toLowerCase().includes(q.toLowerCase()));
   return (
     <Screen title="Session history" sub={cwd || undefined}>
       {projects.error && <ErrorBox error={projects.error} />}
@@ -412,8 +450,14 @@ export function Sessions({ cwd: initial }: { cwd?: string }) {
           <button key={p.cwd} onClick={() => setCwd(p.cwd)} className={clsx("shrink-0 rounded-full px-3 py-1.5 text-[12.5px]", p.cwd === cwd ? "bg-accent/20 font-semibold text-accent" : "bg-hover text-muted")}>{folderName(p.cwd)}</button>
         ))}
       </div>
+      {agentProvider && <Seg value={kind} onChange={setKind} options={[{ value: "claude", label: "Claude Code" }, { value: "agent", label: "DevCat Agent" }]} />}
       <Input placeholder="Search sessions" value={q} onChange={(e) => setQ(e.target.value)} />
-      {sessions.loading ? <Loading /> : sessions.error ? <ErrorBox error={sessions.error} /> : list.length === 0 ? <Empty title="No sessions here yet" /> : list.map((s) => (
+      {kind === "agent" && agentProvider ? (
+        chats.loading ? <Loading /> : chatList.length === 0 ? <Empty title="No DevCat Agent chats here yet" /> : chatList.map((s) => (
+          <Item key={s.id} onClick={() => nav.push({ s: "agentchat", cwd, providerId: agentProvider.id, sessionId: s.id })} icon={<Bot className="size-4" />} title={s.title}
+            meta={`${s.messages} message${s.messages === 1 ? "" : "s"}`} right={<span className="text-[11px] text-muted">{ago(s.updatedMs)}</span>} />
+        ))
+      ) : sessions.loading ? <Loading /> : sessions.error ? <ErrorBox error={sessions.error} /> : list.length === 0 ? <Empty title="No sessions here yet" /> : list.map((s) => (
         <Item key={s.id} onClick={() => nav.push({ s: "transcript", cwd, sessionId: s.id, title: s.title })} title={s.title}
           meta={`${s.messageCount} messages${s.gitBranch ? ` · ${s.gitBranch}` : ""}${s.costUsd ? ` · $${s.costUsd.toFixed(2)}` : ""}`}
           right={<span className="text-[11px] text-muted">{ago(s.updatedAt)}</span>} />
@@ -421,6 +465,8 @@ export function Sessions({ cwd: initial }: { cwd?: string }) {
     </Screen>
   );
 }
+
+type AgentSession = { id: string; title: string; updatedMs: number; messages: number };
 
 type Block = { kind: "me" | "ai" | "tool"; text: string };
 

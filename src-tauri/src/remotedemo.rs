@@ -323,7 +323,11 @@ impl Backend for Arc<Demo> {
         let s = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         Ok(match cmd {
             "host_info" => json!(self.host_info()),
-            "agents" => json!({ "terminals": pretend(json!(crate::claude::pty::list())), "agents": crate::notify::hooks::all() }),
+            "agents" => json!({ "terminals": pretend(json!(crate::claude::pty::list())), "agents": crate::notify::hooks::all(), "chats": crate::agent::list() }),
+            // DevCat Agent chats are real (see `run`): the app's own commands.
+            "agent_open" | "agent_detach" | "agent_send" | "agent_attach" | "agent_stop" | "agent_approve" | "agent_answer" | "agent_close" | "agent_sessions" | "agent_models" => {
+                return crate::remote::dispatch::call(client, cmd, &args).await;
+            }
             "pty_open" => {
                 let cwd = s("cwd").replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
                 let cwd = if std::path::Path::new(&cwd).is_dir() { cwd } else { std::env::temp_dir().to_string_lossy().into_owned() };
@@ -380,7 +384,7 @@ impl Backend for Arc<Demo> {
                 { "type": "user", "message": { "role": "user", "content": "Great, commit it." } },
                 { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "tool_use", "name": "Bash", "input": { "command": "git commit -am \"Apply coupons before tax\"" } }] } },
             ]),
-            "ai_providers_list" => json!([]),
+            "ai_providers_list" => json!(crate::ai::ai_providers_list().await.map_err(|e| json!(e.to_string()))?),
             "home_dir" => json!(self.dir.join("projects").to_string_lossy()),
             "fs_list" => json!(crate::claude::files::fs_list(s("dir"), args["showIgnored"].as_bool()).await.map_err(|e| json!(e.to_string()))?),
             "fs_preview" => json!(crate::claude::files::fs_preview(s("path")).await.map_err(|e| json!(e.to_string()))?),
@@ -563,6 +567,20 @@ pub async fn run(port: u16, dir: std::path::PathBuf) -> Result<(), String> {
     });
     let host = Host::new(store, Arc::new(demo.clone()));
     *demo.host.lock() = Some(host.clone());
+    // DevCat Agent: real chats (src/agent.rs) against the OpenAI-compatible model API in
+    // DEVCAT_DEMO_AGENT_URL (a local mock will do); their events go to the phones.
+    crate::ai::init(dir.clone());
+    crate::agent::init(dir.clone());
+    if let Ok(url) = std::env::var("DEVCAT_DEMO_AGENT_URL") {
+        let providers = json!([{ "id": "demo-agent", "name": "DevCat Agent", "kind": "agent", "agent": { "protocol": "openai-chat", "baseUrl": url, "model": "demo-coder" } }]);
+        std::fs::write(dir.join("ai_providers.json"), providers.to_string()).map_err(|e| e.to_string())?;
+    }
+    let h = host.clone();
+    crate::events::add_tap(move |event, payload| {
+        if matches!(event, "agent-event" | "agent-chat" | "agent-chat-gone") {
+            h.broadcast(event, payload);
+        }
+    });
     // DEVCAT_DEMO_RELAY=public (or a relay URL) lets phones on other networks in.
     let relay = demo_relay();
     host.start(port, true, relay.as_deref()).await?;

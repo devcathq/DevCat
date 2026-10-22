@@ -2,7 +2,7 @@
 // navigation stack (mirrored into browser history so Android's back button works) and toasts.
 import { create } from "zustand";
 import { call, errMsg, onConn, onEvent, phone, type ConnState, type Machine, type PhoneInfo } from "./rpc";
-import type { AgentStatus, PtyInfo, Route, TabRoot } from "./types";
+import type { AgentChatInfo, AgentStatus, PtyInfo, Route, TabRoot } from "./types";
 
 export interface Toast { id: number; text: string; tone: "ok" | "err" | "info" }
 
@@ -14,6 +14,8 @@ interface State {
   /** Live terminals and agent status of the current computer. */
   terms: PtyInfo[];
   agents: Record<string, AgentStatus>;
+  /** DevCat Agent chats open on the current computer. */
+  chats: AgentChatInfo[];
   stack: Route[];
   toasts: Toast[];
 }
@@ -27,6 +29,7 @@ export const useApp = create<State>(() => ({
   conn: {},
   terms: [],
   agents: {},
+  chats: [],
   stack: [{ s: "loading" }],
   toasts: [],
 }));
@@ -91,7 +94,7 @@ export async function loadMachines(): Promise<Machine[]> {
 
 export function selectMachine(id: string) {
   localStorage.setItem(LAST, id);
-  set({ current: id, terms: [], agents: {} });
+  set({ current: id, terms: [], agents: {}, chats: [] });
   void refreshAgents();
 }
 
@@ -111,15 +114,15 @@ export async function refreshAgents() {
   const id = get().current;
   if (!id) return;
   try {
-    const r = await call<{ terminals: PtyInfo[]; agents: AgentStatus[] }>(id, "agents");
+    const r = await call<{ terminals: PtyInfo[]; agents: AgentStatus[]; chats?: AgentChatInfo[] }>(id, "agents");
     if (get().current !== id) return;
-    set({ terms: r.terminals, agents: Object.fromEntries(r.agents.map((a) => [a.ptyId, a])) });
+    set({ terms: r.terminals, agents: Object.fromEntries(r.agents.map((a) => [a.ptyId, a])), chats: r.chats ?? [] });
   } catch { /* offline: the connection state shows it */ }
 }
 
 /** How many agents wait for the user on the selected computer. */
 export function waitingCount(s: State = get()): number {
-  return Object.values(s.agents).filter((a) => a.status === "waiting" && s.terms.some((t) => t.id === a.ptyId)).length;
+  return Object.values(s.agents).filter((a) => a.status === "waiting" && s.terms.some((t) => t.id === a.ptyId)).length + s.chats.filter((c) => c.waiting).length;
 }
 
 // ------------------------------------------------------------------ events
@@ -156,6 +159,26 @@ export function startStateEvents() {
     if (mid !== get().current) return;
     const { [p.ptyId]: _gone, ...rest } = get().agents;
     set({ agents: rest });
+  });
+  // DevCat Agent chats: started working, waiting for the user, finished
+  onEvent<AgentChatInfo>("agent-chat", (c, mid) => {
+    if (mid !== get().current) return;
+    const prev = get().chats.find((x) => x.sessionId === c.sessionId);
+    set({ chats: [c, ...get().chats.filter((x) => x.sessionId !== c.sessionId)] });
+    const watching = (() => { const r = top(); return r.s === "agentchat" && r.sessionId === c.sessionId; })();
+    if (watching) return;
+    const name = folder(c.cwd);
+    if (c.waiting && c.waiting !== prev?.waiting) {
+      if (document.hidden) notify?.(`${name} needs you`, c.waiting);
+      else toast(`${name}: ${c.waiting}`, "info");
+    } else if (!c.busy && prev?.busy) {
+      if (document.hidden) notify?.(`${name} finished`, c.title || "The agent is done.");
+      else toast(`${name} finished`, "ok");
+    }
+  });
+  onEvent<{ sessionId: string }>("agent-chat-gone", (p, mid) => {
+    if (mid !== get().current) return;
+    set({ chats: get().chats.filter((c) => c.sessionId !== p.sessionId) });
   });
   onEvent<{ id: string }>("pty-exit", (p, mid) => {
     if (mid !== get().current) return;

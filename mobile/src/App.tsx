@@ -5,6 +5,7 @@ import { phone, startEvents } from "./lib/rpc";
 import { loadMachines, nav, selectMachine, setLocalNotifier, startStateEvents, useApp } from "./lib/store";
 import type { Route } from "./lib/types";
 import { Agents, NewChat, Sessions, Terminal, Transcript } from "./screens/agents";
+import { AgentChat } from "./screens/agentchat";
 import { Browse, Data, Query, RedisKey, Row, Rows } from "./screens/data";
 import { Activity, Help, MachineSettings, More, Notify } from "./screens/more";
 import { FileView, Files, FilesHome } from "./screens/files";
@@ -28,6 +29,7 @@ function screen(r: Route) {
     case "newchat": return <NewChat cwd={r.cwd} />;
     case "sessions": return <Sessions cwd={r.cwd} />;
     case "transcript": return <Transcript cwd={r.cwd} sessionId={r.sessionId} title={r.title} />;
+    case "agentchat": return <AgentChat cwd={r.cwd} providerId={r.providerId} sessionId={r.sessionId} first={r.first} />;
     case "data": return <Data />;
     case "browse": return <Browse key={r.path.join("\u0000")} connId={r.connId} path={r.path} title={r.title} />;
     case "rows": return <Rows connId={r.connId} table={r.table} />;
