@@ -25,7 +25,7 @@ ntfy app on the phone ◄──── push "finished / needs you" ┘  (optional
 ### App or browser
 
 Both have the same screens. With relays on, the QR code opens the browser version on GitHub Pages
-(`https://devileya.github.io/DevCat/`, over HTTPS). It reaches the computer through the relay with an iroh endpoint
+(`https://devcathq.github.io/DevCat/`, over HTTPS). It reaches the computer through the relay with an iroh endpoint
 compiled to WebAssembly (`mobile/web-iroh`), speaking the same protocol as the app, so it works on any network.
 The pairing details are in the part of the link after `#`, which browsers never send to the page's server.
 

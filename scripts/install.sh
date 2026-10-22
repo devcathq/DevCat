@@ -1,15 +1,15 @@
 #!/bin/sh
 # Install DevCat from the terminal (macOS, Linux):
 #
-#   curl -fsSL https://devileya.github.io/DevCat/install.sh | sh              # the CLI (devcat serve)
-#   curl -fsSL https://devileya.github.io/DevCat/install.sh | sh -s -- --app  # the desktop app
+#   curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh              # the CLI (devcat serve)
+#   curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh -s -- --app  # the desktop app
 #
 # Options: --app (the app instead of the CLI), --both, --version vX.Y.Z (default: latest),
 # --dir <dir> (where the CLI goes; default ~/.local/bin, or /usr/local/bin as root).
 # Nothing is installed system-wide unless you run it as root. Windows: see install.ps1.
 set -eu
 
-REPO="devileya/DevCat"
+REPO="devcathq/DevCat"
 want_cli=1
 want_app=0
 version=""

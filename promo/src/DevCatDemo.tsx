@@ -96,7 +96,7 @@ function Outro() {
       <Img src={staticFile("icon.png")} style={{ width: 96, height: 96 }} />
       <div style={{ color: "#f5f5f4", fontSize: 44, fontWeight: 700, marginTop: 14 }}>DevCat</div>
       <div style={{ color: "#a8a29e", fontSize: 22, marginTop: 8 }}>for macOS, Windows and Linux</div>
-      <div style={{ color: "#f59e0b", fontSize: 20, marginTop: 14, fontFamily: "ui-monospace, Menlo, monospace" }}>github.com/devileya/DevCat</div>
+      <div style={{ color: "#f59e0b", fontSize: 20, marginTop: 14, fontFamily: "ui-monospace, Menlo, monospace" }}>github.com/devcathq/DevCat</div>
     </AbsoluteFill>
   );
 }

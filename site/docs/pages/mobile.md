@@ -24,7 +24,7 @@ clusters on the go.
 5. On the computer, click **Allow**, with **full access** or **read-only**.
 
 > **Tip:** The Android app is the `DevCat-Mobile.apk` file on the
-> [releases page](https://github.com/devileya/DevCat/releases/latest). For iPhone, build it with Xcode for now.
+> [releases page](https://github.com/devcathq/DevCat/releases/latest). For iPhone, build it with Xcode for now.
 
 ## How it connects
 

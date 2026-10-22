@@ -13,7 +13,7 @@ if (!out) {
   console.error("usage: node site/docs/build.mjs <out-dir>");
   process.exit(1);
 }
-const REPO = "https://github.com/devileya/DevCat";
+const REPO = "https://github.com/devcathq/DevCat";
 const nav = JSON.parse(fs.readFileSync(path.join(here, "nav.json"), "utf8"));
 const order = nav.flatMap((g) => g.pages);
 

@@ -381,7 +381,7 @@ export function demoInvoke(cmd: string, args: Record<string, unknown>, emit: Emi
     case "remote_pair_start": {
       const appLink = `devcat://pair?v=1&id=${remoteStatus.id}&code=K7Q2X9MPLA&name=Acme%20MacBook%20Pro&addr=192.168.1.24%3A47100`;
       const webLink = `http://192.168.1.24:47100/#v=1&id=${remoteStatus.id}&code=K7Q2X9MPLA&s=demo-secret-not-real&name=Acme%20MacBook%20Pro&relay=public`;
-      const link = `https://devileya.github.io/DevCat/#v=1&id=${remoteStatus.id}&code=K7Q2X9MPLA&name=Acme%20MacBook%20Pro&relay=public&addr=192.168.1.24%3A47100`;
+      const link = `https://devcathq.github.io/DevCat/#v=1&id=${remoteStatus.id}&code=K7Q2X9MPLA&name=Acme%20MacBook%20Pro&relay=public&addr=192.168.1.24%3A47100`;
       return bridgeQr(link).then((svg: string) => ({ link, appLink: `${appLink}&relay=public`, webLink, hostedLink: link, code: "K7Q2X9MPLA", svg, expiresAt: Date.now() + 272_000 }));
     }
     case "notify_settings": case "notify_save": return args.settings ?? notifySettings;
