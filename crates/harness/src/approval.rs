@@ -29,6 +29,8 @@ pub enum Kind {
     EditOutside,
     /// Runs a command.
     Exec,
+    /// Reads a URL. Asks like a command: the URL itself can carry data out of the project.
+    Fetch,
 }
 
 impl Policy {
@@ -94,9 +96,9 @@ mod tests {
     #[test]
     fn policy_table() {
         use Kind::*;
-        let row = |p: Policy| [Read, Edit, EditOutside, Exec].map(|k| p.needs_approval(k));
-        assert_eq!(row(Policy::Ask), [false, true, true, true]);
-        assert_eq!(row(Policy::AutoEdit), [false, false, true, true]);
-        assert_eq!(row(Policy::Bypass), [false, false, false, false]);
+        let row = |p: Policy| [Read, Edit, EditOutside, Exec, Fetch].map(|k| p.needs_approval(k));
+        assert_eq!(row(Policy::Ask), [false, true, true, true, true]);
+        assert_eq!(row(Policy::AutoEdit), [false, false, true, true, true]);
+        assert_eq!(row(Policy::Bypass), [false, false, false, false, false]);
     }
 }

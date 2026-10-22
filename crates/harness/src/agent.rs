@@ -17,6 +17,22 @@ use tokio::sync::watch;
 /// Steps per turn before the agent stops and asks the user to continue.
 pub const MAX_STEPS: u32 = 60;
 
+/// Share of the context window at which the conversation is summarized before the next step.
+pub const COMPACT_AT: f64 = 0.8;
+
+const COMPACT_PROMPT: &str = "\
+The conversation is about to be cut to free the context window, and this summary will replace it. \
+Don't call any tools: answer with the summary only, in this structure.
+
+1. Request: what the user asked for, in their words where it matters, including later changes and corrections.
+2. Done so far: what you found and changed (files with their paths, functions, commands run and their outcome).
+3. Decisions: choices made with the user or by you, and the reasons.
+4. Errors and fixes: what went wrong and how it was solved.
+5. State now: what you were in the middle of, and the exact next step.
+6. Still to do: the remaining steps and open questions.
+
+Keep paths, names, numbers and error messages exact. Leave out what no longer matters.";
+
 /// One model step. [`Llm`] is the real one; tests use a scripted model.
 #[async_trait]
 pub trait Model: Send + Sync {
@@ -44,6 +60,10 @@ pub enum AgentEvent {
     ToolStart { id: String, name: String },
     /// A step finished: the full assistant message and its token use.
     Step { content: Vec<Block>, usage: Usage },
+    /// The conversation is being summarized (automatically, or `/compact`).
+    Compacting { tokens_before: u64 },
+    /// The summary that now stands for the conversation before it.
+    Compacted { summary: String, tokens_before: u64, usage: Usage },
     /// A tool call is about to run (after approval, if it needed one).
     ToolCall { id: String, name: String, summary: String, input: Value },
     ToolResult { id: String, content: String, is_error: bool },
@@ -87,13 +107,58 @@ pub struct Agent {
     pub policy: Policy,
     pub approver: Arc<dyn Approver>,
     pub system: String,
+    /// The model's context window in tokens; when known, the conversation is summarized at
+    /// [`COMPACT_AT`] of it.
+    pub context_window: Option<u64>,
     /// Tools the user allowed for the rest of the session.
     allowed: HashSet<String>,
 }
 
 impl Agent {
     pub fn new(model: Arc<dyn Model>, tools: Registry, policy: Policy, approver: Arc<dyn Approver>, system: String) -> Agent {
-        Agent { model, tools, policy, approver, system, allowed: HashSet::new() }
+        Agent { model, tools, policy, approver, system, context_window: None, allowed: HashSet::new() }
+    }
+
+    /// Summarize the conversation so far and continue from the summary (`/compact`). `focus` says
+    /// what the summary should keep in particular.
+    pub async fn compact(&mut self, session: &mut Session, focus: Option<&str>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<()> {
+        let mut messages = session.messages();
+        if messages.is_empty() {
+            return Err(Error::Provider("There's nothing to compact yet.".into()));
+        }
+        let tokens_before = session.context_tokens();
+        on(AgentEvent::Compacting { tokens_before });
+        let mut ask = COMPACT_PROMPT.to_string();
+        if let Some(f) = focus.map(str::trim).filter(|f| !f.is_empty()) {
+            ask.push_str(&format!("\n\nThe user wants the summary to focus on: {f}"));
+        }
+        match messages.last_mut() {
+            Some(m) if m.role == crate::message::Role::User => m.content.push(Block::Text { text: ask }),
+            _ => messages.push(crate::message::Message { role: crate::message::Role::User, content: vec![Block::Text { text: ask }] }),
+        }
+        // Same system prompt and tools as every step, so the provider's cache still applies.
+        let specs = self.tools.specs();
+        let req = Request { system: &self.system, messages: &messages, tools: &specs, cache_key: Some(&session.id) };
+        let mut ignore = |_| {};
+        let reply = tokio::select! {
+            r = self.model.step(&req, &mut ignore) => r?,
+            _ = cancel.cancelled() => return Err(Error::Cancelled),
+        };
+        let summary: String = reply.content.iter().filter_map(|b| match b {
+            Block::Text { text } => Some(text.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>().join("").trim().to_string();
+        if summary.is_empty() {
+            return Err(Error::Provider("The model returned an empty summary; the conversation was left as it was.".into()));
+        }
+        session.append(SessionEvent::Compacted { summary: summary.clone(), model: self.model.name(), usage: reply.usage, tokens_before }).await?;
+        on(AgentEvent::Compacted { summary, tokens_before, usage: reply.usage });
+        Ok(())
+    }
+
+    /// Whether the conversation has outgrown [`COMPACT_AT`] of the context window.
+    fn over_limit(&self, session: &Session) -> bool {
+        self.context_window.is_some_and(|w| session.context_tokens() as f64 > w as f64 * COMPACT_AT)
     }
 
     /// Run one turn for `user_text`, writing everything to `session`.
@@ -118,6 +183,9 @@ impl Agent {
         let specs: Vec<ToolSpec> = self.tools.specs();
         let ctx = ToolCtx { cwd: session.cwd.clone().into() };
         for _ in 0..MAX_STEPS {
+            if self.over_limit(session) {
+                self.compact(session, None, cancel, on).await?;
+            }
             let messages = session.messages();
             let req = Request { system: &self.system, messages: &messages, tools: &specs, cache_key: Some(&session.id) };
             let mut forward = |d: Delta| {

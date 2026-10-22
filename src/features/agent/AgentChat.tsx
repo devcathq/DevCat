@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, Layers, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, FilePlus, FileText, FolderSearch, GitCompare, Search, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square,
+  ArrowUp, Ban, BookOpen, Layers, Globe, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, FilePlus, FileText, FolderSearch, GitCompare, Search, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square,
   SquareTerminal, Wrench, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -31,6 +31,9 @@ const SUGGESTIONS = ["Explain how this project is organized", "Find and fix fail
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const lines = (s: string) => (s ? s.replace(/\n$/, "").split("\n").length : 0);
 
+type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
+const todoList = (input: Record<string, unknown> | null): Todo[] => (Array.isArray(input?.todos) ? (input.todos as Todo[]).filter((t) => t && typeof t.content === "string") : []);
+
 /** `path` relative to the project folder when it's inside it (the rows stay short). */
 function rel(path: string, cwd?: string) {
   if (!cwd || !path) return path;
@@ -52,6 +55,11 @@ function describe(name: string, input: Record<string, unknown> | null, status: T
     case "grep": return { icon: Search, verb: done ? "Searched" : "Searching", target: str(i.pattern) };
     case "shell": return { icon: SquareTerminal, verb: done ? "Ran" : "Running", target: str(i.command) };
     case "ask_user": return { icon: MessageCircleQuestion, verb: done ? "Asked" : "Asking", target: str(i.question) };
+    case "web_fetch": return { icon: Globe, verb: done ? "Fetched" : "Fetching", target: str(i.url) };
+    case "todo_write": {
+      const todos = todoList(i);
+      return { icon: ListTodo, verb: "Updated the plan", target: todos.length ? `${todos.filter((t) => t.status === "completed").length}/${todos.length} done` : "" };
+    }
     default:
       if (name.startsWith("mcp__")) {
         const [, server, tool] = name.split("__");
@@ -162,6 +170,7 @@ function ChatBody({ tabId, cwd, visible, onReview, provider }: { tabId: string; 
           </div>
         </div>
       )}
+      <TodoPanel items={chat.items} busy={chat.busy} />
       <EditedFiles items={chat.items} onReview={onReview} />
       <Composer tabId={tabId} visible={visible} provider={provider} />
     </div>
@@ -223,7 +232,7 @@ function toBlocks(items: Item[]): Block[] {
 /** "read 6 files · 14 searches · ran 3 commands · 2 failed" for a group of steps. */
 function summarize(items: Item[]) {
   const reads = new Set<string>(), edits = new Set<string>();
-  let searches = 0, commands = 0, tools = 0, failed = 0, thinkingMs = 0;
+  let searches = 0, commands = 0, tools = 0, fetches = 0, failed = 0, thinkingMs = 0;
   for (const it of items) {
     if (it.kind === "answer") thinkingMs += it.thinkingMs ?? 0;
     if (it.kind !== "tool") continue;
@@ -233,7 +242,8 @@ function summarize(items: Item[]) {
     else if (it.name === "edit" || it.name === "write") edits.add(target);
     else if (it.name === "glob" || it.name === "grep") searches++;
     else if (it.name === "shell") commands++;
-    else tools++;
+    else if (it.name === "web_fetch") fetches++;
+    else if (it.name !== "todo_write") tools++;
   }
   const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
   const parts = [
@@ -241,6 +251,7 @@ function summarize(items: Item[]) {
     edits.size && `edited ${n(edits.size, "file")}`,
     searches && n(searches, "search", "searches"),
     commands && `ran ${n(commands, "command")}`,
+    fetches && `fetched ${n(fetches, "page")}`,
     tools && `used ${n(tools, "tool")}`,
   ].filter(Boolean) as string[];
   if (!parts.length && thinkingMs) parts.push(`thought for ${fmtDuration(thinkingMs)}`);
@@ -296,6 +307,8 @@ const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: I
       return <ToolRow item={item} tabId={tabId} cwd={cwd} working={working} />;
     case "end":
       return <TurnEnd item={item} />;
+    case "compacted":
+      return <CompactedRow item={item} cwd={cwd} />;
   }
 });
 
@@ -435,7 +448,7 @@ function Diff({ before, after, max = 200 }: { before: string; after: string; max
 function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
   const req = item.request!;
   const i = item.input ?? {};
-  const title = req.kind === "exec" ? "Run this command?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+  const title = req.kind === "exec" ? "Run this command?" : req.kind === "fetch" ? "Fetch this page?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
   const deny = () => void answer(tabId, item.id, { decision: "deny" });
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); deny(); }
@@ -450,7 +463,7 @@ function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <Button autoFocus size="sm" variant="primary" onClick={() => void answer(tabId, item.id, { decision: "allow" })}>Allow <kbd className="ml-1 opacity-60">↵</kbd></Button>
         <Button size="sm" onClick={() => void answer(tabId, item.id, { decision: "allow-for-session" })}>
-          Always allow {item.name === "shell" ? "commands" : "edits"} in this chat
+          Always allow {item.name === "shell" ? "commands" : item.name === "web_fetch" ? "fetching pages" : item.name.startsWith("mcp__") ? "this tool" : "edits"} in this chat
         </Button>
         <Button size="sm" variant="ghost" onClick={deny}>Deny <kbd className="ml-1 opacity-60">Esc</kbd></Button>
       </div>
@@ -485,6 +498,66 @@ function QuestionCard({ item, tabId }: { item: ToolItem; tabId: string }) {
           className="h-8 min-w-0 flex-1 rounded-md border border-line bg-panel px-2.5 text-[12.5px] text-fg outline-none placeholder:text-faint focus:border-accent/60 focus-visible:outline-none" />
         <Button size="sm" variant="primary" type="submit" disabled={!own.trim()}>Answer</Button>
       </form>
+    </div>
+  );
+}
+
+/** Where the conversation was summarized: from here on the model works from the summary. */
+function CompactedRow({ item, cwd }: { item: Extract<Item, { kind: "compacted" }>; cwd: string }) {
+  const [open, setOpen] = useState(false);
+  const label = item.state === "running" ? "Summarizing the conversation to free the context window…"
+    : item.state === "failed" ? "Couldn't summarize the conversation"
+    : `Conversation summarized${item.tokensBefore ? ` (${fmtTokens(item.tokensBefore)} tokens)` : ""}: the model continues from the summary`;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button disabled={item.state !== "done"} onClick={() => setOpen(!open)} aria-expanded={open}
+        className={clsx("flex items-center gap-2 text-[12px]", item.state === "failed" ? "text-danger" : "text-muted hover:text-fg")}>
+        <span className="h-px flex-1 bg-line" />
+        {item.state === "running" ? <Spinner className="size-3.5" /> : <FoldVertical className="size-3.5" />}
+        <span>{label}</span>
+        {item.state === "done" && <ChevronRight className={clsx("size-3 transition-transform", open && "rotate-90")} />}
+        <span className="h-px flex-1 bg-line" />
+      </button>
+      {open && <div className="rounded-md border border-line bg-panel/60 px-3 py-2"><Markdown text={item.summary} cwd={cwd} className="text-[12.5px]" /></div>}
+    </div>
+  );
+}
+
+/** The agent's checklist (its latest `todo_write`), above the composer while there's work in it. */
+function TodoPanel({ items, busy }: { items: Item[]; busy: boolean }) {
+  const [open, setOpen] = useState(true);
+  const todos = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "user") return [];
+      if (it.kind === "tool" && it.name === "todo_write" && it.status !== "denied") return todoList(it.input);
+    }
+    return [];
+  }, [items]);
+  if (!todos.length || (!busy && todos.every((t) => t.status === "completed"))) return null;
+  const done = todos.filter((t) => t.status === "completed").length;
+  const current = todos.find((t) => t.status === "in_progress");
+  return (
+    <div className="mx-auto mt-2 w-full max-w-[780px] px-5">
+      <div className="rounded-xl border border-line bg-panel/70 text-[12px]">
+        <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left">
+          <ListTodo className="size-3.5 shrink-0 text-muted" />
+          <span className="shrink-0 text-fg">Plan</span>
+          <span className="shrink-0 text-faint">{done}/{todos.length}</span>
+          {!open && current && <span className="min-w-0 truncate text-muted">· {current.content}</span>}
+          <ChevronDown className={clsx("ml-auto size-3 shrink-0 text-faint transition-transform", !open && "-rotate-90")} />
+        </button>
+        {open && (
+          <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto px-3 pb-2">
+            {todos.map((t, n) => (
+              <li key={n} className={clsx("flex items-start gap-2", t.status === "completed" ? "text-faint line-through" : t.status === "in_progress" ? "text-fg" : "text-muted")}>
+                {t.status === "completed" ? <CircleCheck className="mt-px size-3.5 shrink-0 text-ok" /> : t.status === "in_progress" ? <CircleDot className="mt-px size-3.5 shrink-0 text-accent" /> : <Circle className="mt-px size-3.5 shrink-0" />}
+                <span>{t.content}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -632,7 +705,7 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
             const files = [...e.clipboardData.files];
             if (files.length) { e.preventDefault(); void attach(tabId, files); }
           }}
-          placeholder={chat.busy ? "Working… type your next message" : "Ask DevCat Agent to build, fix or explain something"}
+          placeholder={chat.busy ? "Working… type your next message" : "Ask DevCat Agent to build, fix or explain something  ·  /compact to summarize the chat"}
           className="block max-h-[240px] min-h-[52px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[13.5px] leading-relaxed text-fg outline-none placeholder:text-faint focus-visible:outline-none"
           // the composer's border shows focus; no second outline around the text box
           style={{ outline: "none", boxShadow: "none" }}

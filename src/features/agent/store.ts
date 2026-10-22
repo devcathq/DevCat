@@ -4,6 +4,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, errMsg } from "../../lib/api";
+import { useProviders } from "../claude/providers";
 import type { AiProvider, AgentApprovalRequest, AgentModel, AgentContext, AgentQuestion, AgentBlock, AgentDecision, AgentLiveEvent, AgentPolicy, AgentSessionEvent, AgentUsage } from "../../lib/types";
 
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
@@ -12,10 +13,14 @@ export type Item =
   | { kind: "user"; key: string; text: string; attachments: string[] }
   | { kind: "answer"; key: string; text: string; thinking: string; streaming: boolean; thinkingMs: number | null; thinkingStart: number | null }
   | { kind: "tool"; key: string; id: string; name: string; input: Record<string, unknown> | null; status: ToolStatus; output: string; request: AgentApprovalRequest | null; question?: AgentQuestion | null }
-  | { kind: "end"; key: string; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; elapsedMs: number | null; tokens: number };
+  | { kind: "end"; key: string; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; elapsedMs: number | null; tokens: number }
+  /** The conversation before it was summarized (automatically, or `/compact`). */
+  | { kind: "compacted"; key: string; state: "running" | "done" | "failed"; summary: string; tokensBefore: number };
 
 export interface Chat {
   sessionId: string | null;
+  /** The DevCat Agent connection (for its model list). */
+  providerId: string;
   title: string;
   model: string;
   providerName: string;
@@ -45,7 +50,7 @@ function savedPolicy(): AgentPolicy {
   }
 }
 
-const emptyChat = (): Chat => ({ sessionId: null, title: "", model: "", providerName: "", busy: false, opening: true, error: null, items: [], usage: ZERO, policy: savedPolicy(), context: null, attachments: [], contextTokens: 0 });
+const emptyChat = (): Chat => ({ sessionId: null, providerId: "", title: "", model: "", providerName: "", busy: false, opening: true, error: null, items: [], usage: ZERO, policy: savedPolicy(), context: null, attachments: [], contextTokens: 0 });
 
 export const useAgent = create<{ chats: Record<string, Chat> }>(() => ({ chats: {} }));
 
@@ -73,6 +78,8 @@ export function itemsFromLog(events: AgentSessionEvent[]): Item[] {
     } else if (e.event === "approval" && !e.allowed) {
       const t = tools.get(e.tool_use_id);
       if (t) t.status = "denied";
+    } else if (e.event === "compacted") {
+      items.push({ kind: "compacted", key: key(), state: "done", summary: e.summary, tokensBefore: e.tokens_before });
     } else if (e.event === "interrupted") {
       items.push({ kind: "end", key: key(), end: e.reason.startsWith("Stopped by") ? "stopped" : "error", error: e.reason.startsWith("Stopped by") ? null : e.reason, elapsedMs: null, tokens: 0 });
     }
@@ -85,6 +92,7 @@ function lastContext(events: AgentSessionEvent[]): number {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (e.event === "assistant") return e.usage.input_tokens + e.usage.output_tokens;
+    if (e.event === "compacted") return Math.round(e.summary.length / 4);
   }
   return 0;
 }
@@ -195,6 +203,17 @@ function apply(c: Chat, e: AgentLiveEvent): Partial<Chat> {
       const usage = { input_tokens: c.usage.input_tokens + e.usage.input_tokens, output_tokens: c.usage.output_tokens + e.usage.output_tokens, cache_read_tokens: c.usage.cache_read_tokens + e.usage.cache_read_tokens };
       return { items, usage, contextTokens: e.usage.input_tokens + e.usage.output_tokens || c.contextTokens };
     }
+    case "compacting":
+      items.push({ kind: "compacted", key: key(), state: "running", summary: "", tokensBefore: e.tokens_before });
+      return { items };
+    case "compacted": {
+      const i = items.map((x) => x.kind === "compacted" && x.state === "running").lastIndexOf(true);
+      const done = { kind: "compacted" as const, key: i >= 0 ? items[i].key : key(), state: "done" as const, summary: e.summary, tokensBefore: e.tokens_before };
+      if (i >= 0) items[i] = done;
+      else items.push(done);
+      const usage = { input_tokens: c.usage.input_tokens + e.usage.input_tokens, output_tokens: c.usage.output_tokens + e.usage.output_tokens, cache_read_tokens: c.usage.cache_read_tokens + e.usage.cache_read_tokens };
+      return { items, usage, contextTokens: Math.round(e.summary.length / 4) };
+    }
     case "approval":
       setTool(e.request.toolUseId, () => ({ status: "approval", request: e.request, input: e.request.input }));
       return { items };
@@ -210,7 +229,10 @@ function apply(c: Chat, e: AgentLiveEvent): Partial<Chat> {
       }));
       return { items };
     case "turnEnd": {
-      const closed = items.map((i) => (i.kind === "answer" && i.streaming ? { ...i, streaming: false } : i.kind === "tool" && (i.status === "pending" || i.status === "running" || i.status === "approval" || i.status === "question") ? { ...i, status: "error" as const, request: null, question: null } : i));
+      const closed = items.map((i): Item => (i.kind === "answer" && i.streaming ? { ...i, streaming: false }
+        : i.kind === "tool" && (i.status === "pending" || i.status === "running" || i.status === "approval" || i.status === "question") ? { ...i, status: "error" as const, request: null, question: null }
+        : i.kind === "compacted" && i.state === "running" ? { ...i, state: "failed" }
+        : i));
       const tokens = e.usage.input_tokens + e.usage.output_tokens;
       closed.push({ kind: "end", key: key(), end: e.end, error: e.error, elapsedMs: e.elapsedMs, tokens });
       return { items: closed, busy: false, usage: e.usage, title: e.title };
@@ -249,7 +271,7 @@ export async function openChat(tabId: string, cwd: string, providerId: string, s
   try {
     const o = await api.agentOpen(cwd, providerId, sessionId);
     patch(tabId, () => ({
-      sessionId: o.sessionId, title: o.title, model: o.model, providerName: o.providerName, busy: o.busy, opening: false,
+      sessionId: o.sessionId, providerId, title: o.title, model: o.model, providerName: o.providerName, busy: o.busy, opening: false,
       items: itemsFromLog(o.events), usage: o.usage, context: o.context, contextTokens: lastContext(o.events),
     }));
     return o.sessionId;
@@ -274,7 +296,10 @@ export async function send(tabId: string, text: string): Promise<boolean> {
   const c = useAgent.getState().chats[tabId];
   if (!c?.sessionId || c.busy || (!text.trim() && !c.attachments.length)) return false;
   try {
-    await api.agentSend(c.sessionId, text.trim(), c.policy, c.model || null, c.attachments);
+    // the window decides when the conversation gets summarized
+    const provider = useProviders.getState().providers.find((p) => p.id === c.providerId);
+    const models = provider ? await connectionModels(provider) : [];
+    await api.agentSend(c.sessionId, text.trim(), c.policy, c.model || null, c.attachments, contextWindow(c.model, models).tokens);
     patch(tabId, () => ({ attachments: [] }));
     return true;
   } catch (e) {

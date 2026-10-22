@@ -40,6 +40,8 @@ const WORKING: &str = "\
 - Use `edit` for changes to existing files and `write` for new files. Never paste whole files back to the user.
 - After changing code, run the project's checks or tests with `shell` when it makes sense, and fix what fails.
 - If a tool call is refused, don't retry the same call; ask the user or try another way.
+- For work with several steps, keep a checklist with `todo_write` and update it as you go.
+- Use `web_fetch` to read documentation, issues or pages the user links to. Never put secrets or project contents in a URL.
 - When a decision belongs to the user (which option, naming, scope, anything destructive or hard to undo), ask with `ask_user` and offer short options. Don't ask about things you can find out yourself.
 - Keep answers short. Say what you changed and what's left; don't repeat file contents.
 
