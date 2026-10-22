@@ -32,7 +32,7 @@ import { startUpdateChecks, useUpdate } from "../../features/update/store";
 import { IS_MAC, IS_MAIN_WINDOW, NEW_WINDOW_SHORTCUT, openNewWindow, takeLaunchTab, type TabTransfer } from "../../lib/windows";
 import "../../store/projectFolders";
 import "../../features/files/openedFiles";
-import { openQuickOpen, QuickOpen } from "../../features/files/QuickOpen";
+import { openQuickOpen, QuickOpen, useQuickOpen } from "../../features/files/QuickOpen";
 import { openTab, useTabs } from "../../store/tabs";
 import { useUi, type SidebarView } from "../../store/ui";
 import { TabContent } from "../../tabs/registry";
@@ -108,6 +108,8 @@ export default function AppShell() {
       if (!mod || e.shiftKey || e.altKey || e.key.toLowerCase() !== "p") return;
       if (!IS_MAC && (e.target as HTMLElement | null)?.closest?.(".xterm")) return;
       e.preventDefault();
+      // while it's open, Ctrl+P is the palette's own "move up" (Windows / Linux)
+      if (useQuickOpen.getState().open) return;
       e.stopPropagation();
       openQuickOpen();
     };

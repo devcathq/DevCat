@@ -193,7 +193,8 @@ fn find_files(root: &Path, cap: usize) -> FoundFiles {
         .filter_entry(|e| e.file_name() != ".git")
         .build();
     for e in walk.filter_map(Result::ok) {
-        if !e.file_type().is_some_and(|t| t.is_file() || t.is_symlink()) {
+        // symlinks only when they lead to a file (Path::is_file follows them; broken links drop out)
+        if !e.file_type().is_some_and(|t| t.is_file() || (t.is_symlink() && e.path().is_file())) {
             continue;
         }
         if files.len() == cap {
@@ -740,23 +741,22 @@ mod tests {
     #[tokio::test]
     async fn find_files_walks_the_tree_without_ignored_files() {
         let repo = TempRepo::new("fsfind");
-        repo.write(".gitignore", "node_modules/
-*.log
-");
-        repo.write("src/features/files/format.ts", "x
-");
-        repo.write("README.md", "# hi
-");
-        repo.write(".claude/settings.json", "{}
-");
-        repo.write("node_modules/pkg/index.js", "x
-");
-        repo.write("debug.log", "log
-");
+        repo.write(".gitignore", "node_modules/\n*.log\n");
+        repo.write("src/features/files/format.ts", "x\n");
+        repo.write("README.md", "# hi\n");
+        repo.write(".claude/settings.json", "{}\n");
+        repo.write("node_modules/pkg/index.js", "x\n");
+        repo.write("debug.log", "log\n");
         let mut found = fs_find_files(repo.cwd()).await.unwrap();
         found.files.sort();
         assert_eq!(found.files, vec![".claude/settings.json", ".gitignore", "README.md", "src/features/files/format.ts"]);
         assert!(!found.truncated);
+        // a symlink to a folder isn't a file to open
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(Path::new(&repo.cwd()).join("src"), Path::new(&repo.cwd()).join("srclink")).unwrap();
+            assert!(!find_files(Path::new(&repo.cwd()), 100).files.iter().any(|f| f == "srclink"));
+        }
         let capped = find_files(Path::new(&repo.cwd()), 2);
         assert_eq!((capped.files.len(), capped.truncated), (2, true));
     }
