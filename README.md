@@ -7,9 +7,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/devileya/DevCat/releases/latest"><img src="https://img.shields.io/github/v/release/devileya/DevCat?label=release&color=f5a524" alt="Latest release"></a>
-  <a href="https://github.com/devileya/DevCat/releases"><img src="https://img.shields.io/github/downloads/devileya/DevCat/total?color=3b82f6" alt="Downloads"></a>
-  <a href="https://github.com/devileya/DevCat/actions/workflows/build.yml"><img src="https://github.com/devileya/DevCat/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="https://github.com/devcathq/DevCat/releases/latest"><img src="https://img.shields.io/github/v/release/devcathq/DevCat?label=release&color=f5a524" alt="Latest release"></a>
+  <a href="https://github.com/devcathq/DevCat/releases"><img src="https://img.shields.io/github/downloads/devcathq/DevCat/total?color=3b82f6" alt="Downloads"></a>
+  <a href="https://github.com/devcathq/DevCat/actions/workflows/build.yml"><img src="https://github.com/devcathq/DevCat/actions/workflows/build.yml/badge.svg" alt="Build"></a>
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-555" alt="Platforms: macOS, Windows, Linux, Android">
   <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db" alt="Built with Tauri 2"></a>
 </p>
@@ -17,9 +17,9 @@
 <p align="center">
   <a href="https://devcat.ai.id"><b>Website</b></a> ·
   <a href="https://devcat.ai.id/docs/"><b>Docs</b></a> ·
-  <a href="https://github.com/devileya/DevCat/releases/latest"><b>Download</b></a> ·
+  <a href="https://github.com/devcathq/DevCat/releases/latest"><b>Download</b></a> ·
   <a href="https://devcat.ai.id/docs/shortcuts.html"><b>Shortcuts</b></a> ·
-  <a href="https://github.com/devileya/DevCat/issues"><b>Report a bug</b></a>
+  <a href="https://github.com/devcathq/DevCat/issues"><b>Report a bug</b></a>
 </p>
 
 DevCat is a cross-platform developer workbench. It runs your AI coding agent (Claude Code, Codex, Gemini CLI and
@@ -46,7 +46,7 @@ RabbitMQ brokers and VPN / SSH tunnels in the same window, grouped by project. I
 ## Download
 
 Grab the latest installer for macOS, Windows or Linux from the
-[Releases page](https://github.com/devileya/DevCat/releases/latest), or from a terminal:
+[Releases page](https://github.com/devcathq/DevCat/releases/latest), or from a terminal:
 
 ```sh
 # The app
@@ -356,7 +356,7 @@ notarization ([macOS](https://tauri.app/distribute/sign/macos/), [Windows](https
 
 Bug reports, ideas and pull requests are welcome.
 
-- **Found a bug?** [Open an issue](https://github.com/devileya/DevCat/issues/new) with your OS, the DevCat version
+- **Found a bug?** [Open an issue](https://github.com/devcathq/DevCat/issues/new) with your OS, the DevCat version
   (shown in the status bar) and the steps to reproduce it.
 - **Changing code?** See [Development](#development) to run the app locally. Keep pull requests focused on one
   change and describe how you tested it.

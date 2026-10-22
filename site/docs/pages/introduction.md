@@ -29,5 +29,5 @@ and needs no account.
 
 ## Getting help
 
-Found a bug or missing something? Open an issue on [GitHub](https://github.com/devileya/DevCat/issues). Every page
+Found a bug or missing something? Open an issue on [GitHub](https://github.com/devcathq/DevCat/issues). Every page
 here has an *Edit this page on GitHub* link at the bottom if you'd like to improve it.

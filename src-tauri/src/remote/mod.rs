@@ -158,7 +158,7 @@ fn qr_link(preferred: bool, hosted: Option<&String>, web: Option<&String>, app: 
 }
 
 /// The browser version on GitHub Pages: reaches the computer through its relay, from any network.
-pub const HOSTED_PAGE: &str = "https://devileya.github.io/DevCat/";
+pub const HOSTED_PAGE: &str = "https://devcathq.github.io/DevCat/";
 
 fn settings() -> RemoteSettings {
     REMOTE.get().map(|r| r.host.store.settings()).unwrap_or_default()
