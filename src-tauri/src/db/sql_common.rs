@@ -460,16 +460,24 @@ pub fn can_stop_early(d: Dialect, sql: &str) -> bool {
 pub fn is_read_only_statement(d: Dialect, sql: &str) -> bool {
     let kw = first_keyword(d, sql);
     let upper = sql.to_ascii_uppercase();
+    // Anything that switches the session or transaction back to read-write, in any statement:
+    // `BEGIN READ WRITE`, `START TRANSACTION READ WRITE`, `SELECT set_config('default_transaction_read_only', …)`.
+    let spaced = upper.split_whitespace().collect::<Vec<_>>().join(" ");
+    if spaced.contains("READ WRITE") || contains_word(&upper, "SET_CONFIG") || upper.contains("TRANSACTION_READ_ONLY") {
+        return false;
+    }
     match kw.as_str() {
-        "SELECT" => !upper.contains(" INTO "),
-        "WITH" => !["INSERT", "UPDATE", "DELETE", "MERGE"].iter().any(|k| contains_word(&upper, k)) && !upper.contains(" INTO "),
+        // `SELECT … INTO new_table` / `INTO OUTFILE` write; the keyword may follow a newline
+        "SELECT" => !contains_word(&upper, "INTO"),
+        "WITH" => !["INSERT", "UPDATE", "DELETE", "MERGE", "INTO"].iter().any(|k| contains_word(&upper, k)),
         "SHOW" | "EXPLAIN" | "DESCRIBE" | "DESC" | "VALUES" | "TABLE" | "USE" | "BEGIN" | "START" | "COMMIT" | "ROLLBACK" | "END" | "HELP" => {
             !(kw == "EXPLAIN" && contains_word(&upper, "ANALYZE") && ["INSERT", "UPDATE", "DELETE", "MERGE"].iter().any(|k| contains_word(&upper, k)))
         }
         // PRAGMA writes are blocked by opening SQLite read-only.
         "PRAGMA" => d == Dialect::Sqlite,
         // Session settings are fine, but not ones that would lift read-only mode.
-        "SET" => !upper.contains("READ"),
+        // Server-wide and identity changes are writes too (MySQL `SET GLOBAL`, `SET PASSWORD`, PG `SET ROLE`).
+        "SET" => !upper.contains("READ") && !["GLOBAL", "PERSIST", "PERSIST_ONLY", "PASSWORD", "ROLE", "AUTHORIZATION"].iter().any(|k| contains_word(&upper, k)),
         _ => false,
     }
 }
@@ -868,6 +876,17 @@ mod tests {
         assert!(!is_read_only_statement(Dialect::Postgres, "update t set a = 1"));
         assert!(!is_read_only_statement(Dialect::Postgres, "set default_transaction_read_only = off"));
         assert!(is_read_only_statement(Dialect::Postgres, "set search_path = public"));
+        assert!(!is_read_only_statement(Dialect::Postgres, "begin read  write"));
+        assert!(!is_read_only_statement(Dialect::Mysql, "START TRANSACTION READ WRITE"));
+        assert!(!is_read_only_statement(Dialect::Postgres, "select set_config('default_transaction_read_only', 'off', false)"));
+        assert!(!is_read_only_statement(Dialect::Postgres, "select *\ninto t2 from t"));
+        assert!(!is_read_only_statement(Dialect::Mysql, "select * from t into\toutfile '/tmp/x'"));
+        assert!(!is_read_only_statement(Dialect::Mysql, "set global max_connections = 1"));
+        assert!(!is_read_only_statement(Dialect::Mysql, "SET @@GLOBAL.read_only_x = 0"));
+        assert!(!is_read_only_statement(Dialect::Mysql, "set password = 'x'"));
+        assert!(!is_read_only_statement(Dialect::Postgres, "set role postgres"));
+        assert!(is_read_only_statement(Dialect::Postgres, "begin"));
+        assert!(is_read_only_statement(Dialect::Postgres, "select interval_col from intervals"));
         assert!(may_return_rows(Dialect::Postgres, "insert into t values (1) returning id"));
         assert!(!may_return_rows(Dialect::Postgres, "insert into t values (1)"));
     }

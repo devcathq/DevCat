@@ -6,7 +6,7 @@
 //! (`{"rows", "done", ...}`); the command layer forwards them as
 //! `transfer-progress` events with the job id attached.
 use super::ddl::{self, CreateTableOptions, TypeClass};
-use super::sql_common::{literal, quote_ident, split_statements};
+use super::sql_common::{is_read_only_statement, literal, quote_ident, split_statements};
 use super::{
     ColumnDef, ColumnInfo, Dialect, DynDriver, ExecOptions, NodeKind, RowChange, SortSpec, TableDataRequest, TableRef,
     TableStructure,
@@ -732,6 +732,17 @@ pub async fn export_data(
 ) -> AppResult<u64> {
     let o = Opts(options);
     let src_dialect = driver.dialect();
+    // Exporting a query result runs the query again: refuse anything that would change data a
+    // second time (e.g. `DELETE … RETURNING`, `INSERT … RETURNING`), before any file is created.
+    if let ExportSource::Query { sql, .. } = &source
+        && src_dialect != Dialect::None
+        && let Some(stmt) = split_statements(src_dialect, sql).into_iter().find(|s| !is_read_only_statement(src_dialect, s))
+    {
+        let head: String = stmt.trim().chars().take(60).collect();
+        return Err(AppError::msg(format!(
+            "Export runs the query again, and this statement changes data: {head}… Export the table instead, or run a SELECT and export that."
+        )));
+    }
     let structure = match &source {
         ExportSource::Table(t) => driver.table_structure(t).await.ok(),
         ExportSource::Query { .. } => None,
@@ -1105,11 +1116,13 @@ pub async fn import_data(
     }
     let ro = ReadOptions::new(format, o)?;
     let mode = o.str("mode").unwrap_or("append").to_ascii_lowercase();
-    match mode.as_str() {
-        "append" => {}
-        "truncate" | "replace" => delete_all(driver, table).await?,
+    // Emptying the table waits until the file's first batch has been read and mapped, so a file
+    // that can't be parsed (wrong format, bad encoding, missing columns) leaves the table intact.
+    let mut pending_delete = match mode.as_str() {
+        "append" => false,
+        "truncate" | "replace" => true,
         other => return Err(AppError::Unsupported(format!("import mode {other}"))),
-    }
+    };
     let d = driver.dialect();
     let structure = match driver.table_structure(table).await {
         Ok(s) => Some(s).filter(|s| !s.columns.is_empty()),
@@ -1146,9 +1159,12 @@ pub async fn import_data(
     });
 
     let mut inserted = 0u64;
+    let mut saw_records = false;
     let result: AppResult<()> = async {
         while let Some(batch) = rx.recv().await {
-            let rows: Vec<Map<String, Value>> = batch?
+            let batch = batch?;
+            saw_records |= !batch.is_empty();
+            let rows: Vec<Map<String, Value>> = batch
                 .into_iter()
                 .map(|rec| {
                     let row: Map<String, Value> = rec
@@ -1162,8 +1178,15 @@ pub async fn import_data(
             if rows.is_empty() {
                 continue;
             }
+            if std::mem::take(&mut pending_delete) {
+                delete_all(driver, table).await?;
+            }
             inserted += target.insert(driver, rows).await?;
             progress(json!({ "rows": inserted, "done": false }));
+        }
+        // a file with no rows at all still replaces the table's contents
+        if pending_delete && !saw_records {
+            delete_all(driver, table).await?;
         }
         Ok(())
     }
@@ -2126,6 +2149,16 @@ mod integration {
         assert_eq!(n, 2500);
         assert_eq!(scalar(&pg, db, "SELECT count(*) FROM xfer_exp.users_import").await, 2500);
         assert_eq!(scalar(&pg, db, "SELECT count(*) FROM xfer_exp.users_import WHERE note IS NULL").await, 250);
+        // a truncate import of a file that can't be parsed leaves the table alone
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "this is not json").unwrap();
+        assert!(import_data(&pg, &imp, "json", &bad, &json!({ "mode": "truncate" }), &noop()).await.is_err());
+        assert_eq!(scalar(&pg, db, "SELECT count(*) FROM xfer_exp.users_import").await, 2500);
+        // exporting a query result never re-runs a data-changing statement
+        let del = ExportSource::Query { sql: "DELETE FROM xfer_exp.users_import WHERE id < 10 RETURNING id".into(), database: db.map(Into::into) };
+        assert!(export_data(&pg, del, "csv", &dir.join("del.csv"), &json!({}), &noop()).await.is_err());
+        assert!(!dir.join("del.csv").exists());
+        assert_eq!(scalar(&pg, db, "SELECT count(*) FROM xfer_exp.users_import").await, 2500);
         assert_eq!(
             scalar(&pg, db, "SELECT count(*) FROM xfer_exp.users u JOIN xfer_exp.users_import c USING (id) WHERE u.avatar = c.avatar AND u.profile = c.profile AND u.balance = c.balance").await,
             2500

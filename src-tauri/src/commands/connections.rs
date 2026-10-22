@@ -16,7 +16,8 @@ pub async fn get_connection(state: St, id: String) -> AppResult<ConnectionConfig
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn save_connection(state: St, config: ConnectionConfig) -> AppResult<ConnectionConfig> {
     // Drop any open session so the next use picks up the new settings.
-    if let Some(d) = state.sessions.write().await.remove(&config.id) {
+    let removed = state.sessions.write().await.remove(&config.id);
+    if let Some(d) = removed {
         d.close().await;
     }
     drop_infra_clients(&config.id).await;
@@ -32,7 +33,8 @@ pub async fn save_connection(state: St, config: ConnectionConfig) -> AppResult<C
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_connection(state: St, id: String) -> AppResult<()> {
-    if let Some(d) = state.sessions.write().await.remove(&id) {
+    let removed = state.sessions.write().await.remove(&id);
+    if let Some(d) = removed {
         d.close().await;
     }
     drop_infra_clients(&id).await;
@@ -67,7 +69,8 @@ pub async fn open_connection(state: St, id: String) -> AppResult<String> {
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn close_connection(state: St, id: String) -> AppResult<()> {
-    if let Some(d) = state.sessions.write().await.remove(&id) {
+    let removed = state.sessions.write().await.remove(&id);
+    if let Some(d) = removed {
         d.close().await;
     }
     drop_infra_clients(&id).await;
