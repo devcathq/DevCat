@@ -10,6 +10,7 @@ import { openDdl, openInfra, openMongoCollection, openRedis, openTableData } fro
 import { qualifiedName } from "../../table/sqlDialect";
 import { isInfra, redisKeyOf, refOf, type NodeCtx } from "./rows";
 import { useTree } from "./store";
+import { openSshTerminal } from "../../ssh/open";
 
 const tree = () => useTree.getState();
 
@@ -24,6 +25,7 @@ export function toggleConnection(conn: ConnectionConfig) {
 export function activateConnection(conn: ConnectionConfig) {
   if (conn.kind === "kubernetes") openInfra(conn.id, "k8s");
   else if (conn.kind === "rabbitmq") openInfra(conn.id, "rabbitmq");
+  else if (conn.kind === "ssh") openSshTerminal(conn);
   else toggleConnection(conn);
 }
 

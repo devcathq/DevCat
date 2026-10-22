@@ -11,7 +11,7 @@ import type { ConnectionConfig, ConnectionKind } from "../../lib/types";
 import { newConnection, useConnections } from "../../store/connections";
 import { useUi } from "../../store/ui";
 import {
-  AdvancedSection, IdentitySection, KubernetesSection, RabbitSection, ServerSection, SqliteSection, SshSection,
+  AdvancedSection, IdentitySection, KubernetesSection, RabbitSection, ServerSection, SqliteSection, SshSection, SshSessionSection,
   SslSection, SSH_KINDS, SSL_KINDS, suggestName, URL_KINDS, emptySsh,
 } from "./dialog/sections";
 import { DialogHost } from "./dialogs";
@@ -37,6 +37,7 @@ const KIND_BLURB: Record<ConnectionKind, string> = {
   redis: "Redis, Valkey, KeyDB",
   kubernetes: "Clusters from your kubeconfig",
   rabbitmq: "Management HTTP API",
+  ssh: "Terminal, SFTP and agents on a server",
 };
 
 type Section = "general" | "ssl" | "ssh" | "advanced";
@@ -45,7 +46,9 @@ type TestState = { status: "idle" } | { status: "testing" } | { status: "ok"; me
 function freshConfig(kind: ConnectionKind, projectId: string | null): ConnectionConfig {
   const c = newConnection(kind, projectId);
   c.port = KIND_META[kind].defaultPort ?? null;
-  if (kind === "sqlite" || kind === "kubernetes") c.host = "";
+  if (kind === "sqlite" || kind === "kubernetes" || kind === "ssh") c.host = "";
+  // Empty = 22, or the port of a ~/.ssh/config alias.
+  if (kind === "ssh") c.port = null;
   if (kind === "redis") c.database = "0";
   if (kind === "rabbitmq") {
     c.database = "/";
@@ -124,6 +127,16 @@ function ConnectionDialogInner({ id, kind, projectId }: { id: string | null; kin
       if (!out.database) out.database = "/";
     }
     if (c.kind === "kubernetes") out.host = "";
+    if (c.kind === "ssh") {
+      out.host = c.host.trim();
+      out.user = c.user.trim();
+      out.readOnly = false;
+      // Empty fields mean "not set" (ssh / ~/.ssh/config defaults apply).
+      for (const k of ["keyPath", "jump", "startDir", "startup"]) {
+        const v = out.options[k]?.trim();
+        if (v) out.options[k] = v; else delete out.options[k];
+      }
+    }
     out.group = null;
     out.projectId = c.projectId || null;
     return out;
@@ -267,6 +280,7 @@ function ConnectionDialogInner({ id, kind, projectId }: { id: string | null; kin
               {cfg.kind === "sqlite" ? <SqliteSection {...sp} />
                 : cfg.kind === "kubernetes" ? <KubernetesSection {...sp} />
                 : cfg.kind === "rabbitmq" ? <RabbitSection {...sp} />
+                : cfg.kind === "ssh" ? <SshSessionSection {...sp} />
                 : <ServerSection {...sp} useUrl={useUrl} setUseUrl={(v) => { setUseUrl(v); setTest({ status: "idle" }); }} />}
             </>
           )}

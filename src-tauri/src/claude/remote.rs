@@ -3,12 +3,17 @@
 //! written `ssh://[user@]host[:port]/absolute/path`; the commands that take a folder or file
 //! path (file tree, preview, save, git status, terminals) route such paths here.
 //!
+//! A saved SSH session (an `ssh` connection in the sidebar) is written `ssh://devcat-<id>/path`:
+//! its host, user, port, key, jump host and password come from the saved connection (`Session`).
+//!
 //! On macOS / Linux one master connection per host is shared (OpenSSH ControlMaster), so file
 //! operations are quick and a password typed once in a terminal covers them too. File commands
-//! never prompt (BatchMode): without a key or agent, open a terminal first.
+//! never prompt (BatchMode): without a key or agent, open a terminal first. A session with a saved
+//! password answers through DevCat as SSH_ASKPASS instead (`askpass_main`).
 use super::git::{parse_status_v2, StatusIndex};
 use super::{FileEntry, FilePreview, GitStatus};
 use crate::error::{AppError, AppResult};
+use crate::models::{ConnectionConfig, ConnectionKind};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -18,15 +23,101 @@ const TIMEOUT: Duration = Duration::from_secs(40);
 /// Files up to this size are copied whole for previews; bigger ones only their start.
 const PREVIEW_COPY_CAP: u64 = 30 * 1024 * 1024;
 const PREVIEW_HEAD: u64 = 2 * 1024 * 1024;
+/// `ssh://devcat-<connection id>/…` = a saved SSH session.
+pub const SESSION_PREFIX: &str = "devcat-";
+
+/// How to reach a saved SSH session (from its connection profile).
+#[derive(Clone, PartialEq)]
+pub struct Session {
+    pub id: String,
+    pub name: String,
+    /// Host name, IP or a ~/.ssh/config alias (passed to ssh as the destination, so the alias's
+    /// settings apply).
+    pub host: String,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+    pub key_path: Option<String>,
+    /// ProxyJump (`bastion`, `me@jump:2222`, comma-separated hops).
+    pub jump: Option<String>,
+    /// Folder the terminal starts in (default: home).
+    pub start_dir: Option<String>,
+    /// Command run before the login shell (e.g. `tmux attach || tmux`).
+    pub startup: Option<String>,
+    /// From the keychain; never logged.
+    pub password: Option<String>,
+    /// VPN / tunnel profile connected first.
+    pub network_id: Option<String>,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session").field("id", &self.id).field("host", &self.host).field("user", &self.user).field("port", &self.port).finish_non_exhaustive()
+    }
+}
+
+fn opt(c: &ConnectionConfig, key: &str) -> Option<String> {
+    c.options.get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+impl Session {
+    pub fn from_config(c: &ConnectionConfig) -> AppResult<Session> {
+        let host = c.host.trim();
+        // Same rules as a typed destination: it's an ssh argument.
+        if host.is_empty() || host.starts_with('-') || host.contains(char::is_whitespace) {
+            return Err(AppError::msg("Enter the SSH host (a name, an IP or a ~/.ssh/config alias)"));
+        }
+        let user = Some(c.user.trim().to_string()).filter(|u| !u.is_empty());
+        if user.as_deref().is_some_and(|u| u.starts_with('-') || u.contains(char::is_whitespace)) {
+            return Err(AppError::msg("The SSH user can't start with - or contain spaces"));
+        }
+        let jump = opt(c, "jump");
+        if jump.as_deref().is_some_and(|j| j.starts_with('-') || j.contains(char::is_whitespace)) {
+            return Err(AppError::msg("The jump host can't start with - or contain spaces"));
+        }
+        Ok(Session {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            host: host.to_string(),
+            user,
+            port: c.port.filter(|p| *p != 0),
+            key_path: opt(c, "keyPath").map(|k| expand_local_home(&k)),
+            jump,
+            start_dir: opt(c, "startDir"),
+            startup: opt(c, "startup"),
+            password: c.password.clone().filter(|p| !p.is_empty()),
+            network_id: opt(c, "networkId"),
+        })
+    }
+
+    /// The saved session `devcat-<id>` (with its password from the keychain).
+    fn load(alias: &str) -> Option<Session> {
+        let id = alias.strip_prefix(SESSION_PREFIX)?;
+        let st = crate::state::St::try_get()?;
+        let c = st.store.get(id).ok().filter(|c| c.kind == ConnectionKind::Ssh)?;
+        Session::from_config(&c).ok()
+    }
+
+}
+
+/// `~/.ssh/id` → `/Users/me/.ssh/id` (ssh expands `~` itself, but only unquoted in a shell).
+fn expand_local_home(p: &str) -> String {
+    match (p.strip_prefix("~/"), dirs::home_dir()) {
+        (Some(rest), Some(h)) => h.join(rest).to_string_lossy().into_owned(),
+        _ => p.to_string(),
+    }
+}
 
 /// A folder or file on an SSH host.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
-    /// What `ssh` connects to: a ~/.ssh/config alias, `host` or `user@host`.
+    /// What `ssh` connects to: a ~/.ssh/config alias, `host` or `user@host` (or `devcat-<id>`
+    /// for a saved session, see `session`).
     pub dest: String,
     pub port: Option<u16>,
     /// Absolute path on the host (`~` / `~/…` allowed: resolved there).
     pub path: String,
+    /// A saved session (`dest` = `devcat-<id>`); None if it was deleted.
+    pub session: Option<Box<Session>>,
 }
 
 impl Target {
@@ -46,7 +137,13 @@ impl Target {
         if dest.is_empty() || dest.starts_with('-') || dest.contains(char::is_whitespace) {
             return None;
         }
-        Some(Target { dest: dest.to_string(), port, path: path.to_string() })
+        let session = if dest.starts_with(SESSION_PREFIX) { Session::load(dest).map(Box::new) } else { None };
+        Some(Target { dest: dest.to_string(), port, path: path.to_string(), session })
+    }
+
+    /// A target for a session that may not be saved yet (Test connection).
+    pub fn for_session(s: Session, path: &str) -> Target {
+        Target { dest: format!("{SESSION_PREFIX}{}", s.id), port: None, path: path.to_string(), session: Some(Box::new(s)) }
     }
 
     /// Back to `ssh://…` for `path` on the same host.
@@ -54,6 +151,29 @@ impl Target {
         let port = self.port.map(|p| format!(":{p}")).unwrap_or_default();
         let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
         format!("{SCHEME}{}{port}{path}", self.dest)
+    }
+
+    /// `devcat-…` written in the URI.
+    pub fn is_session(&self) -> bool {
+        self.dest.starts_with(SESSION_PREFIX)
+    }
+
+    /// The destination argument for `ssh`.
+    pub fn ssh_dest(&self) -> &str {
+        self.session.as_ref().map(|s| s.host.as_str()).unwrap_or(&self.dest)
+    }
+
+    /// For messages: the session's name, or the destination.
+    pub fn label(&self) -> &str {
+        self.session.as_ref().map(|s| s.name.as_str()).unwrap_or(&self.dest)
+    }
+
+    /// A saved session that no longer exists can't be reached.
+    pub fn check(&self) -> AppResult<()> {
+        if self.is_session() && self.session.is_none() {
+            return Err(AppError::msg("This SSH session was deleted. Open it again from the sidebar."));
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -94,8 +214,13 @@ fn control_dir() -> std::path::PathBuf {
 /// `ssh` options shared by file commands and terminals.
 pub fn ssh_args(t: &Target, interactive: bool) -> Vec<String> {
     let mut a: Vec<String> = vec!["-o".into(), "ConnectTimeout=15".into(), "-o".into(), "ServerAliveInterval=30".into()];
-    if !interactive {
+    let askpass = !interactive && t.session.as_ref().is_some_and(|s| s.password.is_some());
+    if !interactive && !askpass {
         a.extend(["-o".into(), "BatchMode=yes".into()]);
+    }
+    if askpass {
+        // One try: a wrong saved password shouldn't lock the account out.
+        a.extend(["-o".into(), "NumberOfPasswordPrompts=1".into()]);
     }
     if cfg!(unix) {
         let dir = control_dir();
@@ -114,26 +239,94 @@ pub fn ssh_args(t: &Target, interactive: bool) -> Vec<String> {
             "ControlPersist=600".into(),
         ]);
     }
-    if let Some(p) = t.port {
+    let session = t.session.as_deref();
+    if let Some(s) = session {
+        if let Some(u) = &s.user {
+            a.extend(["-o".into(), format!("User={u}")]);
+        }
+        if let Some(k) = &s.key_path {
+            a.extend(["-i".into(), k.clone(), "-o".into(), "IdentitiesOnly=yes".into()]);
+        }
+        if let Some(j) = &s.jump {
+            a.extend(["-J".into(), j.clone()]);
+        }
+    }
+    if let Some(p) = t.port.or(session.and_then(|s| s.port)) {
         a.extend(["-p".into(), p.to_string()]);
     }
     a
 }
 
-/// Run `script` (POSIX sh) on the host with `args` as $1…, optional stdin. Returns stdout.
-async fn run(t: &Target, script: &str, args: &[&str], stdin: Option<&[u8]>) -> AppResult<Vec<u8>> {
+/// Env for an `ssh` that answers a saved password through DevCat (see `askpass_main`).
+pub fn askpass_env(t: &Target) -> Vec<(String, String)> {
+    let (Some(pw), Ok(exe)) = (t.session.as_ref().and_then(|s| s.password.clone()), std::env::current_exe()) else {
+        return vec![];
+    };
+    vec![
+        ("SSH_ASKPASS".into(), exe.to_string_lossy().into_owned()),
+        ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+        // Older OpenSSH only uses SSH_ASKPASS with a DISPLAY.
+        ("DISPLAY".into(), std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into())),
+        (ASKPASS_FLAG.into(), "1".into()),
+        (ASKPASS_SECRET.into(), pw),
+    ]
+}
+
+const ASKPASS_FLAG: &str = "DEVCAT_ASKPASS";
+const ASKPASS_SECRET: &str = "DEVCAT_SSH_PASSWORD";
+
+/// DevCat started by ssh as SSH_ASKPASS: print the saved password for a password / passphrase
+/// prompt, refuse anything else (an unknown host key must be accepted in a terminal).
+/// Returns the exit code, or None when this process isn't an askpass call.
+pub fn askpass_main() -> Option<i32> {
+    std::env::var_os(ASKPASS_FLAG)?;
+    let prompt = std::env::args().nth(1).unwrap_or_default().to_lowercase();
+    match std::env::var(ASKPASS_SECRET) {
+        Ok(pw) if prompt.contains("password") || prompt.contains("passphrase") => {
+            println!("{pw}");
+            Some(0)
+        }
+        _ => Some(1),
+    }
+}
+
+/// An `ssh` running `script` (POSIX sh) on the host with `args` as $1…; stdio not set up.
+pub(crate) fn ssh_command(t: &Target, script: &str, args: &[&str]) -> tokio::process::Command {
     let mut remote = format!("sh -c {} devcat", sh_quote(script));
     for a in args {
         remote.push(' ');
         remote.push_str(&sh_path(a));
     }
     let mut cmd = tokio::process::Command::new("ssh");
-    cmd.args(ssh_args(t, false)).arg("--").arg(&t.dest).arg(remote);
-    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    cmd.args(ssh_args(t, false)).arg("--").arg(t.ssh_dest()).arg(remote);
+    cmd.envs(askpass_env(t)).kill_on_drop(true);
     #[cfg(windows)]
     {
         cmd.creation_flags(0x0800_0000); // no console window
     }
+    cmd
+}
+
+/// ssh's own failure (exit 255) as a readable error.
+pub(crate) fn connect_error(t: &Target, err: &str) -> AppError {
+    let who = t.label();
+    let hint = if err.contains("Host key verification failed") {
+        " Open a terminal on it first to check and accept its host key."
+    } else if t.session.as_ref().is_some_and(|s| s.password.is_some()) && err.contains("Permission denied") {
+        " Check the saved password, or open a terminal and log in there."
+    } else if err.contains("Permission denied") || err.contains("passphrase") {
+        " Add your key to ssh-agent (ssh-add), save a password in the session, or open a terminal here first and log in there."
+    } else {
+        ""
+    };
+    AppError::msg(format!("Couldn't connect to {who} over SSH: {err}.{hint}"))
+}
+
+/// Run `script` (POSIX sh) on the host with `args` as $1…, optional stdin. Returns stdout.
+async fn run(t: &Target, script: &str, args: &[&str], stdin: Option<&[u8]>) -> AppResult<Vec<u8>> {
+    t.check()?;
+    let mut cmd = ssh_command(t, script, args);
+    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| AppError::msg(format!("Couldn't run ssh ({e}). Install the OpenSSH client.")))?;
     if let (Some(data), Some(mut w)) = (stdin, child.stdin.take()) {
         w.write_all(data).await.map_err(|e| AppError::msg(format!("ssh: {e}")))?;
@@ -141,21 +334,16 @@ async fn run(t: &Target, script: &str, args: &[&str], stdin: Option<&[u8]>) -> A
     }
     let out = tokio::time::timeout(TIMEOUT, child.wait_with_output())
         .await
-        .map_err(|_| AppError::msg(format!("{} didn't answer in time", t.dest)))?
+        .map_err(|_| AppError::msg(format!("{} didn't answer in time", t.label())))?
         .map_err(|e| AppError::msg(format!("ssh: {e}")))?;
     if out.status.success() {
         return Ok(out.stdout);
     }
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if out.status.code() == Some(255) {
-        let hint = if err.contains("Permission denied") || err.contains("passphrase") {
-            " Add your key to ssh-agent (ssh-add), or open a terminal in this folder first and log in there."
-        } else {
-            ""
-        };
-        return Err(AppError::msg(format!("Couldn't connect to {} over SSH: {err}.{hint}", t.dest)));
+        return Err(connect_error(t, &err));
     }
-    Err(AppError::msg(if err.is_empty() { format!("Command failed on {}", t.dest) } else { err }))
+    Err(AppError::msg(if err.is_empty() { format!("Command failed on {}", t.label()) } else { err }))
 }
 
 /// Records separated by NUL; sections by a NUL-wrapped marker.
@@ -351,10 +539,110 @@ printf '%s\000' "$r"; cd "$r" && git status --porcelain=v2 --branch -z -uall"#;
     Ok(GitStatus { is_repo: true, root: Some(t.uri(&root)), branch: st.branch(), ahead: st.ahead, behind: st.behind, files: st.files })
 }
 
+// ---------- sessions ----------
+
+/// Log in to a (possibly unsaved) session: "user on host (Linux 6.8 x86_64)".
+pub async fn test_session(c: &ConnectionConfig) -> AppResult<String> {
+    let mut s = Session::from_config(c)?;
+    if s.id.is_empty() {
+        s.id = "test".into();
+    }
+    let t = Target::for_session(s, "~");
+    let out = run(&t, r#"printf '%s on %s (%s)' "$(id -un)" "$(hostname)" "$(uname -srm)""#, &[], None).await?;
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
+}
+
+// ---------- staged files (pasted images, dropped files) ----------
+
+/// On the host: `~/.cache/devcat/paste`, private, files older than a day removed. Prints the
+/// file's absolute path.
+const STAGE_SCRIPT: &str = r#"d="$HOME/.cache/devcat/paste"
+mkdir -p "$d" && chmod 700 "$d" || exit 3
+find "$d" -type f -mtime +1 -exec rm -f {} + 2>/dev/null
+f="$d/$1"; cat > "$f" && printf '%s' "$f""#;
+
+/// A file name safe for the host: letters, digits, `._-` (others → `_`), and unique.
+fn stage_name(name: &str) -> String {
+    let safe: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
+    let safe = safe.trim_start_matches('.');
+    let safe = if safe.is_empty() { "file" } else { safe };
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let rand = &uuid::Uuid::new_v4().simple().to_string()[..6];
+    format!("{stamp}-{rand}-{safe}")
+}
+
+/// Copy `bytes` to the host's paste folder; returns the path there (for typing into a terminal).
+pub async fn stage_bytes(t: &Target, name: &str, bytes: &[u8]) -> AppResult<String> {
+    let out = run(t, STAGE_SCRIPT, &[&stage_name(name)], Some(bytes)).await?;
+    let path = String::from_utf8_lossy(&out).trim().to_string();
+    if path.is_empty() {
+        return Err(AppError::msg(format!("Couldn't save the file on {}", t.label())));
+    }
+    Ok(path)
+}
+
+// ---------- file management (SFTP tab) ----------
+
+/// Create a folder (and its parents).
+pub async fn mkdir(t: &Target) -> AppResult<()> {
+    run(t, r#"mkdir -p -- "$1""#, &[&t.path], None).await.map(|_| ())
+}
+
+/// Rename / move `t.path` to `to` (an absolute path on the same host). Refuses to overwrite.
+pub async fn rename(t: &Target, to: &str) -> AppResult<()> {
+    run(t, r#"[ -e "$2" ] && { echo "$2 already exists" >&2; exit 3; }; mv -- "$1" "$2""#, &[&t.path, to], None).await.map(|_| ())
+}
+
+/// Delete files and folders (recursively).
+pub async fn remove(t: &Target, paths: &[String]) -> AppResult<()> {
+    if paths.iter().any(|p| matches!(p.trim_end_matches('/'), "" | "~" | "/" | "." | "..")) {
+        return Err(AppError::msg("Refusing to delete a root or home folder"));
+    }
+    let args: Vec<&str> = paths.iter().map(String::as_str).collect();
+    run(t, r#"rm -rf -- "$@""#, &args, None).await.map(|_| ())
+}
+
+/// One file or folder under a folder being downloaded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeItem {
+    /// Relative to the listed root's parent (`root/sub/file`).
+    pub rel: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// Everything under `t.path` (itself included), for a download: folders and regular files.
+pub async fn list_tree(t: &Target) -> AppResult<Vec<TreeItem>> {
+    let script = r#"[ -e "$1" ] || { echo "$1 doesn't exist" >&2; exit 3; }
+cd "$(dirname -- "$1")" || exit 3
+b=$(basename -- "$1")
+if find . -maxdepth 0 -printf '' >/dev/null 2>&1; then
+  find "$b" \( -type d -o -type f \) -printf '%y\t%s\t%p\000'
+else
+  find "$b" \( -type d -o -type f \) -print0 | while IFS= read -r -d '' f; do
+    if [ -d "$f" ]; then printf 'd\t0\t%s\000' "$f"; else printf 'f\t%s\t%s\000' "$(stat -f %z "$f")" "$f"; fi
+  done
+fi"#;
+    let out = run(t, script, &[&t.path], None).await?;
+    Ok(parse_tree(&out))
+}
+
+fn parse_tree(out: &[u8]) -> Vec<TreeItem> {
+    out.split(|b| *b == 0)
+        .filter_map(|rec| {
+            let s = String::from_utf8_lossy(rec);
+            let mut it = s.splitn(3, '\t');
+            let (ty, size, rel) = (it.next()?, it.next()?, it.next()?);
+            Some(TreeItem { rel: rel.to_string(), is_dir: ty == "d", size: size.parse().unwrap_or(0) })
+        })
+        .collect()
+}
+
 // ---------- terminals ----------
 
 /// `ssh` arguments for a terminal in `t.path`: a login shell, or `program args` (e.g. claude).
 /// `env` is exported first on the host; `forward` = (remote port, local port) for -R.
+/// A session's startup command runs before its login shell.
 pub fn terminal_args(t: &Target, program: Option<&str>, args: &[String], env: &[(String, String)], forward: Option<(u16, u16)>) -> Vec<String> {
     let mut inner = String::new();
     for (k, v) in env {
@@ -362,7 +650,13 @@ pub fn terminal_args(t: &Target, program: Option<&str>, args: &[String], env: &[
     }
     inner.push_str(&format!("cd {} || exit 1; ", sh_path(&t.path)));
     match program.filter(|p| !p.is_empty()) {
-        None => inner.push_str("exec \"${SHELL:-/bin/sh}\" -l"),
+        None => {
+            if let Some(cmd) = t.session.as_ref().and_then(|s| s.startup.as_deref()) {
+                inner.push_str(cmd);
+                inner.push_str("; ");
+            }
+            inner.push_str("exec \"${SHELL:-/bin/sh}\" -l")
+        }
         Some(p) => {
             inner.push_str("exec ");
             inner.push_str(&sh_quote(p));
@@ -380,7 +674,7 @@ pub fn terminal_args(t: &Target, program: Option<&str>, args: &[String], env: &[
         a.extend(["-o".into(), "ExitOnForwardFailure=no".into(), "-R".into(), format!("127.0.0.1:{rp}:127.0.0.1:{lp}")]);
     }
     a.push("--".into());
-    a.push(t.dest.clone());
+    a.push(t.ssh_dest().to_string());
     a.push(remote);
     a
 }

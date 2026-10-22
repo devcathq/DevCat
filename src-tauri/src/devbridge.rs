@@ -62,6 +62,30 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "git_discard" => out(c!(git::git_discard, "cwd", "paths", "includeStaged")),
         "git_discard_all" => out(c!(git::git_discard_all, "cwd", "includeUntracked")),
         "git_commit" => out(c!(git::git_commit, "cwd", "message", "paths")),
+        // SSH sessions, terminals, SFTP: a throwaway connection store and in-memory secrets
+        // (see `serve`); events come back through `__events`.
+        "__events" => Ok(Value::Array(std::mem::take(&mut *EVENTS.lock()))),
+        "list_connections" => out(crate::commands::connections::list_connections(crate::state::St::get()).await),
+        "get_connection" => out(crate::commands::connections::get_connection(crate::state::St::get(), arg(args, "id")?).await),
+        "save_connection" => out(crate::commands::connections::save_connection(crate::state::St::get(), arg(args, "config")?).await),
+        "delete_connection" => out(crate::commands::connections::delete_connection(crate::state::St::get(), arg(args, "id")?).await),
+        "test_connection" => out(c!(crate::commands::connections::test_connection, "config")),
+        "net_ssh_config_hosts" => out(c!(crate::network::net_ssh_config_hosts)),
+        "pty_open" => {
+            let (cwd, program, a, cols, rows): (String, Option<String>, Vec<String>, u16, u16) =
+                (arg(args, "cwd")?, arg(args, "program")?, arg(args, "args")?, arg(args, "cols")?, arg(args, "rows")?);
+            out(crate::claude::pty::open(crate::events::sink(), &cwd, program, a, vec![], cols, rows, "desktop").await)
+        }
+        "pty_write" => out(c!(crate::claude::pty::pty_write, "id", "data")),
+        "pty_resize" => out(c!(crate::claude::pty::pty_resize, "id", "cols", "rows")),
+        "pty_close" => out(c!(crate::claude::pty::pty_close, "id")),
+        "remote_paste_image" => out(c!(crate::claude::sftp::remote_paste_image, "cwd", "data", "name")),
+        "remote_stage_files" => out(c!(crate::claude::sftp::remote_stage_files, "cwd", "paths")),
+        "sftp_mkdir" => out(c!(crate::claude::sftp::sftp_mkdir, "path")),
+        "sftp_rename" => out(c!(crate::claude::sftp::sftp_rename, "path", "name")),
+        "sftp_delete" => out(c!(crate::claude::sftp::sftp_delete, "paths")),
+        "sftp_transfer" => out(c!(crate::claude::sftp::sftp_transfer, "jobId", "items")),
+        "sftp_cancel" => out(c!(crate::claude::sftp::sftp_cancel, "jobId")),
         "fs_list" => out(c!(files::fs_list, "dir", "showIgnored")),
         "remote_resolve_dir" => out(c!(crate::claude::remote::remote_resolve_dir, "uri")),
         "fs_preview" => out(c!(files::fs_preview, "path")),
@@ -104,11 +128,27 @@ fn bridge_stores() -> &'static (crate::notes::NoteStore, crate::projects::Projec
     })
 }
 
+/// Backend events since the page last asked (the browser polls `__events`).
+static EVENTS: parking_lot::Mutex<Vec<Value>> = parking_lot::Mutex::new(Vec::new());
+
 /// Serve until the process is killed.
 pub async fn serve(port: u16) -> std::io::Result<()> {
     if let Some(d) = dirs::data_dir() {
         crate::ai::init(d.join("dev.devcat.app"));
     }
+    // Connections (SSH sessions) in the throwaway folder, secrets in memory: never the real app's.
+    crate::secrets::memory_only();
+    let d = std::env::temp_dir().join(format!("devcat-bridge-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&d);
+    crate::state::init(d);
+    crate::events::add_tap(|event, payload| {
+        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done") {
+            let mut q = EVENTS.lock();
+            if q.len() < 20_000 {
+                q.push(json!({ "event": event, "payload": payload }));
+            }
+        }
+    });
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     eprintln!("devbridge listening on http://127.0.0.1:{port}");
     loop {

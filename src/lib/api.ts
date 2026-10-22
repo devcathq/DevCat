@@ -126,6 +126,20 @@ export const api = {
   /** An ssh:// folder as the host sees it (~ and symlinks resolved); fails if it isn't reachable. */
   remoteResolveDir: (uri: string) => invoke<string>("remote_resolve_dir", { uri }),
   fsPreview: (path: string) => invoke<FilePreview>("fs_preview", { path }),
+  // SSH hosts (desktop only, see CLAUDE.md)
+  /** Copy an image (base64 `data`, else the OS clipboard's) to the SSH host of `cwd`; its path
+   *  there, or null when the clipboard has no image. */
+  remotePasteImage: (cwd: string, data?: string | null, name?: string | null) =>
+    invoke<string | null>("remote_paste_image", { cwd, data: data ?? null, name: name ?? null }),
+  /** Copy local files to the SSH host of `cwd` (for typing their paths there). */
+  remoteStageFiles: (cwd: string, paths: string[]) => invoke<string[]>("remote_stage_files", { cwd, paths }),
+  sftpMkdir: (path: string) => invoke<void>("sftp_mkdir", { path }),
+  /** Returns the new path. */
+  sftpRename: (path: string, name: string) => invoke<string>("sftp_rename", { path, name }),
+  sftpDelete: (paths: string[]) => invoke<void>("sftp_delete", { paths }),
+  /** Copy files / folders between this computer and an SSH host; events "sftp-progress", "sftp-done". */
+  sftpTransfer: (jobId: string, items: { src: string; dstDir: string }[]) => invoke<void>("sftp_transfer", { jobId, items }),
+  sftpCancel: (jobId: string) => invoke<void>("sftp_cancel", { jobId }),
   /** Atomic save; returns the new version. Rejects with "CONFLICT: …" when the file changed on disk
    *  since `expectedVersion` (pass null to overwrite). lineEnding normalizes line breaks. */
   fsWriteText: (path: string, content: string, expectedVersion: string | null, lineEnding?: "lf" | "crlf" | null) =>

@@ -4,7 +4,7 @@ import { memo, type MouseEvent } from "react";
 import { KindIcon } from "../../../components/ui/KindIcon";
 import { NetBadge } from "../../network/NetBadge";
 import { isNoteNode, NodeIcon } from "./icons";
-import { bookmarkHint, type Row } from "./rows";
+import { bookmarkHint, isInfra, type Row } from "./rows";
 
 export const ROW_H = 24;
 const INDENT = 14;
@@ -120,9 +120,10 @@ export const TreeRow = memo(function TreeRow({ row, selected, focused, isOpen, c
 
   if (row.type === "conn") {
     const c = row.conn;
-    const infra = c.kind === "kubernetes" || c.kind === "rabbitmq";
+    const infra = isInfra(c);
+    const where = c.kind === "ssh" && c.user ? `${c.user}@${c.host}` : c.host;
     return (
-      <div {...common} draggable title={c.host ? `${c.name} — ${c.host}${c.port ? `:${c.port}` : ""}` : c.name}>
+      <div {...common} draggable title={c.host ? `${c.name} — ${where}${c.port ? `:${c.port}` : ""}` : c.name}>
         {c.color && <span className="absolute inset-y-0.5 left-0 w-[3px] rounded-r" style={{ background: c.color }} />}
         <Chevron expanded={row.expanded} visible={!infra} loading={connecting} onClick={() => onToggle(row)} />
         <span className="relative shrink-0">

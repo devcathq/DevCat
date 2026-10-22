@@ -13,6 +13,8 @@ pub enum ConnectionKind {
     Redis,
     Kubernetes,
     Rabbitmq,
+    /// A saved SSH login (Xshell-style session): terminal, SFTP, agents on the host. Desktop only.
+    Ssh,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -70,6 +72,7 @@ pub struct ConnectionConfig {
     #[serde(default)]
     pub project_id: Option<String>,
     /// Driver specific options. Kubernetes: "context". RabbitMQ: "managementPort", "useTls".
+    /// SSH: "keyPath", "jump", "startDir", "startup".
     #[serde(default)]
     pub options: HashMap<String, String>,
     #[serde(default)]

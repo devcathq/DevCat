@@ -18,6 +18,8 @@ import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
 import { IS_MAC, terminalEditKey } from "../../lib/terminalKeys";
 import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
+import { isRemote, remoteHost } from "../../lib/remotePath";
+import { toast } from "sonner";
 
 
 const CODE_EXT = new Set(("ts tsx js jsx mjs cjs json md mdx css scss html rs go py rb java kt swift c h cpp hpp cs php sh zsh bash yml yaml toml " +
@@ -103,6 +105,13 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       // ⌘/Ctrl + = / - / 0: terminal font size (every terminal; same setting as Appearance → Fonts).
       if (terminalZoomKey(e)) return false;
       if (terminalEditKey(term, e)) return false;
+      // Ctrl+V / Alt+V on an SSH host: the image paste keys of Claude Code and friends. The host
+      // can't see this computer's clipboard, so copy the image there and type its path instead.
+      if (isRemote(cb.current.cwd) && e.code === "KeyV" && !e.metaKey && !e.shiftKey && e.ctrlKey !== e.altKey) {
+        e.preventDefault();
+        void pasteRemoteImage(null, e.ctrlKey ? "\x16" : "\x1bv");
+        return false;
+      }
       // Shift+Enter → newline in claude's prompt (same as iTerm2 after /terminal-setup).
       if (shiftEnterNewline && e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
@@ -113,6 +122,18 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       if (IS_MAC && e.metaKey) return false;
       return true;
     });
+
+    // ⌘V / Ctrl+Shift+V with only an image on the clipboard, on an SSH host: same as above.
+    const onPaste = (e: ClipboardEvent) => {
+      if (!isRemote(cb.current.cwd) || !e.clipboardData || e.clipboardData.types.includes("text/plain")) return;
+      const img = [...e.clipboardData.files].find((f) => f.type.startsWith("image/"));
+      if (!img) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void fileToBase64(img).then((data) => pasteRemoteImage({ data, name: img.name || "pasted.png" }, null));
+    };
+    const hostEl = host.current!;
+    hostEl.addEventListener("paste", onPaste, true);
 
     // File paths (src/foo.ts:12) → file preview tab.
     const links = term.registerLinkProvider({
@@ -162,6 +183,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     ro.observe(host.current!);
     return () => {
       ro.disconnect();
+      hostEl.removeEventListener("paste", onPaste, true);
       links.dispose();
       input.dispose();
       title.dispose();
@@ -245,8 +267,25 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     });
   }, [visible]);
 
+  /** Copy an image to the SSH host and type its path; without one, send `fallback` (the key as
+   *  typed). `img` null = the OS clipboard's image. */
+  const pasteRemoteImage = async (img: { data: string; name: string } | null, fallback: string | null) => {
+    const id = ptyRef.current;
+    if (!id) return;
+    const t = img ? toast.loading(`Copying the image to ${remoteHost(cb.current.cwd)}…`) : null;
+    try {
+      const path = await api.remotePasteImage(cb.current.cwd, img?.data, img?.name);
+      if (path) await api.ptyWrite(id, shellQuote(path) + " ");
+      else if (fallback) await api.ptyWrite(id, fallback);
+    } catch (err) {
+      toast.error(`Couldn't paste the image: ${errMsg(err)}`);
+    } finally {
+      if (t !== null) toast.dismiss(t);
+    }
+  };
+
   // Drop files on the terminal to type their paths (like iTerm2 / Windows Terminal): Claude Code
-  // and other CLIs then read them, images included.
+  // and other CLIs then read them, images included. On an SSH host they're copied there first.
   const [dropping, setDropping] = useState(false);
   const onDrop = async (e: React.DragEvent) => {
     if (!isFileDrag(e.dataTransfer)) return;
@@ -255,7 +294,11 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     const id = ptyRef.current;
     if (!id) return;
     try {
-      const paths = await droppedPaths(e.dataTransfer, "terminal");
+      let paths = await droppedPaths(e.dataTransfer, "terminal");
+      if (paths.length && isRemote(cb.current.cwd)) {
+        const t = toast.loading(`Copying to ${remoteHost(cb.current.cwd)}…`);
+        try { paths = await api.remoteStageFiles(cb.current.cwd, paths); } finally { toast.dismiss(t); }
+      }
       if (paths.length) await api.ptyWrite(id, paths.map(shellQuote).join(" ") + " ");
       termRef.current?.term.focus();
     } catch (err) {
@@ -271,11 +314,20 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       <div ref={host} className="h-full w-full" />
       {dropping && (
         <div className="pointer-events-none absolute inset-2 flex items-center justify-center rounded-lg border-2 border-dashed border-accent/60 bg-app/70 text-[13px] text-fg">
-          Drop to type the file's path into the terminal
+          {isRemote(cwd) ? `Drop to copy the files to ${remoteHost(cwd)} and type their paths` : "Drop to type the file's path into the terminal"}
         </div>
       )}
     </div>
   );
+}
+
+function fileToBase64(f: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ""));
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(f);
+  });
 }
 
 function useNonce(): [number, () => void] {

@@ -94,6 +94,10 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             let rows: u16 = arg(args, "rows").unwrap_or(30);
             let provider: Option<String> = arg(args, "providerId").unwrap_or(None);
             let cwd = expand_home(&cwd);
+            // Saved SSH sessions stay on the computer (their password is typed for them): CLAUDE.md.
+            if cwd.starts_with(&format!("{}{}", crate::claude::remote::SCHEME, crate::claude::remote::SESSION_PREFIX)) {
+                return Err(json!("SSH sessions open from DevCat on your computer only."));
+            }
             let (program, args_, env) = match provider.filter(|p| !p.is_empty()) {
                 Some(pid) => {
                     let l = crate::ai::launch(&pid, args_).await.map_err(|e| json!(e.to_string()))?;
@@ -181,7 +185,12 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "keep_awake_set" => out(crate::keep_awake::keep_awake_set(a!("on"), arg(args, "minutes").unwrap_or(None)).await),
 
         // ------------------------------------------------ connections & databases
-        "list_connections" => out(commands::connections::list_connections(st()).await),
+        // Without SSH sessions: desktop only (CLAUDE.md), and the app doesn't know the kind.
+        "list_connections" => out(
+            commands::connections::list_connections(st())
+                .await
+                .map(|l| l.into_iter().filter(|c| c.kind != crate::models::ConnectionKind::Ssh).collect::<Vec<_>>()),
+        ),
         "list_projects" => out(commands::projects::list_projects(st()).await),
         "open_connection_ids" => out(commands::connections::open_connection_ids(st()).await),
         "close_connection" => out(commands::connections::close_connection(st(), a!("id")).await),

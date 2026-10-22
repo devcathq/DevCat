@@ -31,7 +31,23 @@ const handlers = new Map<string, Set<Handler>>();
 function emitLocal(event: string, payload: unknown) {
   handlers.get(event)?.forEach((h) => h({ event, payload }));
 }
+// Backend events (terminal output, SFTP progress) queued by the devbridge, fetched ~10×/s.
+let polling = false;
+function pollEvents() {
+  if (polling || DEMO) return;
+  polling = true;
+  const tick = async () => {
+    try {
+      const evs = await invoke<{ event: string; payload: unknown }[]>("__events");
+      (evs ?? []).forEach((e) => emitLocal(e.event, e.payload));
+    } catch { /* bridge not running */ }
+    setTimeout(tick, 100);
+  };
+  void tick();
+}
+
 export async function listen(event: string, h: Handler): Promise<UnlistenFn> {
+  if (/^(pty|sftp)-/.test(event)) pollEvents();
   const set = handlers.get(event) ?? new Set<Handler>();
   set.add(h);
   handlers.set(event, set);

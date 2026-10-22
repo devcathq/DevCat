@@ -36,6 +36,7 @@ import { isRemote } from "../../lib/remotePath";
 import AgentChat from "../agent/AgentChat";
 import { closeChat, send as sendToChat, useAgent } from "../agent/store";
 import { openTerminal } from "../terminal/open";
+import { QuickBar } from "../terminal/QuickBar";
 
 type ClaudeTabT = Extract<Tab, { type: "claude" }>;
 
@@ -195,20 +196,26 @@ function SessionChip({ tabId }: { tabId: string }) {
 function ChatPane({ tabId, cwd, visible, provider }: { tabId: string; cwd: string; visible: boolean; provider: AiProvider }) {
   const isClaude = provider.kind === "claude";
   const startSeq = useClaude((s) => s.tabs[tabId]?.startSeq ?? 0);
+  const ptyId = useClaude((s) => s.tabs[tabId]?.ptyId ?? null);
   return (
-    <TerminalPane
-      cwd={cwd}
-      program="claude"
-      providerId={provider.id}
-      name={isClaude ? "claude" : provider.name}
-      startKey={startSeq}
-      visible={visible}
-      shiftEnterNewline={isClaude}
-      activityId={tabId}
-      getArgs={() => claudeLaunchArgs(tabId)}
-      beforeRestart={async () => { await detectSession(tabId); }}
-      onPty={(id) => setPty(tabId, id)}
-    />
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1">
+        <TerminalPane
+          cwd={cwd}
+          program="claude"
+          providerId={provider.id}
+          name={isClaude ? "claude" : provider.name}
+          startKey={startSeq}
+          visible={visible}
+          shiftEnterNewline={isClaude}
+          activityId={tabId}
+          getArgs={() => claudeLaunchArgs(tabId)}
+          beforeRestart={async () => { await detectSession(tabId); }}
+          onPty={(id) => setPty(tabId, id)}
+        />
+      </div>
+      <QuickBar ptyId={ptyId} cwd={cwd} />
+    </div>
   );
 }
 
