@@ -51,13 +51,13 @@ Grab the latest installer for macOS, Windows or Linux from the
 ```sh
 # The app
 brew install --cask devileya/devcat/devcat                                     # macOS (Homebrew)
-curl -fsSL https://devileya.github.io/DevCat/install.sh | sh -s -- --app       # macOS, Linux (AppImage)
-& ([scriptblock]::Create((irm https://devileya.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
+curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh -s -- --app       # macOS, Linux (AppImage)
+& ([scriptblock]::Create((irm https://devcathq.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
 
 # Only the CLI (`devcat serve`, no window: servers, SSH; see below)
 brew install devileya/devcat/devcat-cli                                        # macOS, Linux (Homebrew)
-curl -fsSL https://devileya.github.io/DevCat/install.sh | sh                   # macOS, Linux → ~/.local/bin
-irm https://devileya.github.io/DevCat/install.ps1 | iex                        # Windows (PowerShell)
+curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh                   # macOS, Linux → ~/.local/bin
+irm https://devcathq.github.io/DevCat/install.ps1 | iex                        # Windows (PowerShell)
 ```
 
 The script checks the download's SHA-256 and installs for your user only (no `sudo`); `--version v0.7.0`
