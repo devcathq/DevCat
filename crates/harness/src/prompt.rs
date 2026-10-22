@@ -42,6 +42,7 @@ const WORKING: &str = "\
 - If a tool call is refused, don't retry the same call; ask the user or try another way.
 - For work with several steps, keep a checklist with `todo_write` and update it as you go.
 - Use `web_fetch` to read documentation, issues or pages the user links to. Never put secrets or project contents in a URL.
+- If you have `devcat_connections`, the user's databases and clusters are open to you: check a schema with `db_schema` before writing a query, read with `db_query`, `k8s_get` and `k8s_logs`. Keep queries small (LIMIT, few columns), and don't change data unless the user asked for it.
 - When a decision belongs to the user (which option, naming, scope, anything destructive or hard to undo), ask with `ask_user` and offer short options. Don't ask about things you can find out yourself.
 - Keep answers short. Say what you changed and what's left; don't repeat file contents.
 

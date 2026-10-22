@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, Layers, Globe, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, FilePlus, FileText, FolderSearch, GitCompare, Search, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square,
+  ArrowUp, Ban, BookOpen, Layers, Database, Boxes, ScrollText, Globe, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, FilePlus, FileText, FolderSearch, GitCompare, Search, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square,
   SquareTerminal, Wrench, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -56,6 +56,11 @@ function describe(name: string, input: Record<string, unknown> | null, status: T
     case "shell": return { icon: SquareTerminal, verb: done ? "Ran" : "Running", target: str(i.command) };
     case "ask_user": return { icon: MessageCircleQuestion, verb: done ? "Asked" : "Asking", target: str(i.question) };
     case "web_fetch": return { icon: Globe, verb: done ? "Fetched" : "Fetching", target: str(i.url) };
+    case "devcat_connections": return { icon: Database, verb: done ? "Listed connections" : "Listing connections", target: "" };
+    case "db_schema": return { icon: Database, verb: done ? "Read the schema of" : "Reading the schema of", target: [str(i.connection), str(i.table)].filter(Boolean).join(" · ") };
+    case "db_query": return { icon: Database, verb: done ? "Queried" : "Querying", target: `${str(i.connection)}: ${str(i.query).replace(/\s+/g, " ")}` };
+    case "k8s_get": return { icon: Boxes, verb: done ? "Got" : "Getting", target: `${str(i.connection)}: ${[str(i.kind), str(i.name)].filter(Boolean).join(" ")}${i.namespace ? ` -n ${str(i.namespace)}` : ""}` };
+    case "k8s_logs": return { icon: ScrollText, verb: done ? "Read logs of" : "Reading logs of", target: `${str(i.connection)}: ${str(i.namespace)}/${str(i.pod)}` };
     case "todo_write": {
       const todos = todoList(i);
       return { icon: ListTodo, verb: "Updated the plan", target: todos.length ? `${todos.filter((t) => t.status === "completed").length}/${todos.length} done` : "" };
@@ -232,7 +237,7 @@ function toBlocks(items: Item[]): Block[] {
 /** "read 6 files · 14 searches · ran 3 commands · 2 failed" for a group of steps. */
 function summarize(items: Item[]) {
   const reads = new Set<string>(), edits = new Set<string>();
-  let searches = 0, commands = 0, tools = 0, fetches = 0, failed = 0, thinkingMs = 0;
+  let searches = 0, commands = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0;
   for (const it of items) {
     if (it.kind === "answer") thinkingMs += it.thinkingMs ?? 0;
     if (it.kind !== "tool") continue;
@@ -243,6 +248,8 @@ function summarize(items: Item[]) {
     else if (it.name === "glob" || it.name === "grep") searches++;
     else if (it.name === "shell") commands++;
     else if (it.name === "web_fetch") fetches++;
+    else if (it.name === "db_query" || it.name === "db_schema" || it.name === "k8s_get" || it.name === "k8s_logs") queries++;
+    else if (it.name === "devcat_connections") continue;
     else if (it.name !== "todo_write") tools++;
   }
   const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
@@ -252,10 +259,11 @@ function summarize(items: Item[]) {
     searches && n(searches, "search", "searches"),
     commands && `ran ${n(commands, "command")}`,
     fetches && `fetched ${n(fetches, "page")}`,
+    queries && n(queries, "query", "queries"),
     tools && `used ${n(tools, "tool")}`,
   ].filter(Boolean) as string[];
   if (!parts.length && thinkingMs) parts.push(`thought for ${fmtDuration(thinkingMs)}`);
-  return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools };
+  return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools && !queries };
 }
 
 /** A run of steps folded into one line; the step in progress shows under it while it runs. */
@@ -329,6 +337,7 @@ function ContextLine({ tabId }: { tabId: string }) {
   if (ctx.rules.length) parts.push(<span key="r" title={ctx.rules.join("\n")} className="flex items-center gap-1"><BookOpen className="size-3" />{ctx.rules.length === 1 ? ctx.rules[0] : `${ctx.rules.length} rule files`}</span>);
   if (ctx.skills.length) parts.push(<span key="s" title={ctx.skills.join("\n")}>{ctx.skills.length} skill{ctx.skills.length === 1 ? "" : "s"}</span>);
   for (const m of ctx.mcp) parts.push(<span key={`m${m.name}`} className="flex items-center gap-1"><Plug className="size-3" />{m.name} ({m.tools} tool{m.tools === 1 ? "" : "s"})</span>);
+  if (ctx.connections?.length) parts.push(<span key="c" title={ctx.connections.join("\n")} className="flex items-center gap-1"><Database className="size-3" />{ctx.connections.length} DevCat connection{ctx.connections.length === 1 ? "" : "s"}</span>);
   if (ctx.mcpLoading) parts.push(<span key="ml" className="flex items-center gap-1"><Spinner className="size-3" />connecting MCP servers…</span>);
   return (
     <div className="flex flex-col items-center gap-1 text-[11.5px] text-faint">
@@ -448,7 +457,9 @@ function Diff({ before, after, max = 200 }: { before: string; after: string; max
 function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
   const req = item.request!;
   const i = item.input ?? {};
-  const title = req.kind === "exec" ? "Run this command?" : req.kind === "fetch" ? "Fetch this page?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+  const title = item.name === "db_query" ? (req.kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`)
+    : req.kind === "query" ? `Read from ${str(i.connection)}?`
+    : req.kind === "exec" ? "Run this command?" : req.kind === "fetch" ? "Fetch this page?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
   const deny = () => void answer(tabId, item.id, { decision: "deny" });
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); deny(); }
@@ -457,13 +468,14 @@ function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
     <div onKeyDown={onKey} className="rounded-lg border border-accent/40 bg-accent/5 p-3">
       <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-fg"><ShieldAlert className="size-4 text-accent" />{title}</div>
       {item.name === "shell" && <Code>{str(i.command)}</Code>}
+      {item.name === "db_query" && <Code>{str(i.query)}</Code>}
       {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
-      {!["shell", "edit", "write"].includes(item.name) && <Code>{req.summary}</Code>}
+      {!["shell", "edit", "write", "db_query"].includes(item.name) && <Code>{req.summary}</Code>}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <Button autoFocus size="sm" variant="primary" onClick={() => void answer(tabId, item.id, { decision: "allow" })}>Allow <kbd className="ml-1 opacity-60">↵</kbd></Button>
         <Button size="sm" onClick={() => void answer(tabId, item.id, { decision: "allow-for-session" })}>
-          Always allow {item.name === "shell" ? "commands" : item.name === "web_fetch" ? "fetching pages" : item.name.startsWith("mcp__") ? "this tool" : "edits"} in this chat
+          Always allow {item.name === "shell" ? "commands" : item.name === "web_fetch" ? "fetching pages" : item.name === "db_query" ? "queries" : item.name.startsWith("k8s_") ? "cluster reads" : item.name.startsWith("mcp__") ? "this tool" : "edits"} in this chat
         </Button>
         <Button size="sm" variant="ghost" onClick={deny}>Deny <kbd className="ml-1 opacity-60">Esc</kbd></Button>
       </div>
@@ -646,6 +658,7 @@ function ContextMeter({ tabId, models }: { tabId: string; models: AgentModel[] }
               <Row label="From cache">{fmtTokens(u.cache_read_tokens)} ({rate}%)</Row>
               <Row label="Rules">{ctx?.rules.length ? <span title={ctx.rules.join("\n")}>{ctx.rules.length} file{ctx.rules.length === 1 ? "" : "s"}</span> : "none"}</Row>
               <Row label="Skills">{ctx?.skills.length ? <span title={ctx.skills.join("\n")}>{ctx.skills.length}</span> : "none"}</Row>
+              <Row label="Connections">{ctx?.connections?.length ? <span title={ctx.connections.join("\n")}>{ctx.connections.length}</span> : "none"}</Row>
               <Row label="MCP">{ctx?.mcpLoading ? "connecting…" : ctx?.mcp.length ? <span title={ctx.mcp.map((m) => `${m.name}: ${m.tools} tools`).join("\n")}>{ctx.mcp.length} server{ctx.mcp.length === 1 ? "" : "s"} · {mcpTools} tools</span> : "none"}</Row>
             </div>
           </div>

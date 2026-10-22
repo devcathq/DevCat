@@ -64,6 +64,11 @@ impl St {
     pub fn get() -> Self {
         St(STATE.get().expect("app state not initialized"))
     }
+
+    /// The app state, or None before startup created it.
+    pub fn try_get() -> Option<Self> {
+        STATE.get().map(St)
+    }
 }
 
 impl std::ops::Deref for St {

@@ -31,11 +31,14 @@ pub enum Kind {
     Exec,
     /// Reads a URL. Asks like a command: the URL itself can carry data out of the project.
     Fetch,
+    /// Reads data from one of the user's connections (database rows, Redis keys, cluster objects,
+    /// logs). Asks in `Ask` only: the data goes to the model's provider.
+    Query,
 }
 
 impl Policy {
     pub fn needs_approval(self, kind: Kind) -> bool {
-        !matches!((self, kind), (_, Kind::Read) | (Policy::Bypass, _) | (Policy::AutoEdit, Kind::Edit))
+        !matches!((self, kind), (_, Kind::Read) | (Policy::Bypass, _) | (Policy::AutoEdit, Kind::Edit | Kind::Query))
     }
 }
 
@@ -96,9 +99,9 @@ mod tests {
     #[test]
     fn policy_table() {
         use Kind::*;
-        let row = |p: Policy| [Read, Edit, EditOutside, Exec, Fetch].map(|k| p.needs_approval(k));
-        assert_eq!(row(Policy::Ask), [false, true, true, true, true]);
-        assert_eq!(row(Policy::AutoEdit), [false, false, true, true, true]);
-        assert_eq!(row(Policy::Bypass), [false, false, false, false, false]);
+        let row = |p: Policy| [Read, Edit, EditOutside, Exec, Fetch, Query].map(|k| p.needs_approval(k));
+        assert_eq!(row(Policy::Ask), [false, true, true, true, true, true]);
+        assert_eq!(row(Policy::AutoEdit), [false, false, true, true, true, false]);
+        assert_eq!(row(Policy::Bypass), [false, false, false, false, false, false]);
     }
 }

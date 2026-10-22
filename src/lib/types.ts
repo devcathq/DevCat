@@ -432,10 +432,10 @@ export type AgentSessionEvent =
   | { event: "interrupted"; reason: string }
   | { event: "title"; title: string }
   | { event: "compacted"; summary: string; model: string; usage: AgentUsage; tokens_before: number };
-export interface AgentContext { rules: string[]; skills: string[]; mcp: { name: string; tools: number }[]; notices: string[]; mcpLoading: boolean }
+export interface AgentContext { rules: string[]; skills: string[]; mcp: { name: string; tools: number }[]; notices: string[]; mcpLoading: boolean; connections?: string[] }
 export interface AgentOpened { sessionId: string; title: string; model: string; providerName: string; busy: boolean; events: AgentSessionEvent[]; usage: AgentUsage; context: AgentContext }
 export interface AgentQuestion { toolUseId: string; question: string; options: string[] }
-export interface AgentApprovalRequest { toolUseId: string; tool: string; kind: "read" | "edit" | "edit-outside" | "exec" | "fetch"; summary: string; input: Record<string, unknown> }
+export interface AgentApprovalRequest { toolUseId: string; tool: string; kind: "read" | "edit" | "edit-outside" | "exec" | "fetch" | "query"; summary: string; input: Record<string, unknown> }
 /** Payload of `agent-event`. */
 export type AgentLiveEvent =
   | { type: "turnStart"; text: string; attachments?: string[] }

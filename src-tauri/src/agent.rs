@@ -55,6 +55,8 @@ pub struct AgentContext {
     pub notices: Vec<String>,
     /// MCP servers are still starting (their tools come when they're ready).
     pub mcp_loading: bool,
+    /// DevCat connections the agent can use (names).
+    pub connections: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -143,7 +145,11 @@ async fn build(cwd: &str, provider_id: &str, session: Session) -> AppResult<Arc<
     context.skills = skills(dir, home.as_deref()).into_iter().map(|s| s.name).collect();
     let configured = !devcat_harness::mcp::configured(dir, home.as_deref()).0.is_empty();
     context.mcp_loading = configured;
-    let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), Registry::standard(), Policy::Ask, approver.clone(), system);
+    // the user's DevCat connections: databases, Redis, MongoDB, clusters
+    let mut tools = Registry::standard();
+    crate::agent_tools::add(&mut tools);
+    context.connections = crate::agent_tools::names();
+    let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
     let run = Arc::new(Run {
         id,
         cfg,
