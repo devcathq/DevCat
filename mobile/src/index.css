@@ -20,6 +20,7 @@
 }
 
 html, body, #root { height: 100%; }
+#root { height: var(--app-h, 100%); }
 body {
   margin: 0;
   background: var(--color-app);
