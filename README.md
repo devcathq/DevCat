@@ -345,6 +345,11 @@ run that workflow by hand to get the APK. The install scripts
 ([devileya/homebrew-devcat](https://github.com/devileya/homebrew-devcat), source in `packaging/homebrew-tap/`)
 picks up each release by itself within the hour.
 
+**Releasing:** in `CHANGELOG.md`, rename *Unreleased* to the new version and date. Then set the version in
+`package.json`, `src-tauri/tauri.conf.json` and `mobile/src-tauri/tauri.conf.json`, merge, and push the `vX.Y.Z` tag.
+The release notes, and the "new version" dialog in the app, show that version's changelog section
+(`scripts/release-notes.sh`; without a section, the list of merged pull requests).
+
 macOS release builds are signed with DevCat's self-signed certificate (`.github/devcat-codesign.crt`, so the Keychain
 remembers "Always Allow" across updates; CI needs the `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` secrets, else it falls
 back to ad-hoc signing) but not notarized, so allow DevCat once via *System Settings → Privacy & Security →
