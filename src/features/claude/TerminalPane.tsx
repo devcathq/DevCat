@@ -59,6 +59,8 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
   useEffect(() => () => activity.current?.dispose(), []);
   /** The next start was requested with Enter after an exit. */
   const enterRestart = useRef(false);
+  /** Keys typed while a paste on an SSH host is being decided: sent after it, in order. */
+  const heldInput = useRef<string[] | null>(null);
   const [restartNonce, setRestartNonce] = useNonce();
   // Latest callbacks without re-running effects.
   const cb = useRef({ getArgs, onPty, beforeRestart, cwd });
@@ -169,6 +171,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
         }
         return;
       }
+      if (heldInput.current) return void heldInput.current.push(d);
       if (ptyRef.current) void api.ptyWrite(ptyRef.current, d).catch(() => {});
     });
     const resize = term.onResize(({ cols, rows }) => {
@@ -273,14 +276,19 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     const id = ptyRef.current;
     if (!id) return;
     const t = img ? toast.loading(`Copying the image to ${remoteHost(cb.current.cwd)}…`) : null;
+    heldInput.current ??= [];
     try {
       const path = await api.remotePasteImage(cb.current.cwd, img?.data, img?.name);
       if (path) await api.ptyWrite(id, shellQuote(path) + " ");
       else if (fallback) await api.ptyWrite(id, fallback);
     } catch (err) {
       toast.error(`Couldn't paste the image: ${errMsg(err)}`);
+      if (fallback) await api.ptyWrite(id, fallback).catch(() => {});
     } finally {
       if (t !== null) toast.dismiss(t);
+      const held = heldInput.current?.join("") ?? "";
+      heldInput.current = null;
+      if (held) await api.ptyWrite(id, held).catch(() => {});
     }
   };
 

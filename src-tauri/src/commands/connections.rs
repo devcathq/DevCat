@@ -20,6 +20,10 @@ pub async fn save_connection(state: St, config: ConnectionConfig) -> AppResult<C
         d.close().await;
     }
     drop_infra_clients(&config.id).await;
+    // An SSH session that can't be used shouldn't save (its folders would just fail later).
+    if config.kind == crate::models::ConnectionKind::Ssh {
+        crate::claude::remote::Session::from_config(&config)?;
+    }
     let mut config = config;
     config.group = None;
     if let Some(pid) = &config.project_id {

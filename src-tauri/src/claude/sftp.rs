@@ -316,11 +316,11 @@ async fn run_job(job: &str, items: &[TransferItem], cancel: &AtomicBool) -> AppR
     for it in items {
         match (Target::parse(&it.src), Target::parse(&it.dst_dir)) {
             (None, Some(dst)) => {
-                dst.check()?;
+                dst.ready().await?;
                 plans.push((dst.clone(), true, plan_upload(Path::new(&it.src), &dst.path)?));
             }
             (Some(src), None) => {
-                src.check()?;
+                src.ready().await?;
                 let tree = remote::list_tree(&src).await?;
                 plans.push((src, false, plan_download(&tree, &parent_of_remote(&it.src), Path::new(&it.dst_dir))));
             }
@@ -422,7 +422,8 @@ fn plan_download(tree: &[remote::TreeItem], remote_parent: &str, dst_dir: &Path)
 }
 
 async fn remote_mkdirs(t: &Target, dirs: &[&str]) -> AppResult<()> {
-    let out = remote::ssh_command(t, r#"mkdir -p -- "$@""#, dirs).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().await?;
+    let (mut cmd, _askpass) = remote::ssh_command(t, r#"mkdir -p -- "$@""#, dirs);
+    let out = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().await?;
     check_exit(t, out.status, &out.stderr)
 }
 
@@ -439,7 +440,8 @@ fn check_exit(t: &Target, status: std::process::ExitStatus, stderr: &[u8]) -> Ap
 
 async fn upload_file(t: &Target, src: &Path, dst: &str, p: &mut Progress<'_>, cancel: &AtomicBool) -> AppResult<()> {
     let mut file = tokio::fs::File::open(src).await.map_err(|e| AppError::msg(format!("{}: {e}", src.display())))?;
-    let mut child = remote::ssh_command(t, r#"cat > "$1""#, &[dst])
+    let (mut cmd, _askpass) = remote::ssh_command(t, r#"cat > "$1""#, &[dst]);
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -474,12 +476,16 @@ async fn upload_file(t: &Target, src: &Path, dst: &str, p: &mut Progress<'_>, ca
     }
     let status = child.wait().await?;
     let stderr = err_task.await.unwrap_or_default();
-    copied?;
-    check_exit(t, status, &stderr)
+    // ssh failing (host key, password…) also breaks the pipe: its own message says why.
+    if copied.is_ok() || (!status.success() && !cancel.load(Ordering::Relaxed)) {
+        check_exit(t, status, &stderr)?;
+    }
+    copied
 }
 
 async fn download_file(t: &Target, src: &str, dst: &Path, p: &mut Progress<'_>, cancel: &AtomicBool) -> AppResult<()> {
-    let mut child = remote::ssh_command(t, r#"cat -- "$1""#, &[src])
+    let (mut cmd, _askpass) = remote::ssh_command(t, r#"cat -- "$1""#, &[src]);
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -516,8 +522,11 @@ async fn download_file(t: &Target, src: &str, dst: &Path, p: &mut Progress<'_>, 
     }
     let status = child.wait().await?;
     let stderr = err_task.await.unwrap_or_default();
-    copied?;
-    check_exit(t, status, &stderr)
+    // ssh failing (host key, password…) also breaks the pipe: its own message says why.
+    if copied.is_ok() || (!status.success() && !cancel.load(Ordering::Relaxed)) {
+        check_exit(t, status, &stderr)?;
+    }
+    copied
 }
 
 #[cfg(test)]

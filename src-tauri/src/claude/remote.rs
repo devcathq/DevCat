@@ -70,7 +70,8 @@ impl Session {
         if user.as_deref().is_some_and(|u| u.starts_with('-') || u.contains(char::is_whitespace)) {
             return Err(AppError::msg("The SSH user can't start with - or contain spaces"));
         }
-        let jump = opt(c, "jump");
+        // "a, b" → "a,b" (the hint says comma-separated; ssh wants no spaces).
+        let jump = opt(c, "jump").map(|j| j.split(',').map(str::trim).filter(|h| !h.is_empty()).collect::<Vec<_>>().join(","));
         if jump.as_deref().is_some_and(|j| j.starts_with('-') || j.contains(char::is_whitespace)) {
             return Err(AppError::msg("The jump host can't start with - or contain spaces"));
         }
@@ -80,7 +81,7 @@ impl Session {
             host: host.to_string(),
             user,
             port: c.port.filter(|p| *p != 0),
-            key_path: opt(c, "keyPath").map(|k| expand_local_home(&k)),
+            key_path: opt(c, "keyPath").map(|k| crate::db::ssh::expand_home(&k).to_string_lossy().into_owned()),
             jump,
             start_dir: opt(c, "startDir"),
             startup: opt(c, "startup"),
@@ -97,14 +98,6 @@ impl Session {
         Session::from_config(&c).ok()
     }
 
-}
-
-/// `~/.ssh/id` → `/Users/me/.ssh/id` (ssh expands `~` itself, but only unquoted in a shell).
-fn expand_local_home(p: &str) -> String {
-    match (p.strip_prefix("~/"), dirs::home_dir()) {
-        (Some(rest), Some(h)) => h.join(rest).to_string_lossy().into_owned(),
-        _ => p.to_string(),
-    }
 }
 
 /// A folder or file on an SSH host.
@@ -172,6 +165,15 @@ impl Target {
     pub fn check(&self) -> AppResult<()> {
         if self.is_session() && self.session.is_none() {
             return Err(AppError::msg("This SSH session was deleted. Open it again from the sidebar."));
+        }
+        Ok(())
+    }
+
+    /// `check`, then connect the session's VPN / tunnel (if it has one) and wait for it.
+    pub async fn ready(&self) -> AppResult<()> {
+        self.check()?;
+        if let Some(net) = self.session.as_ref().and_then(|s| s.network_id.as_deref()) {
+            crate::network::ensure(net).await?;
         }
         Ok(())
     }
@@ -257,31 +259,54 @@ pub fn ssh_args(t: &Target, interactive: bool) -> Vec<String> {
     a
 }
 
-/// Env for an `ssh` that answers a saved password through DevCat (see `askpass_main`).
-pub fn askpass_env(t: &Target) -> Vec<(String, String)> {
+/// The saved password for one `ssh` run, in a private file DevCat-as-askpass reads (see
+/// `askpass_main`). Deleted when dropped: a master connection that outlives the command keeps
+/// only the file's (dead) path in its environment, never the password.
+#[derive(Default)]
+pub struct Askpass(Option<std::path::PathBuf>);
+
+impl Drop for Askpass {
+    fn drop(&mut self) {
+        if let Some(p) = self.0.take() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// Env for an `ssh` that answers a saved password through DevCat; keep the guard until it exits.
+pub fn askpass_env(t: &Target) -> (Vec<(String, String)>, Askpass) {
     let (Some(pw), Ok(exe)) = (t.session.as_ref().and_then(|s| s.password.clone()), std::env::current_exe()) else {
-        return vec![];
+        return (vec![], Askpass::default());
     };
-    vec![
+    let dir = if cfg!(unix) { control_dir() } else { std::env::temp_dir().join("devcat-ssh") };
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join(format!("pw-{}", uuid::Uuid::new_v4().simple()));
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    if o.open(&file).and_then(|mut f| std::io::Write::write_all(&mut f, pw.as_bytes())).is_err() {
+        return (vec![], Askpass::default());
+    }
+    let env = vec![
         ("SSH_ASKPASS".into(), exe.to_string_lossy().into_owned()),
         ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
         // Older OpenSSH only uses SSH_ASKPASS with a DISPLAY.
         ("DISPLAY".into(), std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into())),
-        (ASKPASS_FLAG.into(), "1".into()),
-        (ASKPASS_SECRET.into(), pw),
-    ]
+        (ASKPASS_FILE.into(), file.to_string_lossy().into_owned()),
+    ];
+    (env, Askpass(Some(file)))
 }
 
-const ASKPASS_FLAG: &str = "DEVCAT_ASKPASS";
-const ASKPASS_SECRET: &str = "DEVCAT_SSH_PASSWORD";
+const ASKPASS_FILE: &str = "DEVCAT_ASKPASS_FILE";
 
 /// DevCat started by ssh as SSH_ASKPASS: print the saved password for a password / passphrase
 /// prompt, refuse anything else (an unknown host key must be accepted in a terminal).
 /// Returns the exit code, or None when this process isn't an askpass call.
 pub fn askpass_main() -> Option<i32> {
-    std::env::var_os(ASKPASS_FLAG)?;
+    let file = std::env::var_os(ASKPASS_FILE)?;
     let prompt = std::env::args().nth(1).unwrap_or_default().to_lowercase();
-    match std::env::var(ASKPASS_SECRET) {
+    match std::fs::read_to_string(file) {
         Ok(pw) if prompt.contains("password") || prompt.contains("passphrase") => {
             println!("{pw}");
             Some(0)
@@ -291,20 +316,22 @@ pub fn askpass_main() -> Option<i32> {
 }
 
 /// An `ssh` running `script` (POSIX sh) on the host with `args` as $1…; stdio not set up.
-pub(crate) fn ssh_command(t: &Target, script: &str, args: &[&str]) -> tokio::process::Command {
+/// Keep the returned guard alive until the command has finished.
+pub(crate) fn ssh_command(t: &Target, script: &str, args: &[&str]) -> (tokio::process::Command, Askpass) {
     let mut remote = format!("sh -c {} devcat", sh_quote(script));
     for a in args {
         remote.push(' ');
         remote.push_str(&sh_path(a));
     }
+    let (env, guard) = askpass_env(t);
     let mut cmd = tokio::process::Command::new("ssh");
     cmd.args(ssh_args(t, false)).arg("--").arg(t.ssh_dest()).arg(remote);
-    cmd.envs(askpass_env(t)).kill_on_drop(true);
+    cmd.envs(env).kill_on_drop(true);
     #[cfg(windows)]
     {
         cmd.creation_flags(0x0800_0000); // no console window
     }
-    cmd
+    (cmd, guard)
 }
 
 /// ssh's own failure (exit 255) as a readable error.
@@ -324,8 +351,8 @@ pub(crate) fn connect_error(t: &Target, err: &str) -> AppError {
 
 /// Run `script` (POSIX sh) on the host with `args` as $1…, optional stdin. Returns stdout.
 async fn run(t: &Target, script: &str, args: &[&str], stdin: Option<&[u8]>) -> AppResult<Vec<u8>> {
-    t.check()?;
-    let mut cmd = ssh_command(t, script, args);
+    t.ready().await?;
+    let (mut cmd, _askpass) = ssh_command(t, script, args);
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| AppError::msg(format!("Couldn't run ssh ({e}). Install the OpenSSH client.")))?;
     if let (Some(data), Some(mut w)) = (stdin, child.stdin.take()) {
@@ -599,7 +626,14 @@ pub async fn remove(t: &Target, paths: &[String]) -> AppResult<()> {
         return Err(AppError::msg("Refusing to delete a root or home folder"));
     }
     let args: Vec<&str> = paths.iter().map(String::as_str).collect();
-    run(t, r#"rm -rf -- "$@""#, &args, None).await.map(|_| ())
+    // Also as the host resolves them (`/home/me` is home too).
+    let script = r#"h=$(cd ~ && pwd -P)
+for a in "$@"; do
+  r=$(cd "$a" 2>/dev/null && pwd -P)
+  if [ "$r" = "/" ] || [ "$r" = "$h" ]; then echo "Refusing to delete $a: it's the root or home folder" >&2; exit 3; fi
+done
+rm -rf -- "$@""#;
+    run(t, script, &args, None).await.map(|_| ())
 }
 
 /// One file or folder under a folder being downloaded.
@@ -619,9 +653,10 @@ b=$(basename -- "$1")
 if find . -maxdepth 0 -printf '' >/dev/null 2>&1; then
   find "$b" \( -type d -o -type f \) -printf '%y\t%s\t%p\000'
 else
-  find "$b" \( -type d -o -type f \) -print0 | while IFS= read -r -d '' f; do
-    if [ -d "$f" ]; then printf 'd\t0\t%s\000' "$f"; else printf 'f\t%s\t%s\000' "$(stat -f %z "$f")" "$f"; fi
-  done
+  find "$b" \( -type d -o -type f \) -exec sh -c 'for f; do
+    if [ -d "$f" ]; then printf "d\t0\t%s\000" "$f"
+    else printf "f\t%s\t%s\000" "$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f")" "$f"; fi
+  done' sh {} +
 fi"#;
     let out = run(t, script, &[&t.path], None).await?;
     Ok(parse_tree(&out))

@@ -54,6 +54,8 @@ struct Pty {
     owner: Mutex<Option<String>>,
     info: Mutex<PtyInfo>,
     scrollback: Mutex<Vec<u8>>,
+    /// Input has been written (by the user, a quick command, a phone…): see `AutoPass`.
+    typed: std::sync::atomic::AtomicBool,
 }
 
 static PTYS: Lazy<Mutex<HashMap<String, Arc<Pty>>>> = Lazy::new(Default::default);
@@ -85,15 +87,19 @@ fn default_shell() -> CommandBuilder {
     }
 }
 
-/// Does this output end with ssh's password / key passphrase prompt?
+/// Does this output end with the local ssh client's own login prompt? Only its formats:
+/// `me@host's password:`, `(me@host) Password:` (keyboard-interactive, OpenSSH 8.6+) and
+/// `Enter passphrase for key '…':`, never a remote program's (`Password:` from su, sudo, mysql…).
 fn is_login_prompt(out: &[u8]) -> bool {
     let text = String::from_utf8_lossy(out);
     let line = text.trim_end().rsplit(['\n', '\r']).next().unwrap_or("").trim().to_lowercase();
-    line.ends_with("password:") || (line.starts_with("enter passphrase for key") && line.ends_with(':'))
+    (line.ends_with("'s password:") && line.contains('@'))
+        || (line.starts_with('(') && line.contains('@') && line.ends_with(") password:"))
+        || (line.starts_with("enter passphrase for key") && line.ends_with(':'))
 }
 
-/// Answers ssh's login prompt with a saved SSH session's password: once, and only at the start of
-/// the session (afterwards a "password:" is the remote side's, e.g. sudo's, and not ours to answer).
+/// Answers ssh's login prompt with a saved SSH session's password: once, only at the start of the
+/// session, and never after the user typed something (then they're past the login, or doing it).
 struct AutoPass {
     password: Option<String>,
     seen: usize,
@@ -106,10 +112,10 @@ impl AutoPass {
     }
 
     /// The next output batch; returns what to type, if anything.
-    fn feed(&mut self, batch: &[u8], now: Instant) -> Option<String> {
+    fn feed(&mut self, batch: &[u8], now: Instant, user_typed: bool) -> Option<String> {
         self.password.as_ref()?;
         self.seen += batch.len();
-        if self.seen > AUTOPASS_BYTES || now.duration_since(self.started) > AUTOPASS_WINDOW {
+        if user_typed || self.seen > AUTOPASS_BYTES || now.duration_since(self.started) > AUTOPASS_WINDOW {
             self.password = None;
             return None;
         }
@@ -176,13 +182,8 @@ pub(crate) async fn open(
     // A saved SSH session: its VPN / tunnel first; its password answers ssh's login prompt.
     let mut autopass = None;
     if let Some(t) = &remote {
-        t.check()?;
-        if let Some(s) = &t.session {
-            if let Some(net) = &s.network_id {
-                crate::network::ensure(net).await?;
-            }
-            autopass = s.password.clone();
-        }
+        t.ready().await?;
+        autopass = t.session.as_ref().and_then(|s| s.password.clone());
     }
     let uid = uuid::Uuid::new_v4();
     let id = uid.to_string();
@@ -246,6 +247,7 @@ pub(crate) async fn open(
         owner: Mutex::new(None),
         info: Mutex::new(info),
         scrollback: Mutex::new(Vec::new()),
+        typed: std::sync::atomic::AtomicBool::new(false),
     });
     PTYS.lock().insert(id.clone(), pty.clone());
 
@@ -288,7 +290,7 @@ pub(crate) async fn open(
                 }
             }
             emit(&batch);
-            if let Some(answer) = autopass.feed(&batch, Instant::now()) {
+            if let Some(answer) = autopass.feed(&batch, Instant::now(), pty.typed.load(std::sync::atomic::Ordering::Relaxed)) {
                 if let Some(w) = pty.writer.lock().as_mut() {
                     let _ = w.write_all(answer.as_bytes()).and_then(|_| w.flush());
                 }
@@ -343,6 +345,7 @@ pub async fn pty_open(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn pty_write(id: String, data: String) -> AppResult<()> {
     let pty = get(&id)?;
+    pty.typed.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut w = pty.writer.lock();
     let w = w.as_mut().ok_or_else(|| AppError::msg("Terminal input is closed"))?;
     w.write_all(data.as_bytes())?;
@@ -477,7 +480,10 @@ mod tests {
     #[test]
     fn spots_ssh_login_prompts() {
         assert!(is_login_prompt(b"me@10.0.0.5's password: "));
-        assert!(is_login_prompt(b"Warning: Permanently added 'x' (ED25519) to the list of known hosts.\r\nPassword:"));
+        assert!(is_login_prompt(b"Warning: Permanently added 'x' (ED25519) to the list of known hosts.\r\n(me@box) Password:"));
+        for remote in [&b"Password:"[..], b"[sudo] password for me: ", b"Enter password: ", b"me@box:~$ su\r\nPassword: "] {
+            assert!(!is_login_prompt(remote), "{}", String::from_utf8_lossy(remote));
+        }
         assert!(is_login_prompt(b"Enter passphrase for key '/Users/me/.ssh/id_ed25519': "));
         assert!(!is_login_prompt(b"Are you sure you want to continue connecting (yes/no/[fingerprint])? "));
         assert!(!is_login_prompt(b"password: hunter2 was rejected\r\nme@box:~$ "));
@@ -486,20 +492,25 @@ mod tests {
     #[test]
     fn autopass_answers_once_and_only_early() {
         let t0 = Instant::now();
+        let prompt = b"me@box's password: ";
         let mut a = AutoPass::new(Some("s3cret".into()));
-        assert_eq!(a.feed(b"Warning: Permanently added '[box]:22' to known hosts.\r\n", t0), None);
-        assert_eq!(a.feed(b"me@box's password: ", t0).as_deref(), Some("s3cret\r"));
-        assert_eq!(a.feed(b"Permission denied, please try again.\r\nme@box's password: ", t0), None, "never twice");
+        assert_eq!(a.feed(b"Warning: Permanently added '[box]:22' to known hosts.\r\n", t0, false), None);
+        assert_eq!(a.feed(prompt, t0, false).as_deref(), Some("s3cret\r"));
+        assert_eq!(a.feed(b"Permission denied, please try again.\r\nme@box's password: ", t0, false), None, "never twice");
 
         let mut late = AutoPass::new(Some("s3cret".into()));
-        assert_eq!(late.feed(b"[sudo] password for me: ", t0 + AUTOPASS_WINDOW + Duration::from_secs(1)), None);
-        assert_eq!(late.feed(b"[sudo] password for me: ", t0), None, "gone once the window passed");
+        assert_eq!(late.feed(prompt, t0 + AUTOPASS_WINDOW + Duration::from_secs(1), false), None);
+        assert_eq!(late.feed(prompt, t0, false), None, "gone once the window passed");
 
         let mut chatty = AutoPass::new(Some("s3cret".into()));
-        assert_eq!(chatty.feed(&vec![b'x'; AUTOPASS_BYTES + 1], t0), None);
-        assert_eq!(chatty.feed(b"Password: ", t0), None, "gone after the login output");
+        assert_eq!(chatty.feed(&vec![b'x'; AUTOPASS_BYTES + 1], t0, false), None);
+        assert_eq!(chatty.feed(prompt, t0, false), None, "gone after the login output");
 
-        assert_eq!(AutoPass::new(None).feed(b"Password: ", t0), None);
+        let mut typed = AutoPass::new(Some("s3cret".into()));
+        assert_eq!(typed.feed(prompt, t0, true), None, "the user is typing it");
+        assert_eq!(typed.feed(prompt, t0, false), None);
+
+        assert_eq!(AutoPass::new(None).feed(prompt, t0, false), None);
     }
 
     #[test]
