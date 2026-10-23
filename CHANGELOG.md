@@ -17,6 +17,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   the tree's own Copy) into a folder: right-click → **Paste**, or **Ctrl+V** / **⌘V**. A name
   that's taken gets "copy", so nothing is overwritten, and an image on the clipboard is saved as `pasted.png`
   (#54).
+- **Send while DevCat Agent works:** a message you send while it's busy goes in before its next step, as in Claude
+  Code: no need to stop it first. It shows right away as waiting; if you stop the agent before it reads it, the
+  text comes back to the chat box (#69).
+- **New lines in the DevCat Agent chat box** with **Ctrl+Enter** and **Alt+Enter** too, not only **Shift+Enter** (#69).
+- **The "files changed" bar in a DevCat Agent chat** lists only files git still sees changed, so it goes away when
+  you commit or revert them, also from another tool (#69).
 
 ## 0.9.1 - 2026-10-23
 
