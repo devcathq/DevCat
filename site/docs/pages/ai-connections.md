@@ -70,6 +70,30 @@ that tool until the chat closes.
   tokens, each tool call with its input, output and time, who approved it, hook messages and summaries. A bar
   shows where each step falls in its turn. Click a helper's call to see its own run. **Log** opens the session file.
 
+### Scheduled jobs
+
+A scheduled job runs a prompt on a schedule in a folder: a morning report, a nightly check of the tests, a weekly
+look at outdated dependencies. In the AI workspace sidebar, with a DevCat Agent connection selected, click **+**
+next to **Scheduled** (above the folder's chats) and set:
+
+- what the agent should do (the prompt);
+- when: at a time of day on the days you pick, or every so many minutes or hours (at most every 5 minutes);
+- the DevCat Agent connection and the permission mode the run uses.
+
+Each run is a new chat in the folder, named after the job and the time ("Morning report · Oct 23, 09:00"). Click a
+job to open its last run; right-click it to run it now, edit, pause or delete it.
+
+- Jobs run while DevCat is open. A run that came due while DevCat was closed runs once when it opens. A run that
+  DevCat was closed in the middle of shows as stopped.
+- Opening a run's chat and closing its tab doesn't stop the run. **Stop** in the chat does.
+- Jobs are kept in `agent-jobs.json` in DevCat's data folder. If that file can't be read (a hand edit with a
+  mistake, or jobs from a newer DevCat), the list says so and DevCat doesn't write over it: fix the file or move it
+  away.
+- A run asks for approvals like any chat, in its chat and on your phone. A toast tells you when a run finishes or
+  needs your OK, and so does your phone if [notifications](mobile.md#notifications) are on. **Plan** runs never need
+  you: they only read and answer.
+- The folder's hooks run in scheduled runs too, once you've allowed them.
+
 ### Hooks
 
 DevCat Agent runs the hooks you wrote for Claude Code or Codex: commands that run before a tool call, after it,

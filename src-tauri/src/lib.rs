@@ -2,6 +2,7 @@
 #![cfg_attr(not(feature = "gui"), allow(dead_code, unused_imports))]
 
 mod agent;
+mod agent_jobs;
 mod agent_notes;
 mod agent_tools;
 mod ai;
@@ -111,7 +112,9 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("no app data dir");
             events::set_app(app.handle().clone());
-            init_backend(dir);
+            init_backend(dir.clone());
+            // scheduled DevCat Agent jobs run in the app (where they're managed), not in `devcat serve`
+            agent_jobs::init(dir);
             #[cfg(target_os = "macos")]
             windows::install_menu(app.handle())?;
             // Windows / Linux: files DevCat was launched with.
@@ -304,6 +307,10 @@ pub fn run() {
             agent::agent_rename,
             agent::agent_trust_hooks,
             agent::agent_trace,
+            agent_jobs::agent_jobs,
+            agent_jobs::agent_job_save,
+            agent_jobs::agent_job_delete,
+            agent_jobs::agent_job_run,
             ai::ai_providers_list,
             ai::ai_agent_models,
             ai::ai_provider_save,

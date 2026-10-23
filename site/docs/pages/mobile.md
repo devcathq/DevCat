@@ -55,6 +55,8 @@ In the **Remote access** window on the computer:
 when DevCat Mobile is closed. Turn them on under **More → Notifications** on the phone.
 
 DevCat learns an agent's state from Claude Code hooks it adds to the terminals it starts (macOS and Linux).
+[Scheduled DevCat Agent jobs](ai-connections.md#scheduled-jobs) notify you the same way when a run finishes or
+needs your OK.
 
 ## Without the app window
 

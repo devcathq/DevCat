@@ -216,6 +216,12 @@ pub async fn ai_agent_models(settings: AgentSettings, provider_id: Option<String
     Ok(models)
 }
 
+/// A model's context window from OpenRouter's catalog, when it lists the model (scheduled jobs
+/// run without the window, which otherwise passes it from the model picker).
+pub async fn context_window(model: &str) -> Option<u64> {
+    catalog().await.get(&model_key(model)).and_then(|(context, _)| *context)
+}
+
 /// `vendor/Model-Name:variant` -> `model-name`, to match a provider's model id to the catalog's.
 fn model_key(id: &str) -> String {
     let id = id.rsplit('/').next().unwrap_or(id);

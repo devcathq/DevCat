@@ -37,6 +37,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   summaries. They're off until you allow them for the folder, and you're asked again when a hook changes (#62).
 - **DevCat Agent Trace:** a Trace view next to Chat and Diff shows each turn's model steps and tool calls with
   their times, tokens, inputs and outputs, who approved what, and the helpers' own runs (#63).
+- **Scheduled DevCat Agent jobs:** run a prompt in a folder at a time of day or every so many minutes (**+** next to
+  **Scheduled** in the AI workspace sidebar). Each run is a chat in the folder, and you get a toast (and a phone
+  notification, if they're on) when it finishes or needs your OK. Jobs run while DevCat is open (#64).
 
 ## 0.9.1 - 2026-10-23
 
