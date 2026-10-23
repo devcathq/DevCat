@@ -235,8 +235,9 @@ of these step by step, with every keyboard shortcut on
   the provider's env var (e.g. `OPENAI_API_KEY`). With Claude Code you also get **Code Review ⌥⇧⌘3**,
   launch options and your Claude session list (resume any session); other agents get a Review button that
   asks them in the terminal.
-  **DevCat Agent** (built in, nothing to install) talks to a model API directly: Z.ai GLM, DeepSeek, OpenAI,
-  Anthropic, OpenRouter, Kimi, Ollama, LM Studio or any OpenAI- or Anthropic-compatible endpoint. Its chat folds
+  **DevCat Agent** (built in, nothing to install) talks to a model API directly: Z.ai GLM, DeepSeek, OpenAI (Chat
+  Completions or the Responses API), Anthropic, OpenRouter, Kimi, Ollama, LM Studio or any OpenAI- or
+  Anthropic-compatible endpoint. Its chat folds
   the agent's steps into one line and asks before edits and commands (**Ask first**, **Auto-edit** or **Full
   access**), or only looks around and proposes a plan first (**Plan**); answer its approvals and questions on
   DevCat Mobile too. It follows `AGENTS.md` / `CLAUDE.md`, uses
