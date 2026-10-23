@@ -43,6 +43,7 @@ What it asks before doing, in each permission mode (the menu under the chat box)
 | Web pages | asks | asks | asks | — |
 | Queries and cluster reads on your DevCat connections, reading your DevCat notes | asks | asks | — | — |
 | Saving a DevCat note | not run | asks | asks | — |
+| Helpers (see below) | never | never | never | never |
 
 **Plan** is for looking before doing: the agent reads and searches, then answers with a plan, and edits and commands
 don't run, not even with a yes. Under the plan, **Start, ask first** or **Start, auto-edit** switches the mode and
@@ -57,6 +58,10 @@ that tool until the chat closes.
 - The same tool call a 4th time in a row is refused, so a looping model tries something else.
 - When the context fills up, the conversation is summarized and the chat carries on (or type `/compact`).
 - The agent can search and read your [notes](notes.md), and save one when you ask: the approval shows its text.
+- For research that takes many reads, the agent asks **helpers**: each gets one question and a fresh context, looks
+  around on its own and answers the agent. Several run at the same time. Each is a row in the chat showing what it's
+  doing; click it for its question, its steps and its answer. A helper never edits files, runs commands or asks you:
+  whatever would need your OK in the current mode is skipped. Its tokens count in the chat's total and cost.
 - **Rename** a chat: right-click it in the sidebar's chat list → **Rename…** (<kbd>Enter</kbd> saves,
   <kbd>Esc</kbd> cancels).
 - Next to the token meter, **≈ $** estimates what the chat's tokens cost at the model's list price (from the
