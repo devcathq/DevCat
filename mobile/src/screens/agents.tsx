@@ -1,6 +1,6 @@
 // Agents: every terminal on the computer (agents first, sorted by what needs you), the live
 // terminal with a key row, new chats, session history and readable transcripts.
-import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { loadUnicode } from "../../../src/lib/xtermUnicode";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import clsx from "clsx";
@@ -187,8 +187,7 @@ export function Terminal({ id }: { id: string }) {
   useEffect(() => {
     let disposed = false;
     const t = new XTerm({ fontFamily: FONT, fontSize, lineHeight: 1.1, cursorBlink: false, scrollback: 5000, allowProposedApi: true, theme: THEME, convertEol: false });
-    t.loadAddon(new Unicode11Addon());
-    t.unicode.activeVersion = "11";
+    loadUnicode(t);
     xt.current = t;
     t.onData((d) => write(d));
     const attach = async () => {
