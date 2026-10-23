@@ -428,7 +428,7 @@ function Workspace() {
             {/* The connection's color (e.g. red for production) under its tabs. */}
             {connColor(t) && <span className="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 rounded-t" style={{ background: connColor(t)! }} />}
             <TabIcon tab={t} />
-            {t.type === "claude" ? <AgentTabTitle tabId={t.id} title={t.title} /> : <span className="truncate">{t.title}</span>}
+            {t.type === "claude" ? <AgentTabTitle tabId={t.id} title={t.title} /> : <span className="truncate" title={t.title}>{t.title}</span>}
             {t.dirty && <span className="size-1.5 rounded-full bg-accent" />}
             <button
               aria-label="Close tab"

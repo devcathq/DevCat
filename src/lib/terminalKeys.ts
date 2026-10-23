@@ -40,3 +40,12 @@ export function terminalEditKey(term: Terminal, e: KeyboardEvent): boolean {
   }
   return false;
 }
+
+/** Selecting text with the mouse copies it (like Claude Code, PuTTY and iTerm2). Returns the cleanup. */
+export function copyOnSelect(term: Terminal, el: HTMLElement): () => void {
+  const onUp = () => {
+    if (term.hasSelection()) void navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+  };
+  el.addEventListener("mouseup", onUp);
+  return () => el.removeEventListener("mouseup", onUp);
+}
