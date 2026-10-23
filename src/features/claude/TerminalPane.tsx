@@ -93,8 +93,13 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    // xterm also activates a link at the end of a drag over it: a selection (to copy) doesn't open it
-    term.loadAddon(new WebLinksAddon((_e, uri) => { if (!term.hasSelection()) void openUrl(uri).catch(() => {}); }));
+    // xterm activates a link whenever the press and the release land on it, even after a drag. Only a
+    // click opens it: a drag selects text, in xterm or in a full-screen program (Claude Code) that gets the mouse.
+    const press = { x: 0, y: 0 };
+    const onPress = (e: MouseEvent) => { press.x = e.clientX; press.y = e.clientY; };
+    host.current!.addEventListener("mousedown", onPress, true);
+    const isClick = (e: MouseEvent) => !term.hasSelection() && Math.abs(e.clientX - press.x) < 4 && Math.abs(e.clientY - press.y) < 4;
+    term.loadAddon(new WebLinksAddon((e, uri) => { if (isClick(e)) void openUrl(uri).catch(() => {}); }));
     const uni = new Unicode11Addon();
     term.loadAddon(uni);
     term.unicode.activeVersion = "11";
@@ -159,7 +164,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
             text,
             decorations: { underline: true, pointerCursor: true },
             activate: (ev) => {
-              if (term.hasSelection()) return;
+              if (!isClick(ev)) return;
               if (IS_MAC ? ev.metaKey : ev.ctrlKey) void openExternally(resolvePath(cb.current.cwd, path));
               else openFile(cb.current.cwd, path);
             },
@@ -196,6 +201,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     return () => {
       ro.disconnect();
       hostEl.removeEventListener("paste", onPaste, true);
+      hostEl.removeEventListener("mousedown", onPress, true);
       links.dispose();
       input.dispose();
       title.dispose();
