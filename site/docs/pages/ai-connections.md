@@ -83,7 +83,12 @@ next to **Scheduled** (above the folder's chats) and set:
 Each run is a new chat in the folder, named after the job and the time ("Morning report · Oct 23, 09:00"). Click a
 job to open its last run; right-click it to run it now, edit, pause or delete it.
 
-- Jobs run while DevCat is open. A run that came due while DevCat was closed runs once when it opens.
+- Jobs run while DevCat is open. A run that came due while DevCat was closed runs once when it opens. A run that
+  DevCat was closed in the middle of shows as stopped.
+- Opening a run's chat and closing its tab doesn't stop the run. **Stop** in the chat does.
+- Jobs are kept in `agent-jobs.json` in DevCat's data folder. If that file can't be read (a hand edit with a
+  mistake, or jobs from a newer DevCat), the list says so and DevCat doesn't write over it: fix the file or move it
+  away.
 - A run asks for approvals like any chat, in its chat and on your phone. A toast tells you when a run finishes or
   needs your OK, and so does your phone if [notifications](mobile.md#notifications) are on. **Plan** runs never need
   you: they only read and answer.
