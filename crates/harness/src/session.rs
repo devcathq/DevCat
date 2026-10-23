@@ -102,6 +102,17 @@ impl Session {
         &self.path
     }
 
+    /// Keep the whole output of a tool call that was too long to send, in `<id>.out/` next to the
+    /// session file, so the model can read it in parts. Returns the file.
+    pub async fn save_output(&self, tool_use_id: &str, text: &str) -> Result<PathBuf> {
+        let dir = self.path.with_extension("out");
+        tokio::fs::create_dir_all(&dir).await?;
+        let name: String = tool_use_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        let file = dir.join(format!("{name}.txt"));
+        tokio::fs::write(&file, text).await?;
+        Ok(file)
+    }
+
     pub fn events(&self) -> &[SessionEvent] {
         &self.events
     }

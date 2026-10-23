@@ -5,7 +5,7 @@ use crate::approval::{ApprovalRequest, Approver, Decision, Policy, Question};
 use crate::llm::{Delta, Llm, Reply, Request};
 use crate::message::{Block, ToolSpec, Usage};
 use crate::session::{Session, SessionEvent};
-use crate::tools::{ASK_USER, Registry, ToolCtx, ToolOutput, truncate};
+use crate::tools::{ASK_USER, MAX_OUTPUT, Registry, ToolCtx, ToolOutput, truncate};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use serde::Serialize;
@@ -19,6 +19,10 @@ pub const MAX_STEPS: u32 = 60;
 
 /// Share of the context window at which the conversation is summarized before the next step.
 pub const COMPACT_AT: f64 = 0.8;
+
+/// The same call (tool and arguments) this many times in a row runs; the next one is refused, so a
+/// model stuck in a loop hears it instead of spending the turn.
+pub const MAX_SAME_CALL: usize = 3;
 
 const COMPACT_PROMPT: &str = "\
 The conversation is about to be cut to free the context window, and this summary will replace it. \
@@ -182,6 +186,9 @@ impl Agent {
     async fn run(&mut self, session: &mut Session, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<TurnEnd> {
         let specs: Vec<ToolSpec> = self.tools.specs();
         let ctx = ToolCtx { cwd: session.cwd.clone().into() };
+        // the last call and how many times in a row it was made (repeat guard)
+        let mut last: Option<(String, Value)> = None;
+        let mut same = 0;
         for _ in 0..MAX_STEPS {
             if self.over_limit(session) {
                 self.compact(session, None, cancel, on).await?;
@@ -211,8 +218,15 @@ impl Agent {
             }
             let mut results = Vec::new();
             for (id, name, input) in calls {
+                let key = (name.clone(), input.clone());
+                same = if last.as_ref() == Some(&key) { same + 1 } else { 1 };
+                last = Some(key);
                 let out = if cancel.is_cancelled() {
                     ToolOutput::err("Not run: stopped by the user.")
+                } else if same > MAX_SAME_CALL {
+                    ToolOutput::err(format!(
+                        "Not run: you already made this exact `{name}` call {MAX_SAME_CALL} times in a row. Doing it again won't help: try something different, or tell the user what's in the way."
+                    ))
                 } else {
                     self.call(session, &ctx, &id, &name, input, cancel, on).await?
                 };
@@ -279,6 +293,26 @@ impl Agent {
             r = tokio::time::timeout(limit, tool.run(input, ctx)) => r.unwrap_or_else(|_| ToolOutput::err(format!("Timed out after {} s.", limit.as_secs()))),
             _ = cancel.cancelled() => ToolOutput::err("Stopped by the user."),
         };
-        Ok(ToolOutput { content: truncate(&out.content), is_error: out.is_error })
+        Ok(fit(session, id, name, out).await)
     }
+}
+
+/// Output over [`MAX_OUTPUT`]: the model gets its start and end, and the whole of it is saved next
+/// to the session for `read` (offset / limit) or `grep`. `read`'s own output isn't saved: its file
+/// is on disk already, and the model pages through it with offset / limit.
+async fn fit(session: &Session, id: &str, name: &str, out: ToolOutput) -> ToolOutput {
+    if out.content.len() <= MAX_OUTPUT {
+        return out;
+    }
+    let mut content = truncate(&out.content);
+    if name != "read"
+        && let Ok(file) = session.save_output(id, &out.content).await
+    {
+        content.push_str(&format!(
+            "\n\n[The whole output ({} characters) is saved in {}. Read parts of it with `read` (offset / limit) or search it with `grep`.]",
+            out.content.len(),
+            file.display()
+        ));
+    }
+    ToolOutput { content, is_error: out.is_error }
 }

@@ -1,6 +1,7 @@
 //! The tools the agent can call, and the registry that holds them. The agent runs every call
 //! through the same pipeline (see [`crate::agent`]): approval, timeout, output truncation, event.
 mod fs;
+mod git;
 mod shell;
 mod todo;
 mod web;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use fs::{Edit, Glob, Grep, Read, Write};
+pub use git::Git;
 pub use shell::Shell;
 pub use todo::{TODO_WRITE, TodoWrite};
 pub use web::WebFetch;
@@ -98,7 +100,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// read, write, edit, glob, grep, shell, web_fetch, todo_write and ask_user.
+    /// read, write, edit, glob, grep, shell, git, web_fetch, todo_write and ask_user.
     pub fn standard() -> Registry {
         let mut r = Registry::default();
         r.add(Read);
@@ -107,6 +109,7 @@ impl Registry {
         r.add(Glob);
         r.add(Grep);
         r.add(Shell);
+        r.add(Git);
         r.add(WebFetch);
         r.add(TodoWrite);
         r.add(AskUser);

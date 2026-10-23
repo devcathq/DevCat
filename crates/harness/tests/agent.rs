@@ -1,8 +1,9 @@
 //! The agent loop end to end with a scripted model: tool calls, approvals, cancellation, resume.
 use async_trait::async_trait;
-use devcat_harness::approval::{ApprovalRequest, DenyAll};
+use devcat_harness::approval::{ApprovalRequest, DenyAll, Kind};
 use devcat_harness::llm::{Delta, Reply, Request};
-use devcat_harness::tools::Registry;
+use devcat_harness::message::ToolSpec;
+use devcat_harness::tools::{Registry, Tool, ToolCtx, ToolOutput};
 use devcat_harness::{Agent, AgentEvent, Approver, Block, Cancel, Decision, Error, Model, Policy, Role, Session, SessionEvent, TurnEnd, Usage};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -256,5 +257,82 @@ async fn todo_list_needs_no_approval_and_fetch_asks() {
     assert_eq!(*approver.1.lock().unwrap(), vec!["web_fetch: https://example.invalid/x"]);
     assert_eq!(results[0], "Todo list updated:\n[x] Read\n[>] Fix");
     assert!(results[1].starts_with("The user declined"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn the_same_call_over_and_over_is_refused_after_three() {
+    let (dir, mut session) = project().await;
+    let notes = || json!({ "path": "notes.txt" });
+    let model = Scripted::new(vec![
+        vec![tool("r1", "read", notes())],
+        vec![tool("r2", "read", notes())],
+        vec![tool("r3", "read", notes())],
+        vec![tool("r4", "read", notes())],
+        // a different call in between starts the count again
+        vec![tool("g1", "glob", json!({ "pattern": "*.txt" }))],
+        vec![tool("r5", "read", notes())],
+        vec![text("done")],
+    ]);
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    let mut results = Vec::new();
+    agent
+        .turn(&mut session, "read the notes", &Cancel::default(), &mut |e| {
+            if let AgentEvent::ToolResult { content, is_error, .. } = e {
+                results.push((content, is_error));
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(results.iter().map(|r| r.1).collect::<Vec<_>>(), [false, false, false, true, false, false]);
+    assert!(results[3].0.contains("3 times in a row"), "{}", results[3].0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A tool with more output than fits in one result.
+struct Big;
+
+#[async_trait]
+impl Tool for Big {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "big".into(), description: "Prints a lot.".into(), input_schema: json!({ "type": "object" }) }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, _: &Value) -> String {
+        "big".into()
+    }
+    async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::ok(format!("START\n{}END", "a line of output\n".repeat(5_000)))
+    }
+}
+
+#[tokio::test]
+async fn long_output_is_cut_for_the_model_and_kept_whole_in_a_file() {
+    let (dir, mut session) = project().await;
+    std::fs::write(dir.join("proj/long.txt"), "a long line in the file\n".repeat(3_000)).unwrap();
+    let model = Scripted::new(vec![vec![tool("b1", "big", json!({}))], vec![tool("r1", "read", json!({ "path": "long.txt" }))], vec![text("done")]]);
+    let mut tools = Registry::standard();
+    tools.add(Big);
+    let mut agent = Agent::new(model, tools, Policy::Ask, Arc::new(DenyAll), "s".into());
+    let mut results = Vec::new();
+    agent
+        .turn(&mut session, "run it", &Cancel::default(), &mut |e| {
+            if let AgentEvent::ToolResult { content, .. } = e {
+                results.push(content);
+            }
+        })
+        .await
+        .unwrap();
+    let saved = session.path().with_extension("out").join("b1.txt");
+    let whole = format!("START\n{}END", "a line of output\n".repeat(5_000));
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), whole);
+    let big = &results[0];
+    assert!(big.len() < 31_000 && big.starts_with("START") && big.contains("characters, about"), "{}", &big[..200]);
+    assert!(big.ends_with(&format!("[The whole output ({} characters) is saved in {}. Read parts of it with `read` (offset / limit) or search it with `grep`.]", whole.len(), saved.display())), "{}", &big[big.len() - 300..]);
+    // read's own output is cut but not saved again: its file is there to page through
+    assert!(results[1].contains("characters, about") && !results[1].contains("is saved in"));
+    assert!(!session.path().with_extension("out").join("r1.txt").exists());
     let _ = std::fs::remove_dir_all(dir);
 }
