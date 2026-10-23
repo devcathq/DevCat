@@ -495,7 +495,11 @@ impl Model for Router {
         "router".into()
     }
     async fn step(&self, req: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
-        let first = req.messages[0].text();
+        // the message itself, without context hooks added after it
+        let first = match req.messages[0].content.first() {
+            Some(Block::Text { text }) => text.clone(),
+            _ => String::new(),
+        };
         self.seen.lock().unwrap().push((first.clone(), req.system.to_string(), req.tools.iter().map(|t| t.name.clone()).collect()));
         if let Some(gate) = &self.gate
             && req.system.contains("# You're a helper")
@@ -650,5 +654,29 @@ async fn stopping_stops_the_helpers_too() {
     let resumed = Session::open(session.path()).await.unwrap();
     assert!(matches!(resumed.events().last(), Some(SessionEvent::Interrupted { .. })));
     assert_eq!(resumed.messages()[2].content.len(), 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn prompt_hooks_are_for_the_users_messages_not_a_helpers_prompt() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join(".claude")).unwrap();
+    let settings = json!({ "hooks": { "UserPromptSubmit": [{ "hooks": [hook("echo 'from the hook'", "Write-Output 'from the hook'")] }] } });
+    std::fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let model = Router::new(
+        vec![
+            ("look it up", vec![vec![helper_call("h1", "Look", "what is in notes.txt?")], vec![text("done")]]),
+            ("what is in notes.txt?", vec![vec![text("version = 1")]]),
+        ],
+        None,
+    );
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.hooks = Arc::new(devcat_harness::hooks::load(&proj, None).hooks);
+    agent.turn(&mut session, "look it up", &Cancel::default(), &mut |_| {}).await.unwrap();
+    let context = |s: &Session| s.events().iter().find_map(|e| if let SessionEvent::User { context, .. } = e { Some(context.clone()) } else { None }).unwrap();
+    assert_eq!(context(&session), vec!["from the hook"]);
+    let helper = Session::open(&session.path().with_extension("agents").join("h1.jsonl")).await.unwrap();
+    assert!(context(&helper).is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
