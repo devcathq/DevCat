@@ -454,6 +454,9 @@ fn wildcard(pattern: &str, text: &str) -> bool {
 async fn run_handler(h: &Handler, stdin: &str, cwd: &Path, limit: Duration) -> Run {
     let mut cmd = command(h, cwd);
     cmd.current_dir(cwd).env("CLAUDE_PROJECT_DIR", cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // DevCat has no console of its own: without this, Windows opens one per hook and it flashes
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     #[cfg(unix)]
     // its own session: no terminal to take over (see the shell tool)
     unsafe {
