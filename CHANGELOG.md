@@ -10,6 +10,16 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.9.1 - 2026-10-23
+
+- **Terminal on Windows:** **Ctrl+C** copies the selection (and still interrupts when nothing is
+  selected) and **Ctrl+V** pastes, like Windows Terminal. This works in the AI workspace, the
+  Terminal tab, SSH sessions and the pod shell (#47).
+- **Clickable Windows paths:** `C:/x/y.html`, `C:\x\y.html` and `src\a.ts` (with `:line:col`)
+  open in DevCat's file tab, with HTML rendered in Preview. **Ctrl+click** (**⌘-click** on macOS)
+  opens a local file in its default app. A path wrapped over several rows is one link, and dragging
+  over a link now selects it instead of opening it (#47).
+
 ## 0.9.0 - 2026-10-22
 
 - **SSH sessions:** a new "SSH session" connection with host, user, password or key, jump host,
