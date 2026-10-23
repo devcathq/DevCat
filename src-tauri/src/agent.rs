@@ -479,6 +479,56 @@ pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, 
     })
 }
 
+/// A chat's log for the Trace view: each line as written (with `ms`, when it was written), and the
+/// logs of the helpers it started, by file name (`<session>.agents/<call>.jsonl`).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTrace {
+    pub events: Vec<Value>,
+    pub helpers: HashMap<String, Vec<Value>>,
+    /// The session file.
+    pub path: String,
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_trace(session_id: String) -> AppResult<AgentTrace> {
+    if !valid_id(&session_id) {
+        return Err(AppError::msg("Not a DevCat Agent chat"));
+    }
+    let path = dir()?.join(format!("{session_id}.jsonl"));
+    if !path.exists() {
+        return Err(AppError::msg("This chat isn't saved yet: send a message first"));
+    }
+    let events = trace_lines(&path).await?;
+    let mut helpers = HashMap::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(path.with_extension("agents")).await {
+        while let Ok(Some(e)) = rd.next_entry().await {
+            let p = e.path();
+            if let (Some(name), Some("jsonl")) = (p.file_stem().and_then(|s| s.to_str()), p.extension().and_then(|x| x.to_str())) {
+                helpers.insert(name.to_string(), trace_lines(&p).await.unwrap_or_default());
+            }
+        }
+    }
+    Ok(AgentTrace { events, helpers, path: path.to_string_lossy().into_owned() })
+}
+
+/// A session file's lines, without the attached images' data (their size stays).
+async fn trace_lines(path: &std::path::Path) -> AppResult<Vec<Value>> {
+    let text = tokio::fs::read_to_string(path).await?;
+    Ok(text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|mut v| {
+            for image in v.get_mut("images").and_then(Value::as_array_mut).into_iter().flatten() {
+                if let Some(data) = image.get_mut("data") {
+                    *data = json!(format!("[{} characters of base64]", data.as_str().map_or(0, str::len)));
+                }
+            }
+            v
+        })
+        .collect())
+}
+
 /// Rename a chat: a `title` event at the end of its session file (the last one names the chat).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_rename(session_id: String, title: String) -> AppResult<()> {

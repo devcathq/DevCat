@@ -1,6 +1,7 @@
 //! The session: an append-only JSONL event log, one file per session. Every other view (the
-//! messages sent to the model, the chat UI, resume, token totals) is a projection of it, so a
-//! crash never loses more than the event being written.
+//! messages sent to the model, the chat UI, resume, token totals, the trace) is a projection of it,
+//! so a crash never loses more than the event being written. Each line also carries `ms`, when it
+//! was written (Unix time in milliseconds), for the trace; reading ignores it.
 use crate::message::{Block, Message, Role, Usage};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,9 @@ pub enum SessionEvent {
         results: Vec<Block>,
         #[serde(default, skip_serializing_if = "is_zero")]
         usage: Usage,
+        /// How long each call took in milliseconds, in the same order (for the trace).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        took_ms: Vec<u64>,
     },
     /// A decision on a tool call that needed approval (kept for the audit trail).
     Approval { tool_use_id: String, tool: String, allowed: bool, by: String },
@@ -51,6 +55,10 @@ pub enum SessionEvent {
 
 fn is_zero(u: &Usage) -> bool {
     *u == Usage::default()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 impl SessionEvent {
@@ -92,7 +100,7 @@ impl Session {
             id = format!("{id}-{}", uuid::Uuid::new_v4());
         }
         let mut s = Session { id: id.clone(), cwd: cwd.to_string(), path: dir.join(format!("{id}.jsonl")), events: vec![] };
-        let created_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let created_ms = now_ms();
         s.append(SessionEvent::Meta { format: FORMAT, id, cwd: cwd.to_string(), created_ms }).await?;
         Ok(s)
     }
@@ -155,7 +163,9 @@ impl Session {
 
     /// Write one event (a line, flushed) and keep it in memory.
     pub async fn append(&mut self, e: SessionEvent) -> Result<()> {
-        let mut line = serde_json::to_string(&e).map_err(|e| Error::Session(e.to_string()))?;
+        let json = serde_json::to_string(&e).map_err(|e| Error::Session(e.to_string()))?;
+        // `ms` first, then the event's own fields (an event is always a JSON object)
+        let mut line = format!("{{\"ms\":{},{}", now_ms(), json.strip_prefix('{').unwrap_or(&json));
         line.push('\n');
         let mut f = tokio::fs::OpenOptions::new().create(true).append(true).open(&self.path).await?;
         f.write_all(line.as_bytes()).await?;
@@ -296,7 +306,7 @@ mod tests {
         s.append(SessionEvent::user("list files", vec![])).await.unwrap();
         let call = Block::ToolUse { id: "t1".into(), name: "glob".into(), input: json!({ "pattern": "*" }) };
         s.append(SessionEvent::Assistant { content: vec![call], model: "m".into(), usage: Usage { input_tokens: 10, output_tokens: 2, cache_read_tokens: 0 } }).await.unwrap();
-        s.append(SessionEvent::ToolResults { results: vec![Block::ToolResult { tool_use_id: "t1".into(), content: "a.rs".into(), is_error: false }], usage: Usage::default() }).await.unwrap();
+        s.append(SessionEvent::ToolResults { results: vec![Block::ToolResult { tool_use_id: "t1".into(), content: "a.rs".into(), is_error: false }], usage: Usage::default(), took_ms: vec![5] }).await.unwrap();
         s.append(SessionEvent::Assistant { content: vec![Block::Text { text: "One file.".into() }], model: "m".into(), usage: Usage { input_tokens: 20, output_tokens: 3, cache_read_tokens: 0 } }).await.unwrap();
 
         let r = Session::open(s.path()).await.unwrap();
@@ -306,6 +316,9 @@ mod tests {
         assert_eq!(m.iter().map(|m| m.role).collect::<Vec<_>>(), vec![Role::User, Role::Assistant, Role::User, Role::Assistant]);
         assert_eq!(r.usage().input_tokens, 30);
         assert_eq!(r.title(), "list files");
+        // every line says when it was written
+        let text = std::fs::read_to_string(s.path()).unwrap();
+        assert!(text.lines().all(|l| l.starts_with("{\"ms\":1") && serde_json::from_str::<serde_json::Value>(l).unwrap()["ms"].as_u64().unwrap() > 1_700_000_000_000));
         let _ = std::fs::remove_dir_all(dir);
     }
 
