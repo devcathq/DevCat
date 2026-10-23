@@ -1,0 +1,58 @@
+# Quick checks on every pull request that changes the app: the frontend type-checks and builds
+# (desktop and mobile web), and the Rust backend compiles (`cargo check`). A few minutes; the
+# crates have their own workflows (harness.yml, rooms.yml).
+name: check
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "mobile/src/**"
+      - "crates/remote-proto/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `tsc && vite build && pnpm mobile:web`
+      - run: pnpm build
+
+  backend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libssl-dev libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: check
+      # generate_context! needs frontendDist to exist; the check doesn't use its contents.
+      - run: mkdir -p dist
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --locked
