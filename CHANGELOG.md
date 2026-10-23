@@ -10,6 +10,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **DevCat Mobile from other networks:** connects faster and more often goes direct instead of through the
+  relay. The computer asks your router to open its port (UPnP / NAT-PMP / PCP), the pairing QR and the
+  computer's details carry the relay server it's on so the phone goes straight there, and the phone waits
+  longer before giving up on mobile data. Phones paired before keep working.
 - **Docker connections:** add a Docker engine (the current `docker` context, another context, or a host over
   `ssh://` / `tcp://`) and open it in a tab: containers grouped by Compose project with their CPU and memory,
   logs that follow (and carry on after a restart), a shell in a terminal tab, inspect, and start / stop /
