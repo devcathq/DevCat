@@ -446,7 +446,7 @@ export interface AgentContext {
   /** Hook files that run in this chat ("~/.claude/settings.json (2)"). */
   hooks?: string[];
   /** Hooks found but not allowed for this folder yet: they don't run until the user allows them. */
-  hooksReview?: { files: string[]; commands: string[]; skipped: string[] } | null;
+  hooksReview?: { files: string[]; commands: string[]; skipped: string[]; digest: string } | null;
 }
 /** `live`: while a turn runs, its events so far (after `events`); `seq`: the number of the last one
  *  (later `agent-event`s carry higher ones). */

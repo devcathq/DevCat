@@ -87,6 +87,8 @@ pub struct HooksReview {
     pub commands: Vec<String>,
     /// What wouldn't run anyway (other events and hook types).
     pub skipped: Vec<String>,
+    /// The hooks as shown: allowing them sends it back, so what's allowed is what the user saw.
+    pub digest: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -316,20 +318,21 @@ fn hooks_for(cwd: &str) -> (devcat_harness::hooks::Hooks, Vec<String>, Option<Ho
     if hooks_trusted(cwd, &found.digest) {
         (found.hooks, files, None)
     } else {
-        (Default::default(), vec![], Some(HooksReview { files, commands: found.commands, skipped: found.skipped }))
+        (Default::default(), vec![], Some(HooksReview { files, commands: found.commands, skipped: found.skipped, digest: found.digest }))
     }
 }
 
-/// Allow the hooks of a chat's folder as they are now (the chat shows them first). Every open chat
-/// in that folder runs them from its next step on.
+/// Allow the hooks of a chat's folder as the chat showed them (`digest`, from its review). If they
+/// changed since (an edit, a `git pull`), nothing is allowed: the chats show them as they are now,
+/// to look at again. Every open chat in that folder runs them from its next step on.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn agent_trust_hooks(session_id: String) -> AppResult<()> {
+pub async fn agent_trust_hooks(session_id: String, digest: String) -> AppResult<()> {
     let run = run_of(&session_id)?;
     let found = devcat_harness::hooks::load(std::path::Path::new(&run.cwd), home_dir().as_deref());
-    if found.digest.is_empty() {
-        return Ok(());
+    let same = !found.digest.is_empty() && found.digest == digest;
+    if same {
+        trust_hooks(&run.cwd, &found.digest)?;
     }
-    trust_hooks(&run.cwd, &found.digest)?;
     let key = folder_key(&run.cwd);
     let runs: Vec<Arc<Run>> = RUNS.lock().values().filter(|r| folder_key(&r.cwd) == key).cloned().collect();
     for run in runs {
@@ -345,6 +348,9 @@ pub async fn agent_trust_hooks(session_id: String) -> AppResult<()> {
         crate::rt::spawn(async move {
             run.turn.lock().await.0.hooks = Arc::new(hooks);
         });
+    }
+    if !same {
+        return Err(AppError::msg("The hooks changed since this chat showed them, so they weren't allowed. Here they are as they are now: look at them again."));
     }
     Ok(())
 }

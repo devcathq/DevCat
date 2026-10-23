@@ -213,7 +213,7 @@ function HooksReview({ tabId }: { tabId: string }) {
   if (!review || hidden || !chat.sessionId) return null;
   const allow = async () => {
     setBusy(true);
-    await trustHooks(tabId);
+    await trustHooks(tabId, review.digest);
     setBusy(false);
   };
   return (
@@ -228,7 +228,7 @@ function HooksReview({ tabId }: { tabId: string }) {
         <div className="flex items-center gap-2">
           <Button size="sm" variant="primary" loading={busy} onClick={() => void allow()}>Run hooks</Button>
           <Button size="sm" variant="ghost" onClick={() => setHidden(true)}>Not now</Button>
-          <span className="text-[11px] text-faint">Asked again when a hook changes.</span>
+          <span className="text-[11px] text-faint">Asked again when a hook or a script it runs changes; a changed script doesn't run until then.</span>
         </div>
       </div>
     </div>

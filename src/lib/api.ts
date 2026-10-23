@@ -166,7 +166,8 @@ export const api = {
   /** Rename a saved DevCat Agent chat. */
   agentRename: (sessionId: string, title: string) => invoke<void>("agent_rename", { sessionId, title }),
   /** Allow the hooks of a chat's folder as they are now (they run commands on this computer). */
-  agentTrustHooks: (sessionId: string) => invoke<void>("agent_trust_hooks", { sessionId }),
+  /** `digest`: the review the user saw; nothing is allowed if the hooks changed since. */
+  agentTrustHooks: (sessionId: string, digest: string) => invoke<void>("agent_trust_hooks", { sessionId, digest }),
   agentSessions: (cwd: string) => invoke<{ id: string; title: string; updatedMs: number; messages: number }[]>("agent_sessions", { cwd }),
   agentModels: (settings: AgentSettings, providerId: string | null, apiKey: string | null) => invoke<AgentModel[]>("ai_agent_models", { settings, providerId, apiKey }),
   /** Put local files / folders on the OS clipboard (paste attaches them in Slack, copies them in Explorer / Finder). */

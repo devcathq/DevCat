@@ -34,7 +34,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   rows show what they're doing, and their tokens count in the chat's total and cost (#59).
 - **DevCat Agent runs your Claude Code and Codex hooks** (`.claude/settings.json`, `.codex/hooks.json` and the ones
   in your home folder): before and after tool calls, when you send a message, when the agent is done, around
-  summaries. They're off until you allow them for the folder, and you're asked again when a hook changes (#62).
+  summaries. They're off until you allow them for the folder, and you're asked again when a hook or a script it
+  runs changes. Stop ends a running hook (#62).
 
 ## 0.9.1 - 2026-10-23
 
