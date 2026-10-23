@@ -32,7 +32,7 @@ export function ThreadPanel({ room, view, messages }: { room: string; view: Room
   const end = useRef<HTMLDivElement>(null);
   const handles = Object.values(view.handles);
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [messages.length]);
+  useEffect(() => { void end.current?.scrollIntoView({ block: "end" }); }, [messages.length]);
   const send = async () => {
     const t = text.trim();
     if (!t) return;

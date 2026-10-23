@@ -86,9 +86,7 @@ struct AppHost;
 #[async_trait]
 impl Host for AppHost {
     async fn approve_join(&self, req: JoinRequest) -> Option<Role> {
-        if crate::events::headless() {
-            return None;
-        }
+        // Nobody answering (no window open) times out as a refusal (crates/rooms: APPROVAL).
         let (tx, rx) = oneshot::channel();
         APPROVALS.lock().insert(req.request_id.clone(), tx);
         PENDING.lock().push(req.clone());

@@ -33,8 +33,8 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
   const [reveal, setReveal] = useState<{ path: string; from: number; to: number; at: number } | null>(null);
   const tick = useRooms((s) => s.ticks[room] ?? 0);
 
-  useEffect(() => () => replica.dispose(), [replica]);
-  useEffect(() => startRooms(), []);
+  useEffect(() => replica.attach(), [replica]);
+  useEffect(() => { startRooms(); }, []);
   const load = useCallback(async () => {
     try {
       // The document first: the editor must never show (and take typing into) an empty copy.
@@ -216,13 +216,15 @@ function RoomEditor({ room, replica, path, readOnly, claims, suggestions, reveal
 }) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const decorations = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
-  const unbind = useRef<(() => void) | null>(null);
+  const [mounted, setMounted] = useState<monaco.editor.IStandaloneCodeEditor | null>(null);
   const typing = useRef<number | null>(null);
-  useEffect(() => () => { unbind.current?.(); if (typing.current) window.clearTimeout(typing.current); }, []);
+  useEffect(() => () => { if (typing.current) window.clearTimeout(typing.current); }, []);
+  // The binding lives with the effect (bound again if React re-runs it), not with onMount.
+  useEffect(() => (mounted ? bind(monaco, mounted, replica, path) : undefined), [mounted, replica, path]);
 
-  const onMount: OnMount = (editor, m) => {
+  const onMount: OnMount = (editor) => {
     editorRef.current = editor;
-    unbind.current = bind(m, editor, replica, path);
+    setMounted(editor);
     decorations.current = editor.createDecorationsCollection([]);
     // Tell the others who's typing where (cleared after a pause).
     editor.onDidChangeModelContent(() => {
@@ -255,7 +257,7 @@ function RoomEditor({ room, replica, path, readOnly, claims, suggestions, reveal
       })),
     ]);
   }, [claims, suggestions, replica, path]);
-  useEffect(() => paint(), [paint]);
+  useEffect(() => { paint(); }, [paint]);
   useEffect(() => replica.onChange(paint), [replica, paint]);
   useEffect(() => {
     const ed = editorRef.current;

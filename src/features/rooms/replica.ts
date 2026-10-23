@@ -13,11 +13,13 @@ export class Replica {
   private pushing: Promise<void> = Promise.resolve();
   private pulling: Promise<void> | null = null;
   private again = false;
-  private stop: () => void;
   private listeners = new Set<() => void>();
 
-  constructor(readonly room: string) {
-    this.stop = this.doc.subscribeLocalUpdates((bytes) => this.push(bytes));
+  constructor(readonly room: string) {}
+
+  /** Start sending this copy's changes to the backend; returns the stop (for an effect). */
+  attach(): () => void {
+    return this.doc.subscribeLocalUpdates((bytes) => this.push(bytes));
   }
 
   private push(bytes: Uint8Array) {
@@ -56,10 +58,6 @@ export class Replica {
     return () => { this.listeners.delete(f); };
   }
 
-  dispose() {
-    this.stop();
-    this.listeners.clear();
-  }
 }
 
 /** Make the model show `next` with the smallest edit (keeps cursors and selections in place). */
@@ -78,6 +76,8 @@ function reconcile(model: Monaco.editor.ITextModel, next: string) {
   const b = model.getPositionAt(endCur);
   model.applyEdits([{ range: { startLineNumber: a.lineNumber, startColumn: a.column, endLineNumber: b.lineNumber, endColumn: b.column }, text: next.slice(start, endNext), forceMoveMarkers: false }]);
 }
+
+let binds = 0;
 
 /**
  * Bind a Monaco editor to a room file: typing becomes CRDT inserts and deletes (positions are
@@ -114,10 +114,13 @@ export function bind(monaco: typeof Monaco, editor: Monaco.editor.IStandaloneCod
   };
   const unsub = replica.doc.subscribe(() => sync());
   const offPull = replica.onChange(sync);
-  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyZ, () => { undo.undo(); sync(); });
-  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyZ, () => { undo.redo(); sync(); });
-  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyY, () => { undo.redo(); sync(); });
+  const n = ++binds;
+  const actions = [
+    editor.addAction({ id: `room-undo-${n}`, label: "Undo (your changes)", keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyZ], run: () => { undo.undo(); sync(); } }),
+    editor.addAction({ id: `room-redo-${n}`, label: "Redo (your changes)", keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyZ, monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyY], run: () => { undo.redo(); sync(); } }),
+  ];
   return () => {
+    actions.forEach((a) => a.dispose());
     typed.dispose();
     unsub();
     offPull();

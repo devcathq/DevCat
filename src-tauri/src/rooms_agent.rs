@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use devcat_harness::approval::{DenyAll, Kind};
 use devcat_harness::message::ToolSpec;
 use devcat_harness::tools::{Registry, Tool, ToolCtx, ToolOutput};
-use devcat_harness::{Agent, AgentEvent, Block, Cancel, Llm, Policy, Session};
+use devcat_harness::{Agent, AgentEvent, Block, Cancel, Llm, Model, Policy, Session};
 use devcat_rooms::doc::{FileKind, Message};
 use devcat_rooms::{Author, Mentions, Role, Room};
 use once_cell::sync::Lazy;
@@ -138,6 +138,12 @@ async fn provider(r: &Room) -> Result<String, AppError> {
 
 async fn answer(r: &Arc<Room>, trigger: &Message, cancel: &Cancel) -> Result<(), AppError> {
     let (_, cfg) = crate::ai::agent_config(&provider(r).await?)?;
+    let dir = crate::rooms::agent_dir(&r.id).map_err(|e| AppError::msg(e.to_string()))?;
+    run(r, trigger, Arc::new(Llm::new(cfg)), &dir, cancel).await
+}
+
+/// One run of the agent for `trigger`, with `model`; its log goes to `log_dir`.
+async fn run(r: &Arc<Room>, trigger: &Message, model: Arc<dyn Model>, log_dir: &std::path::Path, cancel: &Cancel) -> Result<(), AppError> {
     let me = r.me(true);
     let m = r.membership();
     let edits = m.settings.agent_edits && r.role().can_edit();
@@ -155,9 +161,8 @@ async fn answer(r: &Arc<Room>, trigger: &Message, cancel: &Cancel) -> Result<(),
         }
     }
     let system = system_prompt(r, &me, edits);
-    let mut agent = Agent::new(Arc::new(Llm::new(cfg)), tools, Policy::AutoEdit, Arc::new(DenyAll), system);
-    let dir = crate::rooms::agent_dir(&r.id).map_err(|e| AppError::msg(e.to_string()))?;
-    let mut session = Session::create(&dir, &dir.to_string_lossy()).await.map_err(|e| AppError::msg(e.to_string()))?;
+    let mut agent = Agent::new(model, tools, Policy::AutoEdit, Arc::new(DenyAll), system);
+    let mut session = Session::create(log_dir, &log_dir.to_string_lossy()).await.map_err(|e| AppError::msg(e.to_string()))?;
     let text = turn_text(r, trigger);
     let mut last_text = String::new();
     let mut on = |e: AgentEvent| {
@@ -470,5 +475,93 @@ impl Tool for EditTool {
             Ok(_) => ToolOutput::ok("Changed."),
             Err(e) => ToolOutput::err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use devcat_harness::llm::{Delta, Reply, Request};
+    use devcat_harness::{Error, Usage};
+    use devcat_rooms::{Change, Config, Host, JoinRequest, Node, RelayConfig};
+
+    struct Scripted(parking_lot::Mutex<Vec<Vec<Block>>>);
+
+    #[async_trait]
+    impl Model for Scripted {
+        fn name(&self) -> String {
+            "scripted".into()
+        }
+        async fn step(&self, _: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
+            let content = self.0.lock().pop().ok_or_else(|| Error::Provider("asked more steps than scripted".into()))?;
+            Ok(Reply { content, usage: Usage::default(), truncated: false })
+        }
+    }
+
+    struct Quiet;
+    #[async_trait]
+    impl Host for Quiet {
+        async fn approve_join(&self, _: JoinRequest) -> Option<Role> {
+            None
+        }
+        fn changed(&self, _: &str, _: Change) {}
+        fn message(&self, _: &str, _: &Message) {}
+    }
+
+    fn call(id: &str, name: &str, input: Value) -> Vec<Block> {
+        vec![Block::ToolUse { id: id.into(), name: name.into(), input }]
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn agent_reads_claims_suggests_and_replies_with_room_tools_only() {
+        let dir = std::env::temp_dir().join(format!("devcat-rooms-agent-{}", devcat_rooms::now_ms()));
+        let node = Node::start(Config { dir: dir.join("rooms"), relay: RelayConfig::Off, port: 0, keeper: false, keeper_owners: vec![] }, Arc::new(Quiet)).await.unwrap();
+        let id = node.create("Q4 spec", "Arif").unwrap();
+        let r = node.room(&id).unwrap();
+        let me = r.me(false);
+        r.doc().create_file("plan.md", "# Plan\nShip v2 in March.\n", &me, 1).unwrap();
+        let ask = r.doc().post(&me, "@arif-agent is March realistic?", 0, None, devcat_rooms::now_ms()).unwrap();
+
+        // Wake-up rules.
+        assert!(wanted(&r, &ask), "mentioned by its owner");
+        let mut from_agent = ask.clone();
+        from_agent.author.agent = true;
+        assert!(!wanted(&r, &from_agent), "never answers itself");
+        assert!(!wanted(&r, &Message { depth: MAX_DEPTH, ..ask.clone() }), "agent chains stop");
+        assert!(!wanted(&r, &Message { at: ask.at - FRESH_MS - 1, ..ask.clone() }), "old mentions don't wake it");
+        assert!(!wanted(&r, &Message { text: "no mention here".into(), ..ask.clone() }));
+        r.set_prefs(devcat_rooms::Prefs { mentions: devcat_rooms::Mentions::Off, ..r.prefs() });
+        assert!(!wanted(&r, &ask), "kept out by its owner");
+        r.set_prefs(devcat_rooms::Prefs { mentions: devcat_rooms::Mentions::Anyone, ..r.prefs() });
+
+        let script = vec![
+            // An injected "run this" gets nowhere: there is no shell here.
+            call("c0", "shell", json!({ "command": "rm -rf ~" })),
+            call("c1", "room_read", json!({ "path": "plan.md" })),
+            call("c2", "room_claim", json!({ "path": "plan.md", "find": "Ship v2 in March." })),
+            call("c3", "room_suggest", json!({ "path": "plan.md", "find": "Ship v2 in March.", "replace": "Ship v2 in April, after QA.", "note": "QA needs two weeks" })),
+            // Direct edits aren't on offer while the room says agents only suggest.
+            call("c4", "room_edit", json!({ "path": "plan.md", "find": "Ship v2 in March.", "replace": "x" })),
+            vec![Block::Text { text: "March is tight; I suggested April, after QA.".into() }],
+        ];
+        let model = Arc::new(Scripted(parking_lot::Mutex::new(script.into_iter().rev().collect())));
+        run(&r, &ask, model, &dir, &Cancel::default()).await.unwrap();
+        r.doc().release_all(&r.me(true));
+
+        let d = r.doc();
+        assert_eq!(d.read("plan.md").unwrap(), "# Plan\nShip v2 in March.\n", "suggested, not applied");
+        let s = d.suggestions();
+        assert_eq!(s.len(), 1);
+        assert!(s[0].record.author.agent && s[0].record.replacement == "Ship v2 in April, after QA.");
+        let reply = d.messages().into_iter().find(|m| m.author.agent).expect("the agent replied");
+        assert_eq!((reply.depth, reply.reply_to.as_deref()), (1, Some(ask.id.as_str())));
+        assert!(reply.text.contains("April"));
+        assert!(d.claims(devcat_rooms::now_ms()).is_empty(), "claims released");
+        // What the tools answered, from the run's log.
+        let log = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().is_some_and(|x| x == "jsonl")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap();
+        assert!(log.contains("There is no tool named `shell`"), "{log}");
+        assert!(log.contains("There is no tool named `room_edit`"), "{log}");
+        node.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
