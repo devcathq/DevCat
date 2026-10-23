@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 import { Checkbox, IconButton, Input, Select, Spinner } from "../../../components/ui";
 import { KIND_META } from "../../../components/ui/KindIcon";
 import { api, errMsg } from "../../../lib/api";
-import type { ConnectionConfig, ConnectionKind, SshConfig } from "../../../lib/types";
+import type { ConnectionConfig, ConnectionKind, SessionForward, SshConfig, SshConfigHost } from "../../../lib/types";
+import { parseForwards } from "../../ssh/forwards";
 import { useConnections } from "../../../store/connections";
 import { createProject } from "../tree/projectActions";
 import { NET_KIND_META } from "../../network/meta";
@@ -43,6 +44,7 @@ const URL_PLACEHOLDER: Partial<Record<ConnectionKind, string>> = {
 export function suggestName(cfg: ConnectionConfig): string {
   if (cfg.kind === "sqlite") return cfg.filePath?.split(/[\\/]/).pop() ?? "";
   if (cfg.kind === "kubernetes") return cfg.options.context || "Kubernetes";
+  if (cfg.kind === "ssh") return cfg.host ? `${cfg.user ? `${cfg.user}@` : ""}${cfg.host}` : "";
   if (cfg.url) {
     try { return new URL(cfg.url).hostname; } catch { return ""; }
   }
@@ -248,6 +250,120 @@ export function parseRabbitUrl(text: string): Partial<ConnectionConfig> & { tls:
   };
 }
 
+/** SSH session (Xshell-style): how to log in, and where the terminal starts. */
+export function SshSessionSection({ cfg, set, setOpt }: SectionProps) {
+  const [hosts, setHosts] = useState<SshConfigHost[]>([]);
+  useEffect(() => { api.netSshConfigHosts().then(setHosts).catch(() => {}); }, []);
+  // Picking a ~/.ssh/config alias: ssh applies that entry (user, key, jump…) itself.
+  const alias = hosts.find((h) => h.alias === cfg.host.trim());
+  return (
+    <>
+      <Row label="Host" hint={alias ? <>Uses <span className="font-mono">{alias.alias}</span> from ~/.ssh/config ({alias.user ? `${alias.user}@` : ""}{alias.host}{alias.port && alias.port !== 22 ? `:${alias.port}` : ""}); fields below override it.</> : "A host name, an IP, or a Host alias from ~/.ssh/config."}>
+        <div className="flex gap-1.5">
+          <Input value={cfg.host} list="devcat-ssh-hosts" placeholder="server.example.com" onChange={(e) => set({ host: e.target.value })} />
+          <datalist id="devcat-ssh-hosts">
+            {hosts.map((h) => <option key={h.alias} value={h.alias}>{h.user ? `${h.user}@` : ""}{h.host}</option>)}
+          </datalist>
+          <Input
+            className="w-24! shrink-0"
+            inputMode="numeric"
+            value={cfg.port ?? ""}
+            placeholder={alias ? "" : "22"}
+            onChange={(e) => { const n = parseInt(e.target.value, 10); set({ port: Number.isFinite(n) ? n : null }); }}
+          />
+        </div>
+      </Row>
+      <Row label="User">
+        <Input value={cfg.user} placeholder={alias?.user ?? "root"} onChange={(e) => set({ user: e.target.value })} />
+      </Row>
+      <Row label="Password" hint="Optional. Kept in the OS keychain and typed into ssh's login prompt for you.">
+        <PasswordInput value={cfg.password ?? ""} placeholder="(use a key or ssh-agent)" onChange={(v) => set({ password: v })} />
+      </Row>
+      <Row label="Private key" hint="Optional. Without one, ssh-agent and your ~/.ssh keys are tried.">
+        <FileInput value={cfg.options.keyPath ?? ""} placeholder={alias?.identityFile ?? "~/.ssh/id_ed25519"} onChange={(v) => setOpt("keyPath", v || null)} />
+      </Row>
+      <Row label="Jump host" hint="Optional ProxyJump: user@bastion:22, or several separated by commas.">
+        <Input value={cfg.options.jump ?? ""} placeholder="bastion.example.com" onChange={(e) => setOpt("jump", e.target.value || null)} />
+      </Row>
+      <div className="my-1 h-px bg-line" />
+      <Row label="Start folder">
+        <Input className="font-mono text-xs!" value={cfg.options.startDir ?? ""} placeholder="~" onChange={(e) => setOpt("startDir", e.target.value || null)} />
+      </Row>
+      <Row label="Run on login" hint="Optional. Runs before your shell starts, e.g. tmux new -A -s main. It can't change the shell's environment.">
+        <Input className="font-mono text-xs!" value={cfg.options.startup ?? ""} placeholder="tmux new -A -s main" onChange={(e) => setOpt("startup", e.target.value || null)} />
+      </Row>
+      <div className="my-1 h-px bg-line" />
+      <SessionForwards cfg={cfg} setOpt={setOpt} />
+    </>
+  );
+}
+
+const portNum = (v: string) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 && n <= 65535 ? n : 0; };
+
+/** An SSH session's port forwards (options.forwards, JSON). Started from the sidebar. */
+function SessionForwards({ cfg, setOpt }: Pick<SectionProps, "cfg" | "setOpt">) {
+  const list = parseForwards(cfg.options.forwards);
+  const save = (next: SessionForward[]) => setOpt("forwards", next.length ? JSON.stringify(next) : null);
+  const edit = (i: number, patch: Partial<SessionForward>) => save(list.map((f, j) => (j === i ? { ...f, ...patch } : f)));
+  const port = (i: number, key: "localPort" | "remotePort", v: number, placeholder: string, title: string) => (
+    <Input className="w-14! shrink-0 px-1.5! font-mono text-xs!" inputMode="numeric" value={v || ""} placeholder={placeholder} title={title}
+      onChange={(e) => edit(i, { [key]: portNum(e.target.value) })} />
+  );
+  const text = "shrink-0 text-[11px] text-muted";
+  return (
+    <Row
+      label="Port forwards"
+      hint="Start them from the session's menu in the sidebar. They use their own connection, so stopping them leaves terminals open."
+    >
+      <div className="flex flex-col gap-1.5">
+        {list.map((f, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <Select className="w-32! shrink-0" value={f.kind} onChange={(e) => edit(i, { kind: e.target.value as SessionForward["kind"] })}>
+              <option value="local">Host → here</option>
+              <option value="remote">Here → host</option>
+              <option value="dynamic">SOCKS</option>
+            </Select>
+            {f.kind === "local" && (
+              <>
+                <Input className="w-0 min-w-24 flex-1 font-mono text-xs!" value={f.remoteHost} placeholder="localhost" title="Host or IP, as the SSH server sees it"
+                  onChange={(e) => edit(i, { remoteHost: e.target.value.trim() })} />
+                <span className={text}>:</span>
+                {port(i, "remotePort", f.remotePort, "3000", "Port on the host's side")}
+                <span className={text}>→ localhost:</span>
+                {port(i, "localPort", f.localPort, "3000", "Port on this computer")}
+              </>
+            )}
+            {f.kind === "remote" && (
+              <>
+                <span className={text}>localhost:</span>
+                {port(i, "localPort", f.localPort, "3000", "Port on this computer")}
+                <span className={text}>→ host's localhost:</span>
+                {port(i, "remotePort", f.remotePort, "3000", "Port on the host")}
+                <span className="flex-1" />
+              </>
+            )}
+            {f.kind === "dynamic" && (
+              <>
+                <span className={text}>proxy on localhost:</span>
+                {port(i, "localPort", f.localPort, "1080", "Port on this computer")}
+                <span className="flex-1" />
+              </>
+            )}
+            <IconButton type="button" title="Remove forward" onClick={() => save(list.filter((_, j) => j !== i))}><Trash2 className="size-3.5" /></IconButton>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="flex w-fit items-center gap-1 text-[12px] text-accent hover:underline"
+          onClick={() => save([...list, { kind: "local", localPort: 0, remoteHost: "localhost", remotePort: 0 }])}
+        >
+          <Plus className="size-3.5" />Add forward{list.length ? "" : " (e.g. the host's port 3000 at localhost:3000 here)"}
+        </button>
+      </div>
+    </Row>
+  );
+}
+
 export function RabbitSection({ cfg, set, setOpt }: SectionProps) {
   const tls = cfg.options.useTls === "true";
   const applyUrl = (text: string) => {
@@ -418,7 +534,7 @@ export function SshSection({ cfg, set }: SectionProps) {
 }
 
 /** Managed option keys edited by dedicated fields; hidden from the raw editor. */
-const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId"]);
+const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards"]);
 
 /** VPN / SSH tunnel profile that is connected before this connection opens (options.networkId). */
 function NetworkRow({ cfg, setOpt }: SectionProps) {
@@ -437,7 +553,7 @@ function NetworkRow({ cfg, setOpt }: SectionProps) {
 }
 
 export function AdvancedSection({ cfg, set, setOpt }: SectionProps) {
-  const isDb = cfg.kind !== "kubernetes" && cfg.kind !== "rabbitmq";
+  const isDb = cfg.kind !== "kubernetes" && cfg.kind !== "rabbitmq" && cfg.kind !== "ssh";
   const entries = Object.entries(cfg.options).filter(([k]) => !MANAGED_OPTIONS.has(k));
   const [newKey, setNewKey] = useState("");
   const addKey = () => {
@@ -448,9 +564,11 @@ export function AdvancedSection({ cfg, set, setOpt }: SectionProps) {
   };
   return (
     <>
-      <Row label="" hint="Blocks data edits, DDL and destructive actions from the UI for this connection.">
-        <Checkbox label="Read-only connection" checked={cfg.readOnly} onChange={(v) => set({ readOnly: v })} />
-      </Row>
+      {cfg.kind !== "ssh" && (
+        <Row label="" hint="Blocks data edits, DDL and destructive actions from the UI for this connection.">
+          <Checkbox label="Read-only connection" checked={cfg.readOnly} onChange={(v) => set({ readOnly: v })} />
+        </Row>
+      )}
       <NetworkRow cfg={cfg} set={set} setOpt={setOpt} />
       {isDb && (
         <Row label="Driver options" hint="Extra key/value options passed to the driver.">

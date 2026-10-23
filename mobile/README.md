@@ -1,6 +1,6 @@
 # DevCat Mobile
 
-A remote control for DevCat on your computer: watch AI agents (and get told when they finish or need you), start new chats, browse, preview and edit project files, browse and edit databases and Redis, switch VPNs and tunnels, and look after Kubernetes, from your phone.
+A remote control for DevCat on your computer: watch AI agents (and get told when they finish or need you), start new chats, follow and answer DevCat Agent chats (the same conversation view as the desktop: steps, approvals, questions), browse, preview and edit project files, browse and edit databases and Redis, switch VPNs and tunnels, and look after Kubernetes, from your phone.
 
 Files (the **Files** tab, or **Browse files** in an agent's menu) uploads and downloads files, and copies a file's path relative to the project (⋯ menu) to paste into an agent's chat. It can't open folders with keys or credentials (`~/.ssh`, `~/.aws`, `~/.kube`, …) or DevCat's own data.
 
@@ -49,7 +49,7 @@ The frontend is `mobile/src` (React, built by `mobile/vite.config.ts`); the nati
 
 The browser version is the same frontend built with `pnpm mobile:web` (→ `mobile/dist-web`, with `mobile/src/web` standing in for the Tauri APIs); the desktop build embeds it (`src-tauri/build.rs`). `pnpm mobile:check-crypto` checks the browser crypto against the Rust known answer.
 
-The hosted version (GitHub Pages, `.github/workflows/pages.yml`): `mobile/web-iroh/build.sh` (WebAssembly; needs `rustup target add wasm32-unknown-unknown`, `rustup component add llvm-tools` on macOS, and `wasm-bindgen-cli` matching `mobile/web-iroh/Cargo.lock`), then `pnpm mobile:hosted` (→ `mobile/dist-hosted`). To try it against the demo host: `DEVCAT_DEMO_RELAY=public DEVCAT_DEMO_PAGE=http://127.0.0.1:8090/ cargo run --example remotedemo` and serve `mobile/dist-hosted` on port 8090.
+The hosted version (GitHub Pages, `.github/workflows/pages.yml`): `mobile/web-iroh/build.sh` (WebAssembly; needs `rustup target add wasm32-unknown-unknown`, `rustup component add llvm-tools` on macOS, and `wasm-bindgen-cli` matching `mobile/web-iroh/Cargo.lock`), then `pnpm mobile:hosted` (→ `mobile/dist-hosted`). To try it against the demo host: `DEVCAT_DEMO_RELAY=public DEVCAT_DEMO_PAGE=http://127.0.0.1:8090/ cargo run --example remotedemo` and serve `mobile/dist-hosted` on port 8090. `DEVCAT_DEMO_AGENT_URL=<an OpenAI-compatible API>` gives the demo host real DevCat Agent chats against that API (a local mock will do).
 
 Requirements: Node 22 + pnpm, Rust, and the platform SDKs below. Run commands from `mobile/`.
 

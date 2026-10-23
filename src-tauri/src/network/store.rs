@@ -222,7 +222,7 @@ impl NetStore {
         let mut all = self.load_all()?;
         all.retain(|n| n.id != id);
         self.write_all(&all)?;
-        for ext in ["ovpn", "conf", "log", "pid", "mgmt"] {
+        for ext in ["ovpn", "run.ovpn", "conf", "log", "pid", "mgmt"] {
             let _ = std::fs::remove_file(self.dir()?.join(format!("{id}.{ext}")));
         }
         self.secrets.delete(&pw_key(id));

@@ -65,7 +65,7 @@ impl St {
         St(STATE.get().expect("app state not initialized"))
     }
 
-    /// The app state, or None before startup created it.
+    /// The app state, or None before `init` (unit tests, early startup).
     pub fn try_get() -> Option<Self> {
         STATE.get().map(St)
     }

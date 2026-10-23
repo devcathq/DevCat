@@ -40,6 +40,11 @@ mod updater;
 #[cfg(feature = "gui")]
 mod windows;
 
+/// DevCat run by `ssh` as SSH_ASKPASS for a session's saved password (None: not that).
+pub fn askpass_main() -> Option<i32> {
+    claude::remote::askpass_main()
+}
+
 /// `devcat --vpn-helper <command> …`: the passwordless VPN helper (no Tauri, no window).
 /// Returns the process exit code.
 pub fn vpn_helper_main(args: &[String]) -> i32 {
@@ -79,6 +84,7 @@ fn init_backend(dir: std::path::PathBuf) {
 /// Stop what must not outlive DevCat (VPNs, the remote server, agent runs, keep-awake).
 fn shutdown_backend() {
     network::shutdown();
+    claude::ssh_forward::stop_all();
     crate::rt::block_on(remote::shutdown());
     claude::runner::shutdown_all();
     agent::shutdown_all();
@@ -238,7 +244,18 @@ pub fn run() {
             claude::sessions::claude_sessions,
             claude::sessions::claude_transcript,
             claude::files::fs_list,
+            claude::files::fs_find_files,
             claude::remote::remote_resolve_dir,
+            claude::sftp::remote_paste_image,
+            claude::sftp::remote_stage_files,
+            claude::sftp::sftp_mkdir,
+            claude::sftp::sftp_rename,
+            claude::sftp::sftp_delete,
+            claude::sftp::sftp_transfer,
+            claude::sftp::sftp_cancel,
+            claude::ssh_forward::ssh_forward_start,
+            claude::ssh_forward::ssh_forward_stop,
+            claude::ssh_forward::ssh_forward_list,
             claude::files::fs_preview,
             claude::files::fs_write_text,
             claude::open_external::fs_open_external,

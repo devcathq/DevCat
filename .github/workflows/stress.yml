@@ -1,0 +1,126 @@
+# Runs DevCat's driver/transfer integration tests against real Postgres, MySQL, SQL Server,
+# MongoDB, Redis and RabbitMQ (the docker-compose.dev.yml services) on GitHub's runners,
+# then repeats them in parallel to shake out races and flakiness. Also type-checks and
+# builds the frontend. Nothing here needs a developer machine.
+name: stress
+
+on:
+  pull_request:
+    paths:
+      - "src-tauri/**"
+      - "src/**"
+      - "docker-compose.dev.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/stress.yml"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Parallel stress iterations"
+        default: "5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `tsc && vite build`
+      - run: pnpm build
+
+  backend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      ITERATIONS: ${{ github.event.inputs.iterations || '5' }}
+      # Tests that need the claude CLI, an SSH host, a kube context or an OpenVPN binary.
+      SKIP: --skip real_ --skip over_ssh --skip tunnel_ --skip against_a_host --skip kube_forward::tests::live --skip adopt_after_crash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libssl-dev libdbus-1-dev pkg-config
+
+      - name: Start database services
+        run: docker compose -f docker-compose.dev.yml up -d
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: stress
+
+      # generate_context! needs frontendDist to exist; the tests don't use its contents.
+      - run: mkdir -p dist
+
+      - name: Build tests
+        id: build
+        working-directory: src-tauri
+        run: cargo test --lib --no-run
+
+      - name: Wait for services
+        run: |
+          c="docker compose -f docker-compose.dev.yml exec -T"
+          wait_for() {
+            name=$1; shift
+            for i in $(seq 1 90); do
+              if "$@" >/dev/null 2>&1; then echo "$name ready"; return 0; fi
+              sleep 2
+            done
+            echo "::error::$name did not become ready"; docker compose -f docker-compose.dev.yml logs "$name"; return 1
+          }
+          wait_for postgres $c postgres pg_isready -U postgres
+          wait_for mysql    $c mysql mysqladmin ping -h 127.0.0.1 -uroot -pdevcat
+          wait_for mssql    $c mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'DevCat_Passw0rd!' -Q 'SELECT 1'
+          wait_for mongo    $c mongo mongosh --quiet -u devcat -p devcat --eval 'db.runCommand({ping:1})'
+          wait_for redis    $c redis redis-cli ping
+          wait_for rabbitmq curl -fsS -u devcat:devcat http://127.0.0.1:55673/api/overview
+
+      - name: Unit tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      - name: Integration tests (serial)
+        # Run even when unit tests fail, so one unit failure doesn't hide integration results.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: src-tauri
+        run: cargo test --lib -- --ignored --test-threads=1 $SKIP
+
+      - name: Stress (parallel, repeated)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: src-tauri
+        run: |
+          fails=0
+          for i in $(seq 1 "$ITERATIONS"); do
+            echo "::group::iteration $i/$ITERATIONS"
+            start=$(date +%s)
+            # postgres_truncation_stops_early asserts a wall-clock bound that only holds on an
+            # idle runner; it runs in the serial step above.
+            if ! cargo test --lib -- --ignored --test-threads=8 $SKIP --skip postgres_truncation_stops_early; then
+              fails=$((fails + 1))
+              echo "::warning::iteration $i failed"
+            fi
+            echo "took $(( $(date +%s) - start ))s"
+            echo "::endgroup::"
+          done
+          echo "### Stress: $fails/$ITERATIONS parallel iterations failed" >> "$GITHUB_STEP_SUMMARY"
+          [ "$fails" -eq 0 ]
+
+      - name: Service logs
+        if: failure()
+        run: docker compose -f docker-compose.dev.yml logs --tail=200

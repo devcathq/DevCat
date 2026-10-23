@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, Crosshair, Folder, Layers, FolderPlus, GitBranch, History, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, X } from "lucide-react";
+import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, Folder, Layers, FolderPlus, GitBranch, History, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { Toaster } from "sonner";
@@ -21,6 +21,7 @@ import { confirmDialog } from "../../features/connections/dialogs";
 import { detectSession } from "../../features/claude/store";
 import { useTabActivity } from "../../features/claude/activity";
 import { KeepAwakeButton } from "../../features/keepawake/KeepAwakeButton";
+import { useQuickCommands } from "../../features/terminal/quickCommands";
 import { UpdateDialog } from "../../features/update/UpdateDialog";
 import { MobileButton, MobileDialog } from "../../features/mobile/MobileDialog";
 import { AppearanceButton, AppearanceDialog } from "../../features/appearance/AppearanceDialog";
@@ -32,6 +33,7 @@ import { startUpdateChecks, useUpdate } from "../../features/update/store";
 import { IS_MAC, IS_MAIN_WINDOW, NEW_WINDOW_SHORTCUT, openNewWindow, takeLaunchTab, type TabTransfer } from "../../lib/windows";
 import "../../store/projectFolders";
 import "../../features/files/openedFiles";
+import { openQuickOpen, QuickOpen, useQuickOpen } from "../../features/files/QuickOpen";
 import { openTab, useTabs } from "../../store/tabs";
 import { useUi, type SidebarView } from "../../store/ui";
 import { TabContent } from "../../tabs/registry";
@@ -99,6 +101,23 @@ export default function AppShell() {
     return () => window.removeEventListener("keydown", h, true);
   }, []);
 
+  // ⌘P / Ctrl+P: Go to File (instead of the webview's Print). In a terminal on Windows / Linux,
+  // Ctrl+P stays with the shell (previous command).
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const mod = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (!mod || e.shiftKey || e.altKey || e.key.toLowerCase() !== "p") return;
+      if (!IS_MAC && (e.target as HTMLElement | null)?.closest?.(".xterm")) return;
+      e.preventDefault();
+      // while it's open, Ctrl+P is the palette's own "move up" (Windows / Linux)
+      if (useQuickOpen.getState().open) return;
+      e.stopPropagation();
+      openQuickOpen();
+    };
+    window.addEventListener("keydown", h, true);
+    return () => window.removeEventListener("keydown", h, true);
+  }, []);
+
   // ⌘/Ctrl + = / - / 0: UI zoom. Inside a terminal the same keys change the terminal font size instead.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -148,6 +167,7 @@ export default function AppShell() {
       <MobileDialog />
       <AppearanceDialog />
       <PairPrompt />
+      <QuickOpen />
       <Toaster theme={toastTheme} position="bottom-right" richColors closeButton />
     </div>
   );
@@ -349,6 +369,13 @@ function Workspace() {
       ...(t.type !== "claude"
         ? [{ label: "Open copy in new window", icon: <Copy className="size-3.5" />, disabled: !transferable, onClick: async () => void openNewWindow(focusId, await tabTransfer(t)) } as MenuItem]
         : []),
+      // Another shell / file browser on the same host (Xshell's duplicate session).
+      ...(t.type === "terminal" || t.type === "sftp"
+        ? [{ label: "Duplicate tab", icon: <CopyPlus className="size-3.5" />, onClick: () => { const { id: _id, title, dirty: _d, ...spec } = t; openTab(spec, title); } } as MenuItem]
+        : []),
+      ...((t.type === "terminal" || t.type === "claude") && !useQuickCommands.getState().visible
+        ? [{ label: "Show quick command bar", icon: <Zap className="size-3.5" />, onClick: () => useQuickCommands.getState().setVisible(true) } as MenuItem]
+        : []),
       "separator",
       { label: "Close", icon: <X className="size-3.5" />, onClick: () => close(t.id) },
       { label: "Close others", disabled: allTabs.length < 2, onClick: () => closeOthers(t.id) },
@@ -366,6 +393,7 @@ function Workspace() {
   );
   const hiddenCount = allTabs.length - tabs.length;
   const connName = (t: Tab) => { const id = tabConnId(t); return id ? connections.find((c) => c.id === id)?.name : undefined; };
+  const connColor = (t: Tab) => { const id = tabConnId(t); return id ? connections.find((c) => c.id === id)?.color : undefined; };
   useEffect(() => {
     if (!tabs.some((t) => t.id === activeId) && tabs.length) activate(tabs[tabs.length - 1].id);
   }, [tabs, activeId, activate]);
@@ -397,6 +425,8 @@ function Workspace() {
             {drag && drag.before === null && i === tabs.length - 1 && drag.id !== t.id && (
               <span className="pointer-events-none absolute inset-y-1 -right-px w-0.5 rounded bg-accent" />
             )}
+            {/* The connection's color (e.g. red for production) under its tabs. */}
+            {connColor(t) && <span className="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 rounded-t" style={{ background: connColor(t)! }} />}
             <TabIcon tab={t} />
             {t.type === "claude" ? <AgentTabTitle tabId={t.id} title={t.title} /> : <span className="truncate">{t.title}</span>}
             {t.dirty && <span className="size-1.5 rounded-full bg-accent" />}

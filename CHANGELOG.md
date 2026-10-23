@@ -10,6 +10,32 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.9.0 - 2026-10-22
+
+- **SSH sessions:** a new "SSH session" connection with host, user, password or key, jump host,
+  start folder and a command to run on login. Double-click opens a terminal; the menu also opens
+  SFTP or an AI workspace on the host. Sessions can save port forwards (`-L`, `-R`, SOCKS) that
+  you start and stop from the sidebar. You can paste images into Claude Code running on the host
+  (#39).
+- **SFTP:** your computer on one side, the host on the other. Copy with buttons, the menu or drag
+  and drop (also from Finder), with a transfer queue showing progress (#39).
+- **Quick commands:** a bar of saved commands under terminals and agent chats, for every session
+  or just one (#39).
+- **Go to File:** **Ctrl+P** / **⌘P** fuzzy-searches every file in the folder,
+  with recently opened files first, like VS Code (#28).
+- **Browser and phone version:** DevCat Agent chats open there with the same chat view as the
+  desktop, including approvals, questions, attachments and the model picker. The activity log says
+  who approved what (#31, #35).
+- **VPN:** OpenVPN profiles with `user` / `group` no longer leave a route behind when they
+  disconnect, which could stop every app, OpenVPN Connect included, from reaching that VPN server
+  after the Wi-Fi address changed (#48).
+- **Fixes** (#38):
+  - Importing in replace mode no longer empties the table when the file can't be read.
+  - Exporting a query result no longer runs `INSERT … RETURNING` / `DELETE … RETURNING` twice.
+  - Saving a file no longer overwrites newer changes made in the same instant.
+  - Read-only connections now also block SQL Server dynamic SQL and PostgreSQL / MySQL read-write
+    transactions.
+
 ## 0.8.2 - 2026-10-22
 
 - **DevCat Agent:**

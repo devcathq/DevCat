@@ -14,6 +14,16 @@ files are marked with their Git status (modified, added, untracked).
 Right-click a file or folder for: **Open preview**, **Blame**, **File history**, **Copy path**, **Copy relative
 path**, **Mention in chat** (copies `@path` for the agent's prompt) and **Reveal in Finder** (Explorer on Windows).
 
+## Go to File
+
+Press <kbd>⌘P</kbd> (<kbd>Ctrl+P</kbd>) to open any file by name, like VS Code's and Cursor's quick open. It searches
+every file in the folder of the tab you're in (or the AI workspace's folder), skipping what Git ignores.
+
+- Type a few letters of the name or path: `ffmt` finds `src/features/files/format.ts`. Matches in the file name
+  come first.
+- With an empty box, the files you opened lately are listed first.
+- <kbd>↑</kbd> / <kbd>↓</kbd> to move, <kbd>Enter</kbd> to open, <kbd>Esc</kbd> to close.
+
 ## Previews
 
 Click a file to open it in a preview tab. DevCat shows:

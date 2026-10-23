@@ -50,6 +50,16 @@ pub fn check(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `check`, except that files under `allowed` (a folder in DevCat's data the phone wrote itself,
+/// like a chat's attachments) are fine; a symlink there that leads elsewhere is checked as usual.
+pub fn check_within(path: &str, allowed: &Path) -> Result<(), String> {
+    let p = Path::new(path);
+    if p.is_absolute() && allowed.canonicalize().is_ok_and(|a| real(p).starts_with(a)) {
+        return Ok(());
+    }
+    check(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +83,15 @@ mod tests {
             assert!(check(&link.join("host.key").to_string_lossy()).is_err());
             let _ = std::fs::remove_file(&link);
         }
+        // A chat's attachments, in DevCat's data: allowed only when attaching to that chat.
+        let att = d.join("agent-attachments/S1");
+        std::fs::create_dir_all(&att).unwrap();
+        std::fs::write(att.join("photo.png"), b"x").unwrap();
+        let photo = att.join("photo.png").to_string_lossy().into_owned();
+        assert!(check(&photo).is_err());
+        assert!(check_within(&photo, &att).is_ok());
+        assert!(check_within(&photo, &d.join("agent-attachments/S2")).is_err());
+        assert!(check_within(&att.join("../../remote/host.key").to_string_lossy(), &att).is_err());
+        assert!(check_within(&d.join("remote/host.key").to_string_lossy(), &att).is_err());
     }
 }

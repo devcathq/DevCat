@@ -43,13 +43,19 @@ pub const WRITES: &[&str] = &[
     "fs_upload",
     "fs_upload_cancel",
     "paste_dir",
+    "agent_send",
+    "agent_attach",
+    "agent_stop",
+    "agent_approve",
+    "agent_answer",
+    "agent_close",
 ];
 
 /// Images / PDFs bigger than this aren't sent to phones (base64 over a phone connection).
 const PHONE_MEDIA_CAP: usize = 12 * 1024 * 1024;
 
 /// Calls too frequent or too private for the audit log (keystrokes, live views).
-pub const NOT_AUDITED: &[&str] = &["pty_write", "pty_resize", "pty_attach", "pty_detach", "net_traffic", "k8s_stream_stop", "agents", "home_dir"];
+pub const NOT_AUDITED: &[&str] = &["pty_write", "pty_resize", "pty_attach", "pty_detach", "net_traffic", "k8s_stream_stop", "agents", "home_dir", "agent_detach", "agent_models"];
 
 /// A file transfer is many calls: log a download once (first piece) and an upload once (last piece).
 pub fn audit_skip(cmd: &str, args: &Value) -> bool {
@@ -85,6 +91,7 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "agents" => Ok(json!({
             "terminals": crate::claude::pty::list(),
             "agents": crate::notify::hooks::all(),
+            "chats": crate::agent::list(),
         })),
         "pty_open" => {
             let cwd: String = a!("cwd");
@@ -94,6 +101,10 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             let rows: u16 = arg(args, "rows").unwrap_or(30);
             let provider: Option<String> = arg(args, "providerId").unwrap_or(None);
             let cwd = expand_home(&cwd);
+            // Saved SSH sessions stay on the computer (their password is typed for them): CLAUDE.md.
+            if cwd.starts_with(&format!("{}{}", crate::claude::remote::SCHEME, crate::claude::remote::SESSION_PREFIX)) {
+                return Err(json!("SSH sessions open from DevCat on your computer only."));
+            }
             let (program, args_, env) = match provider.filter(|p| !p.is_empty()) {
                 Some(pid) => {
                     let l = crate::ai::launch(&pid, args_).await.map_err(|e| json!(e.to_string()))?;
@@ -177,11 +188,79 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "claude_sessions" => out(crate::claude::sessions::claude_sessions(a!("cwd")).await),
         "claude_transcript" => out(crate::claude::sessions::claude_transcript(a!("cwd"), a!("sessionId")).await),
         "ai_providers_list" => out(crate::ai::ai_providers_list().await),
+        // DevCat Agent chats (src-tauri/src/agent.rs): the phone gets `agent-event`s of the chats it opened.
+        "agent_open" => {
+            let session_id: Option<String> = arg(args, "sessionId").unwrap_or(None);
+            if client.readonly() && !session_id.as_deref().is_some_and(crate::agent::exists) {
+                return Err(json!("This phone has read-only access: it can watch chats but not start one."));
+            }
+            let origin = format!("phone:{}", client.device.name);
+            // Attach first: events sent while the chat opens reach the phone (it skips the ones
+            // `open` returns, by `seq`).
+            if let Some(id) = &session_id {
+                client.attach(id);
+            }
+            let opened = match crate::agent::open(expand_home(&arg::<String>(args, "cwd")?), a!("providerId"), session_id.clone(), &origin, &client.device.id).await {
+                Ok(o) => o,
+                Err(e) => {
+                    if let Some(id) = &session_id {
+                        client.detach(id);
+                    }
+                    return Err(json!(e.to_string()));
+                }
+            };
+            client.attach(&opened.session_id);
+            out(Ok(opened))
+        }
+        "agent_detach" => {
+            client.detach(&arg::<String>(args, "sessionId")?);
+            Ok(Value::Null)
+        }
+        "agent_send" => {
+            let session_id: String = a!("sessionId");
+            let attachments: Vec<String> = arg(args, "attachments").unwrap_or_default();
+            if !attachments.is_empty() {
+                // files pasted on the phone are saved in this chat's attachments (agent_attach)
+                let own = crate::agent::attachments_dir(&session_id).map_err(|e| json!(e.to_string()))?;
+                for p in &attachments {
+                    super::paths::check_within(p, &own).map_err(|e| json!(e))?;
+                }
+            }
+            out(crate::agent::agent_send(session_id, a!("text"), a!("policy"), arg(args, "model").unwrap_or(None), Some(attachments), arg(args, "contextWindow").unwrap_or(None)).await)
+        }
+        "agent_attach" => out(crate::agent::agent_attach(a!("sessionId"), a!("name"), a!("data")).await),
+        "agent_stop" => out(crate::agent::agent_stop(a!("sessionId")).await),
+        "agent_approve" => out(crate::agent::agent_approve(a!("sessionId"), a!("toolUseId"), a!("decision")).await),
+        "agent_answer" => out(crate::agent::agent_answer(a!("sessionId"), a!("toolUseId"), a!("answer")).await),
+        "agent_close" => {
+            // Only the phone that started the chat ends it: one in a desktop tab stays open there.
+            let id: String = a!("sessionId");
+            match crate::agent::owner(&id) {
+                Some(o) if o == client.device.id => {}
+                Some(o) if o == "desktop" => return Err(json!("This chat is open on the computer; close its tab there.")),
+                Some(_) => return Err(json!("Another phone started this chat; it can end it there.")),
+                None => {}
+            }
+            client.detach(&id);
+            out(crate::agent::close(&id))
+        }
+        "agent_sessions" => out(crate::agent::agent_sessions(expand_home(&arg::<String>(args, "cwd")?)).await),
+        "agent_models" => {
+            let pid: String = a!("providerId");
+            let (provider, _) = crate::ai::agent_config(&pid).map_err(|e| json!(e.to_string()))?;
+            let settings = provider.agent.ok_or_else(|| json!("Not a DevCat Agent connection"))?;
+            out(crate::ai::ai_agent_models(settings, Some(pid), None).await)
+        }
         "keep_awake_status" => Ok(json!(crate::keep_awake::keep_awake_status())),
         "keep_awake_set" => out(crate::keep_awake::keep_awake_set(a!("on"), arg(args, "minutes").unwrap_or(None)).await),
 
         // ------------------------------------------------ connections & databases
-        "list_connections" => out(commands::connections::list_connections(st()).await),
+        // Without SSH sessions: desktop only (CLAUDE.md), and the app doesn't know the kind.
+        "list_connections" => out(
+            commands::connections::list_connections(st())
+                .await
+                .map(|l| l.into_iter().filter(|c| c.kind != crate::models::ConnectionKind::Ssh).collect::<Vec<_>>()),
+        ),
         "list_projects" => out(commands::projects::list_projects(st()).await),
         "open_connection_ids" => out(commands::connections::open_connection_ids(st()).await),
         "close_connection" => out(commands::connections::close_connection(st(), a!("id")).await),

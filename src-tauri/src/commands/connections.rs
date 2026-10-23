@@ -16,10 +16,16 @@ pub async fn get_connection(state: St, id: String) -> AppResult<ConnectionConfig
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn save_connection(state: St, config: ConnectionConfig) -> AppResult<ConnectionConfig> {
     // Drop any open session so the next use picks up the new settings.
-    if let Some(d) = state.sessions.write().await.remove(&config.id) {
+    let removed = state.sessions.write().await.remove(&config.id);
+    if let Some(d) = removed {
         d.close().await;
     }
     drop_infra_clients(&config.id).await;
+    // An SSH session that can't be used shouldn't save (its folders would just fail later).
+    if config.kind == crate::models::ConnectionKind::Ssh {
+        crate::claude::remote::Session::from_config(&config)?;
+    }
+    crate::claude::remote::forget_session(&config.id).await;
     let mut config = config;
     config.group = None;
     if let Some(pid) = &config.project_id {
@@ -32,10 +38,12 @@ pub async fn save_connection(state: St, config: ConnectionConfig) -> AppResult<C
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_connection(state: St, id: String) -> AppResult<()> {
-    if let Some(d) = state.sessions.write().await.remove(&id) {
+    let removed = state.sessions.write().await.remove(&id);
+    if let Some(d) = removed {
         d.close().await;
     }
     drop_infra_clients(&id).await;
+    crate::claude::remote::forget_session(&id).await;
     state.store.delete(&id)?;
     if let Err(e) = state.bookmarks.remove_for_connection(&id) {
         eprintln!("bookmark cleanup for {id} failed: {e}");
@@ -50,6 +58,7 @@ pub async fn test_connection(config: ConnectionConfig) -> AppResult<String> {
     match config.kind {
         crate::models::ConnectionKind::Kubernetes => crate::infra::k8s::test(&config).await,
         crate::models::ConnectionKind::Rabbitmq => crate::infra::rabbitmq::test(&config).await,
+        crate::models::ConnectionKind::Ssh => crate::claude::remote::test_session(&config).await,
         _ => {
             let d = crate::db::connect(&config).await?;
             let v = d.server_version().await;
@@ -67,7 +76,8 @@ pub async fn open_connection(state: St, id: String) -> AppResult<String> {
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn close_connection(state: St, id: String) -> AppResult<()> {
-    if let Some(d) = state.sessions.write().await.remove(&id) {
+    let removed = state.sessions.write().await.remove(&id);
+    if let Some(d) = removed {
         d.close().await;
     }
     drop_infra_clients(&id).await;

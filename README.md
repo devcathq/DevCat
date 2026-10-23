@@ -37,6 +37,7 @@ RabbitMQ brokers and VPN / SSH tunnels in the same window, grouped by project. I
 | NoSQL | MongoDB, Redis |
 | Infrastructure | Kubernetes (any kubeconfig context), RabbitMQ (management API) |
 | Networking | OpenVPN, WireGuard, SSH tunnels (local forwards + SOCKS proxy) |
+| SSH | Saved sessions (password, key, jump host, start folder), terminal tabs, quick-command bar, SFTP, port forwards, pasting images into agents on the server |
 | Mobile | DevCat Mobile (Android, iPhone): agent notifications and control, databases, Redis, VPNs and Kubernetes through DevCat on your computer |
 
 **Contents:** [Download](#download) · [Tour](#tour) · [Mobile app](#mobile-app) · [Features](#features) ·

@@ -30,7 +30,7 @@ const APPROVE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// App events mirrored to phones (the host filters per phone).
 const FORWARDED: &[&str] = &[
-    "pty-output", "pty-exit", "agent-status", "agent-gone", "net-status", "net-traffic", "net-log", "keep-awake", "k8s-log",
+    "pty-output", "pty-exit", "agent-status", "agent-gone", "agent-event", "agent-chat", "agent-chat-gone", "net-status", "net-traffic", "net-log", "keep-awake", "k8s-log",
     "k8s-log-end", "k8s-watch", "remote-pty-opened",
 ];
 

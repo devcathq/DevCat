@@ -24,8 +24,10 @@ export type TabSpec =
   | { type: "file"; path: string; root?: string | null; blame?: boolean }
   /** Git repository: history graph / working-tree changes / branches / stashes.
    *  path = file-history filter, sha = commit to select in History (consumed once shown). */
-  /** A shell in a folder (local or ssh://…), on its own tab. */
-  | { type: "terminal"; cwd: string }
+  /** A shell in a folder (local or ssh://…), on its own tab. connId = its SSH session. */
+  | { type: "terminal"; cwd: string; connId?: string }
+  /** Files on an SSH host next to this computer's, copied both ways. connId = its SSH session. */
+  | { type: "sftp"; cwd: string; connId?: string }
   /** Markdown note (see features/notes). */
   | { type: "note"; noteId: string }
   | { type: "git"; repo: string; view?: GitView; path?: string | null; sha?: string | null };

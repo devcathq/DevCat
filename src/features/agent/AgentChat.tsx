@@ -4,8 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, Layers, Database, Boxes, ScrollText, Globe, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, FilePlus, FileText, FolderSearch, GitCompare, Search, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square,
-  SquareTerminal, Wrench, X,
+  ArrowUp, Ban, BookOpen, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
@@ -13,75 +12,10 @@ import type { AgentModel, AgentPolicy, AiProvider } from "../../lib/types";
 import { useTabs } from "../../store/tabs";
 import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
-import { basename } from "../claude/util";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { answer, answerQuestion, attach, closeChat, connectionModels, contextWindow, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent, type Item, type ToolStatus } from "./store";
-
-type ToolItem = Extract<Item, { kind: "tool" }>;
-
-const POLICIES: { id: AgentPolicy; label: string; hint: string }[] = [
-  { id: "ask", label: "Ask first", hint: "Ask before every file edit and command" },
-  { id: "auto-edit", label: "Auto-edit", hint: "Edit files in the project without asking; ask before commands" },
-  { id: "bypass", label: "Full access", hint: "Never ask: edits and commands run right away" },
-];
-
-const SUGGESTIONS = ["Explain how this project is organized", "Find and fix failing tests", "Review my uncommitted changes for bugs"];
-
-const str = (v: unknown) => (typeof v === "string" ? v : "");
-const lines = (s: string) => (s ? s.replace(/\n$/, "").split("\n").length : 0);
-
-type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
-const todoList = (input: Record<string, unknown> | null): Todo[] => (Array.isArray(input?.todos) ? (input.todos as Todo[]).filter((t) => t && typeof t.content === "string") : []);
-
-/** `path` relative to the project folder when it's inside it (the rows stay short). */
-function rel(path: string, cwd?: string) {
-  if (!cwd || !path) return path;
-  const base = cwd.replace(/[\\/]+$/, "");
-  const fold = (s: string) => s.replace(/\\/g, "/").toLowerCase();
-  if (fold(path) === fold(base)) return ".";
-  return fold(path).startsWith(fold(base) + "/") ? path.slice(base.length + 1) : path;
-}
-
-/** How a tool step reads: icon, verb, target and changed lines. */
-function describe(name: string, input: Record<string, unknown> | null, status: ToolStatus, cwd?: string) {
-  const done = status === "done" || status === "error" || status === "denied";
-  const i = input ?? {};
-  switch (name) {
-    case "read": return { icon: FileText, verb: done ? "Read" : "Reading", target: rel(str(i.path), cwd) };
-    case "write": return { icon: FilePlus, verb: done ? "Wrote" : "Writing", target: rel(str(i.path), cwd), plus: lines(str(i.content)), minus: 0 };
-    case "edit": return { icon: FilePen, verb: done ? "Edited" : "Editing", target: rel(str(i.path), cwd), plus: lines(str(i.new_string)), minus: lines(str(i.old_string)) };
-    case "glob": return { icon: FolderSearch, verb: done ? "Found files" : "Finding files", target: str(i.pattern) };
-    case "grep": return { icon: Search, verb: done ? "Searched" : "Searching", target: str(i.pattern) };
-    case "shell": return { icon: SquareTerminal, verb: done ? "Ran" : "Running", target: str(i.command) };
-    case "ask_user": return { icon: MessageCircleQuestion, verb: done ? "Asked" : "Asking", target: str(i.question) };
-    case "web_fetch": return { icon: Globe, verb: done ? "Fetched" : "Fetching", target: str(i.url) };
-    case "devcat_connections": return { icon: Database, verb: done ? "Listed connections" : "Listing connections", target: "" };
-    case "db_schema": return { icon: Database, verb: done ? "Read the schema of" : "Reading the schema of", target: [str(i.connection), str(i.table)].filter(Boolean).join(" · ") };
-    case "db_query": return { icon: Database, verb: done ? "Queried" : "Querying", target: `${str(i.connection)}: ${str(i.query).replace(/\s+/g, " ")}` };
-    case "k8s_get": return { icon: Boxes, verb: done ? "Got" : "Getting", target: `${str(i.connection)}: ${[str(i.kind), str(i.name)].filter(Boolean).join(" ")}${i.namespace ? ` -n ${str(i.namespace)}` : ""}` };
-    case "k8s_logs": return { icon: ScrollText, verb: done ? "Read logs of" : "Reading logs of", target: `${str(i.connection)}: ${str(i.namespace)}/${str(i.pod)}` };
-    case "todo_write": {
-      const todos = todoList(i);
-      return { icon: ListTodo, verb: "Updated the plan", target: todos.length ? `${todos.filter((t) => t.status === "completed").length}/${todos.length} done` : "" };
-    }
-    default:
-      if (name.startsWith("mcp__")) {
-        const [, server, tool] = name.split("__");
-        return { icon: Plug, verb: done ? "Used" : "Using", target: `${server} · ${tool}` };
-      }
-      return { icon: Wrench, verb: name, target: "" };
-  }
-}
-
-function fmtTokens(n: number) {
-  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-}
-
-function fmtDuration(ms: number) {
-  const s = Math.max(1, Math.round(ms / 1000));
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-}
+import { POLICIES, SUGGESTIONS, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent } from "./store";
 
 export default function AgentChat({ tabId, cwd, provider, visible, onReview }: { tabId: string; cwd: string; provider: AiProvider; visible: boolean; onReview: () => void }) {
   const chat = useAgent((s) => s.chats[tabId]);
@@ -200,70 +134,6 @@ function Welcome({ tabId, cwd }: { tabId: string; cwd: string }) {
       </div>
     </div>
   );
-}
-
-/** A step the conversation folds away: a tool call that needs nothing from the user, or reasoning
- *  that came without an answer. */
-function isStep(it: Item) {
-  if (it.kind === "tool") return !(it.status === "approval" && it.request) && !(it.status === "question" && it.question);
-  return it.kind === "answer" && !it.text.trim();
-}
-
-type Block = { kind: "item"; item: Item; n: number } | { kind: "steps"; items: Item[]; last: number };
-
-/** Runs of two or more steps become one foldable group; everything else shows as it is. */
-function toBlocks(items: Item[]): Block[] {
-  const out: Block[] = [];
-  let run: { items: Item[]; start: number } | null = null;
-  const flush = () => {
-    if (!run) return;
-    if (run.items.length > 1) out.push({ kind: "steps", items: run.items, last: run.start + run.items.length - 1 });
-    else out.push({ kind: "item", item: run.items[0], n: run.start });
-    run = null;
-  };
-  items.forEach((it, n) => {
-    if (isStep(it)) {
-      if (run) run.items.push(it);
-      else run = { items: [it], start: n };
-    } else {
-      flush();
-      out.push({ kind: "item", item: it, n });
-    }
-  });
-  flush();
-  return out;
-}
-
-/** "read 6 files · 14 searches · ran 3 commands · 2 failed" for a group of steps. */
-function summarize(items: Item[]) {
-  const reads = new Set<string>(), edits = new Set<string>();
-  let searches = 0, commands = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0;
-  for (const it of items) {
-    if (it.kind === "answer") thinkingMs += it.thinkingMs ?? 0;
-    if (it.kind !== "tool") continue;
-    if (it.status === "error") failed++;
-    const target = str(it.input?.path) || str(it.input?.pattern);
-    if (it.name === "read") reads.add(target);
-    else if (it.name === "edit" || it.name === "write") edits.add(target);
-    else if (it.name === "glob" || it.name === "grep") searches++;
-    else if (it.name === "shell") commands++;
-    else if (it.name === "web_fetch") fetches++;
-    else if (it.name === "db_query" || it.name === "db_schema" || it.name === "k8s_get" || it.name === "k8s_logs") queries++;
-    else if (it.name === "devcat_connections") continue;
-    else if (it.name !== "todo_write") tools++;
-  }
-  const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
-  const parts = [
-    reads.size && `read ${n(reads.size, "file")}`,
-    edits.size && `edited ${n(edits.size, "file")}`,
-    searches && n(searches, "search", "searches"),
-    commands && `ran ${n(commands, "command")}`,
-    fetches && `fetched ${n(fetches, "page")}`,
-    queries && n(queries, "query", "queries"),
-    tools && `used ${n(tools, "tool")}`,
-  ].filter(Boolean) as string[];
-  if (!parts.length && thinkingMs) parts.push(`thought for ${fmtDuration(thinkingMs)}`);
-  return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools && !queries };
 }
 
 /** A run of steps folded into one line; the step in progress shows under it while it runs. */
@@ -435,11 +305,7 @@ function Code({ children, muted, danger }: { children: ReactNode; muted?: boolea
 }
 
 function Diff({ before, after, max = 200 }: { before: string; after: string; max?: number }) {
-  const rows = useMemo(() => {
-    const del = before ? before.replace(/\n$/, "").split("\n").map((l) => ["-", l] as const) : [];
-    const add = after ? after.replace(/\n$/, "").split("\n").map((l) => ["+", l] as const) : [];
-    return [...del, ...add];
-  }, [before, after]);
+  const rows = useMemo(() => diffRows(before, after), [before, after]);
   const shown = rows.slice(0, max);
   return (
     <div className="max-h-80 overflow-auto rounded-md border border-line bg-panel py-1 font-mono text-[11.5px] leading-relaxed">
@@ -589,16 +455,7 @@ function TurnEnd({ item }: { item: Extract<Item, { kind: "end" }> }) {
 
 /** Files this chat changed, with a shortcut to the Diff view (like Zed's edits bar). */
 function EditedFiles({ items, onReview }: { items: Item[]; onReview: () => void }) {
-  const files = useMemo(() => {
-    const m = new Map<string, { plus: number; minus: number }>();
-    for (const it of items) {
-      if (it.kind !== "tool" || it.status !== "done" || (it.name !== "edit" && it.name !== "write")) continue;
-      const d = describe(it.name, it.input, it.status);
-      const f = m.get(d.target) ?? { plus: 0, minus: 0 };
-      m.set(d.target, { plus: f.plus + (d.plus ?? 0), minus: f.minus + (d.minus ?? 0) });
-    }
-    return [...m.entries()];
-  }, [items]);
+  const files = useMemo(() => editedFiles(items), [items]);
   if (!files.length) return null;
   const plus = files.reduce((n, [, f]) => n + f.plus, 0);
   const minus = files.reduce((n, [, f]) => n + f.minus, 0);

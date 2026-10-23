@@ -8,6 +8,7 @@ Every shortcut in one place. On Windows and Linux, ⌘ is Ctrl and ⌥ is Alt.
 | --- | --- | --- |
 | Hide or show the sidebar | <kbd>⌘B</kbd> | <kbd>Ctrl+B</kbd> (not inside a terminal) |
 | New window | <kbd>⇧⌘N</kbd> | <kbd>Ctrl+Shift+N</kbd> |
+| Go to File (search the folder's files by name) | <kbd>⌘P</kbd> | <kbd>Ctrl+P</kbd> (not inside a terminal) |
 
 ## AI workspace
 

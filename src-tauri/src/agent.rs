@@ -1,6 +1,9 @@
 //! DevCat Agent in the app: runs `crates/harness` sessions for the AI workspace's chat tabs.
 //! Everything a turn does is sent to the window as `agent-event` ({ sessionId, event }); tool calls
 //! that need approval wait for `agent_approve` (closing the tab or stopping counts as a no).
+//! Paired phones open the same chats (remote/dispatch.rs): the events of a running turn are kept,
+//! numbered, so a chat opened in the middle of a turn catches up; `agent-chat` tells them when a
+//! chat starts working, needs the user or finishes.
 use crate::error::{AppError, AppResult};
 use async_trait::async_trait;
 use devcat_harness::approval::{ApprovalRequest, Decision, Question};
@@ -15,7 +18,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::oneshot;
 
 static DIR: OnceCell<PathBuf> = OnceCell::new();
@@ -32,6 +35,17 @@ fn dir() -> AppResult<&'static PathBuf> {
 
 struct Run {
     id: String,
+    cwd: String,
+    provider_id: String,
+    provider_name: String,
+    /// Where the chat was opened: "desktop" or "phone:<name>".
+    origin: String,
+    /// Who opened it: "desktop" or the phone's device id (only they end it).
+    owner: String,
+    /// The session as of the last finished turn (a running turn holds `turn`).
+    log: Mutex<Snapshot>,
+    /// When it last started or finished working (ms).
+    since: AtomicU64,
     /// The connection's model API (with its key); the chat can switch `model`.
     cfg: devcat_harness::LlmConfig,
     turn: tokio::sync::Mutex<(Agent, Session)>,
@@ -66,8 +80,33 @@ pub struct McpInfo {
     pub tools: usize,
 }
 
+#[derive(Clone, Default)]
+struct Snapshot {
+    events: Vec<SessionEvent>,
+    title: String,
+    usage: Usage,
+    model: String,
+}
+
+impl Snapshot {
+    fn of(agent: &Agent, session: &Session) -> Self {
+        Snapshot { events: session.events().to_vec(), title: session.title(), usage: session.usage(), model: agent.model.name() }
+    }
+}
+
+/// Events of the running turn, numbered (`seq`) so a chat opened meanwhile skips what it got.
+#[derive(Default)]
+struct Live {
+    seq: u64,
+    events: Vec<Value>,
+}
+
 fn emit(session_id: &str, event: Value) {
     crate::events::emit("agent-event", json!({ "sessionId": session_id, "event": event }));
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// Asks the window: sends the request as an event and waits for `agent_approve` (or, for a
@@ -76,6 +115,7 @@ struct UiApprover {
     session_id: String,
     pending: Mutex<HashMap<String, oneshot::Sender<Decision>>>,
     questions: Mutex<HashMap<String, oneshot::Sender<String>>>,
+    live: Mutex<Live>,
 }
 
 #[async_trait]
@@ -83,7 +123,8 @@ impl Approver for UiApprover {
     async fn decide(&self, req: &ApprovalRequest) -> (Decision, String) {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(req.tool_use_id.clone(), tx);
-        emit(&self.session_id, json!({ "type": "approval", "request": req }));
+        self.send(json!({ "type": "approval", "request": req }));
+        chat_changed(&self.session_id);
         match rx.await {
             Ok(d) => (d, "user".into()),
             // the tab was closed or the turn stopped: fail closed
@@ -94,7 +135,8 @@ impl Approver for UiApprover {
     async fn ask(&self, q: &Question) -> Option<String> {
         let (tx, rx) = oneshot::channel();
         self.questions.lock().insert(q.tool_use_id.clone(), tx);
-        emit(&self.session_id, json!({ "type": "question", "question": q }));
+        self.send(json!({ "type": "question", "question": q }));
+        chat_changed(&self.session_id);
         rx.await.ok()
     }
 }
@@ -103,6 +145,98 @@ impl UiApprover {
     fn deny_all(&self) {
         self.pending.lock().clear();
         self.questions.lock().clear();
+    }
+
+    /// Send an event of the turn, and keep it for chats opened before the turn ends.
+    fn send(&self, event: Value) {
+        self.send_with(&mut self.live.lock(), event);
+    }
+
+    /// `send` with `live` already locked.
+    fn send_with(&self, live: &mut Live, event: Value) {
+        live.seq += 1;
+        if event["type"] == "turnStart" {
+            live.events.clear();
+        }
+        live.events.push(event.clone());
+        crate::events::emit("agent-event", json!({ "sessionId": self.session_id, "event": event, "seq": live.seq }));
+    }
+
+    /// What the chat waits for: the command or edit to approve, or the question.
+    fn waiting(&self) -> Option<String> {
+        let (pending, questions) = (self.pending.lock(), self.questions.lock());
+        self.live.lock().events.iter().rev().find_map(|e| match e["type"].as_str() {
+            Some("approval") if pending.contains_key(e["request"]["toolUseId"].as_str()?) => {
+                let verb = match e["request"]["kind"].as_str() {
+                    Some("exec") => "Run",
+                    Some("edit") | Some("edit-outside") => "Edit",
+                    _ => "Allow",
+                };
+                Some(format!("{verb}: {}", e["request"]["summary"].as_str()?))
+            }
+            Some("question") if questions.contains_key(e["question"]["toolUseId"].as_str()?) => e["question"]["question"].as_str().map(String::from),
+            _ => None,
+        })
+    }
+}
+
+/// A chat that's open (in a tab or on a phone), for the phone's list.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatInfo {
+    pub session_id: String,
+    pub cwd: String,
+    pub title: String,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub origin: String,
+    pub busy: bool,
+    /// What it asks the user, while it waits.
+    pub waiting: Option<String>,
+    pub since: u64,
+}
+
+fn info(run: &Run) -> ChatInfo {
+    ChatInfo {
+        session_id: run.id.clone(),
+        cwd: run.cwd.clone(),
+        title: run.log.lock().title.clone(),
+        provider_id: run.provider_id.clone(),
+        provider_name: run.provider_name.clone(),
+        origin: run.origin.clone(),
+        busy: run.busy.load(Ordering::SeqCst),
+        waiting: run.approver.waiting(),
+        since: run.since.load(Ordering::SeqCst),
+    }
+}
+
+/// Open chats that have been used, newest activity first.
+pub fn list() -> Vec<ChatInfo> {
+    let runs: Vec<Arc<Run>> = RUNS.lock().values().cloned().collect();
+    let mut out: Vec<ChatInfo> = runs
+        .iter()
+        .filter(|r| r.busy.load(Ordering::SeqCst) || r.log.lock().events.iter().any(|e| matches!(e, SessionEvent::User { .. })))
+        .map(|r| info(r))
+        .collect();
+    out.sort_by(|a, b| b.since.cmp(&a.since));
+    out
+}
+
+/// Who opened a chat ("desktop" / a phone's device id), if it's open.
+pub fn owner(session_id: &str) -> Option<String> {
+    RUNS.lock().get(session_id).map(|r| r.owner.clone())
+}
+
+/// A chat that's running, or saved on disk.
+pub fn exists(session_id: &str) -> bool {
+    RUNS.lock().contains_key(session_id) || (valid_id(session_id) && dir().is_ok_and(|d| d.join(format!("{session_id}.jsonl")).exists()))
+}
+
+/// Tell phones a chat started or stopped working or waiting.
+fn chat_changed(session_id: &str) {
+    let run = RUNS.lock().get(session_id).cloned();
+    if let Some(run) = run {
+        crate::events::emit("agent-chat", info(&run));
     }
 }
 
@@ -118,6 +252,10 @@ pub struct AgentOpened {
     pub events: Vec<SessionEvent>,
     pub usage: Usage,
     pub context: AgentContext,
+    /// While a turn runs: its events so far (applied after `events`), and the number of the last
+    /// one (later `agent-event`s carry higher ones).
+    pub live: Vec<Value>,
+    pub seq: u64,
 }
 
 fn today() -> String {
@@ -127,10 +265,10 @@ fn today() -> String {
 /// MCP servers get this long to start; the chat works without them meanwhile.
 const MCP_START: std::time::Duration = std::time::Duration::from_secs(25);
 
-async fn build(cwd: &str, provider_id: &str, session: Session) -> AppResult<Arc<Run>> {
-    let (_, cfg) = crate::ai::agent_config(provider_id)?;
+async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, owner: &str) -> AppResult<Arc<Run>> {
+    let (provider, cfg) = crate::ai::agent_config(provider_id)?;
     let id = session.id.clone();
-    let approver = Arc::new(UiApprover { session_id: id.clone(), pending: Mutex::default(), questions: Mutex::default() });
+    let approver = Arc::new(UiApprover { session_id: id.clone(), pending: Mutex::default(), questions: Mutex::default(), live: Mutex::default() });
     let dir = std::path::Path::new(cwd);
     let home = home_dir();
     let shell = if cfg!(windows) { "PowerShell" } else { "bash" };
@@ -150,8 +288,16 @@ async fn build(cwd: &str, provider_id: &str, session: Session) -> AppResult<Arc<
     crate::agent_tools::add(&mut tools);
     context.connections = crate::agent_tools::names();
     let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
+    let log = Snapshot::of(&agent, &session);
     let run = Arc::new(Run {
         id,
+        cwd: cwd.to_string(),
+        provider_id: provider_id.to_string(),
+        provider_name: provider.name,
+        origin: origin.to_string(),
+        owner: owner.to_string(),
+        log: Mutex::new(log),
+        since: AtomicU64::new(now_ms()),
         cfg,
         turn: tokio::sync::Mutex::new((agent, session)),
         cancel: Mutex::new(Cancel::default()),
@@ -195,24 +341,51 @@ async fn build(cwd: &str, provider_id: &str, session: Session) -> AppResult<Arc<
 /// Open a chat: a new session, or `session_id` to continue one (still running or from disk).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_open(cwd: String, provider_id: String, session_id: Option<String>) -> AppResult<AgentOpened> {
-    let (provider, cfg) = crate::ai::agent_config(&provider_id)?;
+    open(cwd, provider_id, session_id, "desktop", "desktop").await
+}
+
+/// `agent_open` for the window or a phone (`origin`: "desktop" / "phone:<name>", `owner`:
+/// "desktop" / the phone's device id; both kept from whoever opened the chat first).
+pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, origin: &str, owner: &str) -> AppResult<AgentOpened> {
     let existing = session_id.as_ref().and_then(|id| RUNS.lock().get(id).cloned());
     let run = match (existing, session_id) {
         (Some(r), _) => r,
         (None, Some(id)) if valid_id(&id) && dir()?.join(format!("{id}.jsonl")).exists() => {
             let session = Session::open(&dir()?.join(format!("{id}.jsonl"))).await.map_err(|e| AppError::msg(e.to_string()))?;
-            build(&cwd, &provider_id, session).await?
+            build(&cwd, &provider_id, session, origin, owner).await?
         }
-        _ => build(&cwd, &provider_id, Session::create(dir()?, &cwd).await.map_err(|e| AppError::msg(e.to_string()))?).await?,
+        _ => build(&cwd, &provider_id, Session::create(dir()?, &cwd).await.map_err(|e| AppError::msg(e.to_string()))?, origin, owner).await?,
     };
     RUNS.lock().insert(run.id.clone(), run.clone());
-    let busy = run.busy.load(Ordering::SeqCst);
-    // a running turn holds the lock: send what we can without waiting for it
-    let (events, title, usage) = match run.turn.try_lock() {
-        Ok(g) => (g.1.events().to_vec(), g.1.title(), g.1.usage()),
-        Err(_) => (vec![], String::new(), Usage::default()),
+    // While a turn runs: the session as it was when the turn started, and the turn's events so
+    // far. A turn ends (log updated, `live` cleared, `turnEnd` sent, not busy) all under `live`,
+    // so holding it here, `log` and `live` never both hold the same turn. (Locks: `live`, then
+    // `turn` without waiting, then `log`.)
+    let (snap, live, seq, busy) = {
+        let l = run.approver.live.lock();
+        let busy = run.busy.load(Ordering::SeqCst);
+        if busy {
+            (run.log.lock().clone(), l.events.clone(), l.seq, busy)
+        } else {
+            let snap = match run.turn.try_lock() {
+                Ok(g) => Snapshot::of(&g.0, &g.1),
+                Err(_) => run.log.lock().clone(),
+            };
+            (snap, vec![], l.seq, busy)
+        }
     };
-    Ok(AgentOpened { session_id: run.id.clone(), title, model: cfg.model, provider_name: provider.name, busy, events, usage, context: run.context.lock().clone() })
+    Ok(AgentOpened {
+        session_id: run.id.clone(),
+        title: snap.title,
+        model: snap.model,
+        provider_name: run.provider_name.clone(),
+        busy,
+        events: snap.events,
+        usage: snap.usage,
+        context: run.context.lock().clone(),
+        live,
+        seq,
+    })
 }
 
 fn valid_id(id: &str) -> bool {
@@ -243,7 +416,7 @@ pub async fn agent_attach(session_id: String, name: String, data: String) -> App
     }
     let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " ._-()".contains(c) { c } else { '_' }).collect();
     let safe = if safe.trim().is_empty() || safe.starts_with('.') { format!("file{safe}") } else { safe };
-    let folder = dir()?.parent().unwrap_or(dir()?).join("agent-attachments").join(&session_id);
+    let folder = attachments_dir(&session_id)?;
     tokio::fs::create_dir_all(&folder).await?;
     // don't overwrite an earlier attachment with the same name
     let mut path = folder.join(&safe);
@@ -254,6 +427,14 @@ pub async fn agent_attach(session_id: String, name: String, data: String) -> App
     }
     tokio::fs::write(&path, bytes).await?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Where a chat's dropped or pasted files are saved: `<data>/agent-attachments/<id>`.
+pub fn attachments_dir(session_id: &str) -> AppResult<PathBuf> {
+    if !valid_id(session_id) {
+        return Err(AppError::msg("Invalid chat"));
+    }
+    Ok(dir()?.parent().unwrap_or(dir()?).join("agent-attachments").join(session_id))
 }
 
 /// The message as the model gets it: the text, a list of the attached files, and the images.
@@ -300,6 +481,7 @@ pub async fn agent_answer(session_id: String, tool_use_id: String, answer: Strin
     let run = run_of(&session_id)?;
     let tx = run.approver.questions.lock().remove(&tool_use_id).ok_or_else(|| AppError::msg("That question was already answered"))?;
     let _ = tx.send(answer);
+    chat_changed(&session_id);
     Ok(())
 }
 
@@ -318,9 +500,12 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
     }
     let cancel = Cancel::default();
     *run.cancel.lock() = cancel.clone();
+    run.since.store(now_ms(), Ordering::SeqCst);
     tokio::spawn(async move {
         let started = std::time::Instant::now();
-        emit(&run.id, json!({ "type": "turnStart", "text": text, "attachments": attachments }));
+        let ap = run.approver.clone();
+        ap.send(json!({ "type": "turnStart", "text": text, "attachments": attachments }));
+        chat_changed(&run.id);
         let (message, images) = with_attachments(&text, &attachments).await;
         let mut g = run.turn.lock().await;
         let (agent, session) = &mut *g;
@@ -329,8 +514,7 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
             agent.model = Arc::new(Llm::new(devcat_harness::LlmConfig { model: m, ..run.cfg.clone() }));
         }
         agent.context_window = context_window.filter(|&w| w > 0);
-        let id = run.id.clone();
-        let mut on = |e: AgentEvent| emit(&id, serde_json::to_value(&e).unwrap_or(Value::Null));
+        let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
         // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
         let compact = text.trim().strip_prefix("/compact").filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
         let res = match compact {
@@ -342,11 +526,19 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
             Err(devcat_harness::Error::Cancelled) => (json!("stopped"), None),
             Err(e) => (json!("error"), Some(e.to_string())),
         };
-        let usage = session.usage();
-        let title = session.title();
+        let snap = Snapshot::of(agent, session);
         drop(g);
-        run.busy.store(false, Ordering::SeqCst);
-        emit(&run.id, json!({ "type": "turnEnd", "end": end, "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64 }));
+        // All at once for `open`: the turn moves from `live` to `log`, and the chat is done.
+        {
+            let mut live = ap.live.lock();
+            let (usage, title) = (snap.usage.clone(), snap.title.clone());
+            *run.log.lock() = snap;
+            ap.send_with(&mut live, json!({ "type": "turnEnd", "end": end, "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64 }));
+            live.events.clear();
+            run.since.store(now_ms(), Ordering::SeqCst);
+            run.busy.store(false, Ordering::SeqCst);
+        }
+        chat_changed(&run.id);
     });
     Ok(())
 }
@@ -366,15 +558,27 @@ pub async fn agent_approve(session_id: String, tool_use_id: String, decision: De
     let run = run_of(&session_id)?;
     let tx = run.approver.pending.lock().remove(&tool_use_id).ok_or_else(|| AppError::msg("That request was already answered"))?;
     let _ = tx.send(decision);
+    chat_changed(&session_id);
     Ok(())
 }
 
-/// Forget a chat (its tab closed); a running turn is stopped.
+/// A chat's tab closed: forget it and stop a running turn, unless a phone started it (that
+/// phone ends it).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_close(session_id: String) -> AppResult<()> {
-    if let Some(run) = RUNS.lock().remove(&session_id) {
+    if owner(&session_id).is_some_and(|o| o != "desktop") {
+        return Ok(());
+    }
+    close(&session_id)
+}
+
+/// End a chat: forget it; a running turn is stopped.
+pub fn close(session_id: &str) -> AppResult<()> {
+    let run = RUNS.lock().remove(session_id);
+    if let Some(run) = run {
         run.cancel.lock().cancel();
         run.approver.deny_all();
+        crate::events::emit("agent-chat-gone", json!({ "sessionId": session_id }));
     }
     Ok(())
 }
@@ -444,5 +648,34 @@ pub fn shutdown_all() {
     for run in RUNS.lock().drain().map(|(_, r)| r) {
         run.cancel.lock().cancel();
         run.approver.deny_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_events_are_numbered_kept_per_turn_and_show_what_waits() {
+        let ap = UiApprover { session_id: "S".into(), pending: Mutex::default(), questions: Mutex::default(), live: Mutex::default() };
+        ap.send(json!({ "type": "turnStart", "text": "hi" }));
+        ap.send(json!({ "type": "approval", "request": { "toolUseId": "t1", "kind": "exec", "summary": "cargo test" } }));
+        assert_eq!(ap.live.lock().seq, 2);
+        assert_eq!(ap.live.lock().events.len(), 2);
+        // only while the request is still open
+        assert_eq!(ap.waiting(), None);
+        let (tx, _rx) = oneshot::channel();
+        ap.pending.lock().insert("t1".into(), tx);
+        assert_eq!(ap.waiting().as_deref(), Some("Run: cargo test"));
+        ap.send(json!({ "type": "question", "question": { "toolUseId": "q1", "question": "Which one?" } }));
+        let (tx, _rx2) = oneshot::channel();
+        ap.questions.lock().insert("q1".into(), tx);
+        assert_eq!(ap.waiting().as_deref(), Some("Which one?"));
+        ap.deny_all();
+        assert_eq!(ap.waiting(), None);
+        // a new turn starts a new list; the numbers keep counting
+        ap.send(json!({ "type": "turnStart", "text": "again" }));
+        let live = ap.live.lock();
+        assert_eq!((live.seq, live.events.len()), (4, 1));
     }
 }

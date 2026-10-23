@@ -62,6 +62,33 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "git_discard" => out(c!(git::git_discard, "cwd", "paths", "includeStaged")),
         "git_discard_all" => out(c!(git::git_discard_all, "cwd", "includeUntracked")),
         "git_commit" => out(c!(git::git_commit, "cwd", "message", "paths")),
+        // SSH sessions, terminals, SFTP: a throwaway connection store and in-memory secrets
+        // (see `serve`); events come back through `__events`.
+        "__events" => Ok(Value::Array(std::mem::take(&mut *EVENTS.lock()))),
+        "list_connections" => out(crate::commands::connections::list_connections(crate::state::St::get()).await),
+        "get_connection" => out(crate::commands::connections::get_connection(crate::state::St::get(), arg(args, "id")?).await),
+        "save_connection" => out(crate::commands::connections::save_connection(crate::state::St::get(), arg(args, "config")?).await),
+        "delete_connection" => out(crate::commands::connections::delete_connection(crate::state::St::get(), arg(args, "id")?).await),
+        "test_connection" => out(c!(crate::commands::connections::test_connection, "config")),
+        "net_ssh_config_hosts" => out(c!(crate::network::net_ssh_config_hosts)),
+        "pty_open" => {
+            let (cwd, program, a, cols, rows): (String, Option<String>, Vec<String>, u16, u16) =
+                (arg(args, "cwd")?, arg(args, "program")?, arg(args, "args")?, arg(args, "cols")?, arg(args, "rows")?);
+            out(crate::claude::pty::open(crate::events::sink(), &cwd, program, a, vec![], cols, rows, "desktop").await)
+        }
+        "pty_write" => out(c!(crate::claude::pty::pty_write, "id", "data")),
+        "pty_resize" => out(c!(crate::claude::pty::pty_resize, "id", "cols", "rows")),
+        "pty_close" => out(c!(crate::claude::pty::pty_close, "id")),
+        "remote_paste_image" => out(c!(crate::claude::sftp::remote_paste_image, "cwd", "data", "name")),
+        "remote_stage_files" => out(c!(crate::claude::sftp::remote_stage_files, "cwd", "paths")),
+        "sftp_mkdir" => out(c!(crate::claude::sftp::sftp_mkdir, "path")),
+        "sftp_rename" => out(c!(crate::claude::sftp::sftp_rename, "path", "name")),
+        "sftp_delete" => out(c!(crate::claude::sftp::sftp_delete, "paths")),
+        "sftp_transfer" => out(c!(crate::claude::sftp::sftp_transfer, "jobId", "items")),
+        "sftp_cancel" => out(c!(crate::claude::sftp::sftp_cancel, "jobId")),
+        "ssh_forward_start" => out(c!(crate::claude::ssh_forward::ssh_forward_start, "connId")),
+        "ssh_forward_stop" => out(c!(crate::claude::ssh_forward::ssh_forward_stop, "connId")),
+        "ssh_forward_list" => out(c!(crate::claude::ssh_forward::ssh_forward_list)),
         "fs_list" => out(c!(files::fs_list, "dir", "showIgnored")),
         "remote_resolve_dir" => out(c!(crate::claude::remote::remote_resolve_dir, "uri")),
         "fs_preview" => out(c!(files::fs_preview, "path")),
@@ -104,11 +131,40 @@ fn bridge_stores() -> &'static (crate::notes::NoteStore, crate::projects::Projec
     })
 }
 
+/// Backend events since the page last asked (the browser polls `__events`).
+static EVENTS: parking_lot::Mutex<Vec<Value>> = parking_lot::Mutex::new(Vec::new());
+
+/// `host[:port]` naming this machine's loopback interface.
+fn is_local_authority(a: &str) -> bool {
+    let host = match a.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(""),
+        None => a.rsplit_once(':').map_or(a, |(h, _)| h),
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+fn is_local_origin(o: &str) -> bool {
+    o.strip_prefix("http://").or_else(|| o.strip_prefix("https://")).is_some_and(is_local_authority)
+}
+
 /// Serve until the process is killed.
 pub async fn serve(port: u16) -> std::io::Result<()> {
     if let Some(d) = dirs::data_dir() {
         crate::ai::init(d.join("dev.devcat.app"));
     }
+    // Connections (SSH sessions) in the throwaway folder, secrets in memory: never the real app's.
+    crate::secrets::memory_only();
+    let d = std::env::temp_dir().join(format!("devcat-bridge-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&d);
+    crate::state::init(d);
+    crate::events::add_tap(|event, payload| {
+        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward") {
+            let mut q = EVENTS.lock();
+            if q.len() < 20_000 {
+                q.push(json!({ "event": event, "payload": payload }));
+            }
+        }
+    });
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     eprintln!("devbridge listening on http://127.0.0.1:{port}");
     loop {
@@ -117,15 +173,24 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
             let mut buf = Vec::new();
             let mut tmp = [0u8; 64 * 1024];
             // read headers + body (Content-Length)
-            let (head_end, len) = loop {
+            let (head_end, len, head) = loop {
                 let n = match sock.read(&mut tmp).await { Ok(0) | Err(_) => return, Ok(n) => n };
                 buf.extend_from_slice(&tmp[..n]);
                 if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
                     let head = String::from_utf8_lossy(&buf[..i]).to_ascii_lowercase();
                     let len = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0usize);
-                    break (i + 4, len);
+                    break (i + 4, len, head);
                 }
             };
+            // Only the local dev frontend may call in: any other web page (or a DNS-rebound
+            // hostname) would otherwise get file, git and shell access through this port.
+            let header = |name: &str| head.lines().find_map(|l| l.strip_prefix(name)).map(|v| v.trim().to_string());
+            let origin = header("origin:");
+            if !header("host:").is_some_and(|h| is_local_authority(&h)) || origin.as_deref().is_some_and(|o| !is_local_origin(o)) {
+                let _ = sock.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                return;
+            }
+            let allow_origin = origin.unwrap_or_else(|| "null".into());
             while buf.len() < head_end + len {
                 let n = match sock.read(&mut tmp).await { Ok(0) | Err(_) => return, Ok(n) => n };
                 buf.extend_from_slice(&tmp[..n]);
@@ -146,10 +211,28 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
                 }
             };
             let resp = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: content-type\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nVary: Origin\r\nAccess-Control-Allow-Headers: content-type\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = sock.write_all(resp.as_bytes()).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_local_callers() {
+        for ok in ["127.0.0.1:1430", "localhost:1430", "localhost", "[::1]:1430"] {
+            assert!(is_local_authority(ok), "{ok}");
+        }
+        for bad in ["evil.example:1430", "127.0.0.1.evil.example", "192.168.1.5:1430", ""] {
+            assert!(!is_local_authority(bad), "{bad}");
+        }
+        assert!(is_local_origin("http://localhost:1425"));
+        assert!(!is_local_origin("https://evil.example"));
+        assert!(!is_local_origin("null"));
     }
 }

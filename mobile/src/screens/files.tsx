@@ -237,9 +237,9 @@ export function Files({ dir, root }: { dir: string; root?: string }) {
 
 // ------------------------------------------------------------------ one file
 
-function Markdown({ text }: { text: string }) {
+export function Markdown({ text, className }: { text: string; className?: string }) {
   return (
-    <div className="md selectable text-[14px] leading-relaxed">
+    <div className={clsx("md selectable leading-relaxed", className ?? "text-[14px]")}>
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );

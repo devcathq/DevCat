@@ -169,6 +169,57 @@ pub async fn fs_list(dir: String, show_ignored: Option<bool>) -> AppResult<Vec<F
         .collect())
 }
 
+// ---------- fs_find_files ----------
+
+/// Go to File stops listing after this many files (and says so).
+const FIND_CAP: usize = 100_000;
+
+/// Every file under `root` that .gitignore / .ignore / global excludes keep (and never `.git`),
+/// as paths relative to it with `/`, for Go to File. `truncated` = stopped at the cap.
+#[derive(serde::Serialize)]
+pub struct FoundFiles {
+    pub files: Vec<String>,
+    pub truncated: bool,
+}
+
+fn find_files(root: &Path, cap: usize) -> FoundFiles {
+    let mut files = Vec::new();
+    let mut truncated = false;
+    let walk = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .parents(true)
+        .follow_links(false)
+        .require_git(false)
+        .filter_entry(|e| e.file_name() != ".git")
+        .build();
+    for e in walk.filter_map(Result::ok) {
+        // symlinks only when they lead to a file (Path::is_file follows them; broken links drop out)
+        if !e.file_type().is_some_and(|t| t.is_file() || (t.is_symlink() && e.path().is_file())) {
+            continue;
+        }
+        if files.len() == cap {
+            truncated = true;
+            break;
+        }
+        if let Ok(rel) = e.path().strip_prefix(root) {
+            files.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    FoundFiles { files, truncated }
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn fs_find_files(root: String) -> AppResult<FoundFiles> {
+    if super::remote::Target::parse(&root).is_some() {
+        return Err(AppError::msg("Go to File doesn't search remote folders yet."));
+    }
+    let path = PathBuf::from(&root);
+    if !path.is_dir() {
+        return Err(AppError::msg(format!("{root} is not a folder")));
+    }
+    crate::rt::spawn_blocking(move || find_files(&path, FIND_CAP)).await.map_err(|e| AppError::msg(e.to_string()))
+}
+
 // ---------- fs_preview ----------
 
 fn preview(kind: &str, path: &str, size: u64) -> FilePreview {
@@ -354,15 +405,28 @@ fn line_ending(text: &str) -> &'static str {
     if crlf * 2 > lf { "crlf" } else { "lf" }
 }
 
-/// Version token for conflict detection: modification time (ns) + length.
-fn version_of(meta: &fs::Metadata) -> String {
+/// Files up to this size also get a content hash in their version token.
+const VERSION_HASH_MAX: u64 = 16 * 1024 * 1024;
+
+/// Version token for conflict detection: modification time (ns) + length, plus a content hash
+/// for files small enough to edit. mtime alone misses same-size rewrites that land within one
+/// timestamp tick (coarse-grained filesystems, or two saves in quick succession).
+fn version_of(path: &Path, meta: &fs::Metadata) -> String {
+    use sha2::{Digest, Sha256};
     let mtime = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("{mtime}-{}", meta.len())
+    let hash = (meta.is_file() && meta.len() <= VERSION_HASH_MAX)
+        .then(|| fs::read(path).ok())
+        .flatten()
+        .map(|b| hex::encode(&Sha256::digest(&b)[..8]));
+    match hash {
+        Some(h) => format!("{mtime}-{}-{h}", meta.len()),
+        None => format!("{mtime}-{}", meta.len()),
+    }
 }
 
 fn format_float(f: f64) -> String {
@@ -514,7 +578,7 @@ pub(super) fn preview_sync(path: &str) -> AppResult<FilePreview> {
     }
     // taken before reading: a write racing the read makes the token stale (→ conflict), never newer
     let mut pv = preview_kind(path, meta.len())?;
-    pv.version = Some(version_of(&meta));
+    pv.version = Some(version_of(Path::new(path), &meta));
     Ok(pv)
 }
 
@@ -616,7 +680,7 @@ fn write_text_sync(path: &str, content: &str, expected_version: Option<&str>, eo
     };
     match (&existing, expected_version) {
         (Some(m), _) if !m.is_file() => return Err(AppError::msg(format!("{path} is not a regular file"))),
-        (Some(m), Some(v)) if version_of(m) != v => {
+        (Some(m), Some(v)) if version_of(&target, m) != v => {
             return Err(AppError::msg(format!("{CONFLICT} {path} was changed on disk since it was opened.")))
         }
         (None, Some(_)) => return Err(AppError::msg(format!("{CONFLICT} {path} was deleted or moved since it was opened."))),
@@ -655,7 +719,7 @@ fn write_text_sync(path: &str, content: &str, expected_version: Option<&str>, eo
         }
         fs::write(&target, &bytes).map_err(|e| AppError::msg(format!("Cannot save {path}: {e}")))?;
     }
-    Ok(version_of(&fs::metadata(&target)?))
+    Ok(version_of(&target, &fs::metadata(&target)?))
 }
 
 /// Save text to a file atomically (temp file + rename, original permissions kept).
@@ -685,6 +749,29 @@ mod tests {
 
     fn entry<'a>(entries: &'a [FileEntry], name: &str) -> &'a FileEntry {
         entries.iter().find(|e| e.name == name).unwrap_or_else(|| panic!("{name} missing"))
+    }
+
+    #[tokio::test]
+    async fn find_files_walks_the_tree_without_ignored_files() {
+        let repo = TempRepo::new("fsfind");
+        repo.write(".gitignore", "node_modules/\n*.log\n");
+        repo.write("src/features/files/format.ts", "x\n");
+        repo.write("README.md", "# hi\n");
+        repo.write(".claude/settings.json", "{}\n");
+        repo.write("node_modules/pkg/index.js", "x\n");
+        repo.write("debug.log", "log\n");
+        let mut found = fs_find_files(repo.cwd()).await.unwrap();
+        found.files.sort();
+        assert_eq!(found.files, vec![".claude/settings.json", ".gitignore", "README.md", "src/features/files/format.ts"]);
+        assert!(!found.truncated);
+        // a symlink to a folder isn't a file to open
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(Path::new(&repo.cwd()).join("src"), Path::new(&repo.cwd()).join("srclink")).unwrap();
+            assert!(!find_files(Path::new(&repo.cwd()), 100).files.iter().any(|f| f == "srclink"));
+        }
+        let capped = find_files(Path::new(&repo.cwd()), 2);
+        assert_eq!((capped.files.len(), capped.truncated), (2, true));
     }
 
     #[tokio::test]

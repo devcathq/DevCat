@@ -37,10 +37,22 @@ pub struct HistoryStore {
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(p: &PathBuf) -> Vec<T> {
-    std::fs::read_to_string(p)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let Ok(s) = std::fs::read_to_string(p) else { return Vec::new() };
+    match serde_json::from_str(&s) {
+        Ok(v) => v,
+        Err(_) => {
+            // keep an unreadable file aside so the next write doesn't silently replace it
+            let _ = std::fs::rename(p, p.with_extension(format!("corrupt-{}.json", chrono::Utc::now().timestamp())));
+            Vec::new()
+        }
+    }
+}
+
+/// Write via a temp file + rename, so a crash or full disk mid-write never truncates the file.
+fn write_atomic(p: &PathBuf, contents: &str) -> std::io::Result<()> {
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(tmp, p)
 }
 
 impl HistoryStore {
@@ -63,7 +75,7 @@ impl HistoryStore {
         }
         all.insert(0, e.clone());
         all.truncate(MAX_HISTORY);
-        std::fs::write(&self.history_path, serde_json::to_string(&all)?)?;
+        write_atomic(&self.history_path, &serde_json::to_string(&all)?)?;
         Ok(e)
     }
 
@@ -80,7 +92,7 @@ impl HistoryStore {
 
     pub fn clear(&self) -> AppResult<()> {
         let _g = self.lock.lock();
-        std::fs::write(&self.history_path, "[]")?;
+        write_atomic(&self.history_path, "[]")?;
         Ok(())
     }
 
@@ -100,7 +112,7 @@ impl HistoryStore {
             Some(x) => *x = q.clone(),
             None => all.push(q.clone()),
         }
-        std::fs::write(&self.saved_path, serde_json::to_string_pretty(&all)?)?;
+        write_atomic(&self.saved_path, &serde_json::to_string_pretty(&all)?)?;
         Ok(q)
     }
 
@@ -108,7 +120,7 @@ impl HistoryStore {
         let _g = self.lock.lock();
         let mut all: Vec<SavedQuery> = read_json(&self.saved_path);
         all.retain(|x| x.id != id);
-        std::fs::write(&self.saved_path, serde_json::to_string_pretty(&all)?)?;
+        write_atomic(&self.saved_path, &serde_json::to_string_pretty(&all)?)?;
         Ok(())
     }
 }
