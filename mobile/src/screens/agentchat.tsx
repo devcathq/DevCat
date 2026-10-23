@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  POLICIES, SUGGESTIONS, ZERO, allowAllLabel, applyAll, approvalTitle, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, itemsFromLog, lastContext, str, summarize, toBlocks,
+  POLICIES, SUBAGENT, SUGGESTIONS, ZERO, allowAllLabel, applyAll, approvalTitle, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, itemsFromLog, lastContext, str, summarize, toBlocks,
   type ChatView, type Item, type ToolItem, type ToolStatus,
 } from "../../../src/features/agent/model";
 import type { AgentDecision, AgentLiveEvent, AgentModel, AgentOpened, AgentPolicy } from "../../../src/lib/types";
@@ -401,14 +401,18 @@ function ToolRow({ item, cwd, working }: { item: ToolItem; cwd: string; working:
           {stale ? <X className="size-3.5 text-faint" /> : <StatusIcon status={item.status} />}
         </span>
       </button>
-      {open && <ToolDetails item={item} />}
+      {item.name === SUBAGENT && item.status === "running" && !stale && !open && !!item.helper?.length && (
+        <div className="ml-[22px] truncate text-[12px] text-faint">{helperProgress(item.helper, cwd)}</div>
+      )}
+      {open && <ToolDetails item={item} cwd={cwd} />}
     </div>
   );
 }
 
-function ToolDetails({ item }: { item: ToolItem }) {
+function ToolDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
   const i = item.input ?? {};
   const file = item.name === "write" || item.name === "edit";
+  if (item.name === SUBAGENT) return <HelperDetails item={item} cwd={cwd} />;
   return (
     <div className="mt-1 ml-5 flex flex-col gap-1.5">
       {item.name === "edit" && <Diff before={str(i.old_string)} after={str(i.new_string)} />}
@@ -416,6 +420,28 @@ function ToolDetails({ item }: { item: ToolItem }) {
       {item.name === "shell" && <Code>{`$ ${str(i.command)}`}</Code>}
       {item.output && !file && <Code tone={item.status === "error" ? "danger" : "muted"}>{item.output}</Code>}
       {item.output && file && (item.status === "error" || item.status === "denied") && <Code tone="danger">{item.output}</Code>}
+    </div>
+  );
+}
+
+/** A helper's card, opened: the question it got, what it did, and its answer. */
+function HelperDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
+  const steps = item.helper ?? [];
+  return (
+    <div className="mt-1 ml-5 flex flex-col gap-1.5">
+      <Code tone="muted">{str(item.input?.prompt)}</Code>
+      {steps.length > 0 && (
+        <div className="flex flex-col gap-0.5 text-[12px] text-muted">
+          {steps.map((s, n) => {
+            const d = describe(s.name, s.input, item.status === "running" && n === steps.length - 1 ? "running" : "done", cwd);
+            const Icon = d.icon;
+            return <div key={n} className="flex min-w-0 items-center gap-1.5"><Icon className="size-3 shrink-0" /><span className="shrink-0">{d.verb}</span><span className="min-w-0 truncate font-mono text-[11px]">{d.target}</span></div>;
+          })}
+        </div>
+      )}
+      {item.output && (item.status === "error"
+        ? <Code tone="danger">{item.output}</Code>
+        : <div className="rounded-lg border border-line bg-panel px-3 py-2"><Markdown text={item.output} className="text-[13px]" /></div>)}
     </div>
   );
 }

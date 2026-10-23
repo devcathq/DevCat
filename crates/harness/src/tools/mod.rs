@@ -57,6 +57,42 @@ impl Tool for AskUser {
     }
 }
 
+/// Name of the tool that starts helpers; the agent runs it itself (see [`crate::agent`]).
+pub const SUBAGENT: &str = "subagent";
+
+/// `subagent`: hand a question to a helper with a fresh conversation. The helper only looks
+/// around, and its answer is the result; several calls in one step run at the same time.
+pub struct Subagent;
+
+#[async_trait]
+impl Tool for Subagent {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: SUBAGENT.into(),
+            description: "Hand a self-contained question to a helper agent. It starts with an empty conversation, works through the question with the tools that don't change anything (read, glob, grep, read-only git, and whatever else runs without asking the user), and its final answer comes back as the result of this call. Use it for research that would otherwise fill your context: finding where and how something is done across many files, reading a lot of code or documentation to answer one question, checking several places. Several `subagent` calls in one message run at the same time, so split independent questions. The helper doesn't see this conversation: put everything it needs in `prompt` (what to find out, where to start, what you already know) and say what the answer should contain. It can't edit files, run commands or ask the user. Don't use it for a single read or search: do that yourself.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "description": { "type": "string", "description": "What the helper is doing in 3-6 words, shown to the user (e.g. \"Find where sessions are saved\")." },
+                    "prompt": { "type": "string", "description": "The task, complete and standalone: the helper sees nothing else." }
+                },
+                "required": ["description", "prompt"]
+            }),
+        }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, input: &Value) -> String {
+        let s = |k: &str| input.get(k).and_then(Value::as_str).map(str::trim).unwrap_or("");
+        let d = s("description");
+        if d.is_empty() { s("prompt").lines().next().unwrap_or("").to_string() } else { d.to_string() }
+    }
+    async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::err("subagent is run by the agent, not as a tool.")
+    }
+}
+
 /// Output kept from one tool call; longer output keeps its start and end.
 pub const MAX_OUTPUT: usize = 30_000;
 
@@ -100,7 +136,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// read, write, edit, glob, grep, shell, git, web_fetch, todo_write and ask_user.
+    /// read, write, edit, glob, grep, shell, git, web_fetch, todo_write, ask_user and subagent.
     pub fn standard() -> Registry {
         let mut r = Registry::default();
         r.add(Read);
@@ -113,11 +149,17 @@ impl Registry {
         r.add(WebFetch);
         r.add(TodoWrite);
         r.add(AskUser);
+        r.add(Subagent);
         r
     }
 
     pub fn add(&mut self, t: impl Tool + 'static) {
         self.tools.push(Arc::new(t));
+    }
+
+    /// The same tools without `names`.
+    pub fn without(&self, names: &[&str]) -> Registry {
+        Registry { tools: self.tools.iter().filter(|t| !names.contains(&t.spec().name.as_str())).cloned().collect() }
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {

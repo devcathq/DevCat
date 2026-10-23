@@ -29,6 +29,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   it out (#56).
 - **DevCat Agent and the OpenAI Responses API:** a new API style and an **OpenAI (Responses API)** preset, for
   OpenAI's newer models, including the ones only offered there such as `gpt-5-codex` (#57).
+- **DevCat Agent helpers:** for research that takes many reads, the agent hands questions to helpers. Each starts
+  with a fresh context and only looks: it never edits, runs commands or asks you. Several run at the same time, their
+  rows show what they're doing, and their tokens count in the chat's total and cost (#59).
 
 ## 0.9.1 - 2026-10-23
 

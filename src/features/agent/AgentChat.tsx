@@ -14,7 +14,7 @@ import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { POLICIES, SUGGESTIONS, allowAllLabel, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { fmtCost } from "../claude/util";
 import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent } from "./store";
 
@@ -279,14 +279,18 @@ function ToolRow({ item, tabId, cwd, working }: { item: ToolItem; tabId: string;
           <ChevronRight className={clsx("size-3 text-faint opacity-0 transition group-hover:opacity-100", open && "rotate-90 opacity-100")} />
         </span>
       </button>
-      {open && <ToolDetails item={item} />}
+      {item.name === SUBAGENT && item.status === "running" && !stale && !open && !!item.helper?.length && (
+        <div className="ml-[22px] truncate text-[11.5px] text-faint">{helperProgress(item.helper, cwd)}</div>
+      )}
+      {open && <ToolDetails item={item} cwd={cwd} />}
     </div>
   );
 }
 
 /** What a step did: the diff of an edit, the file written, the command and its output. */
-function ToolDetails({ item }: { item: ToolItem }) {
+function ToolDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
   const i = item.input ?? {};
+  if (item.name === SUBAGENT) return <HelperDetails item={item} cwd={cwd} />;
   return (
     <div className="mt-1 ml-5 flex flex-col gap-1.5">
       {item.name === "edit" && <Diff before={str(i.old_string)} after={str(i.new_string)} />}
@@ -294,6 +298,28 @@ function ToolDetails({ item }: { item: ToolItem }) {
       {item.name === "shell" && <Code>{`$ ${str(i.command)}`}</Code>}
       {item.output && !(item.name === "write" || item.name === "edit") && <Code muted={item.status !== "error"} danger={item.status === "error"}>{item.output}</Code>}
       {item.output && (item.name === "write" || item.name === "edit") && (item.status === "error" || item.status === "denied") && <Code danger>{item.output}</Code>}
+    </div>
+  );
+}
+
+/** A helper's card, opened: the question it got, what it did, and its answer. */
+function HelperDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
+  const steps = item.helper ?? [];
+  return (
+    <div className="mt-1 ml-5 flex flex-col gap-1.5">
+      <Code muted>{str(item.input?.prompt)}</Code>
+      {steps.length > 0 && (
+        <div className="flex flex-col gap-0.5 text-[11.5px] text-muted">
+          {steps.map((s, n) => {
+            const d = describe(s.name, s.input, item.status === "running" && n === steps.length - 1 ? "running" : "done", cwd);
+            const Icon = d.icon;
+            return <div key={n} className="flex min-w-0 items-center gap-1.5"><Icon className="size-3 shrink-0" /><span className="shrink-0">{d.verb}</span><span className="min-w-0 truncate font-mono text-[11px]">{d.target}</span></div>;
+          })}
+        </div>
+      )}
+      {item.output && (item.status === "error"
+        ? <Code danger>{item.output}</Code>
+        : <div className="rounded-md border border-line bg-panel px-3 py-2"><Markdown text={item.output} cwd={cwd} className="text-[12.5px]" /></div>)}
     </div>
   );
 }

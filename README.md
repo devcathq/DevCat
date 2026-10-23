@@ -243,7 +243,8 @@ of these step by step, with every keyboard shortcut on
   DevCat Mobile too. It follows `AGENTS.md` / `CLAUDE.md`, uses
   the MCP servers from your other agents' configs, and has tools for files, commands, `git` (reading runs without
   asking), web pages, a todo list, your DevCat connections (SQL, MongoDB, Redis, Kubernetes; read-only stays
-  read-only) and your DevCat notes (search, read, save). Long chats are summarized when the context fills up, and
+  read-only) and your DevCat notes (search, read, save). For research it asks helpers that run side by side, each
+  with a fresh context and only looking, never changing anything. Long chats are summarized when the context fills up, and
   long tool output is saved to a file the agent reads in parts. Rename chats from the sidebar; the chat shows an
   estimated cost next to its token meter.
   **Folders on SSH hosts** too (*Open folder on SSH host…*): the agent and terminals run on that machine, and the
