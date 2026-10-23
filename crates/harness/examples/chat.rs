@@ -83,6 +83,7 @@ async fn main() {
             AgentEvent::Compacting { tokens_before } => eprintln!("
 [compacting {tokens_before} tokens of conversation…]"),
             AgentEvent::Compacted { summary, .. } => eprintln!("[compacted to {} characters]", summary.len()),
+            AgentEvent::UserMessage { text } => println!("\n> {text}"),
         })
         .await;
     println!("\n== {end:?}; total {:?}", session.usage());

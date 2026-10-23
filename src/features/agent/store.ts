@@ -129,7 +129,8 @@ export async function closeChat(tabId: string) {
 
 export async function send(tabId: string, text: string): Promise<boolean> {
   const c = useAgent.getState().chats[tabId];
-  if (!c?.sessionId || c.busy || (!text.trim() && !c.attachments.length)) return false;
+  // while it works too: the message goes in before its next step
+  if (!c?.sessionId || (!text.trim() && !c.attachments.length)) return false;
   try {
     // the window decides when the conversation gets summarized
     const provider = useProviders.getState().providers.find((p) => p.id === c.providerId);
@@ -219,4 +220,9 @@ export function connectionModels(provider: AiProvider): Promise<AgentModel[]> {
 
 export function dismissError(tabId: string) {
   patch(tabId, () => ({ error: null }));
+}
+
+/** The chat box took the unsent messages back. */
+export function clearDraft(tabId: string) {
+  patch(tabId, () => ({ draft: null }));
 }

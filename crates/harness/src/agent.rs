@@ -67,6 +67,30 @@ pub enum AgentEvent {
     /// A tool call is about to run (after approval, if it needed one).
     ToolCall { id: String, name: String, summary: String, input: Value },
     ToolResult { id: String, content: String, is_error: bool },
+    /// A message the user sent while the agent worked is now part of the conversation.
+    UserMessage { text: String },
+}
+
+/// Messages the user sends while a turn runs. The agent reads them before its next step (also
+/// when it was about to answer), so the user doesn't have to stop it to say something.
+#[derive(Clone, Default)]
+pub struct Inbox(Arc<std::sync::Mutex<Vec<Queued>>>);
+
+/// A queued message: its text and any images.
+pub type Queued = (String, Vec<Block>);
+
+impl Inbox {
+    /// Queue a message (with any images) for the running turn.
+    pub fn push(&self, text: String, images: Vec<Block>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push((text, images));
+    }
+    /// Everything queued, oldest first; the inbox is empty afterwards.
+    pub fn take(&self) -> Vec<Queued> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -110,13 +134,15 @@ pub struct Agent {
     /// The model's context window in tokens; when known, the conversation is summarized at
     /// [`COMPACT_AT`] of it.
     pub context_window: Option<u64>,
+    /// Messages sent while a turn runs (the app keeps a clone to put them in).
+    pub inbox: Inbox,
     /// Tools the user allowed for the rest of the session.
     allowed: HashSet<String>,
 }
 
 impl Agent {
     pub fn new(model: Arc<dyn Model>, tools: Registry, policy: Policy, approver: Arc<dyn Approver>, system: String) -> Agent {
-        Agent { model, tools, policy, approver, system, context_window: None, allowed: HashSet::new() }
+        Agent { model, tools, policy, approver, system, context_window: None, inbox: Inbox::default(), allowed: HashSet::new() }
     }
 
     /// Summarize the conversation so far and continue from the summary (`/compact`). `focus` says
@@ -183,6 +209,11 @@ impl Agent {
         let specs: Vec<ToolSpec> = self.tools.specs();
         let ctx = ToolCtx { cwd: session.cwd.clone().into() };
         for _ in 0..MAX_STEPS {
+            // what the user sent meanwhile goes in before the step (after the tool results)
+            for (text, images) in self.inbox.take() {
+                session.append(SessionEvent::User { text: text.clone(), images }).await?;
+                on(AgentEvent::UserMessage { text });
+            }
             if self.over_limit(session) {
                 self.compact(session, None, cancel, on).await?;
             }
@@ -207,6 +238,10 @@ impl Agent {
                 _ => None,
             }).collect();
             if calls.is_empty() {
+                // a message came while it answered: it reads that before ending
+                if !self.inbox.is_empty() {
+                    continue;
+                }
                 return Ok(TurnEnd::Answered);
             }
             let mut results = Vec::new();

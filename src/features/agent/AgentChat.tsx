@@ -14,8 +14,9 @@ import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { POLICIES, SUGGESTIONS, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
-import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent } from "./store";
+import { POLICIES, SUGGESTIONS, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent } from "./store";
+import { useClaude } from "../claude/store";
 
 export default function AgentChat({ tabId, cwd, provider, visible, onReview }: { tabId: string; cwd: string; provider: AiProvider; visible: boolean; onReview: () => void }) {
   const chat = useAgent((s) => s.chats[tabId]);
@@ -110,7 +111,7 @@ function ChatBody({ tabId, cwd, visible, onReview, provider }: { tabId: string; 
         </div>
       )}
       <TodoPanel items={chat.items} busy={chat.busy} />
-      <EditedFiles items={chat.items} onReview={onReview} />
+      <EditedFiles items={chat.items} tabId={tabId} cwd={cwd} onReview={onReview} />
       <Composer tabId={tabId} visible={visible} provider={provider} />
     </div>
   );
@@ -176,7 +177,8 @@ const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: I
       return (
         <div className="flex flex-col items-end gap-1.5">
           {item.attachments.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">{item.attachments.map((p) => <AttachmentChip key={p} path={p} />)}</div>}
-          {item.text && <div className="max-w-[85%] rounded-2xl rounded-br-md bg-raised px-3.5 py-2 text-[13px] whitespace-pre-wrap text-fg">{item.text}</div>}
+          {item.text && <div className={clsx("max-w-[85%] rounded-2xl rounded-br-md bg-raised px-3.5 py-2 text-[13px] whitespace-pre-wrap text-fg", item.queued && "opacity-60")}>{item.text}</div>}
+          {item.queued && <span className="text-[11px] text-faint">Sent while it works: it reads this after its current step</span>}
         </div>
       );
     case "answer":
@@ -454,8 +456,10 @@ function TurnEnd({ item }: { item: Extract<Item, { kind: "end" }> }) {
 }
 
 /** Files this chat changed, with a shortcut to the Diff view (like Zed's edits bar). */
-function EditedFiles({ items, onReview }: { items: Item[]; onReview: () => void }) {
-  const files = useMemo(() => editedFiles(items), [items]);
+/** Files the agent changed that are still changed in the project: the ones Review shows. */
+function EditedFiles({ items, tabId, cwd, onReview }: { items: Item[]; tabId: string; cwd: string; onReview: () => void }) {
+  const git = useClaude((s) => s.tabs[tabId]?.git ?? null);
+  const files = useMemo(() => stillChanged(editedFiles(items), git, cwd), [items, git, cwd]);
   if (!files.length) return null;
   const plus = files.reduce((n, [, f]) => n + f.plus, 0);
   const minus = files.reduce((n, [, f]) => n + f.minus, 0);
@@ -541,14 +545,30 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   }, [text]);
 
+  // what it didn't read (it was stopped) comes back here
+  useEffect(() => {
+    if (!chat.draft) return;
+    const d = chat.draft;
+    setText((t) => (t.trim() ? `${t}\n\n${d}` : d));
+    clearDraft(tabId);
+  }, [chat.draft, tabId]);
+
+  // while it works too: the message goes in before its next step, as in Claude Code
   const submit = async () => {
-    if ((!text.trim() && !chat.attachments.length) || chat.busy) return;
+    if (!text.trim() && !chat.attachments.length) return;
     const t = text;
     setText("");
     if (!(await send(tabId, t))) setText(t);
   };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+    // Shift+Enter makes a new line by itself; Ctrl+Enter and Alt+Enter do too, here
+    if (e.ctrlKey || e.altKey || e.metaKey) {
+      e.preventDefault();
+      document.execCommand("insertText", false, "\n");
+      return;
+    }
+    if (!e.shiftKey) {
       e.preventDefault();
       void submit();
     }
@@ -575,7 +595,7 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
             const files = [...e.clipboardData.files];
             if (files.length) { e.preventDefault(); void attach(tabId, files); }
           }}
-          placeholder={chat.busy ? "Working… type your next message" : "Ask DevCat Agent to build, fix or explain something  ·  /compact to summarize the chat"}
+          placeholder={chat.busy ? "Working… send a message and it reads it after its current step" : "Ask DevCat Agent to build, fix or explain something  ·  Ctrl+Enter for a new line  ·  /compact"}
           className="block max-h-[240px] min-h-[52px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[13.5px] leading-relaxed text-fg outline-none placeholder:text-faint focus-visible:outline-none"
           // the composer's border shows focus; no second outline around the text box
           style={{ outline: "none", boxShadow: "none" }}
@@ -612,10 +632,10 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
             <ContextMeter tabId={tabId} models={models} />
             {tokens > 0 && cacheRate !== null && cacheRate > 0 && <span title="Share of this chat's input the provider read from its cache">{cacheRate}% cached</span>}
           </span>
-          {chat.busy ? (
+          {chat.busy && !text.trim() && !chat.attachments.length ? (
             <button onClick={() => stop(tabId)} title="Stop" className="flex size-8 items-center justify-center rounded-full bg-fg text-app transition hover:opacity-85"><Square className="size-3 fill-current" /></button>
           ) : (
-            <button onClick={() => void submit()} disabled={!text.trim() && !chat.attachments.length} title="Send (Enter) · new line: Shift+Enter"
+            <button onClick={() => void submit()} disabled={!text.trim() && !chat.attachments.length} title={chat.busy ? "Send now: it reads it after its current step (Enter)" : "Send (Enter) · new line: Shift+Enter or Ctrl+Enter"}
               className="flex size-8 items-center justify-center rounded-full bg-accent text-accent-fg transition hover:brightness-110 disabled:bg-hover disabled:text-faint"><ArrowUp className="size-4" /></button>
           )}
         </div>
