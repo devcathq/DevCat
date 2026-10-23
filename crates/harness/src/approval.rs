@@ -15,6 +15,9 @@ pub enum Policy {
     AutoEdit,
     /// Nothing asks.
     Bypass,
+    /// Look around and propose a plan: reading runs, web pages and queries ask, and nothing that
+    /// changes something (edits, commands) runs at all until the user starts the plan.
+    Plan,
 }
 
 /// What a tool call does, for approval purposes.
@@ -39,6 +42,12 @@ pub enum Kind {
 impl Policy {
     pub fn needs_approval(self, kind: Kind) -> bool {
         !matches!((self, kind), (_, Kind::Read) | (Policy::Bypass, _) | (Policy::AutoEdit, Kind::Edit | Kind::Query))
+    }
+
+    /// Calls this policy doesn't run at all, not even with a yes: in plan mode, anything that
+    /// changes something.
+    pub fn refuses(self, kind: Kind) -> bool {
+        self == Policy::Plan && matches!(kind, Kind::Edit | Kind::EditOutside | Kind::Exec)
     }
 }
 
@@ -103,5 +112,9 @@ mod tests {
         assert_eq!(row(Policy::Ask), [false, true, true, true, true, true]);
         assert_eq!(row(Policy::AutoEdit), [false, false, true, true, true, false]);
         assert_eq!(row(Policy::Bypass), [false, false, false, false, false, false]);
+        // plan mode: reading runs, web pages and queries ask, and changes never run
+        assert_eq!(row(Policy::Plan), [false, true, true, true, true, true]);
+        assert_eq!([Read, Edit, EditOutside, Exec, Fetch, Query].map(|k| Policy::Plan.refuses(k)), [false, true, true, true, false, false]);
+        assert!(![Read, Edit, EditOutside, Exec, Fetch, Query].iter().any(|&k| Policy::Ask.refuses(k)));
     }
 }

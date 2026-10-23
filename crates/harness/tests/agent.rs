@@ -13,11 +13,12 @@ use std::sync::{Arc, Mutex};
 struct Scripted {
     steps: Mutex<Vec<Vec<Block>>>,
     seen: Mutex<Vec<usize>>, // messages per request
+    systems: Mutex<Vec<String>>, // system prompt per request
 }
 
 impl Scripted {
     fn new(steps: Vec<Vec<Block>>) -> Arc<Scripted> {
-        Arc::new(Scripted { steps: Mutex::new(steps.into_iter().rev().collect()), seen: Mutex::default() })
+        Arc::new(Scripted { steps: Mutex::new(steps.into_iter().rev().collect()), seen: Mutex::default(), systems: Mutex::default() })
     }
 }
 
@@ -28,6 +29,7 @@ impl Model for Scripted {
     }
     async fn step(&self, req: &Request<'_>, on: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
         self.seen.lock().unwrap().push(req.messages.len());
+        self.systems.lock().unwrap().push(req.system.to_string());
         let content = self.steps.lock().unwrap().pop().expect("the model was asked more steps than scripted");
         for b in &content {
             if let Block::Text { text } = b {
@@ -257,6 +259,46 @@ async fn todo_list_needs_no_approval_and_fetch_asks() {
     assert_eq!(*approver.1.lock().unwrap(), vec!["web_fetch: https://example.invalid/x"]);
     assert_eq!(results[0], "Todo list updated:\n[x] Read\n[>] Fix");
     assert!(results[1].starts_with("The user declined"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn plan_mode_reads_asks_for_fetches_and_refuses_changes() {
+    let (dir, mut session) = project().await;
+    let model = Scripted::new(vec![
+        vec![tool("r1", "read", json!({ "path": "notes.txt" }))],
+        vec![tool("w1", "write", json!({ "path": "new.txt", "content": "x" }))],
+        vec![tool("s1", "shell", json!({ "command": "echo hi" }))],
+        vec![tool("f1", "web_fetch", json!({ "url": "https://example.invalid/" }))],
+        vec![text("Plan: 1. bump the version in notes.txt")],
+        // the user starts the plan: the next turn may change things
+        vec![tool("w2", "write", json!({ "path": "new.txt", "content": "x" }))],
+        vec![text("done")],
+    ]);
+    let approver = Arc::new(Answer(Decision::Allow, Mutex::default()));
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Plan, approver.clone(), "base prompt".into());
+    let mut results = Vec::new();
+    agent
+        .turn(&mut session, "plan the version bump", &Cancel::default(), &mut |e| {
+            if let AgentEvent::ToolResult { content, is_error, .. } = e {
+                results.push((content, is_error));
+            }
+        })
+        .await
+        .unwrap();
+    assert!(!results[0].1, "read runs: {:?}", results[0]);
+    for (i, what) in [(1, "write"), (2, "shell")] {
+        assert!(results[i].1 && results[i].0.contains("plan mode is on"), "{what} refused: {:?}", results[i]);
+    }
+    assert!(!dir.join("proj/new.txt").exists());
+    // a fetch only reads, so it asks (and runs once allowed; this one fails to resolve)
+    assert_eq!(*approver.1.lock().unwrap(), vec!["web_fetch: https://example.invalid/"]);
+    assert!(model.systems.lock().unwrap().iter().all(|s| s.starts_with("base prompt") && s.contains("# Plan mode")));
+
+    agent.policy = Policy::Ask;
+    agent.turn(&mut session, "go ahead", &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert!(dir.join("proj/new.txt").exists());
+    assert!(!model.systems.lock().unwrap().last().unwrap().contains("# Plan mode"));
     let _ = std::fs::remove_dir_all(dir);
 }
 
