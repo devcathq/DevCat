@@ -39,7 +39,8 @@ What it asks before doing, in each permission mode (the menu under the chat box)
 | Read and search files, `git` status / diff / log / show / blame | never | never | never |
 | Edit files in the project | asks | — | — |
 | Commands, `git` commands that change the repository, web pages, files outside the project | asks | asks | — |
-| Queries and cluster reads on your DevCat connections | asks | — | — |
+| Queries and cluster reads on your DevCat connections, reading your DevCat notes | asks | — | — |
+| Saving a DevCat note | asks | asks | — |
 
 Approvals and the agent's questions also show up on DevCat Mobile. **Always allow … in this chat** stops asking for
 that tool until the chat closes.
@@ -49,6 +50,11 @@ that tool until the chat closes.
 - Long tool output (over 30,000 characters) is saved to a file next to the chat; the agent reads it in parts.
 - The same tool call a 4th time in a row is refused, so a looping model tries something else.
 - When the context fills up, the conversation is summarized and the chat carries on (or type `/compact`).
+- The agent can search and read your [notes](notes.md), and save one when you ask: the approval shows its text.
+- **Rename** a chat: right-click it in the sidebar's chat list → **Rename…** (<kbd>Enter</kbd> saves,
+  <kbd>Esc</kbd> cancels).
+- Next to the token meter, **≈ $** estimates what the chat's tokens cost at the model's list price (from the
+  provider's model list, or else OpenRouter's catalog). Hover it for the prices used.
 
 ## Logins and API keys
 

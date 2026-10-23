@@ -17,6 +17,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   agent reads it in parts instead of losing the middle (#53).
 - **DevCat Agent stops repeating itself:** the same tool call a 4th time in a row is refused, so a looping
   model tries something else (#53).
+- **DevCat Agent and your notes:** it searches and reads your DevCat notes (asking first in **Ask first**) and
+  saves a note when you ask, showing its text before it does. The Notes list updates at once (#55).
+- **Rename a DevCat Agent chat:** right-click it in the sidebar → **Rename…** (#55).
+- **Estimated cost** of a DevCat Agent chat next to its token meter, at the model's list price (#55).
 
 ## 0.9.0 - 2026-10-22
 

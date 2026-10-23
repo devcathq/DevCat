@@ -18,3 +18,9 @@ Switch between **Edit** and **Preview** with the buttons or <kbd>⇧⌘V</kbd> (
 - Move a note to another project at any time.
 - **Pin** the notes you need most so they stay on top.
 - Search finds notes by title and text.
+
+## Notes and DevCat Agent
+
+[DevCat Agent](ai-connections.md#devcat-agent) can search and read your notes, and save a note when you ask it to
+("save what we found as a note in the Nexus project"). It asks first: reading in **Ask first** mode, saving in every
+mode but **Full access**, with the note's text on the approval. Open Notes lists update as soon as it saves.
