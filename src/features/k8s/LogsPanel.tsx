@@ -35,7 +35,7 @@ function highlight(line: string, q: string, active: boolean) {
     const j = lower.indexOf(q, i);
     if (j < 0) break;
     if (j > i) out.push(line.slice(i, j));
-    out.push(<mark key={k++} className={clsx("rounded-sm text-app", active ? "bg-accent" : "bg-warn/70")}>{line.slice(j, j + q.length)}</mark>);
+    out.push(<mark key={k++} className={clsx("solid rounded-sm text-app", active ? "bg-accent" : "bg-warn/70")}>{line.slice(j, j + q.length)}</mark>);
     i = j + q.length;
   }
   out.push(line.slice(i));

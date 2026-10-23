@@ -17,6 +17,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   the tree's own Copy) into a folder: right-click → **Paste**, or **Ctrl+V** / **⌘V**. A name
   that's taken gets "copy", so nothing is overwritten, and an image on the clipboard is saved as `pasted.png`
   (#54).
+- **DevCat Agent on Windows:** a console window no longer flashes up and closes for every command the agent runs
+  (#68).
+- **DevCat Agent's Stop button** shows its square with window glass on (it was a plain white circle), and so do the
+  search highlights in Kubernetes logs (#68).
+- **DevCat Agent's plan** (the checklist above the chat box) goes away when the agent is done, also when it left an
+  item unticked; each update stays in the conversation (#68).
 
 ## 0.9.1 - 2026-10-23
 
