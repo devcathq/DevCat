@@ -32,8 +32,14 @@ There's no DevCat server and no account. The phone talks to DevCat on your compu
 made when you paired:
 
 - **Same Wi-Fi**: directly.
-- **Anywhere else** (mobile data, another network): through a relay that only passes the encrypted traffic on.
-  DevCat uses free public relays by default, or your own.
+- **Anywhere else** (mobile data, another network): directly when the networks allow it (DevCat asks your
+  router to open its port, and tries to reach the phone straight away), otherwise through a relay that only
+  passes the encrypted traffic on. DevCat uses free public relays by default, or your own.
+
+*Paired phones* shows how each connected phone reaches the computer right now: **direct** or **through relay**,
+with the round-trip time (the phone shows the same in its computer's details). If it's mostly through the
+relay and feels slow, run your own relay close to you (see `docs/relay.md` in the repository) and choose
+**My own relay** under *Reach from other networks*.
 
 Your connection profiles and passwords stay on the computer. The phone only remembers which computers it paired
 with.

@@ -1,7 +1,7 @@
 // App state: paired computers, the selected one, connection states, live agent status, the
 // navigation stack (mirrored into browser history so Android's back button works) and toasts.
 import { create } from "zustand";
-import { call, errMsg, onConn, onEvent, phone, type ConnState, type Machine, type PhoneInfo } from "./rpc";
+import { call, errMsg, onConn, onEvent, onPath, phone, type ConnPath, type ConnState, type Machine, type PhoneInfo } from "./rpc";
 import type { AgentChatInfo, AgentStatus, PtyInfo, Route, TabRoot } from "./types";
 
 export interface Toast { id: number; text: string; tone: "ok" | "err" | "info" }
@@ -10,7 +10,7 @@ interface State {
   info: PhoneInfo | null;
   machines: Machine[];
   current: string | null;
-  conn: Record<string, { state: ConnState; error?: string | null }>;
+  conn: Record<string, { state: ConnState; error?: string | null; path?: ConnPath | null }>;
   /** Live terminals and agent status of the current computer. */
   terms: PtyInfo[];
   agents: Record<string, AgentStatus>;
@@ -133,8 +133,13 @@ export function setLocalNotifier(fn: (title: string, body: string) => void) { no
 const folder = (p?: string | null) => (p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "agent";
 
 export function startStateEvents() {
+  onPath((id, path) => {
+    // Arrives first while connecting, then on every change.
+    const c = get().conn[id] ?? { state: "connecting" as ConnState };
+    if (c.state !== "offline") set({ conn: { ...get().conn, [id]: { ...c, path } } });
+  });
   onConn((id, state, error, unpaired) => {
-    set({ conn: { ...get().conn, [id]: { state, error } } });
+    set({ conn: { ...get().conn, [id]: { state, error, path: state === "offline" ? null : get().conn[id]?.path } } });
     if (state === "online" && id === get().current) void refreshAgents();
     if (state === "online") void loadMachines();
     // Browser: the computer no longer knows this pairing, which is now forgotten. Back to pairing.
