@@ -71,6 +71,24 @@ pub struct AgentContext {
     pub mcp_loading: bool,
     /// DevCat connections the agent can use (names).
     pub connections: Vec<String>,
+    /// Hook files that run in this chat ("~/.claude/settings.json (2)").
+    pub hooks: Vec<String>,
+    /// Hooks the user hasn't allowed for this folder yet (or that changed since): they don't run
+    /// until the user allows them on the computer.
+    pub hooks_review: Option<HooksReview>,
+}
+
+/// Hooks waiting for the user's OK: what they'd run.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksReview {
+    pub files: Vec<String>,
+    /// "PreToolUse (Bash): ./check.sh"
+    pub commands: Vec<String>,
+    /// What wouldn't run anyway (other events and hook types).
+    pub skipped: Vec<String>,
+    /// The hooks as shown: allowing them sends it back, so what's allowed is what the user saw.
+    pub digest: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -262,6 +280,81 @@ fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// Hooks run commands on this computer, so they run only in folders where the user allowed the
+/// hooks as they are now: `<data>/agent-hooks.json` maps a folder to the digest of its hooks.
+fn hooks_file() -> AppResult<PathBuf> {
+    Ok(dir()?.parent().unwrap_or(dir()?).join("agent-hooks.json"))
+}
+
+fn folder_key(cwd: &str) -> String {
+    let p = cwd.trim_end_matches(['/', '\\']).replace('\\', "/");
+    if cfg!(windows) { p.to_lowercase() } else { p }
+}
+
+fn hooks_trusted(cwd: &str, digest: &str) -> bool {
+    let Ok(text) = hooks_file().and_then(|f| std::fs::read_to_string(f).map_err(Into::into)) else { return false };
+    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+    !digest.is_empty() && v["trusted"][folder_key(cwd)].as_str() == Some(digest)
+}
+
+fn trust_hooks(cwd: &str, digest: &str) -> AppResult<()> {
+    let file = hooks_file()?;
+    let mut v: Value = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({}));
+    if !v["trusted"].is_object() {
+        v["trusted"] = json!({});
+    }
+    v["trusted"][folder_key(cwd)] = json!(digest);
+    std::fs::write(&file, serde_json::to_string_pretty(&v).unwrap_or_default())?;
+    Ok(())
+}
+
+/// The hooks for `cwd`: (the ones that run, what the chat shows).
+fn hooks_for(cwd: &str) -> (devcat_harness::hooks::Hooks, Vec<String>, Option<HooksReview>) {
+    let found = devcat_harness::hooks::load(std::path::Path::new(cwd), home_dir().as_deref());
+    if found.hooks.is_empty() {
+        return Default::default();
+    }
+    let files = found.files.iter().map(|(f, n)| format!("{f} ({n})")).collect();
+    if hooks_trusted(cwd, &found.digest) {
+        (found.hooks, files, None)
+    } else {
+        (Default::default(), vec![], Some(HooksReview { files, commands: found.commands, skipped: found.skipped, digest: found.digest }))
+    }
+}
+
+/// Allow the hooks of a chat's folder as the chat showed them (`digest`, from its review). If they
+/// changed since (an edit, a `git pull`), nothing is allowed: the chats show them as they are now,
+/// to look at again. Every open chat in that folder runs them from its next step on.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_trust_hooks(session_id: String, digest: String) -> AppResult<()> {
+    let run = run_of(&session_id)?;
+    let found = devcat_harness::hooks::load(std::path::Path::new(&run.cwd), home_dir().as_deref());
+    let same = !found.digest.is_empty() && found.digest == digest;
+    if same {
+        trust_hooks(&run.cwd, &found.digest)?;
+    }
+    let key = folder_key(&run.cwd);
+    let runs: Vec<Arc<Run>> = RUNS.lock().values().filter(|r| folder_key(&r.cwd) == key).cloned().collect();
+    for run in runs {
+        let (hooks, files, review) = hooks_for(&run.cwd);
+        let ctx = {
+            let mut c = run.context.lock();
+            c.hooks = files;
+            c.hooks_review = review;
+            c.clone()
+        };
+        emit(&run.id, json!({ "type": "context", "context": ctx }));
+        // between turns: a running turn keeps what it started with
+        crate::rt::spawn(async move {
+            run.turn.lock().await.0.hooks = Arc::new(hooks);
+        });
+    }
+    if !same {
+        return Err(AppError::msg("The hooks changed since this chat showed them, so they weren't allowed. Here they are as they are now: look at them again."));
+    }
+    Ok(())
+}
+
 /// MCP servers get this long to start; the chat works without them meanwhile.
 const MCP_START: std::time::Duration = std::time::Duration::from_secs(25);
 
@@ -288,7 +381,10 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     crate::agent_tools::add(&mut tools);
     crate::agent_notes::add(&mut tools);
     context.connections = crate::agent_tools::names();
-    let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
+    let (hooks, hook_files, review) = hooks_for(cwd);
+    (context.hooks, context.hooks_review) = (hook_files, review);
+    let mut agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
+    agent.hooks = Arc::new(hooks);
     let log = Snapshot::of(&agent, &session);
     let run = Arc::new(Run {
         id,
@@ -658,7 +754,8 @@ pub async fn agent_sessions(cwd: String) -> AppResult<Vec<AgentSessionInfo>> {
         let (mut first, mut title, mut messages) = (None::<String>, None::<String>, 0);
         for v in lines {
             match v["event"].as_str() {
-                Some("user") => {
+                // messages from hooks (a Stop hook sending the agent on) aren't the user's
+                Some("user") if v["hook"].is_null() => {
                     messages += 1;
                     if first.is_none() {
                         let t = v["text"].as_str().unwrap_or_default();

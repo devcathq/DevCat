@@ -67,6 +67,53 @@ that tool until the chat closes.
 - Next to the token meter, **≈ $** estimates what the chat's tokens cost at the model's list price (from the
   provider's model list, or else OpenRouter's catalog). Hover it for the prices used.
 
+### Hooks
+
+DevCat Agent runs the hooks you wrote for Claude Code or Codex: commands that run before a tool call, after it,
+when you send a message or when the agent is done. It reads them from the same files:
+
+- Claude Code: `hooks` in `~/.claude/settings.json`, `.claude/settings.json` and `.claude/settings.local.json`;
+- Codex: `~/.codex/hooks.json` and `.codex/hooks.json`.
+
+Hooks run commands on your computer, so they're **off until you allow them** for the folder. A chat in a folder
+with hooks lists the commands and shows **Run hooks**, which allows exactly what it lists: if a hook file changed
+in the meantime, nothing is allowed and the chat shows the hooks as they are now. Allowing them is done on the
+computer; DevCat Mobile shows that the folder has hooks waiting.
+
+What you allow includes the scripts the hooks run (`.claude/hooks/check.sh`, or the file after `bash`, `python3`,
+`node` and the like). When a hook or one of its scripts changes, you're asked again, and a changed script doesn't
+run until then, not even in a chat that's already open.
+
+A hook gets the event as JSON on stdin and answers as it does for Claude Code: exit code 2 blocks (its stderr is
+the reason), or a JSON answer on stdout (`decision`, `hookSpecificOutput`, `systemMessage`, `continue`). Tools have
+the names and fields those agents use (`Bash` with `command`, `Edit` / `Write` / `Read` with `file_path`, `Task`,
+`mcp__server__tool`), so their matchers and scripts work as they are; DevCat's own names (`shell`, `edit`, …)
+match too. `git` calls are seen as `Bash` commands.
+
+| Event | When | What a hook can do |
+| --- | --- | --- |
+| `SessionStart` | The first message of a chat (`startup`, or `resume` for a saved chat) | Add context for the agent |
+| `UserPromptSubmit` | You send a message | Add context, or block the message |
+| `PreToolUse` | Before a tool call | Block it, allow it without asking, make it ask, change its input, add context |
+| `PermissionRequest` | A call is about to ask you | Allow or decline it in your place |
+| `PostToolUse` / `PostToolUseFailure` | After a call that worked / failed | Give the agent feedback, add context, replace the result |
+| `Stop` / `SubagentStop` | The agent (or a helper) is done | Send it back to work with a reason |
+| `PreCompact` / `PostCompact` | Before / after the chat is summarized | Stop the summary |
+
+Hook messages (`systemMessage`, a hook that failed, or why a Stop hook sent the agent on) show up in the chat.
+**Stop** doesn't wait for a running hook: it ends the hook and what it started. A hook that runs past its `timeout`
+(600 seconds unless it sets one; 30 for `UserPromptSubmit`) is ended the same way. When a hook answers
+`"continue": false` after a tool call, that call's result stands, the step's other calls don't run, and the agent
+stops.
+
+- On Windows, hooks run in Git Bash when it's installed (most hooks are shell scripts), else in PowerShell. A
+  hook with `"shell": "powershell"` or Codex's `commandWindows` runs in PowerShell.
+- Only `command` hooks run, not `http`, `prompt`, `agent` or `mcp_tool` ones, and only the events above. The chat
+  says which hooks it skips.
+- Codex hooks written in `config.toml` (`[hooks]`) aren't read; put them in `hooks.json`.
+- `"disableAllHooks": true` in any Claude Code settings file turns off the hooks of all of them, as in Claude Code.
+  Codex's `hooks.json` isn't affected.
+
 ## Logins and API keys
 
 Each agent uses its own login by default: run the CLI once in a terminal and sign in the way it asks.

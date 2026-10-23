@@ -14,6 +14,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod hooks;
 pub mod llm;
 pub mod mcp;
 pub mod message;
@@ -38,6 +39,8 @@ pub enum Error {
     Session(String),
     /// The turn was stopped by the user.
     Cancelled,
+    /// A hook stopped it (a blocked prompt, `continue: false`), with its reason.
+    Hook(String),
 }
 
 impl std::fmt::Display for Error {
@@ -47,6 +50,7 @@ impl std::fmt::Display for Error {
             Error::Io(m) => write!(f, "{m}"),
             Error::Session(m) => write!(f, "session: {m}"),
             Error::Cancelled => write!(f, "stopped"),
+            Error::Hook(m) => write!(f, "{m}"),
         }
     }
 }

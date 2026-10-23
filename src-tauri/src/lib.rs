@@ -302,6 +302,7 @@ pub fn run() {
             agent::agent_attach,
             agent::agent_sessions,
             agent::agent_rename,
+            agent::agent_trust_hooks,
             ai::ai_providers_list,
             ai::ai_agent_models,
             ai::ai_provider_save,

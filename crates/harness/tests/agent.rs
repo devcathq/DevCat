@@ -381,6 +381,92 @@ async fn long_output_is_cut_for_the_model_and_kept_whole_in_a_file() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A Claude Code hook: `sh` everywhere but Windows, where Codex's `commandWindows` runs in PowerShell.
+fn hook(sh: &str, ps: &str) -> Value {
+    json!({ "type": "command", "command": sh, "commandWindows": ps })
+}
+
+#[tokio::test]
+async fn hooks_written_for_claude_code_block_add_context_answer_approvals_and_keep_the_agent_going() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    let settings = json!({ "hooks": {
+        "SessionStart": [{ "hooks": [hook("echo 'session context'", "Write-Output 'session context'")] }],
+        "UserPromptSubmit": [{ "hooks": [hook(
+            "if grep -q password; then echo 'no passwords in prompts' >&2; exit 2; fi; echo 'branch: main'",
+            "$i = [Console]::In.ReadToEnd(); if ($i -match 'password') { [Console]::Error.WriteLine('no passwords in prompts'); exit 2 }; Write-Output 'branch: main'",
+        )] }],
+        "PreToolUse": [{ "matcher": "Bash", "hooks": [hook(
+            "if grep -q 'rm -rf'; then echo 'no rm here' >&2; exit 2; fi",
+            "$i = [Console]::In.ReadToEnd(); if ($i -match 'rm -rf') { [Console]::Error.WriteLine('no rm here'); exit 2 }",
+        )] }],
+        "PostToolUse": [{ "matcher": "Edit|Write", "hooks": [hook(
+            r#"cat > post.json; echo '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"formatter ran"}}'"#,
+            r#"[IO.File]::WriteAllText((Join-Path (Get-Location) 'post.json'), [Console]::In.ReadToEnd()); Write-Output '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"formatter ran"}}'"#,
+        )] }],
+        "PermissionRequest": [{ "matcher": "WebFetch", "hooks": [hook(
+            r#"echo '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"no web"}}}'"#,
+            r#"Write-Output '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"no web"}}}'"#,
+        )] }],
+        "Stop": [{ "hooks": [hook(
+            r#"if grep -q '"stop_hook_active":false'; then echo '{"decision":"block","reason":"run the tests first"}'; fi"#,
+            r#"$i = [Console]::In.ReadToEnd(); if ($i -match '"stop_hook_active":false') { Write-Output '{"decision":"block","reason":"run the tests first"}' }"#,
+        )] }],
+    }});
+    std::fs::create_dir_all(proj.join(".claude")).unwrap();
+    std::fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let found = devcat_harness::hooks::load(&proj, None);
+    assert_eq!(found.files, vec![(".claude/settings.json".to_string(), 6)]);
+
+    let model = Scripted::new(vec![
+        vec![tool("t1", "shell", json!({ "command": "rm -rf build" }))],
+        vec![tool("t2", "write", json!({ "path": "notes2.txt", "content": "x" }))],
+        vec![tool("t3", "web_fetch", json!({ "url": "https://example.invalid/" }))],
+        vec![text("Done.")],
+        // the Stop hook sent it back once
+        vec![text("Tests pass.")],
+    ]);
+    let approver = Arc::new(Answer(Decision::Allow, Mutex::default()));
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Ask, approver.clone(), "s".into());
+    agent.hooks = Arc::new(found.hooks);
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, "please clean up", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    let results: Vec<(String, bool)> = events.iter().filter_map(|e| match e {
+        AgentEvent::ToolResult { content, is_error, .. } => Some((content.clone(), *is_error)),
+        _ => None,
+    }).collect();
+    // PreToolUse blocked the command, with the hook's reason; nobody was asked
+    assert_eq!(results[0], ("Not run: a PreToolUse hook blocked it. no rm here".to_string(), true));
+    // the write asked as usual, ran, and the PostToolUse hook's context came with its result
+    assert!(!results[1].1 && results[1].0.ends_with("<hook-context>\nformatter ran\n</hook-context>"), "{:?}", results[1]);
+    // PermissionRequest answered the fetch instead of the user
+    assert_eq!(results[2], ("Not run: a PermissionRequest hook declined it. no web".to_string(), true));
+    assert_eq!(*approver.1.lock().unwrap(), vec!["write: notes2.txt"]);
+    assert!(session.events().iter().any(|e| matches!(e, SessionEvent::Approval { tool, allowed: false, by, .. } if tool == "web_fetch" && by == "hook")));
+    // the hook got the call the way Claude Code describes it
+    let post: Value = serde_json::from_str(std::fs::read_to_string(proj.join("post.json")).unwrap().trim_start_matches('\u{feff}')).unwrap();
+    assert_eq!((post["hook_event_name"].as_str(), post["tool_name"].as_str(), post["tool_use_id"].as_str()), (Some("PostToolUse"), Some("Write"), Some("t2")));
+    assert_eq!(post["tool_input"]["file_path"].as_str(), Some(proj.join("notes2.txt").to_str().unwrap()));
+    assert_eq!((post["session_id"].as_str(), post["permission_mode"].as_str()), (Some(session.id.as_str()), Some("default")));
+    // SessionStart and UserPromptSubmit added context to the message: the model got it
+    let first = &session.messages()[0];
+    let texts: Vec<&str> = first.content.iter().filter_map(|b| if let Block::Text { text } = b { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(texts, ["please clean up", "<hook-context>\nsession context\n</hook-context>", "<hook-context>\nbranch: main\n</hook-context>"]);
+    // the Stop hook sent the agent back to work once, and the chat says why
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Hook { event, message } if event == "Stop" && message == "Stop hook feedback:\nrun the tests first")));
+    assert!(session.events().iter().any(|e| matches!(e, SessionEvent::User { hook: Some(h), text, .. } if h == "Stop" && text.ends_with("run the tests first"))));
+    assert_eq!(session.messages().last().unwrap().text(), "Tests pass.");
+    assert_eq!(session.title(), "please clean up");
+
+    // UserPromptSubmit can block a message: it isn't recorded, and the turn says why
+    let before = session.events().len();
+    let blocked = agent.turn(&mut session, "my password is hunter2", &Cancel::default(), &mut |_| {}).await;
+    assert!(matches!(&blocked, Err(Error::Hook(m)) if m == "A hook blocked this message: no passwords in prompts"), "{blocked:?}");
+    assert_eq!(session.events().len(), before);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Answers from one script per conversation, picked by its first user message (the user's task or a
 /// helper's prompt), so helpers running at the same time each get their own. Records each request's
 /// first message, system prompt and tool names. With a `gate`, helpers' first steps wait for each
@@ -409,7 +495,11 @@ impl Model for Router {
         "router".into()
     }
     async fn step(&self, req: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
-        let first = req.messages[0].text();
+        // the message itself, without context hooks added after it
+        let first = match req.messages[0].content.first() {
+            Some(Block::Text { text }) => text.clone(),
+            _ => String::new(),
+        };
         self.seen.lock().unwrap().push((first.clone(), req.system.to_string(), req.tools.iter().map(|t| t.name.clone()).collect()));
         if let Some(gate) = &self.gate
             && req.system.contains("# You're a helper")
@@ -559,5 +649,79 @@ async fn stopping_stops_the_helpers_too() {
     let resumed = Session::open(session.path()).await.unwrap();
     assert!(matches!(resumed.events().last(), Some(SessionEvent::Interrupted { .. })));
     assert_eq!(resumed.messages()[2].content.len(), 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn prompt_hooks_are_for_the_users_messages_not_a_helpers_prompt() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join(".claude")).unwrap();
+    let settings = json!({ "hooks": { "UserPromptSubmit": [{ "hooks": [hook("echo 'from the hook'", "Write-Output 'from the hook'")] }] } });
+    std::fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let model = Router::new(
+        vec![
+            ("look it up", vec![vec![helper_call("h1", "Look", "what is in notes.txt?")], vec![text("done")]]),
+            ("what is in notes.txt?", vec![vec![text("version = 1")]]),
+        ],
+        None,
+    );
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.hooks = Arc::new(devcat_harness::hooks::load(&proj, None).hooks);
+    agent.turn(&mut session, "look it up", &Cancel::default(), &mut |_| {}).await.unwrap();
+    let context = |s: &Session| s.events().iter().find_map(|e| if let SessionEvent::User { context, .. } = e { Some(context.clone()) } else { None }).unwrap();
+    assert_eq!(context(&session), vec!["from the hook"]);
+    let helper = Session::open(&session.path().with_extension("agents").join("h1.jsonl")).await.unwrap();
+    assert!(context(&helper).is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_hook_that_stops_the_agent_keeps_what_already_ran() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    let settings = json!({ "hooks": {
+        "PostToolUse": [{ "matcher": "Read", "hooks": [hook(
+            r#"echo '{"continue":false,"stopReason":"enough reading"}'"#,
+            r#"Write-Output '{"continue":false,"stopReason":"enough reading"}'"#,
+        )] }],
+    }});
+    std::fs::create_dir_all(proj.join(".claude")).unwrap();
+    std::fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let model = Scripted::new(vec![vec![tool("t1", "read", json!({ "path": "notes.txt" })), tool("t2", "glob", json!({ "pattern": "*" }))]]);
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.hooks = Arc::new(devcat_harness::hooks::load(&proj, None).hooks);
+    let end = agent.turn(&mut session, "look", &Cancel::default(), &mut |_| {}).await;
+    assert!(matches!(&end, Err(Error::Hook(m)) if m == "A PostToolUse hook stopped the agent: enough reading"), "{end:?}");
+    // the read ran: the model gets its result; the glob after it didn't
+    let results: Vec<(String, String)> = session.messages().iter().flat_map(|m| m.content.clone()).filter_map(|b| match b {
+        Block::ToolResult { tool_use_id, content, .. } => Some((tool_use_id, content)),
+        _ => None,
+    }).collect();
+    assert!(results[0].0 == "t1" && results[0].1.contains("version = 1"), "{results:?}");
+    assert_eq!(results[1], ("t2".to_string(), "Not run: a hook stopped the agent.".to_string()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn stop_doesnt_wait_for_a_hook() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    let settings = json!({ "hooks": { "PreToolUse": [{ "hooks": [hook("sleep 30", "Start-Sleep -Seconds 30")] }] } });
+    std::fs::create_dir_all(proj.join(".claude")).unwrap();
+    std::fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let model = Scripted::new(vec![vec![tool("t1", "read", json!({ "path": "notes.txt" }))]]);
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.hooks = Arc::new(devcat_harness::hooks::load(&proj, None).hooks);
+    let cancel = Cancel::default();
+    let stopper = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        stopper.cancel();
+    });
+    let started = std::time::Instant::now();
+    let end = agent.turn(&mut session, "look", &cancel, &mut |_| {}).await;
+    assert!(matches!(end, Err(Error::Cancelled)), "{end:?}");
+    assert!(started.elapsed() < Duration::from_secs(10), "waited {:?} for the hook", started.elapsed());
     let _ = std::fs::remove_dir_all(dir);
 }
