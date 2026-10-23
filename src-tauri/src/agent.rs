@@ -141,6 +141,7 @@ impl Approver for UiApprover {
         self.pending.lock().insert(req.tool_use_id.clone(), tx);
         self.send(json!({ "type": "approval", "request": req }));
         chat_changed(&self.session_id);
+        crate::agent_jobs::waiting(&self.session_id, &req.summary);
         match rx.await {
             Ok(d) => (d, "user".into()),
             // the tab was closed or the turn stopped: fail closed
@@ -153,6 +154,7 @@ impl Approver for UiApprover {
         self.questions.lock().insert(q.tool_use_id.clone(), tx);
         self.send(json!({ "type": "question", "question": q }));
         chat_changed(&self.session_id);
+        crate::agent_jobs::waiting(&self.session_id, &q.question);
         rx.await.ok()
     }
 }
@@ -667,8 +669,20 @@ pub async fn agent_answer(session_id: String, tool_use_id: String, answer: Strin
 /// file paths: images are shown to the model, every file is listed with its path.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>) -> AppResult<()> {
-    let run = run_of(&session_id)?;
-    let attachments = attachments.unwrap_or_default();
+    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window).map(|_| ())
+}
+
+/// Send a message the way the chat does, and wait for the turn to end: (how it ended, the error).
+/// For scheduled jobs (agent_jobs.rs).
+pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_window: Option<u64>) -> AppResult<(String, Option<String>)> {
+    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window)?;
+    let (end, error) = done.await.map_err(|e| AppError::msg(e.to_string()))?;
+    Ok((end.as_str().unwrap_or("error").to_string(), error))
+}
+
+/// Start a turn in the background; the handle gives how it ended.
+fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>) -> AppResult<tokio::task::JoinHandle<(Value, Option<String>)>> {
+    let run = run_of(session_id)?;
     if text.trim().is_empty() && attachments.is_empty() {
         return Err(AppError::msg("Type a message first"));
     }
@@ -678,7 +692,7 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
     let cancel = Cancel::default();
     *run.cancel.lock() = cancel.clone();
     run.since.store(now_ms(), Ordering::SeqCst);
-    tokio::spawn(async move {
+    Ok(tokio::spawn(async move {
         let started = std::time::Instant::now();
         let ap = run.approver.clone();
         ap.send(json!({ "type": "turnStart", "text": text, "attachments": attachments }));
@@ -716,8 +730,8 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
             run.busy.store(false, Ordering::SeqCst);
         }
         chat_changed(&run.id);
-    });
-    Ok(())
+        (end, error)
+    }))
 }
 
 /// Stop the running turn (pending approvals count as a no).
@@ -747,6 +761,14 @@ pub async fn agent_close(session_id: String) -> AppResult<()> {
         return Ok(());
     }
     close(&session_id)
+}
+
+/// End a chat unless it's working (a job's earlier run: its log stays on disk).
+pub fn close_if_idle(session_id: &str) {
+    let idle = RUNS.lock().get(session_id).is_some_and(|r| !r.busy.load(Ordering::SeqCst));
+    if idle {
+        let _ = close(session_id);
+    }
 }
 
 /// End a chat: forget it; a running turn is stopped.

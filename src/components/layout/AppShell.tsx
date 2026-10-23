@@ -10,6 +10,8 @@ import ConnectionTree from "../../features/connections/ConnectionTree";
 import HistoryPanel from "../../features/history/HistoryPanel";
 import NetworkPanel from "../../features/network/NetworkPanel";
 import ClaudePanel from "../../features/claude/ClaudePanel";
+// scheduled DevCat Agent jobs: their toasts show wherever you are
+import "../../features/agent/schedule";
 import { AiConnectionsDialog, ProviderPicker } from "../../features/claude/AiProviders";
 import GitPanel from "../../features/git/GitPanel";
 import NotesPanel from "../../features/notes/NotesPanel";

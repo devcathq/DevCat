@@ -136,7 +136,16 @@ export async function send(tabId: string, text: string): Promise<boolean> {
     // the window decides when the conversation gets summarized
     const provider = useProviders.getState().providers.find((p) => p.id === c.providerId);
     const models = provider ? await connectionModels(provider) : [];
-    await api.agentSend(c.sessionId, text.trim(), c.policy, c.model || null, c.attachments, contextWindow(c.model, models).tokens);
+    const sendIt = () => api.agentSend(c.sessionId!, text.trim(), c.policy, c.model || null, c.attachments, contextWindow(c.model, models).tokens);
+    try {
+      await sendIt();
+    } catch (e) {
+      // ended elsewhere (a phone, or a scheduled job's next run): open it again and send
+      const tab = useTabs.getState().tabs.find((t) => t.id === tabId);
+      if (!errMsg(e).startsWith("This chat is closed") || !tab || tab.type !== "claude") throw e;
+      if (!(await openChat(tabId, tab.cwd, c.providerId, c.sessionId))) throw e;
+      await sendIt();
+    }
     patch(tabId, () => ({ attachments: [] }));
     return true;
   } catch (e) {

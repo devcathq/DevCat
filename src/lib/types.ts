@@ -451,6 +451,18 @@ export interface AgentContext {
 /** `live`: while a turn runs, its events so far (after `events`); `seq`: the number of the last one
  *  (later `agent-event`s carry higher ones). */
 export interface AgentOpened { sessionId: string; title: string; model: string; providerName: string; busy: boolean; events: AgentSessionEvent[]; usage: AgentUsage; context: AgentContext; live?: AgentLiveEvent[]; seq?: number }
+/** When a scheduled job runs: every N minutes, or at a time of day on some weekdays (1 = Monday … 7 = Sunday; none = every day). */
+export type AgentJobSchedule = { kind: "every"; minutes: number } | { kind: "daily"; time: string; days: number[] };
+export interface AgentJobRun { startedMs: number; sessionId: string | null; end: "answered" | "stepLimit" | "stopped" | "error" | null; error: string | null; finishedMs: number | null }
+/** A scheduled DevCat Agent job: a prompt that runs on a schedule in a folder (src-tauri/src/agent_jobs.rs). */
+export interface AgentJob {
+  id: string; name: string; cwd: string; providerId: string; prompt: string; policy: AgentPolicy; schedule: AgentJobSchedule; enabled: boolean;
+  /** Newest first. */
+  runs: AgentJobRun[];
+  nextMs: number | null;
+  /** From the list only: it's running now. */
+  running?: boolean;
+}
 /** A logged event as written: `ms` is when (missing in logs from before the Trace view). */
 export type AgentTraceEvent = AgentSessionEvent & { ms?: number };
 /** A chat's log for the Trace view, and its helpers' logs by file name (the `subagent` call's id). */

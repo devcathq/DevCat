@@ -2,7 +2,7 @@
 // their own api files under src/features/<feature>/api.ts.
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  AgentDecision, AgentModel, AgentOpened, AgentPolicy, AgentSettings, AgentTrace,
+  AgentDecision, AgentJob, AgentModel, AgentOpened, AgentPolicy, AgentSettings, AgentTrace,
   KeepAwakeState,
   UpdateInfo,
   GitRepo, GitLogQuery, GitCommit, GitCommitDetail, GitBlame, GitRefs, GitStash, CommitAction, RemoteOpts,
@@ -169,6 +169,13 @@ export const api = {
   agentTrustHooks: (sessionId: string) => invoke<void>("agent_trust_hooks", { sessionId }),
   /** A chat's log and its helpers' logs, for the Trace view. */
   agentTrace: (sessionId: string) => invoke<AgentTrace>("agent_trace", { sessionId }),
+  /** Scheduled DevCat Agent jobs (those of `cwd` when given). */
+  agentJobs: (cwd: string | null) => invoke<AgentJob[]>("agent_jobs", { cwd }),
+  /** Add a job (empty id) or change one; returns it with its id and next run. */
+  agentJobSave: (job: AgentJob) => invoke<AgentJob>("agent_job_save", { job }),
+  agentJobDelete: (id: string) => invoke<void>("agent_job_delete", { id }),
+  /** Run a job now (its schedule stays). */
+  agentJobRun: (id: string) => invoke<void>("agent_job_run", { id }),
   agentSessions: (cwd: string) => invoke<{ id: string; title: string; updatedMs: number; messages: number }[]>("agent_sessions", { cwd }),
   agentModels: (settings: AgentSettings, providerId: string | null, apiKey: string | null) => invoke<AgentModel[]>("ai_agent_models", { settings, providerId, apiKey }),
   /** Put local files / folders on the OS clipboard (paste attaches them in Slack, copies them in Explorer / Finder). */

@@ -17,6 +17,7 @@ import { openGitRepo } from "../git/open";
 import { openClaudeWorkspace } from "./open";
 import { useSelectedProvider } from "./providers";
 import { renameChat, useAgent } from "../agent/store";
+import { AgentJobs } from "../agent/Jobs";
 import FileTree, { type FileTreeHandle } from "./sidebar/FileTree";
 import { SessionsList } from "./sidebar/SessionsList";
 import { pickFolder, useWorkspace } from "./sidebar/workspace";
@@ -367,6 +368,7 @@ function Workspace({ cwd }: { cwd: string }) {
               <RefreshCw className={clsx("size-3.5", sessLoading && "animate-spin")} />
             </IconButton>
           </SectionHeader>
+          {sessionsOpen && isAgent && <AgentJobs cwd={cwd} providerId={selected.id} />}
           {sessionsOpen && isAgent && <div className="min-h-0 flex-1"><AgentSessions cwd={cwd} providerId={selected.id} now={now} /></div>}
           {sessionsOpen && !isClaude && !isAgent && (
             <div className="px-3 py-2 text-[12px] text-faint">Sessions are available for Claude Code and DevCat Agent. Pick one in the header above to browse and resume them.</div>
