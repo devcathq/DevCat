@@ -401,7 +401,7 @@ function CompactedRow({ item, cwd }: { item: Extract<Item, { kind: "compacted" }
   );
 }
 
-/** The agent's checklist (its latest `todo_write`), above the composer while there's work in it. */
+/** The agent's checklist (its latest `todo_write`), above the composer while the agent works. */
 function TodoPanel({ items, busy }: { items: Item[]; busy: boolean }) {
   const [open, setOpen] = useState(true);
   const todos = useMemo(() => {
@@ -412,7 +412,9 @@ function TodoPanel({ items, busy }: { items: Item[]; busy: boolean }) {
     }
     return [];
   }, [items]);
-  if (!todos.length || (!busy && todos.every((t) => t.status === "completed"))) return null;
+  // the plan shows the turn's progress: when the turn ends it goes (the conversation keeps each
+  // update), even if the model left an item open
+  if (!todos.length || !busy) return null;
   const done = todos.filter((t) => t.status === "completed").length;
   const current = todos.find((t) => t.status === "in_progress");
   return (
