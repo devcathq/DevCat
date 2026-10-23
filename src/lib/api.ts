@@ -2,7 +2,7 @@
 // their own api files under src/features/<feature>/api.ts.
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  AgentDecision, AgentModel, AgentOpened, AgentPolicy, AgentSettings,
+  AgentDecision, AgentModel, AgentOpened, AgentPolicy, AgentSettings, AgentTrace,
   KeepAwakeState,
   UpdateInfo,
   GitRepo, GitLogQuery, GitCommit, GitCommitDetail, GitBlame, GitRefs, GitStash, CommitAction, RemoteOpts,
@@ -167,6 +167,8 @@ export const api = {
   agentRename: (sessionId: string, title: string) => invoke<void>("agent_rename", { sessionId, title }),
   /** Allow the hooks of a chat's folder as they are now (they run commands on this computer). */
   agentTrustHooks: (sessionId: string) => invoke<void>("agent_trust_hooks", { sessionId }),
+  /** A chat's log and its helpers' logs, for the Trace view. */
+  agentTrace: (sessionId: string) => invoke<AgentTrace>("agent_trace", { sessionId }),
   agentSessions: (cwd: string) => invoke<{ id: string; title: string; updatedMs: number; messages: number }[]>("agent_sessions", { cwd }),
   agentModels: (settings: AgentSettings, providerId: string | null, apiKey: string | null) => invoke<AgentModel[]>("ai_agent_models", { settings, providerId, apiKey }),
   /** Put local files / folders on the OS clipboard (paste attaches them in Slack, copies them in Explorer / Finder). */

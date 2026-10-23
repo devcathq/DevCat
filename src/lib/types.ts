@@ -435,8 +435,8 @@ export type AgentSessionEvent =
   /** `context`: what hooks added for the model; `hook`: not from the user but from a hook (its event). */
   | { event: "user"; text: string; images?: AgentBlock[]; context?: string[]; hook?: string }
   | { event: "assistant"; content: AgentBlock[]; model: string; usage: AgentUsage }
-  /** `usage`: tokens the calls used themselves (helpers started with `subagent`). */
-  | { event: "tool_results"; results: AgentBlock[]; usage?: AgentUsage }
+  /** `usage`: tokens the calls used themselves (helpers started with `subagent`); `took_ms`: how long each call took. */
+  | { event: "tool_results"; results: AgentBlock[]; usage?: AgentUsage; took_ms?: number[] }
   | { event: "approval"; tool_use_id: string; tool: string; allowed: boolean; by: string }
   | { event: "interrupted"; reason: string }
   | { event: "title"; title: string }
@@ -451,6 +451,10 @@ export interface AgentContext {
 /** `live`: while a turn runs, its events so far (after `events`); `seq`: the number of the last one
  *  (later `agent-event`s carry higher ones). */
 export interface AgentOpened { sessionId: string; title: string; model: string; providerName: string; busy: boolean; events: AgentSessionEvent[]; usage: AgentUsage; context: AgentContext; live?: AgentLiveEvent[]; seq?: number }
+/** A logged event as written: `ms` is when (missing in logs from before the Trace view). */
+export type AgentTraceEvent = AgentSessionEvent & { ms?: number };
+/** A chat's log for the Trace view, and its helpers' logs by file name (the `subagent` call's id). */
+export interface AgentTrace { events: AgentTraceEvent[]; helpers: Record<string, AgentTraceEvent[]>; path: string }
 /** A DevCat Agent chat open on the computer (the phone's list; `origin`: "desktop" / "phone:<name>"). */
 export interface AgentChatInfo { sessionId: string; cwd: string; title: string; providerId: string; providerName: string; origin: string; busy: boolean; waiting: string | null; since: number }
 export interface AgentQuestion { toolUseId: string; question: string; options: string[] }

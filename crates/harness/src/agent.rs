@@ -338,12 +338,15 @@ impl Agent {
             let mut helped = if cancel.is_cancelled() { HashMap::new() } else { self.helpers(session, jobs, cancel, on).await };
             let mut results = Vec::new();
             let mut usage = Usage::default();
+            let mut took_ms = Vec::new();
             for (id, name, input) in calls {
-                if let Some((out, used)) = helped.remove(&id) {
+                if let Some((out, used, took)) = helped.remove(&id) {
                     usage += used;
+                    took_ms.push(took);
                     results.push(Block::ToolResult { tool_use_id: id, content: out.content, is_error: out.is_error });
                     continue;
                 }
+                let started = std::time::Instant::now();
                 let out = if cancel.is_cancelled() {
                     ToolOutput::err("Not run: stopped by the user.")
                 } else if repeated.contains(&id) {
@@ -353,10 +356,11 @@ impl Agent {
                 } else {
                     self.call(session, &ctx, &id, &name, input, cancel, on).await?
                 };
+                took_ms.push(started.elapsed().as_millis() as u64);
                 on(AgentEvent::ToolResult { id: id.clone(), content: out.content.clone(), is_error: out.is_error });
                 results.push(Block::ToolResult { tool_use_id: id, content: out.content, is_error: out.is_error });
             }
-            session.append(SessionEvent::ToolResults { results, usage }).await?;
+            session.append(SessionEvent::ToolResults { results, usage, took_ms }).await?;
             if cancel.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -370,8 +374,9 @@ impl Agent {
     }
 
     /// Run `subagent` calls (id, input), up to [`MAX_HELPERS`] at a time, each in its own session
-    /// in `<session>.agents/`. Returns each result with the tokens its helper used.
-    async fn helpers(&self, session: &Session, jobs: Vec<(String, Value)>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> HashMap<String, (ToolOutput, Usage)> {
+    /// in `<session>.agents/`. Returns each result with the tokens its helper used and how long it
+    /// took (ms).
+    async fn helpers(&self, session: &Session, jobs: Vec<(String, Value)>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> HashMap<String, (ToolOutput, Usage, u64)> {
         let mut done = HashMap::new();
         if jobs.is_empty() {
             return done;
@@ -383,8 +388,10 @@ impl Agent {
             .map(|(id, input)| {
                 let tx = tx.clone();
                 async move {
+                    // from when it gets a slot (not while it waits for one)
+                    let started = std::time::Instant::now();
                     let (out, usage) = self.helper(session, &id, &input, cancel, tx).await;
-                    (id, out, usage)
+                    (id, out, usage, started.elapsed().as_millis() as u64)
                 }
             })
             .collect();
@@ -394,13 +401,13 @@ impl Agent {
             tokio::select! {
                 Some(e) = rx.recv() => on(e),
                 next = runs.next() => {
-                    let Some((id, out, usage)) = next else { break };
+                    let Some((id, out, usage, took)) = next else { break };
                     while let Ok(e) = rx.try_recv() {
                         on(e);
                     }
                     let out = fit(session, &id, SUBAGENT, out).await;
                     on(AgentEvent::ToolResult { id: id.clone(), content: out.content.clone(), is_error: out.is_error });
-                    done.insert(id, (out, usage));
+                    done.insert(id, (out, usage, took));
                 }
             }
         }
