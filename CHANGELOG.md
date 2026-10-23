@@ -24,6 +24,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   saves a note when you ask, showing its text before it does. The Notes list updates at once (#55).
 - **Rename a DevCat Agent chat:** right-click it in the sidebar → **Rename…** (#55).
 - **Estimated cost** of a DevCat Agent chat next to its token meter, at the model's list price (#55).
+- **DevCat Agent plan mode:** pick **Plan** in the permission menu and the agent only looks around and answers
+  with a plan; edits and commands don't run. **Start, ask first** or **Start, auto-edit** under the plan carries
+  it out (#56).
 
 ## 0.9.1 - 2026-10-23
 

@@ -5,7 +5,7 @@
 import clsx from "clsx";
 import {
   ArrowUp, Ban, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, File as FileIcon, FilePen, FolderOpen, Layers, MessageCircleQuestion, MoreVertical, Paperclip, Plug,
-  Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TriangleAlert, X,
+  ClipboardList, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TriangleAlert, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -598,7 +598,7 @@ function Composer({ chat, models, policy, onPolicy, onModel, attachments, setAtt
     }
   };
   const p = POLICIES.find((x) => x.id === policy)!;
-  const PolicyIcon = policy === "bypass" ? ShieldOff : policy === "auto-edit" ? ShieldCheck : Shield;
+  const PolicyIcon = policy === "bypass" ? ShieldOff : policy === "auto-edit" ? ShieldCheck : policy === "plan" ? ClipboardList : Shield;
   const { pct } = usedPct(chat, models);
   const r = 6, circ = 2 * Math.PI * r;
   return (
@@ -618,7 +618,7 @@ function Composer({ chat, models, policy, onPolicy, onModel, attachments, setAtt
           <button aria-label="Attach files" disabled={uploading > 0} onClick={() => picker.current?.click()} className="flex size-9 shrink-0 items-center justify-center rounded-full text-muted active:bg-hover disabled:opacity-60">
             {uploading > 0 ? <Spinner className="size-4" /> : <Paperclip className="size-4" />}
           </button>
-          <label className={clsx("relative flex h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[12px]", policy === "bypass" ? "border-warn/40 bg-warn/10 text-warn" : "border-line text-muted")}>
+          <label className={clsx("relative flex h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[12px]", policy === "bypass" ? "border-warn/40 bg-warn/10 text-warn" : policy === "plan" ? "border-accent/40 bg-accent/10 text-accent" : "border-line text-muted")}>
             <PolicyIcon className="size-3.5" />{p.label}<ChevronDown className="size-3 opacity-60" />
             <select value={policy} onChange={(e) => onPolicy(e.target.value as AgentPolicy)} className="absolute inset-0 opacity-0" aria-label="Permission mode">
               {POLICIES.map((x) => <option key={x.id} value={x.id}>{x.label}: {x.hint}</option>)}
