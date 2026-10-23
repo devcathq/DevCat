@@ -229,7 +229,9 @@ impl Host {
             .map_err(|e| e.to_string())?;
         let endpoint = builder.bind().await.map_err(|e| {
             let s = e.to_string();
-            if s.to_lowercase().contains("in use") { format!("Port {port} is already in use. Pick another port.") } else { format!("Couldn't listen on port {port}: {s}") }
+            // iroh says only "Failed to bind sockets": see whether it's the port.
+            let taken = std::net::UdpSocket::bind(("0.0.0.0", port)).is_err_and(|e| e.kind() == std::io::ErrorKind::AddrInUse);
+            if taken || crate::instance::port_taken(&s) { format!("Port {port} is already in use. Pick another port.") } else { format!("Couldn't listen on port {port}: {s}") }
         })?;
         if relay.is_some() {
             // Show the relay as connected once it is.
