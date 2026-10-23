@@ -236,7 +236,8 @@ of these step by step, with every keyboard shortcut on
   **DevCat Agent** (built in, nothing to install) talks to a model API directly: Z.ai GLM, DeepSeek, OpenAI,
   Anthropic, OpenRouter, Kimi, Ollama, LM Studio or any OpenAI- or Anthropic-compatible endpoint. Its chat folds
   the agent's steps into one line and asks before edits and commands (**Ask first**, **Auto-edit** or **Full
-  access**); answer its approvals and questions on DevCat Mobile too. It follows `AGENTS.md` / `CLAUDE.md`, uses
+  access**), or only looks around and proposes a plan first (**Plan**); answer its approvals and questions on
+  DevCat Mobile too. It follows `AGENTS.md` / `CLAUDE.md`, uses
   the MCP servers from your other agents' configs, and has tools for files, commands, `git` (reading runs without
   asking), web pages, a todo list, your DevCat connections (SQL, MongoDB, Redis, Kubernetes; read-only stays
   read-only) and your DevCat notes (search, read, save). Long chats are summarized when the context fills up, and
