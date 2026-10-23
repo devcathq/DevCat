@@ -17,6 +17,7 @@ import { open as pickFiles } from "@tauri-apps/plugin-dialog";
 import { POLICIES, SUGGESTIONS, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent } from "./store";
 import { useClaude } from "../claude/store";
+import { historyFor, remember } from "./history";
 
 export default function AgentChat({ tabId, cwd, provider, visible, onReview }: { tabId: string; cwd: string; provider: AiProvider; visible: boolean; onReview: () => void }) {
   const chat = useAgent((s) => s.chats[tabId]);
@@ -112,7 +113,7 @@ function ChatBody({ tabId, cwd, visible, onReview, provider }: { tabId: string; 
       )}
       <TodoPanel items={chat.items} busy={chat.busy} />
       <EditedFiles items={chat.items} tabId={tabId} cwd={cwd} onReview={onReview} />
-      <Composer tabId={tabId} visible={visible} provider={provider} />
+      <Composer tabId={tabId} cwd={cwd} visible={visible} provider={provider} />
     </div>
   );
 }
@@ -529,9 +530,11 @@ function ContextMeter({ tabId, models }: { tabId: string; models: AgentModel[] }
   );
 }
 
-function Composer({ tabId, visible, provider }: { tabId: string; visible: boolean; provider: AiProvider }) {
+function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: string; visible: boolean; provider: AiProvider }) {
   const chat = useAgent((s) => s.chats[tabId])!;
   const [text, setText] = useState("");
+  // ↑ / ↓: where in the history (null = the message being written), and that message meanwhile
+  const [recall, setRecall] = useState<{ at: number; draft: string } | null>(null);
   const [models, setModels] = useState<AgentModel[]>([]);
   useEffect(() => { void connectionModels(provider).then(setModels); }, [provider]);
   const box = useRef<HTMLTextAreaElement>(null);
@@ -558,10 +561,38 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
     if (!text.trim() && !chat.attachments.length) return;
     const t = text;
     setText("");
-    if (!(await send(tabId, t))) setText(t);
+    setRecall(null);
+    if (await send(tabId, t)) remember(cwd, t);
+    else setText(t);
+  };
+  /** Step through what was sent in this folder; false when there's nowhere to go. */
+  const step = (back: boolean, el: HTMLTextAreaElement) => {
+    const list = historyFor(cwd, chat.items.flatMap((i) => (i.kind === "user" && !i.queued ? [i.text] : [])));
+    const at = recall?.at ?? list.length;
+    const next = back ? at - 1 : at + 1;
+    if (next < 0 || (!recall && !back)) return false;
+    if (next >= list.length) {
+      setText(recall?.draft ?? "");
+      setRecall(null);
+    } else {
+      setText(list[next]);
+      setRecall({ at: next, draft: recall?.draft ?? text });
+    }
+    // the cursor at the end, as in a shell
+    requestAnimationFrame(() => el.setSelectionRange(el.value.length, el.value.length));
+    return true;
   };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+    if (e.nativeEvent.isComposing) return;
+    // ↑ on the first line goes back through what you sent here, ↓ on the last line forward
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const el = e.currentTarget;
+      if (el.selectionStart !== el.selectionEnd) return;
+      const edge = e.key === "ArrowUp" ? !el.value.slice(0, el.selectionStart).includes("\n") : !el.value.slice(el.selectionEnd).includes("\n");
+      if (edge && step(e.key === "ArrowUp", el)) e.preventDefault();
+      return;
+    }
+    if (e.key !== "Enter") return;
     // Shift+Enter makes a new line by itself; Ctrl+Enter and Alt+Enter do too, here
     if (e.ctrlKey || e.altKey || e.metaKey) {
       e.preventDefault();
@@ -589,7 +620,7 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
           ref={box}
           rows={2}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => { setText(e.target.value); setRecall(null); }}
           onKeyDown={onKey}
           onPaste={(e) => {
             const files = [...e.clipboardData.files];

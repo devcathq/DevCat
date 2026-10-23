@@ -23,6 +23,7 @@ Every shortcut in one place. On Windows and Linux, ⌘ is Ctrl and ⌥ is Alt.
 | Save a file in the editor | <kbd>⌘S</kbd> | <kbd>Ctrl+S</kbd> |
 | DevCat Agent: send (also while it works: it reads the message after its current step) | <kbd>↵</kbd> | <kbd>Enter</kbd> |
 | DevCat Agent: new line in the chat box | <kbd>⇧↵</kbd> <kbd>⌃↵</kbd> <kbd>⌥↵</kbd> | <kbd>Shift+Enter</kbd> <kbd>Ctrl+Enter</kbd> <kbd>Alt+Enter</kbd> |
+| DevCat Agent: earlier / later messages you sent in this folder | <kbd>↑</kbd> <kbd>↓</kbd> | <kbd>↑</kbd> <kbd>↓</kbd> |
 
 ## Terminal
 
