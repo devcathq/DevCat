@@ -41,11 +41,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # The system libraries the desktop app builds against (WebKitGTK for the Tauri window, GTK,
+      # OpenSSL, D-Bus): their -sys crates' build scripts need them even for `cargo check`.
+      # A slow Ubuntu mirror can hang apt: retry downloads, and give up after 10 minutes.
       - name: Install Linux dependencies
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libssl-dev libdbus-1-dev pkg-config
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libwebkit2gtk-4.1-dev \
+            libappindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
         with:
