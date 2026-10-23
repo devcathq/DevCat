@@ -398,14 +398,57 @@ impl LoginPrompt {
 
     /// Is `out`'s last line this destination's login prompt?
     pub fn matches(&self, out: &str) -> bool {
-        let line = out.trim_end().rsplit(['\n', '\r']).next().unwrap_or("").trim().to_lowercase();
-        let named = |d: &String| line == format!("{d}'s password:") || (line.starts_with(&format!("({d}) ")) && line.ends_with("password:"));
+        let line = last_line(out);
+        let named = |d: &String| {
+            // keyboard-interactive: the server's own wording ("Password:", "Password for me@REALM:")
+            let kbd = line.strip_prefix(&format!("({d}) ")).is_some_and(|p| p.contains("password") && p.ends_with(':') && !p.contains("new password") && !p.contains("retype"));
+            kbd || line == format!("{d}'s password:")
+        };
         if self.dests.iter().any(named) {
             return true;
         }
         let key = self.key.as_deref().map(str::to_lowercase);
         key.is_some_and(|k| line == format!("enter passphrase for key '{k}':"))
     }
+}
+
+/// The last line of terminal output, lowercase, without colours and other escape sequences (a
+/// Windows console redraws its screen with them, moving the cursor instead of printing newlines).
+pub fn last_line(out: &str) -> String {
+    let mut text = String::with_capacity(out.len());
+    let mut chars = out.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\x1b', Some('[')) => {
+                chars.next();
+                let mut end = None;
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        end = Some(c);
+                        break;
+                    }
+                }
+                // cursor moved to another line
+                if matches!(end, Some('H' | 'f' | 'd' | 'E' | 'F')) {
+                    text.push('\n');
+                }
+            }
+            ('\x1b', Some(']')) => {
+                // a title: ends with BEL or ESC \\
+                while let Some(c) = chars.next() {
+                    if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            ('\x1b', Some(_)) => {
+                chars.next();
+            }
+            (c, _) if c.is_control() && !matches!(c, '\n' | '\r') => {}
+            (c, _) => text.push(c),
+        }
+    }
+    text.trim_end().rsplit(['\n', '\r']).next().unwrap_or("").trim().to_lowercase()
 }
 
 /// A saved SSH session is being edited or deleted: let go of its master connection (so its old

@@ -11,7 +11,7 @@ import { glassOn, onPaletteChange, palette } from "../appearance/store";
 import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
 import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
-import { terminalEditKey } from "../../lib/terminalKeys";
+import { copyOnSelect, terminalEditKey } from "../../lib/terminalKeys";
 
 export interface ShellTarget { namespace: string; pod: string; containers: string[]; container?: string | null; owner?: string; pods?: string[] }
 
@@ -56,6 +56,7 @@ export default function ShellPanel({ connId, target, visible, onPodChange }: { c
     termRef.current = { term, fit };
     // ⌘/Ctrl + = / - / 0 (font size), copy / paste / clear / select all: the same keys as the AI workspace terminals.
     term.attachCustomKeyEventHandler((e) => e.type !== "keydown" || !(terminalZoomKey(e) || terminalEditKey(term, e)));
+    const offCopy = copyOnSelect(term, host.current!);
     const input = term.onData((d) => {
       if (sessionRef.current) k8s.execInput(sessionRef.current, d).catch(() => {});
     });
@@ -68,7 +69,7 @@ export default function ShellPanel({ connId, target, visible, onPodChange }: { c
       }
     });
     ro.observe(host.current!);
-    return () => { ro.disconnect(); input.dispose(); resize.dispose(); term.dispose(); termRef.current = null; };
+    return () => { ro.disconnect(); offCopy(); input.dispose(); resize.dispose(); term.dispose(); termRef.current = null; };
   }, []);
 
   // Exec session (restarts on container change / reconnect).

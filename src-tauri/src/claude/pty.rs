@@ -91,19 +91,26 @@ fn default_shell() -> CommandBuilder {
 /// Answers ssh's login prompt with a saved SSH session's password: once, only at the start of the
 /// session, only for the session's own prompt (`LoginPrompt`: never a jump host's or a remote
 /// program's), and never after the user typed something (then they're past the login, or doing
-/// it). Answering "yes" to an unknown host key is the one exception.
+/// it). Typing an answer to another of ssh's questions doesn't count: "yes" to an unknown host
+/// key, a jump host's password, a one-time code.
 struct AutoPass {
     password: Option<String>,
     prompt: LoginPrompt,
     seen: usize,
     started: Instant,
-    /// ssh's "continue connecting (yes/no)?" is on screen.
-    host_key_question: bool,
+    /// Output since the last line break: the prompt on screen (with what the user typed so far).
+    line: String,
+}
+
+/// Is this (last) line one of ssh's questions before the login: a host key, a password, a code?
+fn is_ssh_question(line: &str) -> bool {
+    let asks = ["password", "passphrase", "code", "token", "otp", "pin"];
+    line.starts_with("are you sure you want to continue connecting") || (line.ends_with(':') && asks.iter().any(|w| line.contains(w)))
 }
 
 impl AutoPass {
     fn new(password: Option<String>, prompt: LoginPrompt) -> Self {
-        AutoPass { password, prompt, seen: 0, started: Instant::now(), host_key_question: false }
+        AutoPass { password, prompt, seen: 0, started: Instant::now(), line: String::new() }
     }
 
     /// The next output batch, and whether input was written since the previous one; returns
@@ -111,19 +118,49 @@ impl AutoPass {
     fn feed(&mut self, batch: &[u8], now: Instant, typed: bool) -> Option<String> {
         self.password.as_ref()?;
         self.seen += batch.len();
-        if (typed && !self.host_key_question) || self.seen > AUTOPASS_BYTES || now.duration_since(self.started) > AUTOPASS_WINDOW {
+        // The question stays up while the answer is typed; a new line ends it.
+        let answering = typed && is_ssh_question(&super::remote::last_line(&self.line));
+        if (typed && !answering) || self.seen > AUTOPASS_BYTES || now.duration_since(self.started) > AUTOPASS_WINDOW {
             self.password = None;
             return None;
         }
         let text = String::from_utf8_lossy(batch);
-        // The question stays up while the answer is echoed; a new line ends it.
-        if text.contains(['\n', '\r']) || !self.host_key_question {
-            let last = text.trim_end().rsplit(['\n', '\r']).next().unwrap_or("").trim_start().to_lowercase();
-            self.host_key_question = last.starts_with("are you sure you want to continue connecting");
+        match text.trim_end().rfind(['\n', '\r']) {
+            Some(i) => self.line = text[i + 1..].to_string(),
+            None => self.line.push_str(&text),
+        }
+        if self.line.len() > 4096 {
+            self.line.clear();
         }
         // Once: a second prompt means it was wrong; the user types from there.
-        self.prompt.matches(&text).then(|| format!("{}\r", self.password.take().unwrap_or_default()))
+        self.prompt.matches(&self.line).then(|| format!("{}\r", self.password.take().unwrap_or_default()))
     }
+}
+
+/// Is this input only the terminal answering the program, not someone typing? Windows' console
+/// asks where the cursor is as it starts (ESC[6n → ESC[row;colR) and turns on focus reports
+/// (ESC[I / ESC[O); xterm.js answers device queries (ESC[?…c), modes (…$y) and colours (ESC]…).
+fn is_terminal_reply(data: &str) -> bool {
+    let mut rest = data;
+    while !rest.is_empty() {
+        let Some(seq) = rest.strip_prefix('\x1b') else { return false };
+        rest = if let Some(csi) = seq.strip_prefix('[') {
+            let end = csi.find(|c: char| !(c.is_ascii_digit() || matches!(c, ';' | '?' | '>' | '$')));
+            match end.map(|i| (i, csi.as_bytes()[i])) {
+                Some((i, b'R' | b'c' | b'n' | b'I' | b'O' | b't' | b'y')) => &csi[i + 1..],
+                _ => return false,
+            }
+        } else if let Some(osc) = seq.strip_prefix(']').or_else(|| seq.strip_prefix('P')) {
+            match osc.find(['\x07', '\x1b']) {
+                Some(i) if osc[i..].starts_with('\x07') => &osc[i + 1..],
+                Some(i) if osc[i..].starts_with("\x1b\\") => &osc[i + 2..],
+                _ => return false,
+            }
+        } else {
+            return false;
+        };
+    }
+    !data.is_empty()
 }
 
 /// Is this program Claude Code ("claude" or a path to the claude binary)?
@@ -349,7 +386,9 @@ pub async fn pty_open(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn pty_write(id: String, data: String) -> AppResult<()> {
     let pty = get(&id)?;
-    pty.typed.store(true, std::sync::atomic::Ordering::Relaxed);
+    if !is_terminal_reply(&data) {
+        pty.typed.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut w = pty.writer.lock();
     let w = w.as_mut().ok_or_else(|| AppError::msg("Terminal input is closed"))?;
     w.write_all(data.as_bytes())?;
@@ -464,6 +503,43 @@ mod tests {
         assert!(pty_resize(id, 10, 10).await.is_err());
     }
 
+    /// A password-only session against a real host: the terminal logs in with the saved password,
+    /// nothing typed but "yes" to an unknown host key (and the jump host's password, the same one).
+    /// DEVCAT_SSH_PASSWORD_TEST="host port user password [user@jumphost:port]".
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn saved_password_logs_in() {
+        let Ok(spec) = std::env::var("DEVCAT_SSH_PASSWORD_TEST") else { return };
+        let p: Vec<&str> = spec.split_whitespace().collect();
+        let data = std::env::temp_dir().join(format!("devcat-pwtest-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&data).unwrap();
+        let conn = json!([{ "id": "pwtest", "name": "Password box", "kind": "ssh", "host": p[0], "port": p[1].parse::<u16>().unwrap(), "user": p[2], "options": { "jump": p.get(4) }, "readOnly": false }]);
+        std::fs::write(data.join("connections.json"), conn.to_string()).unwrap();
+        crate::state::init(data.clone());
+        crate::secrets::set("pwtest:password", p[3]).unwrap();
+        let (sink, mut rx) = channel_sink();
+        let id = open(sink, "ssh://devcat-pwtest/~", None, vec![], vec![], 100, 30, "desktop").await.unwrap();
+        let mut out = String::new();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !out.contains("$ ") && Instant::now() < deadline {
+            if let Ok(Some((e, v))) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+                if e == "pty-output" {
+                    out.push_str(&String::from_utf8_lossy(&base64::engine::general_purpose::STANDARD.decode(v["data"].as_str().unwrap()).unwrap()));
+                    if out.trim_end().ends_with("[fingerprint])?") {
+                        pty_write(id.clone(), "yes\r".into()).await.unwrap();
+                    }
+                    let jump_user = p.get(4).and_then(|j| j.split(':').next());
+                    if jump_user.is_some_and(|j| out.ends_with(&format!("{j}'s password: "))) {
+                        pty_write(id.clone(), format!("{}\r", p[3])).await.unwrap();
+                    }
+                }
+            }
+        }
+        let _ = pty_close(id).await;
+        assert!(out.contains("$ "), "no shell prompt: {out:?}");
+    }
+
     /// Resolves the real claude binary (free: --version only).
     #[tokio::test]
     #[ignore]
@@ -491,7 +567,11 @@ mod tests {
         assert!(p.matches("me@10.0.0.5's password: "));
         assert!(p.matches("Warning: Permanently added 'x' (ED25519) to the list of known hosts.\r\n(me@box) Password:"));
         assert!(p.matches("Enter passphrase for key '/Users/me/.ssh/id_ed25519': "));
+        assert!(p.matches("(me@box) Password for me@CORP.EXAMPLE: "));
+        // a Windows console: colours, a title, the cursor moved instead of a newline
+        assert!(p.matches("\x1b[?25l\x1b[2J\x1b[m\x1b[HWarning: added\x1b[2;1Hme@box's password: \x1b]0;ssh.exe\x07\x1b[?25h"));
         for other in [
+            "(me@box) New password: ",
             "Password:",
             "[sudo] password for me: ",
             "Enter password: ",
@@ -548,7 +628,25 @@ mod tests {
         assert_eq!(after.feed(b"x", t0, true), None);
         assert_eq!(after.feed(prompt, t0, false), None);
 
+        // A jump host's password (or a one-time code) typed by the user first.
+        let mut jumped = pass();
+        assert_eq!(jumped.feed(b"me@bastion's password: ", t0, false), None);
+        assert_eq!(jumped.feed(b"\r\n", t0, true), None);
+        assert_eq!(jumped.feed(b"(me@box) Verification code: ", t0, false), None);
+        assert_eq!(jumped.feed(b"\r\nme@box's ", t0, true), None, "split across batches");
+        assert_eq!(jumped.feed(b"password: ", t0, false).as_deref(), Some("s3cret\r"));
+
         assert_eq!(AutoPass::new(None, me_at_box()).feed(prompt, t0, false), None);
+    }
+
+    #[test]
+    fn terminal_replies_arent_typing() {
+        for reply in ["\x1b[12;1R", "\x1b[I", "\x1b[O", "\x1b[?1;2c", "\x1b[>0;276;0c", "\x1b[?2004;2$y", "\x1b]11;rgb:1e1e/1e1e/1e1e\x07", "\x1b[1;1R\x1b[I"] {
+            assert!(is_terminal_reply(reply), "{reply:?}");
+        }
+        for typed in ["", "a", "yes\r", "\x1b[A", "\x1b", "\x1bv", "\x03", "\x1b[200~text\x1b[201~", "\x1b[12;1Rx"] {
+            assert!(!is_terminal_reply(typed), "{typed:?}");
+        }
     }
 
     #[test]
