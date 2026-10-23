@@ -10,8 +10,11 @@ export function resolvePath(cwd: string, p: string): string {
   if (p.startsWith("~")) return p;
   const sep = cwd.includes("\\") && !cwd.includes("/") ? "\\" : "/";
   const abs = isAbs(p) ? p : `${cwd.replace(/[\\/]+$/, "")}${sep}${p.replace(/^\.[\\/]/, "")}`;
-  // Windows: backslashes only, so C:/x/a.ts (as CLIs print it) and C:\x\a.ts are the same tab
-  return /^[A-Za-z]:[\\/]/.test(abs) ? abs.replace(/\//g, "\\") : abs;
+  // Windows: one separator, the folder's (as Go to File joins), so C:/x/a.ts and C:\x\a.ts (CLIs print
+  // both) are the same tab, and a file in the folder stays relative to it
+  if (!/^[A-Za-z]:[\\/]/.test(abs)) return abs;
+  const winSep = /^[A-Za-z]:/.test(cwd) && !cwd.includes("\\") ? "/" : "\\";
+  return abs.replace(/[\\/]/g, winSep);
 }
 
 export function relPath(cwd: string, p: string): string {

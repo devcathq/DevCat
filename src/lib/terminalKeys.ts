@@ -1,7 +1,7 @@
 import type { Terminal } from "@xterm/xterm";
 
 export const IS_MAC = navigator.platform.toLowerCase().includes("mac");
-const IS_WIN = navigator.platform.toLowerCase().startsWith("win");
+export const IS_WIN = navigator.platform.toLowerCase().startsWith("win");
 
 /** Copy / paste / clear / select all in an xterm terminal, shared by every terminal in the app:
  *  ⌘C ⌘V ⌘K ⌘A on macOS, Ctrl+Shift+C/V/K/A elsewhere. On Windows also plain Ctrl+C (only with a

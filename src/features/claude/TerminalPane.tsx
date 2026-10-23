@@ -17,7 +17,7 @@ import { glassOn, onPaletteChange, palette } from "../appearance/store";
 import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
 import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
-import { IS_MAC, terminalEditKey } from "../../lib/terminalKeys";
+import { IS_MAC, IS_WIN, terminalEditKey } from "../../lib/terminalKeys";
 import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
 import { isRemote, remoteHost } from "../../lib/remotePath";
 import { toast } from "sonner";
@@ -155,6 +155,8 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
         while ((m = PATH_RE.exec(line))) {
           const [, pre, path, ext] = m;
           if (!/[\\/]/.test(path) && !CODE_EXT.has(ext.toLowerCase())) continue;
+          // drive letters and backslashes are Windows paths (elsewhere `logs\nreport.txt` is an escape)
+          if (!IS_WIN && /\\|^[A-Za-z]:/.test(path)) continue;
           const start = m.index + pre.length;
           const text = m[0].slice(pre.length);
           const range = { start: at(start), end: at(start + text.length - 1) };
@@ -165,7 +167,10 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
             decorations: { underline: true, pointerCursor: true },
             activate: (ev) => {
               if (!isClick(ev)) return;
-              if (IS_MAC ? ev.metaKey : ev.ctrlKey) void openExternally(resolvePath(cb.current.cwd, path));
+              const abs = resolvePath(cb.current.cwd, path);
+              // the default app only for a file on this computer: not an SSH host's, not an unexpanded ~/…
+              const local = !isRemote(cb.current.cwd) && !abs.startsWith("~");
+              if ((IS_MAC ? ev.metaKey : ev.ctrlKey) && local) void openExternally(abs);
               else openFile(cb.current.cwd, path);
             },
           });
@@ -345,19 +350,28 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
 }
 
 /** Row `y` (1-based) with the rows the terminal wrapped it onto, so a long path is one link; `at`
- *  maps an index in `line` to its cell. Falls back to the row alone when wide characters would shift cells. */
+ *  maps an index in `line` to its cell, read cell by cell so wide characters (CJK, emoji) don't shift links. */
 function logicalLine(term: Terminal, y: number): { line: string; at: (i: number) => { x: number; y: number } } {
   const buf = term.buffer.active;
   let first = y - 1;
   while (first > 0 && y - 1 - first < 20 && buf.getLine(first)?.isWrapped) first--;
   let last = y - 1;
   while (last - first < 40 && buf.getLine(last + 1)?.isWrapped) last++;
-  const rows: string[] = [];
-  for (let i = first; i <= last; i++) rows.push(buf.getLine(i)?.translateToString(i === last) ?? "");
-  if (rows.slice(0, -1).some((r) => r.length !== term.cols)) {
-    return { line: buf.getLine(y - 1)?.translateToString(true) ?? "", at: (i) => ({ x: i + 1, y }) };
+  let line = "";
+  const cells: { x: number; y: number }[] = [];
+  const cell = buf.getNullCell();
+  for (let r = first; r <= last; r++) {
+    const row = buf.getLine(r);
+    if (!row) break;
+    for (let x = 0; x < row.length; x++) {
+      row.getCell(x, cell);
+      if (cell.getWidth() === 0) continue; // the second half of a wide character
+      const ch = cell.getChars() || " ";
+      for (let k = 0; k < ch.length; k++) cells.push({ x: x + 1, y: r + 1 });
+      line += ch;
+    }
   }
-  return { line: rows.join(""), at: (i) => ({ x: (i % term.cols) + 1, y: first + Math.floor(i / term.cols) + 1 }) };
+  return { line, at: (i) => cells[Math.min(i, cells.length - 1)] };
 }
 
 function fileToBase64(f: File): Promise<string> {
