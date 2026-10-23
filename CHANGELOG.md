@@ -13,6 +13,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **`devcat stop`:** stops a `devcat serve` that's still holding the port: one in the background, in a closed
   terminal or from before an update. Starting `devcat serve` while another DevCat has the port now says which
   one and offers to stop it and take over (`--replace` does it without asking).
+- **Paste in the file tree:** in the AI workspace, paste files and folders copied in Explorer / Finder (or with
+  the tree's own Copy) into a folder: right-click → **Paste**, or **Ctrl+V** / **⌘V**. A name
+  that's taken gets "copy", so nothing is overwritten, and an image on the clipboard is saved as `pasted.png`
+  (#54).
 
 ## 0.9.1 - 2026-10-23
 
