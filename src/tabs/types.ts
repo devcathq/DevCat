@@ -32,6 +32,8 @@ export type TabSpec =
   | { type: "sftp"; cwd: string; connId?: string }
   /** Markdown note (see features/notes). */
   | { type: "note"; noteId: string }
+  /** A room: documents, thread and agents shared with other people (see features/rooms). */
+  | { type: "room"; roomId: string }
   | { type: "git"; repo: string; view?: GitView; path?: string | null; sha?: string | null };
 
 export type GitView = "history" | "changes" | "branches" | "stashes";

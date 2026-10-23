@@ -29,6 +29,8 @@ mod notify;
 mod opened;
 mod projects;
 mod remote;
+mod rooms;
+mod rooms_agent;
 mod rt;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
@@ -79,7 +81,8 @@ fn init_backend(dir: std::path::PathBuf) {
     state::init(dir.clone());
     network::start();
     notify::init(dir.clone());
-    remote::init(dir);
+    remote::init(dir.clone());
+    rooms::init(dir);
 }
 
 /// Stop what must not outlive DevCat (VPNs, the remote server, agent runs, keep-awake).
@@ -87,6 +90,7 @@ fn shutdown_backend() {
     network::shutdown();
     claude::ssh_forward::stop_all();
     crate::rt::block_on(remote::shutdown());
+    crate::rt::block_on(rooms::shutdown());
     claude::runner::shutdown_all();
     agent::shutdown_all();
     keep_awake::shutdown();
@@ -288,6 +292,32 @@ pub fn run() {
             remote::remote_device_revoke,
             remote::remote_audit,
             remote::remote_reset_identity,
+            rooms::rooms_info,
+            rooms::room_create,
+            rooms::room_invite,
+            rooms::room_join,
+            rooms::room_join_answer,
+            rooms::room_forget,
+            rooms::room_view,
+            rooms::room_board,
+            rooms::room_doc_updates,
+            rooms::room_doc_import,
+            rooms::room_post,
+            rooms::room_suggest,
+            rooms::room_decide,
+            rooms::room_revert,
+            rooms::room_file_new,
+            rooms::room_file_delete,
+            rooms::room_file_add,
+            rooms::room_blob,
+            rooms::room_blob_save,
+            rooms::room_member_remove,
+            rooms::room_member_role,
+            rooms::room_settings,
+            rooms::room_prefs,
+            rooms::room_keeper_add,
+            rooms::room_focus,
+            rooms::room_agent_stop,
             // notes
             notes::notes_list,
             notes::note_save,

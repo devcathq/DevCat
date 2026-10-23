@@ -164,6 +164,12 @@ fn settings() -> RemoteSettings {
     REMOTE.get().map(|r| r.host.store.settings()).unwrap_or_default()
 }
 
+/// The relay choice (DevCat → Mobile → Reach from other networks), which rooms use too:
+/// [`devcat_remote_proto::RELAY_PUBLIC`], a relay URL, or none.
+pub fn relay_value() -> Option<String> {
+    settings().relay_value()
+}
+
 fn host_info_now() -> HostInfo {
     let s = settings();
     HostInfo {

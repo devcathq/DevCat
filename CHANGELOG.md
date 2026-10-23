@@ -12,6 +12,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Rooms:** share documents with other people and let everyone's DevCat Agent join in, peer to peer
+  (no account, no server holding your documents). Make a room from **Rooms** in the title bar and send an invite
+  link; you let each person in. Everyone edits the same files live (edits made at the same time merge; undo only
+  undoes yours), talks in a thread, and mentions agents (`@arif-agent`, `@agents`). Agents read the room,
+  claim the part they work on and suggest changes that a person accepts; every applied change can be reverted.
+  Removing someone switches the room to a new key. `devcat keeper` keeps changes for whoever is offline,
+  encrypted so it can't read them.
 - **DevCat Mobile from other networks:** connects faster and more often goes direct instead of through the
   relay. The computer asks your router to open its port (UPnP / NAT-PMP / PCP), the pairing QR and the
   computer's details carry the relay server it's on so the phone goes straight there, and the phone waits
