@@ -250,19 +250,22 @@ impl Agent {
 
     /// A turn whose message carries images (`Block::Image`).
     pub async fn turn_with_images(&mut self, session: &mut Session, user_text: &str, images: Vec<Block>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<TurnEnd> {
-        // hooks: SessionStart on the first turn, then UserPromptSubmit; both may add context, and
-        // the second may block the message (it's not recorded then)
+        // hooks on the user's messages (not a helper's prompt): SessionStart on the first turn, then
+        // UserPromptSubmit; both may add context, and the second may block the message (it's not
+        // recorded then)
         let mut context = Vec::new();
-        if !self.started && self.helper.is_none() {
-            let source = if session.events().iter().any(|e| matches!(e, SessionEvent::User { .. })) { "resume" } else { "startup" };
-            context.extend(self.hook(session, "SessionStart", Some(&[source]), json!({ "source": source }), on).await.context);
+        if self.helper.is_none() {
+            if !self.started {
+                let source = if session.events().iter().any(|e| matches!(e, SessionEvent::User { .. })) { "resume" } else { "startup" };
+                context.extend(self.hook(session, "SessionStart", Some(&[source]), json!({ "source": source }), on).await.context);
+                self.started = true;
+            }
+            let o = self.hook(session, "UserPromptSubmit", None, json!({ "prompt": user_text }), on).await;
+            if let Some(why) = o.stop.or(o.block) {
+                return Err(Error::Hook(format!("A hook blocked this message: {why}")));
+            }
+            context.extend(o.context);
         }
-        self.started = true;
-        let o = self.hook(session, "UserPromptSubmit", None, json!({ "prompt": user_text }), on).await;
-        if let Some(why) = o.stop.or(o.block) {
-            return Err(Error::Hook(format!("A hook blocked this message: {why}")));
-        }
-        context.extend(o.context);
         session.append(SessionEvent::User { text: user_text.to_string(), images, context, hook: None }).await?;
         let res = self.run(session, cancel, on).await;
         match &res {
