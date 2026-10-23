@@ -42,6 +42,7 @@ The CLI on its own has no window code, so it runs on a bare server. On Linux it 
 | `--public-addr <host>` | A public address phones outside this network can use |
 | `--no-browser` / `--browser` | Turn the browser version off or on again |
 | `--approve ask\|full\|readonly` | Who answers pairing requests (this run only) |
+| `--replace` | Another DevCat is using the port: stop it without asking (this run only) |
 | `--data-dir <dir>` | DevCat's data folder (this run only) |
 
 `--port`, `--name`, `--relay`, `--public-addr` and `--no-browser` are saved and also used by the app. Run
@@ -54,3 +55,18 @@ With no terminal to answer in (systemd, `nohup`, the app's Windows binary), star
 
 > **Warning:** Don't run `devcat serve` while the app has **Remote access** on. They would share one port and
 > identity.
+
+## Stop one you can't reach
+
+A `devcat serve` left running in the background, in a closed terminal or from before an update keeps the port,
+and there's nowhere to type `quit`. Run:
+
+```sh
+devcat stop
+```
+
+It finds the DevCat using the port (`--port <n>` for another one) and stops it the same way `quit` does. If it
+doesn't stop within 15 seconds, `devcat stop --force` kills it.
+
+Starting `devcat serve` while another DevCat has the port also says which one and offers to stop it and take
+over. Without a terminal to answer in, pass `--replace` to do that without asking.

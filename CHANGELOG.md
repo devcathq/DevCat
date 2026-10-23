@@ -10,10 +10,23 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **`devcat stop`:** stops a `devcat serve` that's still holding the port: one in the background, in a closed
+  terminal or from before an update. Starting `devcat serve` while another DevCat has the port now says which
+  one and offers to stop it and take over (`--replace` does it without asking).
 - **Paste in the file tree:** in the AI workspace, paste files and folders copied in Explorer / Finder (or with
   the tree's own Copy) into a folder: right-click → **Paste**, or **Ctrl+V** / **⌘V**. A name
   that's taken gets "copy", so nothing is overwritten, and an image on the clipboard is saved as `pasted.png`
   (#54).
+
+## 0.9.1 - 2026-10-23
+
+- **Terminal on Windows:** **Ctrl+C** copies the selection (and still interrupts when nothing is
+  selected) and **Ctrl+V** pastes, like Windows Terminal. This works in the AI workspace, the
+  Terminal tab, SSH sessions and the pod shell (#47).
+- **Clickable Windows paths:** `C:/x/y.html`, `C:\x\y.html` and `src\a.ts` (with `:line:col`)
+  open in DevCat's file tab, with HTML rendered in Preview. **Ctrl+click** (**⌘-click** on macOS)
+  opens a local file in its default app. A path wrapped over several rows is one link, and dragging
+  over a link now selects it instead of opening it (#47).
 
 ## 0.9.0 - 2026-10-22
 
