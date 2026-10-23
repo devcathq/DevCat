@@ -12,10 +12,20 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.10.0 - 2026-10-24
+
+- **Rooms:** share documents with other people and let everyone's DevCat Agent join in, peer to peer
+  (no account, no server holding your documents). Make a room from **Rooms** in the title bar and send an invite
+  link; you let each person in. Everyone edits the same files live (edits made at the same time merge; undo only
+  undoes yours), talks in a thread, and mentions agents (`@arif-agent`, `@agents`). Agents read the room,
+  claim the part they work on and suggest changes that a person accepts; every applied change can be reverted.
+  Removing someone switches the room to a new key. `devcat keeper` keeps changes for whoever is offline,
+  encrypted so it can't read them (#72).
 - **DevCat Mobile from other networks:** connects faster and more often goes direct instead of through the
   relay. The computer asks your router to open its port (UPnP / NAT-PMP / PCP), the pairing QR and the
   computer's details carry the relay server it's on so the phone goes straight there, and the phone waits
-  longer before giving up on mobile data. Phones paired before keep working.
+  longer before giving up on mobile data. Phones paired before keep working. DevCat → Mobile and the phone show
+  whether each connection is direct or through the relay (#71).
 - **Docker connections:** add a Docker engine (the current `docker` context, another context, or a host over
   `ssh://` / `tcp://`) and open it in a tab: containers grouped by Compose project with their CPU and memory,
   logs that follow (and carry on after a restart), a shell in a terminal tab, inspect, and start / stop /
@@ -34,6 +44,17 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   search highlights in Kubernetes logs (#68).
 - **DevCat Agent's plan** (the checklist above the chat box) goes away when the agent is done, also when it left an
   item unticked; each update stays in the conversation (#68).
+
+- **SSH sessions on Windows:** the saved password is typed again (the Windows console's own replies no longer
+  count as typing); answering ssh's own questions (host key, a jump host's password, a one-time code) no longer
+  stops it; pasting a screenshot (Alt+V) works; selecting text in a terminal copies it; terminal tabs follow the
+  program's title (#50).
+- **Open folder on SSH host:** pick one of your saved SSH sessions (with its saved password) instead of typing a
+  host (#66).
+- **Terminal tables with emoji** (like Claude Code's ⚠️ rows) line up: characters are measured by grapheme
+  cluster, as current terminals do (#65).
+- **Browser version of DevCat Mobile:** a pairing the computer no longer knows is forgotten instead of failing
+  forever, and scanning a new QR code for the same computer pairs again (#60).
 
 ## 0.9.1 - 2026-10-23
 
