@@ -84,8 +84,10 @@ async function boot() {
   useApp.setState({ info });
   if (webLink) {
     const l = parseLink(webLink);
-    if (l && pairedHostId() === l.id) {
-      // Already paired with this computer in this browser: just open it.
+    // Already paired with this computer in this browser: just open it, unless the computer no
+    // longer knows that pairing (then it's forgotten, and this new code pairs again).
+    if (l && pairedHostId() === l.id && (await phone.connect(l.id).then(() => true, () => pairedHostId() === l.id))) {
+      // open it below
     } else if (l && prefersApp()) {
       location.href = appLink(l);
       nav.reset([{ s: "weblanding", link: webLink }]);

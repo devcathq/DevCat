@@ -40,8 +40,22 @@ export function saved(): Saved | null {
 }
 
 function save(s: Saved | null) {
-  if (s) localStorage.setItem(SAVED, JSON.stringify(s)); else localStorage.removeItem(SAVED);
+  if (s) localStorage.setItem(SAVED, JSON.stringify(s)); else { localStorage.removeItem(SAVED); markUnpaired(); }
   carryPairing();
+}
+
+/** The computer answered that it doesn't know this browser's pairing (revoked, or its pairings
+ *  were reset): keeping it would only fail again, so the browser forgets it and pairs anew. */
+export class Refused {
+  constructor(readonly reason: string) {}
+}
+
+// When this browser last dropped its pairing. A Home Screen icon keeps the address it was added
+// with, pairing included, so without this the dropped pairing would come back on the next launch.
+const UNPAIRED = "devcat.web.unpairedAt";
+
+export function markUnpaired() {
+  localStorage.setItem(UNPAIRED, String(Date.now()));
 }
 
 // Browsers don't share storage: not the in-app browser a QR code opens in, not Safari, not a
@@ -73,14 +87,16 @@ function pairedAt(get: (k: string) => string | null | undefined): number {
 }
 
 /** Take the pairing the address bar carries (opened from another browser) into this one, unless
- *  this one has a newer pairing (a Home Screen icon keeps the address it was added with). */
+ *  this one has a newer pairing or dropped it since (a Home Screen icon keeps the address it was
+ *  added with). */
 export function adoptCarried() {
   const p = new URLSearchParams(location.hash.slice(1)).get(CARRY_PARAM);
   if (!p) return;
   try {
     const v = JSON.parse(dec.decode(b64urlDecode(p)));
     if (!CARRY.some((k) => typeof v[k] === "string")) return;
-    if (pairedAt((k) => localStorage.getItem(k)) > pairedAt((k) => v[k])) return;
+    const mine = Math.max(pairedAt((k) => localStorage.getItem(k)), Number(localStorage.getItem(UNPAIRED)) || 0);
+    if (mine > pairedAt((k) => v[k])) return;
     for (const k of CARRY) if (typeof v[k] === "string") localStorage.setItem(k, v[k]); else localStorage.removeItem(k);
   } catch { /* not ours */ }
 }
@@ -207,6 +223,8 @@ export class WebHost {
     try { challenge = typeof ch === "string" ? JSON.parse(ch) : { t: "?" }; } catch { challenge = { t: "?" }; }
     if (challenge.t !== "challenge" || !challenge.nonce) {
       conn.ws.close();
+      // Asked with a device id, the only answer before the challenge is "not paired (any more)".
+      if (deviceId && challenge.t === "denied") throw new Refused(denial(ch));
       throw denial(ch);
     }
     conn.keys = browserKeys(secret, nonce, b64urlDecode(challenge.nonce), mode);
@@ -284,6 +302,11 @@ export class WebHost {
           return first;
         })
         .catch((e) => {
+          if (e instanceof Refused) {
+            save(null);
+            this.emit("m-conn", { id: s.hostId, state: "offline", error: e.reason, unpaired: true });
+            throw e.reason;
+          }
           this.emit("m-conn", { id: s.hostId, state: "offline", error: typeof e === "string" ? e : String(e) });
           throw e;
         })

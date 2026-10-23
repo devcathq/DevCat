@@ -133,10 +133,19 @@ export function setLocalNotifier(fn: (title: string, body: string) => void) { no
 const folder = (p?: string | null) => (p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "agent";
 
 export function startStateEvents() {
-  onConn((id, state, error) => {
+  onConn((id, state, error, unpaired) => {
     set({ conn: { ...get().conn, [id]: { state, error } } });
     if (state === "online" && id === get().current) void refreshAgents();
     if (state === "online") void loadMachines();
+    // Browser: the computer no longer knows this pairing, which is now forgotten. Back to pairing.
+    if (unpaired) {
+      void loadMachines().then((rest) => {
+        const top = get().stack[get().stack.length - 1]?.s;
+        if (top === "weblanding" || top === "pairing") return; // already pairing with a new code
+        toast(error ?? "This browser isn't paired with the computer any more. Scan the QR code again.", "err");
+        nav.reset(rest.length ? [{ s: "computers" }] : [{ s: "welcome" }]);
+      });
+    }
   });
   onEvent<AgentStatus>("agent-status", (a, mid) => {
     if (mid !== get().current) return;
