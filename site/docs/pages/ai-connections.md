@@ -29,7 +29,8 @@ DevCat Agent is built into DevCat: no CLI to install. It talks to a model API di
 
 1. **Add AI connection** → **DevCat Agent**.
 2. Pick a **Provider** (Z.ai GLM, DeepSeek, OpenAI, Anthropic, OpenRouter, Kimi, Ollama, LM Studio), or set the
-   **API style** and **API address** of any OpenAI- or Anthropic-compatible endpoint.
+   **API style** and **API address** of any OpenAI- or Anthropic-compatible endpoint. For OpenAI's newer models,
+   including the ones only on its Responses API (such as `gpt-5-codex`), pick **OpenAI (Responses API)**.
 3. Enter the **API key** and pick a **Model** from the provider's list.
 
 What it asks before doing, in each permission mode (the menu under the chat box):
