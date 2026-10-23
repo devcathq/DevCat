@@ -4,7 +4,8 @@
 //! commands, terminals, agents, files, databases, VPNs and clusters are the app's own (same
 //! data folder, connections and paired phones); only the window is missing.
 use crate::remote::server::PairRequest;
-use crate::remote::store::{RelayChoice, RemoteSettings};
+use crate::error::AppError;
+use crate::remote::store::{RelayChoice, RemoteSettings, RemoteStore};
 use serde_json::Value;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
@@ -16,6 +17,8 @@ DevCat without a window: phones and browsers pair with this computer from the te
 
 Usage:
   devcat serve [options]   Share this computer with DevCat Mobile / the browser version
+  devcat stop [options]    Stop a DevCat that's using the port (e.g. a `devcat serve` left
+                           running in the background or from before an update)
   devcat help              This help
   devcat version           The version
 
@@ -34,7 +37,10 @@ Only for this run:
                            Who answers pairing requests: you in this terminal (ask, the
                            default) or nobody (every phone with a valid pairing code is
                            allowed with that access). Without a terminal it must be set.
+  --replace                Another DevCat is using the port: stop it without asking
   --data-dir <dir>         DevCat's data folder (default: the app's)
+
+Options for stop: --port <n>, --data-dir <dir>, --force (kill it if it won't stop)
 
 While it runs, type a command and press Enter:
   pair (or just Enter)     A new pairing QR code
@@ -52,6 +58,10 @@ pub fn main(args: &[String]) -> Option<i32> {
         "serve" => {
             attach_console();
             serve_main(&args[1..])
+        }
+        "stop" => {
+            attach_console();
+            stop_main(&args[1..])
         }
         "help" | "--help" | "-h" => {
             attach_console();
@@ -93,6 +103,8 @@ struct Opts {
     approve: Option<String>,
     data_dir: Option<PathBuf>,
     tailscale: bool,
+    replace: bool,
+    force: bool,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
@@ -112,6 +124,8 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--no-browser" => o.web = Some(false),
             "--browser" => o.web = Some(true),
             "--tailscale" => o.tailscale = true,
+            "--replace" => o.replace = true,
+            "--force" => o.force = true,
             "--approve" => {
                 let v = value()?;
                 if !["ask", "full", "readonly"].contains(&v.as_str()) {
@@ -184,10 +198,93 @@ fn serve_main(args: &[String]) -> i32 {
     }
     crate::init_process();
     crate::init_backend(dir.clone());
-    let code = crate::rt::block_on(serve(o, approve, interactive, dir));
+    let code = crate::rt::block_on(serve(o, approve, interactive, dir.clone()));
     println!("Stopping…");
     crate::shutdown_backend();
+    crate::instance::note_stopped(&dir);
     code
+}
+
+/// `devcat stop`: the DevCat holding the port (or noted as serving), stopped.
+fn stop_main(args: &[String]) -> i32 {
+    let o = match parse(args) {
+        Ok(o) => o,
+        Err(e) if e.is_empty() => {
+            print!("{HELP}");
+            return 0;
+        }
+        Err(e) => {
+            eprintln!("{e}\nSee `devcat help`.");
+            return 2;
+        }
+    };
+    let Some(dir) = o.data_dir.clone().or_else(default_data_dir) else {
+        eprintln!("Can't find a data folder: pass --data-dir");
+        return 1;
+    };
+    let port = o.port.unwrap_or_else(|| RemoteStore::new(&dir).settings().port);
+    let Some(h) = crate::instance::find(&dir, port) else {
+        println!("No DevCat is running here (port {port} is free).");
+        return 0;
+    };
+    if !h.devcat {
+        eprintln!("Port {port} is used by {}, not DevCat.", h.describe());
+        return 1;
+    }
+    println!("Stopping {}…", h.describe());
+    match crate::instance::stop(&dir, &h, o.force) {
+        Ok(()) => {
+            println!("Stopped.");
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// `devcat serve` couldn't listen: when another DevCat has the port, offer to stop it and take over.
+async fn take_over(o: &Opts, dir: &std::path::Path, interactive: bool, err: AppError) -> Option<crate::remote::RemoteStatus> {
+    let port = RemoteStore::new(dir).settings().port;
+    let in_use = crate::instance::port_taken(&err.to_string());
+    let holder = if in_use { crate::instance::find(dir, port) } else { None };
+    eprintln!("Couldn't start: {err}");
+    let Some(h) = holder else {
+        if in_use {
+            eprintln!("Is the DevCat app sharing this computer already? Turn off Remote access there, or use --port.");
+        }
+        return None;
+    };
+    if !h.devcat {
+        eprintln!("It's used by {}. Pick another port with --port.", h.describe());
+        return None;
+    }
+    eprintln!("{} is using it.", h.describe());
+    let yes = o.replace || (interactive && {
+        print!("Stop it and start this one ({})? [Y/n] ", env!("DEVCAT_VERSION"));
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line).is_ok_and(|n| n > 0) && matches!(line.trim().to_lowercase().as_str(), "" | "y" | "yes")
+    });
+    if !yes {
+        eprintln!("Stop it with `devcat stop`, or start with --replace.");
+        return None;
+    }
+    println!("Stopping {}…", h.describe());
+    let (d, force) = (dir.to_path_buf(), o.force);
+    let stopped = tokio::task::spawn_blocking(move || crate::instance::stop(&d, &h, force)).await.unwrap_or_else(|e| Err(e.to_string()));
+    if let Err(e) = stopped {
+        eprintln!("{e}");
+        return None;
+    }
+    match crate::remote::start_headless(|_| {}).await {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("Couldn't start: {e}");
+            None
+        }
+    }
 }
 
 enum Input {
@@ -198,15 +295,12 @@ enum Input {
 async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32 {
     let st = match crate::remote::start_headless(|s| apply(&o, s)).await {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("Couldn't start: {e}");
-            let e = e.to_string().to_lowercase();
-            if e.contains("in use") || e.contains("bind") {
-                eprintln!("Is the DevCat app sharing this computer already? Turn off Remote access there, or use --port.");
-            }
-            return 1;
-        }
+        Err(e) => match take_over(&o, &dir, interactive, e).await {
+            Some(s) => s,
+            None => return 1,
+        },
     };
+    crate::instance::note_serving(&dir, st.settings.port);
     // Phones in other networks come in through the relay: wait a little for it.
     if st.settings.relay != RelayChoice::Off {
         for _ in 0..40 {
@@ -313,6 +407,10 @@ async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32
                 }
             }
             _ = tick.tick() => {
+                if crate::instance::stop_requested(&dir) {
+                    println!("`devcat stop` asked this one to stop.");
+                    return 0;
+                }
                 // The code ran out (or was used): say so once; without a terminal make a new one.
                 let live = crate::remote::status_now().ok().and_then(|s| s.pairing_expires).is_some();
                 if !live && !code_out && asking.is_empty() {

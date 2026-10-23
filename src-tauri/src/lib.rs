@@ -19,6 +19,7 @@ mod fonts;
 mod gitx;
 mod history;
 mod infra;
+mod instance;
 mod keep_awake;
 mod models;
 mod network;
