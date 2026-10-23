@@ -10,6 +10,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **`devcat stop`:** stops a `devcat serve` that's still holding the port: one in the background, in a closed
+  terminal or from before an update. Starting `devcat serve` while another DevCat has the port now says which
+  one and offers to stop it and take over (`--replace` does it without asking).
 - **DevCat Agent: a `git` tool.** Commands that only read the repository (status, diff, log, show, blame, …)
   run without asking; commit, checkout, push and anything else that changes it asks first, like a shell
   command (#53).
@@ -26,6 +29,16 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   it out (#56).
 - **DevCat Agent and the OpenAI Responses API:** a new API style and an **OpenAI (Responses API)** preset, for
   OpenAI's newer models, including the ones only offered there such as `gpt-5-codex` (#57).
+
+## 0.9.1 - 2026-10-23
+
+- **Terminal on Windows:** **Ctrl+C** copies the selection (and still interrupts when nothing is
+  selected) and **Ctrl+V** pastes, like Windows Terminal. This works in the AI workspace, the
+  Terminal tab, SSH sessions and the pod shell (#47).
+- **Clickable Windows paths:** `C:/x/y.html`, `C:\x\y.html` and `src\a.ts` (with `:line:col`)
+  open in DevCat's file tab, with HTML rendered in Preview. **Ctrl+click** (**⌘-click** on macOS)
+  opens a local file in its default app. A path wrapped over several rows is one link, and dragging
+  over a link now selects it instead of opening it (#47).
 
 ## 0.9.0 - 2026-10-22
 

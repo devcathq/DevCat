@@ -85,6 +85,11 @@ const IMAGE_EXT: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 #[cfg(feature = "gui")]
 async fn clipboard_image() -> AppResult<Option<(Vec<u8>, String)>> {
     let found = crate::rt::spawn_blocking(read_clipboard_image).await.map_err(|e| AppError::msg(e.to_string()))??;
+    #[cfg(windows)]
+    let found = match found {
+        Some(x) => Some(x),
+        None => bitmap_to_png().await.map(|b| (b, "pasted.png".to_string())),
+    };
     let Some((bytes, name)) = found else { return Ok(None) };
     if name.ends_with(".tiff") {
         return tiff_to_png(bytes).await.map(|b| Some((b, "pasted.png".into())));
@@ -155,6 +160,26 @@ async fn tiff_to_png(tiff: Vec<u8>) -> AppResult<Vec<u8>> {
     let png = if ok { tokio::fs::read(&dst).await.ok() } else { None };
     let _ = tokio::fs::remove_dir_all(&dir).await;
     png.ok_or_else(|| AppError::msg("Couldn't convert the clipboard image to PNG"))
+}
+
+/// Windows: a screenshot (Print Screen, Win+Shift+S) is on the clipboard as a bitmap, not PNG;
+/// saved as PNG by PowerShell (like `sips` on macOS), None if there's no image.
+#[cfg(all(feature = "gui", windows))]
+async fn bitmap_to_png() -> Option<Vec<u8>> {
+    let dir = std::env::temp_dir().join(format!("devcat-paste-{}", uuid::Uuid::new_v4().simple()));
+    tokio::fs::create_dir_all(&dir).await.ok()?;
+    let dst = dir.join("out.png");
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; $i = [System.Windows.Forms.Clipboard]::GetImage(); if ($i) {{ $i.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png) }}",
+        dst.display().to_string().replace('\'', "''")
+    );
+    let mut cmd = tokio::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script.as_str()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let ok = cmd.status().await.is_ok_and(|s| s.success());
+    let png = if ok { tokio::fs::read(&dst).await.ok().filter(|b| !b.is_empty()) } else { None };
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    png
 }
 
 // ---------- file management (local or remote paths) ----------
