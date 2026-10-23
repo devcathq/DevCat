@@ -24,6 +24,7 @@ import { KeepAwakeButton } from "../../features/keepawake/KeepAwakeButton";
 import { useQuickCommands } from "../../features/terminal/quickCommands";
 import { UpdateDialog } from "../../features/update/UpdateDialog";
 import { MobileButton, MobileDialog } from "../../features/mobile/MobileDialog";
+import { RoomJoinPrompt, RoomsButton, RoomsDialog } from "../../features/rooms/RoomsDialog";
 import { AppearanceButton, AppearanceDialog } from "../../features/appearance/AppearanceDialog";
 import { useAppearance, useIsDark } from "../../features/appearance/store";
 import { zoomUi } from "../../features/appearance/fonts";
@@ -165,6 +166,8 @@ export default function AppShell() {
       <AiConnectionsDialog />
       <UpdateDialog />
       <MobileDialog />
+      <RoomsDialog />
+      <RoomJoinPrompt />
       <AppearanceDialog />
       <PairPrompt />
       <QuickOpen />
@@ -310,6 +313,7 @@ function ProjectBar() {
       )}
       <div className={clsx("flex items-center gap-0.5", !focus && "ml-auto")}>
         <AppearanceButton />
+        <RoomsButton />
         <MobileButton />
         <KeepAwakeButton />
         <IconButton title={`New window (${NEW_WINDOW_SHORTCUT})`} onClick={() => void openNewWindow(focus?.id)}>

@@ -120,8 +120,12 @@ pub struct RoomsInfo {
     pub pending: Vec<JoinRequest>,
 }
 
+/// `start`: false = don't start rooms just to look (empty when not running yet).
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn rooms_info() -> AppResult<RoomsInfo> {
+pub async fn rooms_info(start: Option<bool>) -> AppResult<RoomsInfo> {
+    if start == Some(false) && NODE.get().is_none() {
+        return Ok(RoomsInfo { id: String::new(), rooms: vec![], pending: vec![] });
+    }
     let n = node().await?;
     Ok(RoomsInfo { id: n.id(), rooms: n.rooms(), pending: PENDING.lock().clone() })
 }
