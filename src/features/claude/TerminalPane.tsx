@@ -1,5 +1,5 @@
-// xterm.js terminal bound to a backend PTY (iTerm2-like): DevCat palette, ⌘C/⌘V/⌘K,
-// Option-as-Meta, clickable URLs and file paths, restart on Enter after the process exits.
+// xterm.js terminal bound to a backend PTY (iTerm2-like): DevCat palette, ⌘C/⌘V/⌘K (Windows: Ctrl+C
+// copies a selection, Ctrl+V pastes), Option-as-Meta, clickable URLs and file paths, restart on Enter after the process exits.
 // The PTY lives as long as the component (tabs stay mounted) and restarts when `startKey` changes.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FitAddon } from "@xterm/addon-fit";
@@ -11,12 +11,13 @@ import { useEffect, useRef, useState } from "react";
 import { ActivityDetector } from "./activity";
 import { api, errMsg } from "../../lib/api";
 import { ptyEventsReady, subscribePty } from "./pty";
-import { openFile } from "./util";
+import { openFile, resolvePath } from "./util";
+import { openExternally } from "../files/format";
 import { glassOn, onPaletteChange, palette } from "../appearance/store";
 import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
 import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
-import { IS_MAC, terminalEditKey } from "../../lib/terminalKeys";
+import { IS_MAC, IS_WIN, terminalEditKey } from "../../lib/terminalKeys";
 import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
 import { isRemote, remoteHost } from "../../lib/remotePath";
 import { toast } from "sonner";
@@ -24,8 +25,8 @@ import { toast } from "sonner";
 
 const CODE_EXT = new Set(("ts tsx js jsx mjs cjs json md mdx css scss html rs go py rb java kt swift c h cpp hpp cs php sh zsh bash yml yaml toml " +
   "ini sql lua dart scala vue svelte txt lock xml gradle env conf proto graphql").split(" "));
-// path(:line(:col)?)? preceded by start / whitespace / quote / bracket
-const PATH_RE = /(^|[\s'"`(\[{<])((?:~|\.{1,2})?\/?(?:[\w.@+-]+\/)*[\w@+-][\w.@+-]*\.([A-Za-z][\w]{0,7}))(?::(\d+)(?::(\d+))?)?/g;
+// path(:line(:col)?)? preceded by start / whitespace / quote / bracket; Windows paths too (C:/x/y.html, C:\x\y.html, src\a.ts)
+const PATH_RE = /(^|[\s'"`(\[{<])((?:[A-Za-z]:[\\/]|(?:~|\.{1,2})?[\\/]?)(?:[\w.@+-]+[\\/])*[\w@+-][\w.@+-]*\.([A-Za-z][\w]{0,7}))(?::(\d+)(?::(\d+))?)?/g;
 
 export interface TerminalPaneProps {
   cwd: string;
@@ -92,7 +93,13 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon((_e, uri) => void openUrl(uri).catch(() => {})));
+    // xterm activates a link whenever the press and the release land on it, even after a drag. Only a
+    // click opens it: a drag selects text, in xterm or in a full-screen program (Claude Code) that gets the mouse.
+    const press = { x: 0, y: 0 };
+    const onPress = (e: MouseEvent) => { press.x = e.clientX; press.y = e.clientY; };
+    host.current!.addEventListener("mousedown", onPress, true);
+    const isClick = (e: MouseEvent) => !term.hasSelection() && Math.abs(e.clientX - press.x) < 4 && Math.abs(e.clientY - press.y) < 4;
+    term.loadAddon(new WebLinksAddon((e, uri) => { if (isClick(e)) void openUrl(uri).catch(() => {}); }));
     const uni = new Unicode11Addon();
     term.loadAddon(uni);
     term.unicode.activeVersion = "11";
@@ -109,6 +116,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       if (terminalEditKey(term, e)) return false;
       // Ctrl+V / Alt+V on an SSH host: the image paste keys of Claude Code and friends. The host
       // can't see this computer's clipboard, so copy the image there and type its path instead.
+      // (On Windows Ctrl+V is a plain paste, handled above; an image-only clipboard comes through onPaste.)
       if (isRemote(cb.current.cwd) && e.code === "KeyV" && !e.metaKey && !e.shiftKey && e.ctrlKey !== e.altKey) {
         e.preventDefault();
         void pasteRemoteImage(null, e.ctrlKey ? "\x16" : "\x1bv");
@@ -125,7 +133,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       return true;
     });
 
-    // ⌘V / Ctrl+Shift+V with only an image on the clipboard, on an SSH host: same as above.
+    // ⌘V / Ctrl+Shift+V (and Ctrl+V on Windows) with only an image on the clipboard, on an SSH host: same as above.
     const onPaste = (e: ClipboardEvent) => {
       if (!isRemote(cb.current.cwd) || !e.clipboardData || e.clipboardData.types.includes("text/plain")) return;
       const img = [...e.clipboardData.files].find((f) => f.type.startsWith("image/"));
@@ -137,23 +145,34 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     const hostEl = host.current!;
     hostEl.addEventListener("paste", onPaste, true);
 
-    // File paths (src/foo.ts:12) → file preview tab.
+    // File paths (src/foo.ts:12) → file preview tab (.html renders there); ⌘/Ctrl+click → the default app.
     const links = term.registerLinkProvider({
       provideLinks(y, done) {
-        const line = term.buffer.active.getLine(y - 1)?.translateToString(true) ?? "";
+        const { line, at } = logicalLine(term, y);
         const out: ILink[] = [];
         PATH_RE.lastIndex = 0;
         let m: RegExpExecArray | null;
         while ((m = PATH_RE.exec(line))) {
           const [, pre, path, ext] = m;
-          if (!path.includes("/") && !CODE_EXT.has(ext.toLowerCase())) continue;
+          if (!/[\\/]/.test(path) && !CODE_EXT.has(ext.toLowerCase())) continue;
+          // drive letters and backslashes are Windows paths (elsewhere `logs\nreport.txt` is an escape)
+          if (!IS_WIN && /\\|^[A-Za-z]:/.test(path)) continue;
           const start = m.index + pre.length;
           const text = m[0].slice(pre.length);
+          const range = { start: at(start), end: at(start + text.length - 1) };
+          if (range.end.y < y || range.start.y > y) continue;
           out.push({
-            range: { start: { x: start + 1, y }, end: { x: start + text.length, y } },
+            range,
             text,
             decorations: { underline: true, pointerCursor: true },
-            activate: () => openFile(cb.current.cwd, path),
+            activate: (ev) => {
+              if (!isClick(ev)) return;
+              const abs = resolvePath(cb.current.cwd, path);
+              // the default app only for a file on this computer: not an SSH host's, not an unexpanded ~/…
+              const local = !isRemote(cb.current.cwd) && !abs.startsWith("~");
+              if ((IS_MAC ? ev.metaKey : ev.ctrlKey) && local) void openExternally(abs);
+              else openFile(cb.current.cwd, path);
+            },
           });
         }
         done(out.length ? out : undefined);
@@ -187,6 +206,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     return () => {
       ro.disconnect();
       hostEl.removeEventListener("paste", onPaste, true);
+      hostEl.removeEventListener("mousedown", onPress, true);
       links.dispose();
       input.dispose();
       title.dispose();
@@ -327,6 +347,31 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       )}
     </div>
   );
+}
+
+/** Row `y` (1-based) with the rows the terminal wrapped it onto, so a long path is one link; `at`
+ *  maps an index in `line` to its cell, read cell by cell so wide characters (CJK, emoji) don't shift links. */
+function logicalLine(term: Terminal, y: number): { line: string; at: (i: number) => { x: number; y: number } } {
+  const buf = term.buffer.active;
+  let first = y - 1;
+  while (first > 0 && y - 1 - first < 20 && buf.getLine(first)?.isWrapped) first--;
+  let last = y - 1;
+  while (last - first < 40 && buf.getLine(last + 1)?.isWrapped) last++;
+  let line = "";
+  const cells: { x: number; y: number }[] = [];
+  const cell = buf.getNullCell();
+  for (let r = first; r <= last; r++) {
+    const row = buf.getLine(r);
+    if (!row) break;
+    for (let x = 0; x < row.length; x++) {
+      row.getCell(x, cell);
+      if (cell.getWidth() === 0) continue; // the second half of a wide character
+      const ch = cell.getChars() || " ";
+      for (let k = 0; k < ch.length; k++) cells.push({ x: x + 1, y: r + 1 });
+      line += ch;
+    }
+  }
+  return { line, at: (i) => cells[Math.min(i, cells.length - 1)] };
 }
 
 function fileToBase64(f: File): Promise<string> {

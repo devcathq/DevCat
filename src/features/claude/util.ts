@@ -7,10 +7,14 @@ export { basename };
 const isAbs = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\");
 
 export function resolvePath(cwd: string, p: string): string {
-  if (isAbs(p)) return p;
   if (p.startsWith("~")) return p;
   const sep = cwd.includes("\\") && !cwd.includes("/") ? "\\" : "/";
-  return `${cwd.replace(/[\\/]+$/, "")}${sep}${p.replace(/^\.[\\/]/, "")}`;
+  const abs = isAbs(p) ? p : `${cwd.replace(/[\\/]+$/, "")}${sep}${p.replace(/^\.[\\/]/, "")}`;
+  // Windows: one separator, the folder's (as Go to File joins), so C:/x/a.ts and C:\x\a.ts (CLIs print
+  // both) are the same tab, and a file in the folder stays relative to it
+  if (!/^[A-Za-z]:[\\/]/.test(abs)) return abs;
+  const winSep = /^[A-Za-z]:/.test(cwd) && !cwd.includes("\\") ? "/" : "\\";
+  return abs.replace(/[\\/]/g, winSep);
 }
 
 export function relPath(cwd: string, p: string): string {
