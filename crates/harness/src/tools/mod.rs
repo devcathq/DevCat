@@ -101,6 +101,15 @@ pub const MAX_OUTPUT: usize = 30_000;
 pub struct ToolCtx {
     /// The project folder: relative paths start here, and edits outside it need approval.
     pub cwd: PathBuf,
+    /// Commands run in the OS sandbox: they can write only in the project (see [`crate::sandbox`]).
+    pub sandbox: bool,
+}
+
+impl ToolCtx {
+    /// In `cwd`, without the sandbox.
+    pub fn at(cwd: impl Into<PathBuf>) -> ToolCtx {
+        ToolCtx { cwd: cwd.into(), sandbox: false }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,6 +137,10 @@ pub trait Tool: Send + Sync {
     /// Longest the call may run.
     fn timeout(&self, _input: &Value) -> Duration {
         Duration::from_secs(60)
+    }
+    /// Its commands run in the OS sandbox when it's on, so they can change only the project.
+    fn contained(&self) -> bool {
+        false
     }
     async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput;
 }
@@ -237,7 +250,7 @@ mod tests {
     #[test]
     fn paths_inside_and_outside() {
         let root = if cfg!(windows) { "C:\\proj" } else { "/proj" };
-        let ctx = ToolCtx { cwd: PathBuf::from(root) };
+        let ctx = ToolCtx::at(root);
         assert!(inside(&ctx, &resolve(&ctx, "src/main.rs")));
         assert!(inside(&ctx, &resolve(&ctx, "./a/../b.txt")));
         assert!(!inside(&ctx, &resolve(&ctx, "../other/x")));

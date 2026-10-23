@@ -240,6 +240,35 @@ async fn compact_on_request_and_nothing_to_compact() {
 }
 
 #[tokio::test]
+async fn in_the_sandbox_auto_edit_runs_commands_without_asking() {
+    for sandbox in [false, true] {
+        let (dir, mut session) = project().await;
+        let model = Scripted::new(vec![vec![tool("s1", "shell", json!({ "command": "echo hi" }))], vec![text("done")]]);
+        let approver = Arc::new(Answer(Decision::Allow, Mutex::default()));
+        let mut agent = Agent::new(model, Registry::standard(), Policy::AutoEdit, approver.clone(), "s".into());
+        agent.sandbox = sandbox;
+        let mut results = Vec::new();
+        agent
+            .turn(&mut session, "say hi", &Cancel::default(), &mut |e| {
+                if let AgentEvent::ToolResult { content, is_error, .. } = e {
+                    results.push((content, is_error));
+                }
+            })
+            .await
+            .unwrap();
+        // outside the sandbox a command asks; inside it, it can change only the project
+        assert_eq!(approver.1.lock().unwrap().len(), if sandbox { 0 } else { 1 }, "sandbox {sandbox}");
+        match devcat_harness::sandbox::available() {
+            Ok(()) => assert!(!results[0].1 && results[0].0.contains("hi"), "{results:?}"),
+            // no sandbox on this system: the command isn't run unsandboxed
+            Err(_) if sandbox => assert!(results[0].1 && results[0].0.starts_with("Not run: the sandbox is on"), "{results:?}"),
+            Err(_) => assert!(!results[0].1, "{results:?}"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[tokio::test]
 async fn todo_list_needs_no_approval_and_fetch_asks() {
     let (dir, mut session) = project().await;
     let model = Scripted::new(vec![
