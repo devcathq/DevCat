@@ -17,7 +17,7 @@ import { glassOn, onPaletteChange, palette } from "../appearance/store";
 import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
 import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
-import { IS_MAC, IS_WIN, terminalEditKey } from "../../lib/terminalKeys";
+import { copyOnSelect, IS_MAC, IS_WIN, terminalEditKey } from "../../lib/terminalKeys";
 import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
 import { isRemote, remoteHost } from "../../lib/remotePath";
 import { toast } from "sonner";
@@ -42,6 +42,8 @@ export interface TerminalPaneProps {
   /** Process name used in the exit line. */
   name: string;
   onPty?: (id: string | null) => void;
+  /** The program set the terminal's title ("" when it exits). */
+  onTitle?: (title: string) => void;
   /** Called before restarting after an exit (e.g. to pick the session to resume). */
   beforeRestart?: () => Promise<void> | void;
   /** Map Shift+Enter to ESC CR (newline in claude's prompt). */
@@ -50,7 +52,7 @@ export interface TerminalPaneProps {
   activityId?: string;
 }
 
-export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, visible, name, onPty, beforeRestart, shiftEnterNewline, activityId }: TerminalPaneProps) {
+export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, visible, name, onPty, onTitle, beforeRestart, shiftEnterNewline, activityId }: TerminalPaneProps) {
   const host = useRef<HTMLDivElement>(null);
   const termRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null);
   const ptyRef = useRef<string | null>(null);
@@ -64,8 +66,8 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
   const heldInput = useRef<string[] | null>(null);
   const [restartNonce, setRestartNonce] = useNonce();
   // Latest callbacks without re-running effects.
-  const cb = useRef({ getArgs, onPty, beforeRestart, cwd });
-  cb.current = { getArgs, onPty, beforeRestart, cwd };
+  const cb = useRef({ getArgs, onPty, onTitle, beforeRestart, cwd });
+  cb.current = { getArgs, onPty, onTitle, beforeRestart, cwd };
 
   // Colors follow the Appearance theme.
   useEffect(() => onPaletteChange((p, glass) => { if (termRef.current) termRef.current.term.options.theme = terminalTheme(p, glass); }), []);
@@ -144,6 +146,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     };
     const hostEl = host.current!;
     hostEl.addEventListener("paste", onPaste, true);
+    const offCopy = copyOnSelect(term, hostEl);
 
     // File paths (src/foo.ts:12) → file preview tab (.html renders there); ⌘/Ctrl+click → the default app.
     const links = term.registerLinkProvider({
@@ -179,7 +182,10 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       },
     });
 
-    const title = term.onTitleChange((t) => activity.current?.title(t));
+    const title = term.onTitleChange((t) => {
+      activity.current?.title(t);
+      cb.current.onTitle?.(t);
+    });
     const bell = term.onBell(() => activity.current?.bell());
     const input = term.onData((d) => {
       activity.current?.input();
@@ -206,6 +212,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     return () => {
       ro.disconnect();
       hostEl.removeEventListener("paste", onPaste, true);
+      offCopy();
       hostEl.removeEventListener("mousedown", onPress, true);
       links.dispose();
       input.dispose();
@@ -253,6 +260,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
             ptyRef.current = null;
             exitedRef.current = true;
             cb.current.onPty?.(null);
+            cb.current.onTitle?.("");
             t.term.write(`\r\n\x1b[2m[${name} exited${code ? ` with code ${code}` : ""} — press Enter to restart]\x1b[0m\r\n`);
           },
         );

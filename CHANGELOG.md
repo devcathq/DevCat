@@ -10,6 +10,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **`devcat stop`:** stops a `devcat serve` that's still holding the port: one in the background, in a closed
+  terminal or from before an update. Starting `devcat serve` while another DevCat has the port now says which
+  one and offers to stop it and take over (`--replace` does it without asking).
 - **DevCat Agent: a `git` tool.** Commands that only read the repository (status, diff, log, show, blame, …)
   run without asking; commit, checkout, push and anything else that changes it asks first, like a shell
   command (#53).
@@ -29,6 +32,16 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **DevCat Agent helpers:** for research that takes many reads, the agent hands questions to helpers. Each starts
   with a fresh context and only looks: it never edits, runs commands or asks you. Several run at the same time, their
   rows show what they're doing, and their tokens count in the chat's total and cost (#59).
+
+## 0.9.1 - 2026-10-23
+
+- **Terminal on Windows:** **Ctrl+C** copies the selection (and still interrupts when nothing is
+  selected) and **Ctrl+V** pastes, like Windows Terminal. This works in the AI workspace, the
+  Terminal tab, SSH sessions and the pod shell (#47).
+- **Clickable Windows paths:** `C:/x/y.html`, `C:\x\y.html` and `src\a.ts` (with `:line:col`)
+  open in DevCat's file tab, with HTML rendered in Preview. **Ctrl+click** (**⌘-click** on macOS)
+  opens a local file in its default app. A path wrapped over several rows is one link, and dragging
+  over a link now selects it instead of opening it (#47).
 
 ## 0.9.0 - 2026-10-22
 
