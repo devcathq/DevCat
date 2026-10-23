@@ -40,7 +40,7 @@ export function RemoteFolderDialog() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Sessions only (the phone / browser get none from list_connections; see CLAUDE.md).
+  // Sessions only (the phone / browser get none from list_connections; see AGENTS.md).
   const sessions = useMemo(() => connections.filter((c) => c.kind === "ssh"), [connections]);
   const recentHosts = useMemo(() => [...new Set(recent.filter(isRemote).filter((p) => !sessionIdOf(p)).map(remoteHost))], [recent]);
   /** A saved session for the typed `user@host` (to offer its saved login after Permission denied). */

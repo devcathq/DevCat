@@ -5,7 +5,7 @@ export type ConnectionKind =
   | "kubernetes" | "rabbitmq"
   /** A Docker engine, through the `docker` CLI: this computer's, a context, or a remote host. */
   | "docker"
-  /** Saved SSH login (terminal, SFTP, agents on the host). Desktop only: see CLAUDE.md. */
+  /** Saved SSH login (terminal, SFTP, agents on the host). Desktop only: see AGENTS.md. */
   | "ssh";
 
 export const DATABASE_KINDS: ConnectionKind[] = ["postgres", "mysql", "sqlite", "mssql", "mongodb", "redis"];
