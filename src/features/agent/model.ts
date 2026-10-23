@@ -2,7 +2,7 @@
 // items a chat draws, and how those items read (step rows, folded runs of steps). Shared by the
 // desktop chat (./AgentChat.tsx) and the phone / browser version (mobile/src/screens/agentchat.tsx),
 // so nothing here may import Tauri.
-import { Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, NotebookPen, Plug, ScrollText, Search, SquareTerminal, StickyNote, Wrench } from "lucide-react";
+import { Bot, Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, NotebookPen, Plug, ScrollText, Search, SquareTerminal, StickyNote, Wrench } from "lucide-react";
 import type { AgentApprovalRequest, AgentBlock, AgentContext, AgentLiveEvent, AgentModel, AgentPolicy, AgentQuestion, AgentSessionEvent, AgentUsage } from "../../lib/types";
 
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
@@ -10,12 +10,18 @@ export type ToolStatus = "pending" | "approval" | "question" | "running" | "done
 export type Item =
   | { kind: "user"; key: string; text: string; attachments: string[] }
   | { kind: "answer"; key: string; text: string; thinking: string; streaming: boolean; thinkingMs: number | null; thinkingStart: number | null }
-  | { kind: "tool"; key: string; id: string; name: string; input: Record<string, unknown> | null; status: ToolStatus; output: string; request: AgentApprovalRequest | null; question?: AgentQuestion | null }
+  /** `helper`: for a `subagent` call, the tool calls its helper made (live only; they're in the
+   *  helper's own session). */
+  | { kind: "tool"; key: string; id: string; name: string; input: Record<string, unknown> | null; status: ToolStatus; output: string; request: AgentApprovalRequest | null; question?: AgentQuestion | null; helper?: HelperStep[] }
   | { kind: "end"; key: string; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; elapsedMs: number | null; tokens: number }
   /** The conversation before it was summarized (automatically, or `/compact`). */
   | { kind: "compacted"; key: string; state: "running" | "done" | "failed"; summary: string; tokensBefore: number };
 
 export type ToolItem = Extract<Item, { kind: "tool" }>;
+export type HelperStep = { name: string; input: Record<string, unknown> | null };
+
+/** The tool that hands a question to a helper (the harness runs it: crates/harness/src/agent.rs). */
+export const SUBAGENT = "subagent";
 
 /** What the live events change in a chat. */
 export interface ChatView {
@@ -177,9 +183,14 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
         if (toolIdx(b.id) >= 0) setTool(b.id, () => ({ input: b.input, name: b.name }));
         else items.push({ kind: "tool", key: key(), id: b.id, name: b.name, input: b.input, status: "pending", output: "", request: null });
       }
-      const usage = { input_tokens: c.usage.input_tokens + e.usage.input_tokens, output_tokens: c.usage.output_tokens + e.usage.output_tokens, cache_read_tokens: c.usage.cache_read_tokens + e.usage.cache_read_tokens };
-      return { items, usage, contextTokens: e.usage.input_tokens + e.usage.output_tokens || c.contextTokens };
+      return { items, usage: plus(c.usage, e.usage), contextTokens: e.usage.input_tokens + e.usage.output_tokens || c.contextTokens };
     }
+    case "helperTool":
+      setTool(e.id, (t) => ({ helper: [...(t.helper ?? []), { name: e.name, input: e.input }] }));
+      return { items };
+    case "helperStep":
+      // a helper's tokens count for the chat, not for its context
+      return { usage: plus(c.usage, e.usage) };
     case "approval":
       setTool(e.request.toolUseId, () => ({ status: "approval", request: e.request, input: e.request.input }));
       return { items };
@@ -194,8 +205,7 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
       const done = { kind: "compacted" as const, key: i >= 0 ? items[i].key : key(), state: "done" as const, summary: e.summary, tokensBefore: e.tokens_before };
       if (i >= 0) items[i] = done;
       else items.push(done);
-      const usage = { input_tokens: c.usage.input_tokens + e.usage.input_tokens, output_tokens: c.usage.output_tokens + e.usage.output_tokens, cache_read_tokens: c.usage.cache_read_tokens + e.usage.cache_read_tokens };
-      return { items, usage, contextTokens: Math.round(e.summary.length / 4) };
+      return { items, usage: plus(c.usage, e.usage), contextTokens: Math.round(e.summary.length / 4) };
     }
     case "toolResult":
       setTool(e.id, (t) => ({
@@ -216,6 +226,8 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
     }
   }
 }
+
+const plus = (a: AgentUsage, b: AgentUsage): AgentUsage => ({ input_tokens: a.input_tokens + b.input_tokens, output_tokens: a.output_tokens + b.output_tokens, cache_read_tokens: a.cache_read_tokens + b.cache_read_tokens });
 
 /** Apply several events in order. */
 export function applyAll<C extends ChatView>(c: C, events: AgentLiveEvent[]): C {
@@ -260,6 +272,7 @@ export function describe(name: string, input: Record<string, unknown> | null, st
     case "shell": return { icon: SquareTerminal, verb: done ? "Ran" : "Running", target: str(i.command) };
     case "git": return { icon: GitBranch, verb: done ? "Ran" : "Running", target: `git ${gitArgs(i).map((a) => (/^$|\s/.test(a) ? `"${a}"` : a)).join(" ")}` };
     case "ask_user": return { icon: MessageCircleQuestion, verb: done ? "Asked" : "Asking", target: str(i.question) };
+    case SUBAGENT: return { icon: Bot, verb: done ? "Asked a helper" : "Asking a helper", target: str(i.description) || str(i.prompt).split("\n")[0] };
     case "web_fetch": return { icon: Globe, verb: done ? "Fetched" : "Fetching", target: str(i.url) };
     case "devcat_connections": return { icon: Database, verb: done ? "Listed connections" : "Listing connections", target: "" };
     case "db_schema": return { icon: Database, verb: done ? "Read the schema of" : "Reading the schema of", target: [str(i.connection), str(i.table)].filter(Boolean).join(" · ") };
@@ -283,6 +296,14 @@ export function describe(name: string, input: Record<string, unknown> | null, st
   }
 }
 
+/** What a helper is doing, under its card: "4 steps · Reading src/lib/api.ts". */
+export function helperProgress(steps: HelperStep[], cwd?: string) {
+  const last = steps[steps.length - 1];
+  if (!last) return "";
+  const d = describe(last.name, last.input, "running", cwd);
+  return `${steps.length} ${steps.length === 1 ? "step" : "steps"} · ${d.verb} ${d.target}`.trim();
+}
+
 /** What a chat's tokens cost at a model's list price (US dollars); null without a price. Cached
  *  input is part of `input_tokens`, at the cache price when there is one. */
 export function chatCost(u: AgentUsage, price: AgentModel["price"]): number | null {
@@ -300,10 +321,11 @@ export function fmtDuration(ms: number) {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
-/** A step the conversation folds away: a tool call that needs nothing from the user, or reasoning
- *  that came without an answer. */
+/** A step the conversation folds away: a tool call that needs nothing from the user (helpers stay
+ *  in view: they run side by side, and their answers matter), or reasoning that came without an
+ *  answer. */
 function isStep(it: Item) {
-  if (it.kind === "tool") return !(it.status === "approval" && it.request) && !(it.status === "question" && it.question);
+  if (it.kind === "tool") return it.name !== SUBAGENT && !(it.status === "approval" && it.request) && !(it.status === "question" && it.question);
   return it.kind === "answer" && !it.text.trim();
 }
 
