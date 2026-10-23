@@ -10,6 +10,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **`devcat stop`:** stops a `devcat serve` that's still holding the port: one in the background, in a closed
+  terminal or from before an update. Starting `devcat serve` while another DevCat has the port now says which
+  one and offers to stop it and take over (`--replace` does it without asking).
+
 ## 0.9.1 - 2026-10-23
 
 - **Terminal on Windows:** **Ctrl+C** copies the selection (and still interrupts when nothing is

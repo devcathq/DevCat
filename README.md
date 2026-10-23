@@ -149,6 +149,8 @@ needs `libdbus` (installed almost everywhere).
 - With no terminal to answer in (systemd, `nohup`, the app's Windows binary), start it with `--approve full` or
   `--approve readonly`: any phone with the current pairing code is then allowed. New codes are printed as links.
 - Don't run it while the app has **Remote access** on: they'd share one port and identity.
+- A `devcat serve` you can't reach any more (in the background, a closed terminal, from before an update):
+  `devcat stop` stops it. Starting a new one while it has the port offers to stop it (`--replace`: without asking).
 
 ## Features
 
@@ -405,7 +407,8 @@ src-tauri/src/
   commands/               Tauri command handlers
   store.rs                saved connections (JSON) + OS keychain secrets
   remote/                 remote access for DevCat Mobile: QUIC server, pairing, command allowlist, audit log
-  cli.rs                  `devcat serve`: remote access without a window
+  cli.rs                  `devcat serve` / `devcat stop`: remote access without a window
+  instance.rs             another DevCat holding the port: find it, stop it
   events.rs               backend events to windows and phones
   notify/                 agent status from Claude Code hooks, ntfy notifications
 crates/remote-proto/      wire protocol shared by the desktop app and DevCat Mobile
