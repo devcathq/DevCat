@@ -40,6 +40,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Scheduled DevCat Agent jobs:** run a prompt in a folder at a time of day or every so many minutes (**+** next to
   **Scheduled** in the AI workspace sidebar). Each run is a chat in the folder, and you get a toast (and a phone
   notification, if they're on) when it finishes or needs your OK. Jobs run while DevCat is open (#64).
+- **DevCat Agent sandbox** (macOS and Linux): **Sandbox** under the chat box runs the agent's commands in the
+  operating system's sandbox, where they can write only in the project. With it on, **Auto-edit** runs commands
+  without asking (#67).
 
 ## 0.9.1 - 2026-10-23
 

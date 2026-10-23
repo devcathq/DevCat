@@ -45,6 +45,9 @@ What it asks before doing, in each permission mode (the menu under the chat box)
 | Saving a DevCat note | not run | asks | asks | — |
 | Helpers (see below) | never | never | never | never |
 
+With the [sandbox](#sandbox) on, commands can change only the project, so in **Auto-edit** they run without asking,
+like edits.
+
 **Plan** is for looking before doing: the agent reads and searches, then answers with a plan, and edits and commands
 don't run, not even with a yes. Under the plan, **Start, ask first** or **Start, auto-edit** switches the mode and
 tells the agent to go ahead; or keep chatting to change the plan.
@@ -69,6 +72,22 @@ that tool until the chat closes.
 - **Trace** (next to Chat and Diff) shows how the chat went, turn by turn: each model step with its time and
   tokens, each tool call with its input, output and time, who approved it, hook messages and summaries. A bar
   shows where each step falls in its turn. Click a helper's call to see its own run. **Log** opens the session file.
+
+### Sandbox
+
+**Sandbox** (next to the permission mode under the chat box) runs the agent's commands (`shell`, `git`) in the
+operating system's sandbox. They can still read any file, but they can write only in the project folder, the temp
+folders and `/dev`, so a command can't change your home folder or other projects. With it on, **Auto-edit** runs
+commands without asking; **Ask first** still asks.
+
+- macOS uses Seatbelt (`sandbox-exec`); Linux uses Landlock (Linux 5.13 or newer). Windows isn't supported yet, so
+  the button doesn't show there.
+- It limits writing, not the network: a command can still download or send things.
+- Tools that write outside the project fail inside it: package caches (`~/.npm`, `~/.cargo`), global installs, your
+  git config. Turn the sandbox off for those, or run them yourself.
+- If the sandbox can't be used, the command isn't run (it doesn't run unsandboxed instead).
+- A scheduled job can run its commands in the sandbox too (an option in its editor). The sandbox is set on the
+  computer: a chat you continue on your phone keeps it.
 
 ### Scheduled jobs
 
