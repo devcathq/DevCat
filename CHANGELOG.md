@@ -5,7 +5,9 @@ the app show the section of that version.
 
 When a pull request changes something users notice, add a line under **Unreleased**. At release
 time, rename **Unreleased** to the version (`## 0.8.2 - 2026-10-23`) and start a new empty
-**Unreleased** above it. A version without a section gets the list of merged pull requests instead.
+**Unreleased** above it, in a pull request from a branch named `release/v0.8.2` (with the version
+bumped in `package.json`, `src-tauri/tauri.conf.json` and `mobile/src-tauri/tauri.conf.json`).
+Merging it tags `v0.8.2` and publishes the release (`.github/workflows/release.yml`). A version without a section gets the list of merged pull requests instead.
 Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
