@@ -432,7 +432,8 @@ export type AgentBlock =
 /** One line of a session log. */
 export type AgentSessionEvent =
   | { event: "meta"; id: string; cwd: string; created_ms: number }
-  | { event: "user"; text: string; images?: AgentBlock[] }
+  /** `context`: what hooks added for the model; `hook`: not from the user but from a hook (its event). */
+  | { event: "user"; text: string; images?: AgentBlock[]; context?: string[]; hook?: string }
   | { event: "assistant"; content: AgentBlock[]; model: string; usage: AgentUsage }
   /** `usage`: tokens the calls used themselves (helpers started with `subagent`). */
   | { event: "tool_results"; results: AgentBlock[]; usage?: AgentUsage }
@@ -440,7 +441,13 @@ export type AgentSessionEvent =
   | { event: "interrupted"; reason: string }
   | { event: "title"; title: string }
   | { event: "compacted"; summary: string; model: string; usage: AgentUsage; tokens_before: number };
-export interface AgentContext { rules: string[]; skills: string[]; mcp: { name: string; tools: number }[]; notices: string[]; mcpLoading: boolean; connections?: string[] }
+export interface AgentContext {
+  rules: string[]; skills: string[]; mcp: { name: string; tools: number }[]; notices: string[]; mcpLoading: boolean; connections?: string[];
+  /** Hook files that run in this chat ("~/.claude/settings.json (2)"). */
+  hooks?: string[];
+  /** Hooks found but not allowed for this folder yet: they don't run until the user allows them. */
+  hooksReview?: { files: string[]; commands: string[]; skipped: string[] } | null;
+}
 /** `live`: while a turn runs, its events so far (after `events`); `seq`: the number of the last one
  *  (later `agent-event`s carry higher ones). */
 export interface AgentOpened { sessionId: string; title: string; model: string; providerName: string; busy: boolean; events: AgentSessionEvent[]; usage: AgentUsage; context: AgentContext; live?: AgentLiveEvent[]; seq?: number }
@@ -465,4 +472,6 @@ export type AgentLiveEvent =
   /** The helper started by `subagent` call `id` made a tool call / finished a step. */
   | { type: "helperTool"; id: string; name: string; input: Record<string, unknown> }
   | { type: "helperStep"; id: string; usage: AgentUsage }
+  /** A hook's message for the user: its `systemMessage`, a failure, or why a Stop hook sent the agent on. */
+  | { type: "hook"; event: string; message: string }
   | { type: "turnEnd"; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; usage: AgentUsage; title: string; elapsedMs: number };

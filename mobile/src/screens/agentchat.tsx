@@ -5,7 +5,7 @@
 import clsx from "clsx";
 import {
   ArrowUp, Ban, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, File as FileIcon, FilePen, FolderOpen, Layers, MessageCircleQuestion, MoreVertical, Paperclip, Plug,
-  ClipboardList, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TriangleAlert, X,
+  ClipboardList, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TriangleAlert, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -270,10 +270,13 @@ function ContextLine({ chat }: { chat: Chat }) {
   if (ctx.skills.length) parts.push(<span key="s">{ctx.skills.length} skill{ctx.skills.length === 1 ? "" : "s"}</span>);
   for (const m of ctx.mcp) parts.push(<span key={`m${m.name}`} className="flex items-center gap-1"><Plug className="size-3" />{m.name} ({m.tools} tool{m.tools === 1 ? "" : "s"})</span>);
   if (ctx.mcpLoading) parts.push(<span key="ml" className="flex items-center gap-1"><Spinner className="size-3" />connecting MCP servers…</span>);
+  if (ctx.hooks?.length) parts.push(<span key="h" className="flex items-center gap-1"><Webhook className="size-3" />hooks from {ctx.hooks.length === 1 ? ctx.hooks[0] : `${ctx.hooks.length} files`}</span>);
   return (
     <div className="flex flex-col items-center gap-1 text-[11.5px] text-faint">
       {parts.length > 0 && <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1"><span>Using</span>{parts}</div>}
       {ctx.notices.map((n) => <div key={n} className="flex items-start gap-1.5 text-warn"><TriangleAlert className="mt-0.5 size-3 shrink-0" />{n}</div>)}
+      {/* they run commands on the computer: allowing them is the computer's call */}
+      {ctx.hooksReview && <div className="flex items-start gap-1.5 text-warn"><Webhook className="mt-0.5 size-3 shrink-0" />This folder has hooks ({ctx.hooksReview.files.join(", ")}). They're off until you allow them in DevCat on the computer.</div>}
     </div>
   );
 }
@@ -335,6 +338,13 @@ const ItemView = memo(function ItemView({ item, ctx, working }: { item: Item; ct
             : item.state === "failed" ? <span className="text-danger">Couldn't summarize the conversation</span>
             : <>Conversation summarized{item.tokensBefore ? ` (${fmtTokens(item.tokensBefore)} tokens)` : ""}</>}
           <span className="h-px flex-1 bg-line" />
+        </div>
+      );
+    case "hook":
+      return (
+        <div className="flex items-start gap-2 px-1 text-[12.5px] text-muted">
+          <Webhook className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 whitespace-pre-wrap"><span className="text-fg">{item.event} hook</span> · {item.text.replace(/^\w+ hook feedback:\n/, "")}</span>
         </div>
       );
   }
