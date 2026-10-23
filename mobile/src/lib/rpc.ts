@@ -52,7 +52,7 @@ export function errMsg(e: unknown): string {
 
 type Handler = (payload: any, machineId: string) => void;
 const handlers = new Map<string, Set<Handler>>();
-type ConnHandler = (id: string, state: ConnState, error?: string | null) => void;
+type ConnHandler = (id: string, state: ConnState, error?: string | null, unpaired?: boolean) => void;
 const connHandlers = new Set<ConnHandler>();
 type PairHandler = (p: { stage: "connecting" | "waiting" | "done"; hostName: string }) => void;
 const pairHandlers = new Set<PairHandler>();
@@ -65,8 +65,8 @@ export function startEvents(): Promise<void> {
       listen<{ id: string; event: string; payload: unknown }>("m-event", (e) => {
         handlers.get(e.payload.event)?.forEach((h) => h(e.payload.payload, e.payload.id));
       }),
-      listen<{ id: string; state: ConnState; error?: string | null }>("m-conn", (e) => {
-        connHandlers.forEach((h) => h(e.payload.id, e.payload.state, e.payload.error));
+      listen<{ id: string; state: ConnState; error?: string | null; unpaired?: boolean }>("m-conn", (e) => {
+        connHandlers.forEach((h) => h(e.payload.id, e.payload.state, e.payload.error, e.payload.unpaired));
       }),
       listen<{ stage: "connecting" | "waiting" | "done"; hostName: string }>("m-pair", (e) => {
         pairHandlers.forEach((h) => h(e.payload));

@@ -3,7 +3,7 @@
 // speaks the app's protocol (crates/remote-proto). This browser has its own key, kept here;
 // the computer lists it under Paired phones like the app.
 import init, { Node, type Pipe } from "devcat-web-iroh";
-import { carryPairing, deviceName, parseLink, platform } from "./client";
+import { Refused, carryPairing, deviceName, markUnpaired, parseLink, platform } from "./client";
 
 export interface RelaySaved {
   hostId: string;
@@ -28,7 +28,7 @@ export function relaySaved(): RelaySaved | null {
 }
 
 function save(s: RelaySaved | null) {
-  if (s) localStorage.setItem(SAVED, JSON.stringify(s)); else localStorage.removeItem(SAVED);
+  if (s) localStorage.setItem(SAVED, JSON.stringify(s)); else { localStorage.removeItem(SAVED); markUnpaired(); }
   carryPairing();
 }
 
@@ -115,6 +115,8 @@ export class RelayHost {
     }
     if (first?.t !== "welcome") {
       pipe.close();
+      // Without a pairing code the computer only refuses a browser it doesn't know (any more).
+      if (!pairCode && first?.t === "denied") throw new Refused(denial(first));
       throw denial(first);
     }
     return { pipe, first };
@@ -184,6 +186,11 @@ export class RelayHost {
       this.connecting = this.open(s.hostId, s.relay, s.hostName)
         .then(({ pipe, first }) => { this.attach(pipe, s.hostId, first); return first; })
         .catch((e) => {
+          if (e instanceof Refused) {
+            save(null);
+            this.emit("m-conn", { id: s.hostId, state: "offline", error: e.reason, unpaired: true });
+            throw e.reason;
+          }
           this.emit("m-conn", { id: s.hostId, state: "offline", error: errText(e) });
           throw e;
         })
