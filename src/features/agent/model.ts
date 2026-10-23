@@ -2,7 +2,7 @@
 // items a chat draws, and how those items read (step rows, folded runs of steps). Shared by the
 // desktop chat (./AgentChat.tsx) and the phone / browser version (mobile/src/screens/agentchat.tsx),
 // so nothing here may import Tauri.
-import { Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, Plug, ScrollText, Search, SquareTerminal, Wrench } from "lucide-react";
+import { Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, NotebookPen, Plug, ScrollText, Search, SquareTerminal, StickyNote, Wrench } from "lucide-react";
 import type { AgentApprovalRequest, AgentBlock, AgentContext, AgentLiveEvent, AgentModel, AgentPolicy, AgentQuestion, AgentSessionEvent, AgentUsage } from "../../lib/types";
 
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
@@ -265,6 +265,10 @@ export function describe(name: string, input: Record<string, unknown> | null, st
     case "db_query": return { icon: Database, verb: done ? "Queried" : "Querying", target: `${str(i.connection)}: ${str(i.query).replace(/\s+/g, " ")}` };
     case "k8s_get": return { icon: Boxes, verb: done ? "Got" : "Getting", target: `${str(i.connection)}: ${[str(i.kind), str(i.name)].filter(Boolean).join(" ")}${i.namespace ? ` -n ${str(i.namespace)}` : ""}` };
     case "k8s_logs": return { icon: ScrollText, verb: done ? "Read logs of" : "Reading logs of", target: `${str(i.connection)}: ${str(i.namespace)}/${str(i.pod)}` };
+    case "devcat_notes": return i.id
+      ? { icon: StickyNote, verb: done ? "Read a note" : "Reading a note", target: str(i.id) }
+      : { icon: StickyNote, verb: done ? "Searched notes" : "Searching notes", target: [str(i.query), str(i.project)].filter(Boolean).join(" · ") };
+    case "devcat_note_write": return { icon: NotebookPen, verb: done ? (i.id ? "Updated a note" : "Saved a note") : "Saving a note", target: noteTitle(str(i.body)) };
     case "todo_write": {
       const todos = todoList(i);
       return { icon: ListTodo, verb: "Updated the plan", target: todos.length ? `${todos.filter((t) => t.status === "completed").length}/${todos.length} done` : "" };
@@ -276,6 +280,14 @@ export function describe(name: string, input: Record<string, unknown> | null, st
       }
       return { icon: Wrench, verb: name, target: "" };
   }
+}
+
+/** What a chat's tokens cost at a model's list price (US dollars); null without a price. Cached
+ *  input is part of `input_tokens`, at the cache price when there is one. */
+export function chatCost(u: AgentUsage, price: AgentModel["price"]): number | null {
+  if (!price) return null;
+  const cached = Math.min(u.cache_read_tokens, u.input_tokens);
+  return ((u.input_tokens - cached) * price.input + cached * (price.cacheRead ?? price.input) + u.output_tokens * price.output) / 1_000_000;
 }
 
 export function fmtTokens(n: number) {
@@ -327,6 +339,8 @@ const GIT_READS = new Set(["status", "diff", "log", "show", "blame", "grep", "ls
 export function allowAllLabel(name: string) {
   if (name === "shell") return "commands";
   if (name === "git") return "git commands";
+  if (name === "devcat_notes") return "reading notes";
+  if (name === "devcat_note_write") return "saving notes";
   if (name === "web_fetch") return "fetching pages";
   if (name === "db_query") return "queries";
   if (name.startsWith("k8s_")) return "cluster reads";
@@ -334,10 +348,30 @@ export function allowAllLabel(name: string) {
   return "edits";
 }
 
+/** The question on an approval card: what the call is about to do. */
+export function approvalTitle(name: string, kind: AgentApprovalRequest["kind"], input: Record<string, unknown> | null) {
+  const i = input ?? {};
+  if (name === "db_query") return kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`;
+  if (name === "devcat_notes") return "Read your DevCat notes?";
+  if (name === "devcat_note_write") return i.id ? "Change a DevCat note?" : "Save a new DevCat note?";
+  if (kind === "query") return `Read from ${str(i.connection)}?`;
+  if (kind === "exec") return "Run this command?";
+  if (kind === "fetch") return "Fetch this page?";
+  if (kind === "edit-outside") return "Edit a file outside the project?";
+  return `${name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+}
+
+/** A note's title: its first non-empty line without Markdown markers. The same as `noteTitle` in
+ *  features/notes/store.ts, which this file can't import (it uses Tauri; this one is shared with the phone). */
+function noteTitle(body: string) {
+  const line = body.split("\n").map((l) => l.replace(/^\s*(#{1,6}\s+|[-*+]\s+(\[[ xX]\]\s+)?|>\s*)/, "").trim()).find(Boolean);
+  return line ? line.slice(0, 120) : "Untitled note";
+}
+
 /** "read 6 files · 14 searches · ran 3 commands · 2 failed" for a group of steps. */
 export function summarize(items: Item[]) {
   const reads = new Set<string>(), edits = new Set<string>();
-  let searches = 0, commands = 0, gitReads = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0;
+  let searches = 0, commands = 0, gitReads = 0, noteReads = 0, noteWrites = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0;
   for (const it of items) {
     if (it.kind === "answer") thinkingMs += it.thinkingMs ?? 0;
     if (it.kind !== "tool") continue;
@@ -353,6 +387,8 @@ export function summarize(items: Item[]) {
     }
     else if (it.name === "web_fetch") fetches++;
     else if (it.name === "db_query" || it.name === "db_schema" || it.name === "k8s_get" || it.name === "k8s_logs") queries++;
+    else if (it.name === "devcat_notes") noteReads++;
+    else if (it.name === "devcat_note_write") noteWrites++;
     else if (it.name === "devcat_connections") continue;
     else if (it.name !== "todo_write") tools++;
   }
@@ -362,13 +398,15 @@ export function summarize(items: Item[]) {
     edits.size && `edited ${n(edits.size, "file")}`,
     searches && n(searches, "search", "searches"),
     gitReads && n(gitReads, "git lookup"),
+    noteReads && n(noteReads, "note lookup"),
+    noteWrites && `saved ${n(noteWrites, "note")}`,
     commands && `ran ${n(commands, "command")}`,
     fetches && `fetched ${n(fetches, "page")}`,
     queries && n(queries, "query", "queries"),
     tools && `used ${n(tools, "tool")}`,
   ].filter(Boolean) as string[];
   if (!parts.length && thinkingMs) parts.push(`thought for ${fmtDuration(thinkingMs)}`);
-  return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools && !queries };
+  return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools && !queries && !noteWrites };
 }
 
 /** Files a chat changed, with lines added / removed. */

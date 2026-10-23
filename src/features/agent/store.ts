@@ -5,6 +5,8 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, errMsg } from "../../lib/api";
 import { useProviders } from "../claude/providers";
+import { chatTabTitle } from "../claude/open";
+import { useTabs } from "../../store/tabs";
 import type { AiProvider, AgentModel, AgentDecision, AgentLiveEvent, AgentPolicy } from "../../lib/types";
 import { ZERO, applyAll, contextWindow, itemsFromLog, lastContext, type ChatView } from "./model";
 
@@ -219,4 +221,17 @@ export function connectionModels(provider: AiProvider): Promise<AgentModel[]> {
 
 export function dismissError(tabId: string) {
   patch(tabId, () => ({ error: null }));
+}
+
+/** Rename a saved chat; its open tab and chat take the new name. */
+export async function renameChat(sessionId: string, title: string) {
+  await api.agentRename(sessionId, title);
+  const name = title.trim().split(/\s+/).join(" ");
+  const chats = useAgent.getState().chats;
+  const tabs = useTabs.getState();
+  for (const t of tabs.tabs) {
+    if (t.type !== "claude" || (t.sessionId !== sessionId && chats[t.id]?.sessionId !== sessionId)) continue;
+    tabs.update(t.id, { title: chatTabTitle(t.cwd, name) } as never);
+    if (chats[t.id]) patch(t.id, () => ({ title: name }));
+  }
 }
