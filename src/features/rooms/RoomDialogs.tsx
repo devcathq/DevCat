@@ -182,7 +182,10 @@ export function SettingsDialog({ open, onClose, room, view, tabId }: { open: boo
           </Field>
         </div>
         <div className="flex items-center justify-between border-t border-line pt-3">
-          <span className="text-[11px] text-faint">Room id <span className="font-mono">{room.slice(0, 16)}…</span></span>
+          <span className="text-[11px] text-faint">
+            Your DevCat's id in rooms <span className="font-mono">{view.me.slice(0, 12)}…</span>{" "}
+            <button className="text-accent hover:underline" title="For `devcat keeper --owner <id>`" onClick={() => copy(view.me)}>copy</button>
+          </span>
           <Button variant="danger" onClick={() => void forget()}><Trash2 className="size-3.5" />Leave on this DevCat</Button>
         </div>
       </div>

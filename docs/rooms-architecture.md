@@ -1,9 +1,11 @@
-# Pairing and Rooms on iroh (proposal)
+# Pairing and Rooms on iroh
 
-Status: **draft for discussion**. Nothing below is built yet except where it says "exists".
+Status: **built** (`crates/rooms`, `src-tauri/src/rooms.rs`, `rooms_agent.rs`, `src/features/rooms`).
+User guide: `site/docs/pages/rooms.md`. Where the build differs from the first proposal, it says so
+(**Built:**); known limits are listed at the end.
 
 DevCat already uses iroh to let a phone reach its own computer (`src-tauri/src/remote`, `mobile/`).
-This proposal keeps that ("pairing") and adds **rooms**: people on their own networks share
+This keeps that ("pairing") and adds **rooms**: people on their own networks share
 documents, discuss them in a thread, and each person's DevCat Agent can join the discussion and
 edit, without a central server holding the data.
 
@@ -30,39 +32,40 @@ edit, without a central server holding the data.
 │            pair · dispatch       │  membership · invites · sync · claims      │
 │                                  │  agent bridge → harness (room tools)       │
 ├──────────────────────────────────┴───────────────────────────────────────────┤
-│ Data       Loro CRDT docs · iroh-blobs (files, images)                         │
+│ Data       one Loro CRDT per room · sealed blobs (files, images)                │
 ├────────────────────────────────────────────────────────────────────────────────┤
-│ Transport  ONE iroh Endpoint per DevCat, routed by ALPN:                       │
-│            devcat/remote/1 (exists) · devcat/room/1 · iroh-gossip · iroh-blobs │
+│ Transport  pairing endpoint (exists): devcat/remote/1                          │
+│            rooms endpoint (own key), routed by ALPN: devcat/room/1 · gossip    │
 ├────────────────────────────────────────────────────────────────────────────────┤
 │ Connectivity  direct (hole-punch + port mapping) → DevCat relays → n0 (last)   │
 │ Finding peers invite link · relay server URL · DNS lookup (n0 or our own)      │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-`iroh-gossip` (0.101) and `iroh-blobs` (0.103) depend on iroh `^1`, the same major version DevCat
-uses (1.3).
+`iroh-gossip` (0.101) depends on iroh `^1`, the same major version DevCat uses (1.3).
 
-## 2. Connection layer (shared by pairing and rooms)
+**Built:** rooms have **their own endpoint and key**, not the pairing one. People you share a room with
+never learn the identity your phones pair with, and room code can't reach the pairing protocol; the cost
+is a second UDP port. Behind it, one iroh `Router` serves `devcat/room/1` and gossip.
 
-**One endpoint per DevCat.** Its key is already the computer's identity. Incoming connections are
-routed by ALPN, so pairing and rooms share one UDP port and one hole-punching session; any other
-ALPN is refused.
+## 2. Connection layer (the same rules for pairing and rooms)
+
+Pairing and rooms each have an endpoint (see above), both built the same way; each only accepts its
+own ALPNs.
 
 **Order of paths:**
 1. Same network, direct.
 2. Internet, direct: hole-punching, plus the router opening the port (UPnP / NAT-PMP / PCP; the
    `portmapper` feature).
-3. **DevCat relays:** `iroh-relay` on 2–3 small servers (Singapore/Jakarta first, then EU, US).
-   They forward encrypted packets only; iroh keeps trying to upgrade to direct.
-4. n0's public relays, last resort. A setting turns them off for self-hosters.
+3. **A relay**: n0's public relays by default, or your own `iroh-relay` (`docs/relay.md`), ideally
+   close to your users. They forward encrypted packets only; iroh keeps trying to upgrade to direct.
 
 **Finding peers:** every pairing link and invite carries the peer's current relay server URL and
 addresses (`home` in `crates/remote-proto`); iroh's DNS lookup is the fallback. Our own
 `iroh-dns-server` later, if we want no n0 dependency.
 
-**Visibility:** each connection shows `Direct · 35 ms` or `Relay (sgp) · 140 ms`, for paired phones
-and room members.
+**Visibility:** each connection shows `direct · 35 ms` or `through relay … · 140 ms`, for paired
+phones and room members.
 
 ## 3. Pairing (phone ↔ own computer)
 
@@ -83,7 +86,7 @@ the phone come later and go through the user's own computer, within the limits i
 |---|---|---|
 | `room_id` (32 random bytes) | Members | Names the room; can't be guessed |
 | `room_key` (32-byte secret, per *epoch*) | Members only | Encrypts all room traffic and storage; the gossip topic is derived from it |
-| Membership log (signed changes) | Members | Who's in, roles (owner / editor / viewer), current epoch |
+| Member list, signed by the owner (newest version wins) | Members | Who's in, roles (owner / editor / viewer / keeper), current epoch, room settings |
 
 ### 4.3 Invite and join (approved like pairing)
 
@@ -92,33 +95,38 @@ Owner: Invite ─► link/QR: room_id · invite token (single-use, 24 h) · owne
                  (no room key: a leaked link alone isn't enough)
 Guest opens it ─► connects to the owner over devcat/room/1, shows the token
 Owner's DevCat ─► "Akbar wants to join Q4 spec as editor"  [Allow] [Deny]
-Allowed        ─► room_key + membership + current docs, over that encrypted connection
-               ─► signed "add Akbar" in the membership log; every member learns it
+Allowed        ─► room keys + member list + the document, over that encrypted connection
+               ─► the owner signs a new member list with Akbar in it; every member learns it
 ```
 
-- Members accept room connections only from endpoints in the membership log.
+- Members only sync with, and hand keys to, endpoints in the newest signed member list.
 - Removing a member starts a new epoch with a new `room_key`, sent only to remaining members. The
   removed member keeps what they already had, and gets nothing new.
 
 ### 4.4 Data
 
-Loro (Rust CRDT) per room; Automerge is the alternative.
+One Loro document per room (`crates/rooms/src/doc.rs`):
 
 ```
-RoomDoc
-├─ files:   tree  path → { kind: text | blob, doc_id | blob_hash }
-├─ thread:  list  { id, author (person or "Arif's agent"), text, refs (file + range), time }
-├─ claims:  map   range → { holder, agent, expires }      (leases, see §5.3)
-├─ suggestions: map id → { author, file, range anchors, base version, change, state }
-└─ meta:    title, settings
-FileDoc (one per text file): LoroText; every change tagged with its author
+files        map   path → { kind: text | blob, created by/at, blob: { hash, size, mime } }
+file:<path>  text  the content of each text file (a root container: two people creating the
+                   same file at once share it instead of overwriting each other)
+thread       list  { id, author (person or "Arif's agent"), text, at, depth, reply_to }
+claims       map   id → { path, first/last-character anchors, holder, expires }   (see §5.3)
+suggestions  map   id → { path, anchors, base text, replacement, author, state }
+history      list  applied changes { before, after, anchors, by, approved by } (for revert)
+peers        map   Loro peer → member (who typed what)
 ```
 
-- **Binary files and images:** iroh-blobs; the CRDT holds the hash. Fetched in pieces from any
-  member that has them, like a torrent.
-- **On disk:** `<app data>/rooms/<room_id>/`, encrypted snapshot plus update log.
-- **As files:** a read-only copy at `~/DevCat Rooms/<room>/` for normal tools. Edits go through
-  DevCat's editor and room tools; picking up external editors' changes is a later step.
+- **Binary files and images:** sealed with the room key and kept by whoever shared them; the CRDT holds
+  the hash. **Built:** fetched over `devcat/room/1` (`Blob`) from any member who has it, members only,
+  instead of iroh-blobs: iroh-blobs serves any blob to whoever knows its hash, so it would have needed the
+  same sealing plus its own access control.
+- **On disk:** `<app data>/rooms/<room_id>/`: `room.json` (member list, keys, invites, your
+  preferences), `doc.loro` (the document) and `blobs/`. Like the rest of DevCat's data, it is protected
+  by your account, not encrypted again on disk.
+- **Editing:** in DevCat's room tab and through the agent's room tools. A copy as plain files on disk,
+  for other editors, is a later step.
 
 ### 4.5 Sync
 
@@ -193,21 +201,23 @@ Arif's DevCat                          Akbar's DevCat
         └───────────── RoomDoc (CRDT) ◄──────────┘
 ```
 
-- **When an agent acts:** only when @mentioned or assigned a task in the thread, never on every
-  message. Agent-to-agent mentions are depth-limited and rate-limited per room, so agents can't
-  loop. Each owner pays only for their own agent.
-- **Room tools** (new in `crates/harness`):
+- **When an agent acts:** only when mentioned in the thread (`@<first name>-agent`, or `@agents`),
+  never on every message, and only if its owner allows it (anyone / only me / nobody). Replies chain
+  at most 3 deep between agents, an agent runs at most 20 times an hour per room, and mentions older
+  than 10 minutes (arriving after being offline) don't wake it. Each owner pays only for their own agent.
+- **Room tools** (`src-tauri/src/rooms_agent.rs`, on the harness's `Tool` trait):
 
   | Tool | Effect |
   |---|---|
-  | `room_read`, `room_search` | Read |
-  | `room_comment` | Post to the thread |
+  | `room_files`, `room_read`, `room_search`, `room_thread` | Read |
   | `room_claim` / `room_release` | Lease a range |
   | `room_suggest` | Propose a change (**default**) |
-  | `room_edit` | Edit directly, only inside a held claim, if the room allows it |
+  | `room_edit` | Edit directly, only inside a held claim, only if the room allows it |
 
-- **No shell, no local files, no connections, no phone access.** Web fetch asks. A new `Room`
-  policy is checked before approvals and "Always allow", the same way plan mode is.
+  Its final answer is posted to the thread as a reply; its claims are released when it finishes.
+- **No shell, no local files, no connections, no web, no phone access.** **Built:** rather than a new
+  approval policy, the room agent's tool registry simply contains nothing else: the other tools don't
+  exist for it (a test drives it with a scripted model asking for `shell`).
 - **Prompt injection:** documents and messages from others are untrusted input. With only room
   tools, the worst an injected instruction can do is bad text, which history can undo.
 
@@ -215,7 +225,9 @@ Arif's DevCat                          Akbar's DevCat
 
 A headless `devcat keeper` (server, or anyone's always-on machine) joins rooms as a member **without
 the room key**: it stores and forwards encrypted changes so members can sync when nobody else is
-online. It can't read anything.
+online. It can't read anything. **Built:** members push sealed batches of changes (`KeeperPush`) and
+fetch what they missed (`KeeperFetch`, by index). The keeper answers only members of the newest member
+list the owner signed, and `--owner <id>` limits it to chosen owners' rooms.
 
 ## 8. Security summary
 
@@ -228,20 +240,35 @@ online. It can't read anything.
 | An injected instruction in a shared doc | Room tools only; suggestions by default; undo |
 | A room member reaches someone's computer | Separate ALPNs; room code never reaches `dispatch.rs` or the PTY |
 
-## 9. Phases
+## 9. Phases (all built)
 
 | # | Delivers | Proves |
 |---|---|---|
-| 0 | Port mapping, relay server URL in links, longer relay timeouts (branch `feat/remote-direct-paths`); direct/relay indicator; one DevCat relay (Singapore) | How often connections go direct; pairing speed |
-| 1 | One shared endpoint routed by ALPN; `devcat-rooms`; create, invite, approve, membership log | Two DevCats on different networks meet in a room |
-| 2 | RoomDoc, one shared Markdown file, gossip + catch-up sync | Two people edit live; offline edits merge |
+| 0 | Port mapping, relay server URL in links, longer relay timeouts, direct/relay indicator, `docs/relay.md` (running a relay: hosting one is up to you) | How often connections go direct; pairing speed |
+| 1 | Rooms endpoint routed by ALPN; `devcat-rooms`; create, invite, approve, signed member list | Two DevCats on different networks meet in a room |
+| 2 | RoomDoc, shared text files, gossip + catch-up sync | Two people edit live; offline edits merge |
 | 3 | Thread; agents read and comment on @mention | Agents discussing a document |
 | 4 | Minimal edits, claims, suggestions, out-of-date check, attribution, undo | Agents editing safely together |
 | 5 | Blobs, presence, removal with a new key, blind keeper | Everyday use |
 
-## 10. Open decisions
+## 10. Decisions taken
 
-1. CRDT: **Loro** (recommended) or Automerge.
-2. Who approves joins: owner only, or any admin.
-3. Agent edits by default: **suggestions** (recommended), or direct edits inside claims.
-4. Relays: who hosts them, and in which regions.
+1. CRDT: **Loro** 1.16.2, the same release in the backend (Rust) and the window (`loro-crdt`, WASM).
+   The editor types into the window's own copy; copies exchange updates, so concurrent edits merge
+   whatever arrives first.
+2. Joins: the **owner** approves each one.
+3. Agents **suggest** by default; the owner can let them edit inside their claims.
+4. Relays: the DevCat → Mobile setting (public by default; your own: `docs/relay.md`).
+
+## 11. Known limits
+
+- **Roles are enforced by honest clients.** A viewer's DevCat doesn't send document edits, and every
+  DevCat refuses to send editor changes for a viewer, but the CRDT accepts any member's changes: a
+  modified client could still edit. Likewise the author written on a message or suggestion isn't signed.
+  Members are people the owner let in; signing changes is future work.
+- **Removing someone hides what comes next, not what they had.** They keep their copy up to the
+  removal.
+- **The keeper's log only grows** (no compaction yet).
+- **Presence and typing** are best-effort (gossip, every 15 s); catch-up sync is what guarantees
+  copies converge.
+- **Not on the phone** (see `CLAUDE.md`): rooms are desktop-only, like the SSH workbench.
