@@ -226,7 +226,7 @@ of these step by step, with every keyboard shortcut on
     MacPorts' `sudo port install openvpn2 wireguard-tools` under `/opt/local` does). Those cases
     fall back to the password prompt. *Remove* deletes both files. Windows keeps using UAC.
 - **AI Workspace**: runs your installed coding-agent CLI in a real terminal (like iTerm2), with
-  **Chat ⌥⇧⌘1 · Diff ⌥⇧⌘2**, extra terminals in the same folder (**+** or ⌥⇧⌘T, each its own tab next to Chat), a git-aware file tree and file previews (code, Markdown, PDF, images,
+  **Chat ⌥⇧⌘1 · Diff ⌥⇧⌘2**, extra terminals in the same folder (**+** or ⌥⇧⌘T, each its own tab next to Chat), a git-aware file tree (copy and paste files to and from Explorer / Finder) and file previews (code, Markdown, PDF, images,
   Excel/CSV, Word). The agent is an *AI connection* picked in the sidebar header: [Claude Code](https://docs.claude.com/en/docs/claude-code)
   by default, or OpenAI Codex, Gemini CLI, GitHub Copilot CLI, Aider, opencode or any custom command
   (args + env vars). Each uses its own login, or an optional API key kept in the OS keychain and passed as

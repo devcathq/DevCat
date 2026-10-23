@@ -10,6 +10,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Paste in the file tree:** in the AI workspace, paste files and folders copied in Explorer / Finder (or with
+  the tree's own Copy) into a folder: right-click → **Paste**, or **Ctrl+V** / **⌘V**. A name
+  that's taken gets "copy", so nothing is overwritten, and an image on the clipboard is saved as `pasted.png`
+  (#54).
+
 ## 0.9.0 - 2026-10-22
 
 - **SSH sessions:** a new "SSH session" connection with host, user, password or key, jump host,
