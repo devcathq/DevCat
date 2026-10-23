@@ -19,6 +19,9 @@ Usage:
   devcat serve [options]   Share this computer with DevCat Mobile / the browser version
   devcat stop [options]    Stop a DevCat that's using the port (e.g. a `devcat serve` left
                            running in the background or from before an update)
+  devcat keeper [options]  Keep rooms' changes for members who are offline (a blind keeper:
+                           it stores them encrypted and can't read them). Run it on an
+                           always-on machine, then add its id in the room (owner only)
   devcat help              This help
   devcat version           The version
 
@@ -42,6 +45,9 @@ Only for this run:
 
 Options for stop: --port <n>, --data-dir <dir>, --force (kill it if it won't stop)
 
+Options for keeper: --port <n> (UDP, default any), --relay <public|off|url> (default public),
+  --owner <id> (only keep rooms of this owner; repeat for several), --data-dir <dir>
+
 While it runs, type a command and press Enter:
   pair (or just Enter)     A new pairing QR code
   status                   Addresses, relay and connected phones
@@ -62,6 +68,10 @@ pub fn main(args: &[String]) -> Option<i32> {
         "stop" => {
             attach_console();
             stop_main(&args[1..])
+        }
+        "keeper" => {
+            attach_console();
+            keeper_main(&args[1..])
         }
         "help" | "--help" | "-h" => {
             attach_console();
@@ -631,4 +641,79 @@ async fn list_devices() {
 async fn device_at(n: Option<&&str>) -> Option<crate::remote::store::Device> {
     let i: usize = n?.parse().ok()?;
     crate::remote::remote_devices().await.ok()?.into_iter().nth(i.checked_sub(1)?)
+}
+
+/// `devcat keeper`: a blind keeper for rooms (crates/rooms/src/keeper.rs).
+fn keeper_main(args: &[String]) -> i32 {
+    let (mut port, mut relay, mut owners, mut data_dir) = (0u16, devcat_rooms::RelayConfig::Public, Vec::new(), None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let (flag, inline) = match a.split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f, Some(v.to_string())),
+            _ => (a.as_str(), None),
+        };
+        let mut value = || inline.clone().or_else(|| it.next().cloned());
+        match (flag, value()) {
+            ("--port", Some(v)) => match v.parse() {
+                Ok(p) => port = p,
+                Err(_) => {
+                    eprintln!("--port: a number");
+                    return 2;
+                }
+            },
+            ("--relay", Some(v)) => {
+                relay = match v.trim() {
+                    "public" | "on" | "default" => devcat_rooms::RelayConfig::Public,
+                    "off" | "none" | "no" => devcat_rooms::RelayConfig::Off,
+                    url => devcat_rooms::RelayConfig::Custom(url.to_string()),
+                }
+            }
+            ("--owner", Some(v)) => owners.push(v.trim().to_lowercase()),
+            ("--data-dir", Some(v)) => data_dir = Some(PathBuf::from(v)),
+            (other, _) => {
+                eprintln!("Unknown option or missing value: {other}\nSee `devcat help`.");
+                return 2;
+            }
+        }
+    }
+    let Some(dir) = data_dir.or_else(default_data_dir) else {
+        eprintln!("Can't find a data folder: pass --data-dir");
+        return 1;
+    };
+    crate::init_process();
+    crate::rt::block_on(async move {
+        let cfg = devcat_rooms::Config { dir: dir.join("rooms-keeper"), relay, port, keeper: true, keeper_owners: owners.clone() };
+        let node = match devcat_rooms::Node::start(cfg, std::sync::Arc::new(KeeperHost)).await {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        };
+        node.online(Duration::from_secs(15)).await;
+        let h = node.hints();
+        println!("DevCat keeper is running.\n\nKeeper id (the room's owner adds it in the room's settings):\n  {}\n", node.id());
+        if let Some(r) = h.relay {
+            println!("Relay: {r}");
+        }
+        if !h.addrs.is_empty() {
+            println!("Addresses: {}", h.addrs.join(", "));
+        }
+        println!("{}\nCtrl+C stops it.", if owners.is_empty() { "Keeps any room that adds it.".to_string() } else { format!("Keeps rooms of: {}", owners.join(", ")) });
+        let _ = tokio::signal::ctrl_c().await;
+        node.shutdown().await;
+        0
+    })
+}
+
+/// A keeper has no rooms of its own: nobody joins, nothing to show.
+struct KeeperHost;
+
+#[async_trait::async_trait]
+impl devcat_rooms::Host for KeeperHost {
+    async fn approve_join(&self, _: devcat_rooms::JoinRequest) -> Option<devcat_rooms::Role> {
+        None
+    }
+    fn changed(&self, _: &str, _: devcat_rooms::Change) {}
+    fn message(&self, _: &str, _: &devcat_rooms::doc::Message) {}
 }

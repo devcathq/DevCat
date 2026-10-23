@@ -94,10 +94,43 @@ impl Membership {
         self.members.iter().find(|m| m.id == id)
     }
 
+    /// The handle that wakes a member's agent in the thread: `@<first name>-agent`, with a few
+    /// characters of their id added when two members share a first name. Every copy of the
+    /// member list gives the same handles.
+    pub fn agent_handle(&self, id: &str) -> Option<String> {
+        let m = self.member(id)?;
+        let base = first_word(&m.name);
+        let shared = self.members.iter().filter(|x| x.role != Role::Keeper && first_word(&x.name) == base).count() > 1;
+        Some(if shared { format!("@{base}-{}-agent", &m.id[..4.min(m.id.len())]) } else { format!("@{base}-agent") })
+    }
+
+    /// Members whose agent `text` mentions (`@agents` wakes every agent).
+    pub fn mentioned_agents(&self, text: &str) -> Vec<String> {
+        let low = text.to_lowercase();
+        let all = contains_word(&low, "@agents");
+        self.members
+            .iter()
+            .filter(|m| m.role.can_edit() || m.role == Role::Viewer)
+            .filter(|m| all || self.agent_handle(&m.id).is_some_and(|h| contains_word(&low, &h)))
+            .map(|m| m.id.clone())
+            .collect()
+    }
+
     /// `other` is a valid, newer version of the same room from the same owner.
     pub fn superseded_by(&self, other: &Membership) -> bool {
         other.owner == self.owner && other.version > self.version && other.verify(&self.room)
     }
+}
+
+fn first_word(name: &str) -> String {
+    let w: String = name.split_whitespace().next().unwrap_or("member").chars().filter(|c| c.is_alphanumeric() || *c == '-').collect::<String>().to_lowercase();
+    if w.is_empty() { "member".into() } else { w }
+}
+
+/// `needle` in `hay` not followed by more of a handle (so `@arif-agent` doesn't match
+/// `@arif-agents`).
+fn contains_word(hay: &str, needle: &str) -> bool {
+    hay.match_indices(needle).any(|(i, _)| !hay[i + needle.len()..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_'))
 }
 
 fn parse_sig(hex_sig: &str) -> Option<iroh::Signature> {
@@ -255,6 +288,24 @@ mod tests {
         next.sign(&owner);
         assert!(m.superseded_by(&next));
         assert!(!next.superseded_by(&m), "older");
+    }
+
+    #[test]
+    fn agent_handles_and_mentions() {
+        let owner = SecretKey::generate();
+        let mut m = membership(&owner);
+        let (b, c) = ("b".repeat(64), "c".repeat(64));
+        m.members.push(Member { id: b.clone(), name: "Akbar Haryadi".into(), role: Role::Editor, added_at: 2 });
+        m.members.push(Member { id: c.clone(), name: "Arif B".into(), role: Role::Viewer, added_at: 3 });
+        let a = m.owner.clone();
+        assert_eq!(m.agent_handle(&b).unwrap(), "@akbar-agent");
+        // Two Arifs: their ids tell them apart.
+        assert_eq!(m.agent_handle(&c).unwrap(), "@arif-cccc-agent");
+        assert!(m.agent_handle(&a).unwrap().starts_with("@arif-") && m.agent_handle(&a) != m.agent_handle(&c));
+        assert_eq!(m.mentioned_agents("Hey @Akbar-agent, look"), vec![b.clone()]);
+        assert!(m.mentioned_agents("@akbar-agents").is_empty(), "not a prefix match");
+        assert_eq!(m.mentioned_agents("@agents what do you think?").len(), 3);
+        assert!(m.mentioned_agents("no mention").is_empty());
     }
 
     #[test]
