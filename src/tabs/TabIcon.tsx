@@ -53,6 +53,7 @@ export function tabKindLabel(tab: Tab, connName?: string): string {
     case "er-diagram": return `ER diagram${on}`;
     case "k8s": return `Kubernetes${on}`;
     case "rabbitmq": return `RabbitMQ${on}`;
+    case "docker": return `Docker${on}`;
     case "file": return `File · ${tab.path}`;
     case "git": return `Git · ${tab.repo}`;
     case "note": return "Note";

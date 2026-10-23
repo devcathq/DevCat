@@ -241,6 +241,8 @@ export const api = {
   // Terminal (PTY). Events: "pty-output" ({ id, data: base64 }), "pty-exit" ({ id, code })
   /** program: "claude" = the resolved Claude Code binary, null = the user's login shell, else a path/name.
    *  providerId: run that AI connection instead (backend resolves program, env and API key; args are appended). */
+  /** Docker contexts in the user's Docker config, for the connection form. */
+  dockerContexts: () => invoke<{ name: string; endpoint: string; current: boolean }[]>("docker_contexts"),
   ptyOpen: (cwd: string, program: string | null, args: string[], cols: number, rows: number, providerId?: string | null) =>
     invoke<string>("pty_open", { cwd, program, args, cols, rows, providerId: providerId ?? null }),
   ptyWrite: (id: string, data: string) => invoke<void>("pty_write", { id, data }),

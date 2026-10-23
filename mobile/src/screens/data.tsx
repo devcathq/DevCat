@@ -11,10 +11,10 @@ import { Btn, Card, Confirm, Dot, Empty, ErrorBox, Field, IconBtn, Input, Item, 
 
 // SSH sessions never reach the phone (the computer leaves them out: see CLAUDE.md); named for the type only.
 const KIND_LABEL: Record<ConnectionKind, string> = {
-  postgres: "PostgreSQL", mysql: "MySQL", sqlite: "SQLite", mssql: "SQL Server", mongodb: "MongoDB", redis: "Redis", kubernetes: "Kubernetes", rabbitmq: "RabbitMQ",
+  postgres: "PostgreSQL", mysql: "MySQL", sqlite: "SQLite", mssql: "SQL Server", mongodb: "MongoDB", redis: "Redis", kubernetes: "Kubernetes", rabbitmq: "RabbitMQ", docker: "Docker",
   ssh: "SSH session",
 };
-const KIND_ICON: Record<string, string> = { postgres: "🐘", mysql: "🐬", sqlite: "🪶", mssql: "🗄", mongodb: "🍃", redis: "🟥", kubernetes: "☸", rabbitmq: "🐇" };
+const KIND_ICON: Record<string, string> = { postgres: "🐘", mysql: "🐬", sqlite: "🪶", mssql: "🗄", mongodb: "🍃", redis: "🟥", kubernetes: "☸", rabbitmq: "🐇", docker: "🐳" };
 const SQL_KINDS: ConnectionKind[] = ["postgres", "mysql", "sqlite", "mssql"];
 
 function useConnections() {
@@ -40,7 +40,7 @@ export function Data() {
   const [q, setQ] = useState("");
   const groups = useMemo(() => {
     if (!data) return [];
-    const list = data.conns.filter((c) => c.kind !== "kubernetes" && c.kind !== "rabbitmq" && (!q || c.name.toLowerCase().includes(q.toLowerCase())));
+    const list = data.conns.filter((c) => c.kind !== "kubernetes" && c.kind !== "rabbitmq" && c.kind !== "docker" && (!q || c.name.toLowerCase().includes(q.toLowerCase())));
     const byProject = new Map<string, ConnectionConfig[]>();
     for (const c of list) {
       const k = c.projectId ?? "";
