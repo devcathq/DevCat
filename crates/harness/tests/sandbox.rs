@@ -56,7 +56,10 @@ async fn sandboxed_commands_write_only_in_the_project() {
     // git works in the project
     let git = |args: &[&str]| Git.run(json!({ "args": args }), &ctx);
     assert!(!git(&["init", "-q"]).await.is_error);
-    let commit = git(&["-c", "user.email=a@b.c", "-c", "user.name=A", "commit", "-q", "--allow-empty", "-m", "sandboxed"]).await;
+    // the identity goes in the project's own .git/config (the tool takes the subcommand first)
+    assert!(!git(&["config", "user.email", "a@b.c"]).await.is_error);
+    assert!(!git(&["config", "user.name", "A"]).await.is_error);
+    let commit = git(&["commit", "-q", "--allow-empty", "-m", "sandboxed"]).await;
     assert!(!commit.is_error, "{commit:?}");
     assert!(git(&["log", "--oneline"]).await.content.contains("sandboxed"));
 
