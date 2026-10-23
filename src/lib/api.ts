@@ -167,6 +167,8 @@ export const api = {
   agentModels: (settings: AgentSettings, providerId: string | null, apiKey: string | null) => invoke<AgentModel[]>("ai_agent_models", { settings, providerId, apiKey }),
   /** Put local files / folders on the OS clipboard (paste attaches them in Slack, copies them in Explorer / Finder). */
   fsCopyFiles: (paths: string[]) => invoke<void>("fs_copy_files", { paths }),
+  /** Paste the files / folders (or else the image) on the OS clipboard into `dir`, a folder of the workspace `root`; returns the new paths. */
+  fsPaste: (dir: string, root: string) => invoke<string[]>("fs_paste", { dir, root }),
   gitStatus: (cwd: string) => invoke<GitStatus>("git_status", { cwd }),
   gitFileVersions: (cwd: string, path: string, staged: boolean) => invoke<FileVersions>("git_file_versions", { cwd, path, staged }),
   gitDiffText: (cwd: string, staged: boolean) => invoke<string>("git_diff_text", { cwd, staged }),
