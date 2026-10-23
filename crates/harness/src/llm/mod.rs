@@ -2,6 +2,7 @@
 //! each wire protocol has its own small adapter.
 mod anthropic;
 mod openai;
+mod responses;
 pub(crate) mod sse;
 
 use crate::message::{Block, Message, ToolSpec, Usage};
@@ -17,6 +18,8 @@ pub enum Protocol {
     /// OpenAI-compatible Chat Completions (`/chat/completions`): OpenAI, DeepSeek, Kimi, GLM,
     /// OpenRouter, Ollama, LM Studio, vLLM and most gateways.
     OpenaiChat,
+    /// OpenAI Responses API (`/responses`): OpenAI's newer models, some of them only there.
+    OpenaiResponses,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,12 +92,14 @@ impl Llm {
             let res = match self.config.protocol {
                 Protocol::Anthropic => anthropic::send(&self.http, &self.config, req).await,
                 Protocol::OpenaiChat => openai::send(&self.http, &self.config, req).await,
+                Protocol::OpenaiResponses => responses::send(&self.http, &self.config, req).await,
             };
             match res {
                 Ok(resp) => {
                     return match self.config.protocol {
                         Protocol::Anthropic => anthropic::read(resp, on).await,
                         Protocol::OpenaiChat => openai::read(resp, on).await,
+                        Protocol::OpenaiResponses => responses::read(resp, on).await,
                     };
                 }
                 Err(Retry::Later(e, wait)) if attempt < RETRIES => {
@@ -145,7 +150,7 @@ pub async fn list_models(cfg: &LlmConfig) -> Result<Vec<ModelInfo>> {
     let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(20)).build().unwrap_or_default();
     let key = cfg.api_key.as_deref().filter(|k| !k.is_empty());
     let req = match cfg.protocol {
-        Protocol::OpenaiChat => {
+        Protocol::OpenaiChat | Protocol::OpenaiResponses => {
             let r = http.get(url(&cfg.base_url, "models"));
             if let Some(k) = key { r.bearer_auth(k) } else { r }
         }
