@@ -9,7 +9,7 @@ import type {
 } from "../lib/types";
 import { Btn, Card, Confirm, Dot, Empty, ErrorBox, Field, IconBtn, Input, Item, Loading, Note, Screen, Section, Seg, Sheet, TextArea, ago, useLoad } from "../ui";
 
-// SSH sessions never reach the phone (the computer leaves them out: see CLAUDE.md); named for the type only.
+// SSH sessions never reach the phone (the computer leaves them out: see AGENTS.md); named for the type only.
 const KIND_LABEL: Record<ConnectionKind, string> = {
   postgres: "PostgreSQL", mysql: "MySQL", sqlite: "SQLite", mssql: "SQL Server", mongodb: "MongoDB", redis: "Redis", kubernetes: "Kubernetes", rabbitmq: "RabbitMQ", docker: "Docker",
   ssh: "SSH session",
