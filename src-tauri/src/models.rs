@@ -13,6 +13,8 @@ pub enum ConnectionKind {
     Redis,
     Kubernetes,
     Rabbitmq,
+    /// A Docker engine (containers, images, volumes, networks) through the `docker` CLI.
+    Docker,
     /// A saved SSH login (Xshell-style session): terminal, SFTP, agents on the host. Desktop only.
     Ssh,
 }
@@ -72,6 +74,7 @@ pub struct ConnectionConfig {
     #[serde(default)]
     pub project_id: Option<String>,
     /// Driver specific options. Kubernetes: "context". RabbitMQ: "managementPort", "useTls".
+    /// Docker: "context" (the host, when set, overrides it).
     /// SSH: "keyPath", "jump", "startDir", "startup".
     #[serde(default)]
     pub options: HashMap<String, String>,

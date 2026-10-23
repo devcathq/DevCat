@@ -218,6 +218,44 @@ export function KubernetesSection({ cfg, set, setOpt }: SectionProps) {
   );
 }
 
+/** Docker: a context from the user's Docker config, or a host that overrides it. */
+export function DockerSection({ cfg, set, setOpt }: SectionProps) {
+  const [contexts, setContexts] = useState<{ name: string; endpoint: string; current: boolean }[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.dockerContexts().then(
+      (l) => { if (!cancelled) { setContexts(l); setError(null); } },
+      (e) => { if (!cancelled) { setContexts(null); setError(errMsg(e)); } },
+    ).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [nonce]);
+  const ctx = cfg.options.context ?? "";
+  const current = contexts?.find((c) => c.current);
+  return (
+    <>
+      <Row label="Context" hint={error ? <span className="text-danger">{error}</span> : cfg.host.trim() ? "Not used: the host below is." : "Docker Desktop, OrbStack, Colima… as `docker context ls` lists them."}>
+        <div className="flex items-center gap-1.5">
+          <Select value={ctx} onChange={(e) => setOpt("context", e.target.value || null)}>
+            <option value="">(current context{current ? `: ${current.name}` : ""})</option>
+            {ctx && contexts && !contexts.some((c) => c.name === ctx) && <option value={ctx}>{ctx}</option>}
+            {contexts?.map((c) => <option key={c.name} value={c.name}>{c.name}{c.endpoint ? ` · ${c.endpoint}` : ""}</option>)}
+          </Select>
+          {loading ? <span className="flex size-6 items-center justify-center"><Spinner className="size-3.5" /></span> : (
+            <IconButton type="button" title="Reload contexts" onClick={() => setNonce((n) => n + 1)}><RefreshCw className="size-3.5" /></IconButton>
+          )}
+        </div>
+      </Row>
+      <Row label="Host" hint="Optional, overrides the context: ssh://user@server (your ssh key, no password prompt), tcp://host:2376 or unix:///var/run/docker.sock.">
+        <Input value={cfg.host} placeholder="(the context's engine)" onChange={(e) => set({ host: e.target.value })} />
+      </Row>
+    </>
+  );
+}
+
 /** AMQP ports → the management API port DevCat actually talks to. */
 const AMQP_TO_MGMT: Record<number, number> = { 5672: 15672, 5671: 15671 };
 
@@ -553,7 +591,7 @@ function NetworkRow({ cfg, setOpt }: SectionProps) {
 }
 
 export function AdvancedSection({ cfg, set, setOpt }: SectionProps) {
-  const isDb = cfg.kind !== "kubernetes" && cfg.kind !== "rabbitmq" && cfg.kind !== "ssh";
+  const isDb = cfg.kind !== "kubernetes" && cfg.kind !== "rabbitmq" && cfg.kind !== "docker" && cfg.kind !== "ssh";
   const entries = Object.entries(cfg.options).filter(([k]) => !MANAGED_OPTIONS.has(k));
   const [newKey, setNewKey] = useState("");
   const addKey = () => {

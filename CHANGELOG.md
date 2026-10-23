@@ -10,6 +10,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Docker connections:** add a Docker engine (the current `docker` context, another context, or a host over
+  `ssh://` / `tcp://`) and open it in a tab: containers grouped by Compose project with their CPU and memory,
+  logs that follow (and carry on after a restart), a shell in a terminal tab, inspect, and start / stop /
+  restart / pause / kill / remove; images, volumes and networks with inspect and remove. A read-only
+  connection only looks (#70).
 - **`devcat stop`:** stops a `devcat serve` that's still holding the port: one in the background, in a closed
   terminal or from before an update. Starting `devcat serve` while another DevCat has the port now says which
   one and offers to stop it and take over (`--replace` does it without asking).

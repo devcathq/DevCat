@@ -44,7 +44,7 @@ fn connections() -> Vec<ConnectionConfig> {
 }
 
 fn is_db(k: ConnectionKind) -> bool {
-    !matches!(k, ConnectionKind::Kubernetes | ConnectionKind::Rabbitmq | ConnectionKind::Ssh)
+    !matches!(k, ConnectionKind::Kubernetes | ConnectionKind::Rabbitmq | ConnectionKind::Docker | ConnectionKind::Ssh)
 }
 
 fn kind_name(k: ConnectionKind) -> &'static str {
@@ -57,6 +57,7 @@ fn kind_name(k: ConnectionKind) -> &'static str {
         ConnectionKind::Redis => "redis",
         ConnectionKind::Kubernetes => "kubernetes",
         ConnectionKind::Rabbitmq => "rabbitmq",
+        ConnectionKind::Docker => "docker",
         ConnectionKind::Ssh => "ssh",
     }
 }

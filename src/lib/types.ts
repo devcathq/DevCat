@@ -3,11 +3,13 @@
 export type ConnectionKind =
   | "postgres" | "mysql" | "sqlite" | "mssql" | "mongodb" | "redis"
   | "kubernetes" | "rabbitmq"
+  /** A Docker engine, through the `docker` CLI: this computer's, a context, or a remote host. */
+  | "docker"
   /** Saved SSH login (terminal, SFTP, agents on the host). Desktop only: see CLAUDE.md. */
   | "ssh";
 
 export const DATABASE_KINDS: ConnectionKind[] = ["postgres", "mysql", "sqlite", "mssql", "mongodb", "redis"];
-export const INFRA_KINDS: ConnectionKind[] = ["kubernetes", "rabbitmq", "ssh"];
+export const INFRA_KINDS: ConnectionKind[] = ["kubernetes", "rabbitmq", "docker", "ssh"];
 
 export interface SshConfig {
   enabled: boolean;
@@ -40,7 +42,7 @@ export interface ConnectionConfig {
   group?: string | null;
   /** Project (sidebar folder) this connection belongs to. */
   projectId?: string | null;
-  /** Kubernetes: { context }. RabbitMQ: { managementPort, useTls }.
+  /** Kubernetes: { context }. RabbitMQ: { managementPort, useTls }. Docker: { context } (`host`, when set, overrides it).
    *  SSH: { keyPath, jump, startDir, startup } (host = name, IP or ~/.ssh/config alias). */
   options: Record<string, string>;
   readOnly: boolean;
