@@ -668,23 +668,43 @@ pub async fn agent_answer(session_id: String, tool_use_id: String, answer: Strin
 /// `model` switches the chat's model from this message on (None = keep it). `attachments` are
 /// file paths: images are shown to the model, every file is listed with its path.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>) -> AppResult<()> {
-    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window).map(|_| ())
+/// `sandbox` turns the OS sandbox for its commands on or off from this message on (None = as it was).
+pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>, sandbox: Option<bool>) -> AppResult<()> {
+    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window, sandbox).map(|_| ())
+}
+
+/// Whether this computer can run the agent's commands in the OS sandbox (and why not).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxInfo {
+    pub available: bool,
+    pub reason: Option<String>,
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_sandbox() -> AppResult<SandboxInfo> {
+    let r = devcat_harness::sandbox::available();
+    Ok(SandboxInfo { available: r.is_ok(), reason: r.err() })
 }
 
 /// Send a message the way the chat does, and wait for the turn to end: (how it ended, the error).
 /// For scheduled jobs (agent_jobs.rs).
-pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_window: Option<u64>) -> AppResult<(String, Option<String>)> {
-    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window)?;
+pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_window: Option<u64>, sandbox: bool) -> AppResult<(String, Option<String>)> {
+    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window, Some(sandbox))?;
     let (end, error) = done.await.map_err(|e| AppError::msg(e.to_string()))?;
     Ok((end.as_str().unwrap_or("error").to_string(), error))
 }
 
 /// Start a turn in the background; the handle gives how it ended.
-fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>) -> AppResult<tokio::task::JoinHandle<(Value, Option<String>)>> {
+fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>, sandbox: Option<bool>) -> AppResult<tokio::task::JoinHandle<(Value, Option<String>)>> {
     let run = run_of(session_id)?;
     if text.trim().is_empty() && attachments.is_empty() {
         return Err(AppError::msg("Type a message first"));
+    }
+    if sandbox == Some(true)
+        && let Err(why) = devcat_harness::sandbox::available()
+    {
+        return Err(AppError::msg(format!("The sandbox isn't available here: {why}")));
     }
     if run.busy.swap(true, Ordering::SeqCst) {
         return Err(AppError::msg("The agent is still working. Stop it or wait for it to finish."));
@@ -705,6 +725,9 @@ fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<Stri
             agent.model = Arc::new(Llm::new(devcat_harness::LlmConfig { model: m, ..run.cfg.clone() }));
         }
         agent.context_window = context_window.filter(|&w| w > 0);
+        if let Some(s) = sandbox {
+            agent.sandbox = s;
+        }
         let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
         // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
         let compact = text.trim().strip_prefix("/compact").filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));

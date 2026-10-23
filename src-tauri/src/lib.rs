@@ -307,6 +307,7 @@ pub fn run() {
             agent::agent_rename,
             agent::agent_trust_hooks,
             agent::agent_trace,
+            agent::agent_sandbox,
             agent_jobs::agent_jobs,
             agent_jobs::agent_job_save,
             agent_jobs::agent_job_delete,
