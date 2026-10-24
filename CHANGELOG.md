@@ -12,6 +12,14 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **DevCat Agent: a `git` tool.** Commands that only read the repository (status, diff, log, show, blame, …)
+  run without asking; commit, checkout, push and anything else that changes it asks first, like a shell
+  command (#53).
+- **DevCat Agent: long tool output** (over 30,000 characters) is saved to a file next to the chat, and the
+  agent reads it in parts instead of losing the middle (#53).
+- **DevCat Agent stops repeating itself:** the same tool call a 4th time in a row is refused, so a looping
+  model tries something else (#53).
+
 ## 0.12.0 - 2026-10-24
 
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of
