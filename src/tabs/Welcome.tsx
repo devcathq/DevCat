@@ -70,7 +70,7 @@ export default function Welcome() {
         </Section>
 
         <p className="mt-10 text-xs text-faint">
-          Tip: {NEW_WINDOW_SHORTCUT} opens another window, so you can keep each project in its own. The coffee cup at the top right keeps your screen awake.
+          Tip: {NEW_WINDOW_SHORTCUT} opens another window, so you can keep each project in its own. Settings (the gear at the top right) → Keep awake keeps your screen awake.
         </p>
       </div>
     </div>

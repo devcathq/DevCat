@@ -17,14 +17,6 @@ type View = "claude" | "memories";
 
 export const openMemory = (view: View = "claude") => useOpen.setState({ open: true, view });
 
-export function MemoryButton() {
-  return (
-    <button onClick={() => openMemory()} title="Memory: one memory for all your coding agents" className="flex h-6 items-center rounded px-1.5 text-muted hover:bg-hover hover:text-fg">
-      <Brain className="size-3.5" />
-    </button>
-  );
-}
-
 export function MemoryDialog() {
   const open = useOpen((s) => s.open);
   return open ? <MemoryView onClose={() => useOpen.setState({ open: false })} /> : null;

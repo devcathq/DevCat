@@ -72,6 +72,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   200,000 characters are now shared as read-only files (save them to read them) instead of editable documents.
 - **Room agents see the room's images:** an agent mentioned in a room now looks at shared PNG, JPEG, GIF and WebP
   images (up to 5 MB) when it reads them, and can read text files shared read-only because of their size.
+- **Tidier window:** the row of icons at the top right is now one **Settings** menu (Appearance, AI memory, Mobile
+  pairing, Tickets, Keep awake, New window); a coffee cup still shows while keep awake is on. **Rooms** moved to
+  the left bar, and saved queries and query history now sit under the connection list (**Queries**) instead of
+  having their own icon.
 
 ## 0.12.0 - 2026-10-24
 

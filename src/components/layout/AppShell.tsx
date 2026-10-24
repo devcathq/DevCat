@@ -1,13 +1,12 @@
 import clsx from "clsx";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, Folder, Layers, FolderPlus, GitBranch, History, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, X, Zap } from "lucide-react";
+import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Layers, FolderPlus, GitBranch, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, Users, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { Toaster } from "sonner";
 import ConnectionDialog from "../../features/connections/ConnectionDialog";
-import ConnectionTree from "../../features/connections/ConnectionTree";
-import HistoryPanel from "../../features/history/HistoryPanel";
+import ConnectionsSidebar from "../../features/connections/ConnectionsSidebar";
 import NetworkPanel from "../../features/network/NetworkPanel";
 import ClaudePanel from "../../features/claude/ClaudePanel";
 // scheduled DevCat Agent jobs: their toasts show wherever you are
@@ -22,14 +21,13 @@ import { createProject, focusProject } from "../../features/connections/tree/pro
 import { confirmDialog } from "../../features/connections/dialogs";
 import { detectSession } from "../../features/claude/store";
 import { useTabActivity } from "../../features/claude/activity";
-import { KeepAwakeButton } from "../../features/keepawake/KeepAwakeButton";
 import { useQuickCommands } from "../../features/terminal/quickCommands";
 import { UpdateDialog } from "../../features/update/UpdateDialog";
-import { MobileButton, MobileDialog } from "../../features/mobile/MobileDialog";
-import { RoomJoinPrompt, RoomsButton, RoomsDialog } from "../../features/rooms/RoomsDialog";
-import { TicketsButton } from "../../features/tickets/TicketsButton";
-import { AppearanceButton, AppearanceDialog } from "../../features/appearance/AppearanceDialog";
-import { MemoryButton, MemoryDialog } from "../../features/memory/MemoryDialog";
+import { MobileDialog } from "../../features/mobile/MobileDialog";
+import { RoomJoinPrompt, RoomsDialog, RoomsPanel } from "../../features/rooms/RoomsDialog";
+import { startRooms, useRooms } from "../../features/rooms/store";
+import { AppearanceDialog } from "../../features/appearance/AppearanceDialog";
+import { MemoryDialog } from "../../features/memory/MemoryDialog";
 import { useAppearance, useIsDark } from "../../features/appearance/store";
 import { zoomUi } from "../../features/appearance/fonts";
 import { PairPrompt } from "../../features/mobile/PairPrompt";
@@ -48,6 +46,7 @@ import { TabIcon, tabKindLabel } from "../../tabs/TabIcon";
 import { tabConnId, tabFolder, type Tab } from "../../tabs/types";
 import { IconButton } from "../ui";
 import { AiTerminalIcon } from "../ui/AppIcons";
+import { SettingsMenu } from "./SettingsMenu";
 
 export default function AppShell() {
   const load = useConnections((s) => s.load);
@@ -76,6 +75,10 @@ export default function AppShell() {
   }, []);
 
   useEffect(() => startMobileStatus(), []);
+  useEffect(() => {
+    startRooms();
+    void useRooms.getState().refresh(false).catch(() => {});
+  }, []);
   // A project's own look (Appearance → This project) follows the window's focus.
   const focusId = useConnections((s) => s.focusProjectId);
   useEffect(() => useAppearance.getState().setFocus(focusId), [focusId]);
@@ -191,6 +194,8 @@ function ActivityBar() {
     if (v === sidebar) setSidebarCollapsed(!sidebarCollapsed);
     else { setSidebar(v); setSidebarCollapsed(false); }
   };
+  // Someone waits to be let into one of this user's rooms.
+  const roomWaiting = useRooms((s) => s.pending.length > 0);
   const item = (v: SidebarView, icon: ReactNode, title: string) => (
     <button
       title={sidebar === v ? `${title} (click to ${sidebarCollapsed ? "show" : "hide"} the sidebar, ${toggleKey})` : title}
@@ -208,10 +213,10 @@ function ActivityBar() {
     <div className="glass-side flex w-11 shrink-0 flex-col items-center border-r border-line bg-app pt-1">
       {item("claude", <AiTerminalIcon className="size-5" />, "AI Workspace")}
       {item("connections", <Cable className="size-5" />, "Connections")}
-      {item("history", <History className="size-5" />, "History & saved queries")}
       {item("network", <Shield className="size-5" />, "VPN & SSH tunnels")}
       {item("git", <GitBranch className="size-5" />, "Git repositories")}
       {item("notes", <NotebookPen className="size-5" />, "Notes")}
+      {item("rooms", <span className="relative"><Users className="size-5" />{roomWaiting && <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-warn" />}</span>, roomWaiting ? "Rooms: someone wants to join" : "Rooms: share documents and agents with other people")}
       <div className="flex-1" />
       <button
         title={`${sidebarCollapsed ? "Show" : "Hide"} sidebar (${toggleKey})`}
@@ -231,7 +236,7 @@ function Sidebar() {
     <div className="flex h-full flex-col bg-panel">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-3">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-          {sidebar === "connections" ? "Connections" : sidebar === "network" ? "VPN & Tunnels" : sidebar === "claude" ? "AI Workspace" : sidebar === "git" ? "Git" : sidebar === "notes" ? "Notes" : "History"}
+          {sidebar === "connections" ? "Connections" : sidebar === "network" ? "VPN & Tunnels" : sidebar === "claude" ? "AI Workspace" : sidebar === "git" ? "Git" : sidebar === "notes" ? "Notes" : "Rooms"}
         </span>
         {sidebar === "connections" && (
           <IconButton title="New connection" onClick={() => openDialog(null)}><Plus className="size-4" /></IconButton>
@@ -240,9 +245,15 @@ function Sidebar() {
         {sidebar === "notes" && (
           <IconButton title="New note" onClick={() => void createNote()}><Plus className="size-4" /></IconButton>
         )}
+        {sidebar === "rooms" && (
+          <span className="flex items-center gap-0.5">
+            <IconButton title="Join with an invite" onClick={() => useRooms.getState().show(true, "join")}><DoorOpen className="size-4" /></IconButton>
+            <IconButton title="New room" onClick={() => useRooms.getState().show(true, "new")}><Plus className="size-4" /></IconButton>
+          </span>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
-        {sidebar === "connections" ? <ConnectionTree /> : sidebar === "network" ? <NetworkPanel /> : sidebar === "claude" ? <ClaudePanel /> : sidebar === "git" ? <GitPanel /> : sidebar === "notes" ? <NotesPanel /> : <HistoryPanel />}
+        {sidebar === "connections" ? <ConnectionsSidebar /> : sidebar === "network" ? <NetworkPanel /> : sidebar === "claude" ? <ClaudePanel /> : sidebar === "git" ? <GitPanel /> : sidebar === "notes" ? <NotesPanel /> : <RoomsPanel />}
       </div>
     </div>
   );
@@ -319,15 +330,7 @@ function ProjectBar() {
         </>
       )}
       <div className={clsx("flex items-center gap-0.5", !focus && "ml-auto")}>
-        <AppearanceButton />
-        <MemoryButton />
-        <RoomsButton />
-        <TicketsButton />
-        <MobileButton />
-        <KeepAwakeButton />
-        <IconButton title={`New window (${NEW_WINDOW_SHORTCUT})`} onClick={() => void openNewWindow(focus?.id)}>
-          <AppWindow className="size-3.5" />
-        </IconButton>
+        <SettingsMenu />
       </div>
       {menu.element}
     </div>

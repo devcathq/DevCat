@@ -111,7 +111,7 @@ logs and deployments.
   network) through a relay that only forwards encrypted traffic, like RustDesk. iroh's free public relays by
   default, or your own. Profiles and passwords stay on the computer; the phone only keeps the list of computers
   it paired with.
-- **App or browser**: DevCat → 📱 in the title bar → turn on **Remote access** → point the phone's camera at the
+- **App or browser**: DevCat → ⚙️ Settings → **Mobile pairing** → turn on **Remote access** → point the phone's camera at the
   QR code. It opens DevCat in the phone's browser (nothing to install); tap **Open in DevCat app** to pair the app
   instead, or **Continue in browser**. Then click **Allow** on the computer. Browser sessions are encrypted with a
   key from the QR code, but the page itself comes over plain HTTP, so on Wi-Fi you don't trust use the app (or turn
@@ -169,8 +169,8 @@ of these step by step, with every keyboard shortcut on
   Skip this version), or use *DevCat → Check for Updates…* (macOS menu bar), *Check for updates…* in the project menu
   or click the version in the status bar. Updates are
   signed and verified before installing. Linux .deb/.rpm installs get a download link instead (the AppImage self-updates).
-- **Keep awake**: the coffee cup at the top right keeps the screen and computer from sleeping (like Caffeine /
-  Amphetamine). Click to toggle; right-click to keep awake for 15 minutes to 8 hours.
+- **Keep awake**: ⚙️ Settings → **Keep awake** keeps the screen and computer from sleeping (like Caffeine /
+  Amphetamine), until turned off or for 15 minutes to 8 hours. While it's on, a coffee cup at the top right turns it off.
 - **Tabs**: drag a tab along the tab bar to reorder it; every **New chat** opens a chat of its own.
 - **Open files with DevCat**: on macOS DevCat is in Finder's *Open With* for code and text files (choose
   *Always Open With*, or *Get Info → Open with → Change All…* to make it the default); the file opens in an editor tab,
@@ -259,7 +259,7 @@ of these step by step, with every keyboard shortcut on
   **Folders on SSH hosts** too (*Open folder on SSH host…*): the agent and terminals run on that machine, and the
   file tree, previews, edits and git status work over your system `ssh` (hosts from `~/.ssh/config`, keys,
   ssh-agent, ProxyJump; one shared connection per host). Diff and Code Review are local-only for now.
-- **Appearance** (🎨 in the title bar): dark, light or system mode, 8 dark and 3 light themes (editors and terminals
+- **Appearance** (⚙️ Settings in the title bar): dark, light or system mode, 8 dark and 3 light themes (editors and terminals
   follow), and **window glass** on macOS and Windows: the desktop shows through the sidebar and work area, blurred,
   with separate opacity for each.
 

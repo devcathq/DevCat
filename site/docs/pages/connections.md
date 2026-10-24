@@ -51,5 +51,5 @@ unpins one.
 
 ## History and saved queries
 
-The **History & saved queries** icon in the left bar lists every query you ran, per connection, and the queries you
-saved with <kbd>⌘S</kbd>. Click one to open it again.
+Under the connection list, open **Queries** to see every query you ran, per connection, and the queries you
+saved with <kbd>⌘S</kbd>. Click one to open it again. Drag the line above **Queries** to give it more room.
