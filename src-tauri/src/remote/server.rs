@@ -4,7 +4,7 @@
 //! The app-specific parts (commands, approval dialog, audit) sit behind [`Backend`] so the
 //! protocol can be tested without a running app.
 use super::store::{AuditEntry, Device, RemoteStore};
-use devcat_remote_proto::{ALPN, ClientMsg, DeviceInfo, HostInfo, HostMsg, read_frame, write_frame};
+use devcat_remote_proto::{ALPN, ClientMsg, ConnPath, DeviceInfo, HostInfo, HostMsg, read_frame, write_frame};
 use iroh::endpoint::{Connection, presets};
 use iroh::{Endpoint, RelayMode, RelayUrl, SecretKey};
 use parking_lot::Mutex;
@@ -60,9 +60,15 @@ pub struct Client {
     attached: Mutex<HashSet<String>>,
     streams: Mutex<HashSet<String>>,
     closer: Box<dyn Fn(&str) + Send + Sync>,
+    /// The QUIC connection (the app); none for browsers served over TCP.
+    quic: Option<Connection>,
 }
 
 impl Client {
+    /// Direct or through a relay, for the app's connections.
+    pub fn path(&self) -> Option<ConnPath> {
+        self.quic.as_ref().and_then(conn_path)
+    }
     pub fn readonly(&self) -> bool {
         self.device.access != "full"
     }
@@ -127,6 +133,18 @@ pub struct ClientInfo {
     pub access: String,
     pub since: i64,
     pub addr: Option<String>,
+    pub path: Option<ConnPath>,
+}
+
+/// The path a connection uses right now (the selected one).
+pub fn conn_path(conn: &Connection) -> Option<ConnPath> {
+    let paths = conn.paths();
+    let p = paths.iter().find(|p| p.is_selected())?;
+    let relay = match p.remote_addr() {
+        iroh::TransportAddr::Relay(url) => Some(url.to_string()),
+        _ => None,
+    };
+    Some(ConnPath { direct: p.is_ip(), rtt_ms: p.rtt().as_millis() as u64, relay })
 }
 
 struct Pairing {
@@ -305,7 +323,7 @@ impl Host {
         let mut v: Vec<ClientInfo> = self
             .clients()
             .iter()
-            .map(|c| ClientInfo { device_id: c.device.id.clone(), name: c.device.name.clone(), platform: c.device.platform.clone(), access: c.device.access.clone(), since: c.since, addr: c.addr.clone() })
+            .map(|c| ClientInfo { device_id: c.device.id.clone(), name: c.device.name.clone(), platform: c.device.platform.clone(), access: c.device.access.clone(), since: c.since, addr: c.addr.clone(), path: c.path() })
             .collect();
         v.sort_by_key(|c| c.since);
         v
@@ -469,11 +487,11 @@ impl Host {
             let conn = conn.clone();
             Box::new(move |why: &str| conn.close(0u32.into(), why.as_bytes())) as Box<dyn Fn(&str) + Send + Sync>
         };
-        self.session(device, addr, Box::new(QuicRx(recv)), Box::new(QuicTx(send)), closer).await;
+        self.session(device, addr, Box::new(QuicRx(recv)), Box::new(QuicTx(send)), closer, Some(conn)).await;
     }
 
     /// Welcome an admitted phone and serve it until it goes away (any transport).
-    pub(crate) async fn session(self: Arc<Self>, device: Device, addr: Option<String>, mut rx_wire: Box<dyn WireRx>, mut tx_wire: Box<dyn WireTx>, closer: Box<dyn Fn(&str) + Send + Sync>) {
+    pub(crate) async fn session(self: Arc<Self>, device: Device, addr: Option<String>, mut rx_wire: Box<dyn WireRx>, mut tx_wire: Box<dyn WireTx>, closer: Box<dyn Fn(&str) + Send + Sync>, quic: Option<Connection>) {
         let device = self.store.update_device(&device.id, |d| d.last_seen = Some(now_ms())).ok().flatten().unwrap_or(device);
         let (tx, mut rx) = mpsc::unbounded_channel::<HostMsg>();
         let queued = Arc::new(AtomicUsize::new(0));
@@ -487,6 +505,7 @@ impl Host {
             attached: Mutex::new(HashSet::new()),
             streams: Mutex::new(HashSet::new()),
             closer,
+            quic: quic.clone(),
         });
         let welcome = HostMsg::Welcome {
             host: self.backend.host_info(),
@@ -497,6 +516,16 @@ impl Host {
         }
         self.clients.lock().insert(client.conn_id, client.clone());
         self.backend.changed();
+        // Show relay → direct (and back) as it happens.
+        let watcher = quic.map(|conn| {
+            let me = self.clone();
+            tokio::spawn(async move {
+                let mut events = conn.path_events();
+                while futures::StreamExt::next(&mut events).await.is_some() {
+                    me.backend.changed();
+                }
+            })
+        });
 
         // writer
         let writer = tokio::spawn(async move {
@@ -535,6 +564,9 @@ impl Host {
             }
         }
         writer.abort();
+        if let Some(w) = watcher {
+            w.abort();
+        }
         client.close("bye");
         self.clients.lock().remove(&client.conn_id);
         let _ = self.store.update_device(&device.id, |d| d.last_seen = Some(now_ms()));
@@ -588,7 +620,7 @@ pub(crate) mod tests {
             self.allow.then(|| "readonly".to_string())
         }
         fn host_info(&self) -> HostInfo {
-            HostInfo { id: String::new(), name: "Test Mac".into(), os: "macos".into(), app_version: "0".into(), addrs: vec![], relay: None }
+            HostInfo { id: String::new(), name: "Test Mac".into(), os: "macos".into(), app_version: "0".into(), addrs: vec![], relay: None, home: None }
         }
         fn changed(&self) {}
         async fn disconnected(&self, _: &Arc<Client>) {

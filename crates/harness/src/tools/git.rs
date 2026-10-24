@@ -63,8 +63,6 @@ impl Tool for Git {
         // no prompt can wait for an answer that never comes: credentials, editors (commit without -m,
         // rebase -i), and no optional locks, so reading doesn't get in the way of the user's own git
         cmd.env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "devcat-agent-no-editor").env("GIT_SEQUENCE_EDITOR", "devcat-agent-no-editor").env("GIT_OPTIONAL_LOCKS", "0");
-        #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         match run_process(cmd, ctx, TIMEOUT, "git").await {
             Ok((text, code)) => exit_output(text, code),
             Err(e) => e,

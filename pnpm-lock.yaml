@@ -238,6 +238,9 @@ importers:
       jsqr:
         specifier: 1.4.0
         version: 1.4.0
+      loro-crdt:
+        specifier: 1.16.2
+        version: 1.16.2
       lucide-react:
         specifier: ^1.56.0
         version: 1.56.0(@types/react@19.3.0)(react@19.3.0)
@@ -1261,6 +1264,9 @@ packages:
 
   longest-streak@3.1.0:
     resolution: {integrity: sha512-9Ri+o0JYgehTaVBBDoMqIl8GXtbWg711O3srftcHhZ0dqnETqLaoIK0x17fUw9rFSlK/0NlsKe0Ahhyl5pXE2g==}
+
+  loro-crdt@1.16.2:
+    resolution: {integrity: sha512-Jbfy/P6ggYWa3joyz/P+Vqtg66+pUdF+a6PrC69bTnNQIaElJd/Tx5xBPZBa9rgMjoU3YW67v9CSMLqRi8TeQA==}
 
   lucide-react@1.56.0:
     resolution: {integrity: sha512-b+hqj30/trHBma5r1zlKb6yLewQp6tUtnz9loc3xdrYerPmvLYhlEbyPVCJ8DOg2/blBf6lwPLznftFVACka6A==}
@@ -2451,6 +2457,8 @@ snapshots:
       lightningcss-win32-x64-msvc: 1.33.0
 
   longest-streak@3.1.0: {}
+
+  loro-crdt@1.16.2: {}
 
   lucide-react@1.56.0(@types/react@19.3.0)(react@19.3.0):
     dependencies:

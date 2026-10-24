@@ -128,7 +128,7 @@ export const api = {
   /** An ssh:// folder as the host sees it (~ and symlinks resolved); fails if it isn't reachable. */
   remoteResolveDir: (uri: string) => invoke<string>("remote_resolve_dir", { uri }),
   fsPreview: (path: string) => invoke<FilePreview>("fs_preview", { path }),
-  // SSH hosts (desktop only, see CLAUDE.md)
+  // SSH hosts (desktop only, see AGENTS.md)
   /** Copy an image (base64 `data`, else the OS clipboard's) to the SSH host of `cwd`; its path
    *  there, or null when the clipboard has no image. */
   remotePasteImage: (cwd: string, data?: string | null, name?: string | null) =>
@@ -241,6 +241,8 @@ export const api = {
   // Terminal (PTY). Events: "pty-output" ({ id, data: base64 }), "pty-exit" ({ id, code })
   /** program: "claude" = the resolved Claude Code binary, null = the user's login shell, else a path/name.
    *  providerId: run that AI connection instead (backend resolves program, env and API key; args are appended). */
+  /** Docker contexts in the user's Docker config, for the connection form. */
+  dockerContexts: () => invoke<{ name: string; endpoint: string; current: boolean }[]>("docker_contexts"),
   ptyOpen: (cwd: string, program: string | null, args: string[], cols: number, rows: number, providerId?: string | null) =>
     invoke<string>("pty_open", { cwd, program, args, cols, rows, providerId: providerId ?? null }),
   ptyWrite: (id: string, data: string) => invoke<void>("pty_write", { id, data }),

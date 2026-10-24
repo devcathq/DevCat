@@ -15,6 +15,7 @@ export type TabSpec =
   | { type: "history" }
   | { type: "k8s"; connId: string }
   | { type: "rabbitmq"; connId: string }
+  | { type: "docker"; connId: string }
   /** Network profile (VPN / SSH tunnel) details; profileId "" = new (kind preselected). */
   | { type: "network"; profileId: string; kind?: "ssh" | "openvpn" | "wireguard" | "k8s"; importPath?: string }
   /** AI workspace for a folder: Chat / Diff / Code Review. providerId = AI connection the chat runs
@@ -25,11 +26,14 @@ export type TabSpec =
   /** Git repository: history graph / working-tree changes / branches / stashes.
    *  path = file-history filter, sha = commit to select in History (consumed once shown). */
   /** A shell in a folder (local or ssh://…), on its own tab. connId = its SSH session. */
-  | { type: "terminal"; cwd: string; connId?: string }
+  /** `program` / `args`: run that instead of a shell (a container's shell: `docker exec -it`). */
+  | { type: "terminal"; cwd: string; connId?: string; program?: string; args?: string[] }
   /** Files on an SSH host next to this computer's, copied both ways. connId = its SSH session. */
   | { type: "sftp"; cwd: string; connId?: string }
   /** Markdown note (see features/notes). */
   | { type: "note"; noteId: string }
+  /** A room: documents, thread and agents shared with other people (see features/rooms). */
+  | { type: "room"; roomId: string }
   | { type: "git"; repo: string; view?: GitView; path?: string | null; sha?: string | null };
 
 export type GitView = "history" | "changes" | "branches" | "stashes";

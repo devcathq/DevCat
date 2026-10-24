@@ -9,6 +9,8 @@ export interface RelaySaved {
   hostId: string;
   hostName: string;
   relay: string;
+  /** The relay server the computer was last connected to (tried before iroh's DNS lookup). */
+  home?: string | null;
   addrs: string[];
   deviceId: string;
   addedAt: number;
@@ -99,11 +101,11 @@ export class RelayHost {
   }
 
   /** Connect and say hello. Resolves with the pipe and the first answer (after approval when pairing). */
-  private async open(hostId: string, relay: string, hostName: string, pairCode?: string): Promise<{ pipe: Pipe; first: HostMsg }> {
+  private async open(hostId: string, relay: string, home: string | null | undefined, hostName: string, pairCode?: string): Promise<{ pipe: Pipe; first: HostMsg }> {
     const n = await timeout(node(relay), 20000, "Couldn't start networking in this browser.");
     let pipe: Pipe;
     try {
-      pipe = await timeout(n.open(hostId, relay), 25000, "timed out");
+      pipe = await timeout(n.open(hostId, relay, home ?? null), 25000, "timed out");
     } catch (e) {
       throw `Couldn't reach ${hostName}. Check that DevCat is open there with Remote access on and relays allowed. (${errText(e)})`;
     }
@@ -127,7 +129,7 @@ export class RelayHost {
     this.pipe = pipe;
     this.live = true;
     const s = relaySaved();
-    if (s) save({ ...s, hostName: welcome.host?.name ?? s.hostName, access: welcome.device?.access, os: welcome.host?.os, appVersion: welcome.host?.appVersion, addrs: welcome.host?.addrs ?? s.addrs, relay: welcome.host?.relay ?? s.relay });
+    if (s) save({ ...s, hostName: welcome.host?.name ?? s.hostName, access: welcome.device?.access, os: welcome.host?.os, appVersion: welcome.host?.appVersion, addrs: welcome.host?.addrs ?? s.addrs, relay: welcome.host?.relay ?? s.relay, home: welcome.host?.home ?? s.home });
     const closed = () => {
       if (this.pipe !== pipe) return;
       this.pipe = null;
@@ -168,9 +170,9 @@ export class RelayHost {
     if (!l?.relay) throw "This link has no DevCat pairing details. Scan the QR code in DevCat → Mobile on the computer.";
     this.close();
     this.emit("m-pair", { stage: "connecting", hostName: l.name });
-    const { pipe, first } = await this.open(l.id, l.relay, l.name, l.code);
+    const { pipe, first } = await this.open(l.id, l.relay, l.home, l.name, l.code);
     const n = await node(l.relay);
-    save({ hostId: l.id, hostName: first.host?.name ?? l.name, relay: first.host?.relay ?? l.relay, addrs: l.addrs, deviceId: n.id(), addedAt: Date.now() });
+    save({ hostId: l.id, hostName: first.host?.name ?? l.name, relay: first.host?.relay ?? l.relay, home: first.host?.home ?? l.home, addrs: l.addrs, deviceId: n.id(), addedAt: Date.now() });
     this.attach(pipe, l.id, first);
     this.emit("m-pair", { stage: "done", hostName: first.host?.name ?? l.name });
     return relaySaved()!;
@@ -183,7 +185,7 @@ export class RelayHost {
     if (this.online()) return { t: "welcome" };
     if (!this.connecting) {
       this.emit("m-conn", { id: s.hostId, state: "connecting", error: null });
-      this.connecting = this.open(s.hostId, s.relay, s.hostName)
+      this.connecting = this.open(s.hostId, s.relay, s.home, s.hostName)
         .then(({ pipe, first }) => { this.attach(pipe, s.hostId, first); return first; })
         .catch((e) => {
           if (e instanceof Refused) {

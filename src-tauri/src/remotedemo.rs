@@ -512,6 +512,7 @@ impl Backend for Arc<Demo> {
             app_version: "0.4.0".into(),
             addrs: crate::remote::reachable_addrs(port, None),
             relay: demo_relay(),
+            home: self.host.lock().as_ref().and_then(|h| h.home_relay()),
         }
     }
 
@@ -605,7 +606,7 @@ pub async fn run(port: u16, dir: std::path::PathBuf) -> Result<(), String> {
     loop {
         if host.pairing_expires().is_none_or(|t| t - crate::remote::server::now_ms() < 60_000) {
             let (code, secret, _) = host.pair_start();
-            let pl = PairLink { id: id.clone(), code, name: "Demo MacBook".into(), addrs: crate::remote::reachable_addrs(port, Some(&format!("127.0.0.1:{port}"))), relay: relay.clone() };
+            let pl = PairLink { id: id.clone(), code, name: "Demo MacBook".into(), addrs: crate::remote::reachable_addrs(port, Some(&format!("127.0.0.1:{port}"))), relay: relay.clone(), home: host.home_relay() };
             let link = pl.to_url();
             if relay.is_some() {
                 let page = std::env::var("DEVCAT_DEMO_PAGE").unwrap_or_else(|_| crate::remote::HOSTED_PAGE.into());

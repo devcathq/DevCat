@@ -58,6 +58,7 @@ pub async fn test_connection(config: ConnectionConfig) -> AppResult<String> {
     match config.kind {
         crate::models::ConnectionKind::Kubernetes => crate::infra::k8s::test(&config).await,
         crate::models::ConnectionKind::Rabbitmq => crate::infra::rabbitmq::test(&config).await,
+        crate::models::ConnectionKind::Docker => crate::infra::docker::test(&config).await,
         crate::models::ConnectionKind::Ssh => crate::claude::remote::test_session(&config).await,
         _ => {
             let d = crate::db::connect(&config).await?;

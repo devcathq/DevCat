@@ -1,4 +1,4 @@
-//! The SFTP tab and getting files onto an SSH host from a terminal (desktop only: see CLAUDE.md).
+//! The SFTP tab and getting files onto an SSH host from a terminal (desktop only: see AGENTS.md).
 //! Everything goes through the system `ssh` like the rest of `remote.rs` (one shared master
 //! connection per host on macOS / Linux), streaming files with `cat` so progress is ours to count.
 //!

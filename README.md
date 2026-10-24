@@ -24,7 +24,7 @@
 
 DevCat is a cross-platform developer workbench. It runs your AI coding agent (Claude Code, Codex, Gemini CLI and
 others) in a real terminal next to the diff and the commit graph, and puts your databases, Kubernetes clusters,
-RabbitMQ brokers and VPN / SSH tunnels in the same window, grouped by project. It is built with
+Docker engines, RabbitMQ brokers and VPN / SSH tunnels in the same window, grouped by project. It is built with
 [Tauri 2](https://tauri.app) (Rust) and React + TypeScript, and needs no account.
 
 <p align="center"><img src="assets/readme/demo.gif" width="960" alt="DevCat tour: AI workspace, diff review, databases, SQL editor, Git, Kubernetes, VPN and notes"></p>
@@ -35,7 +35,7 @@ RabbitMQ brokers and VPN / SSH tunnels in the same window, grouped by project. I
 | Git | Nested repo discovery, commit graph, blame, branches, tags, stashes, fetch/pull/push |
 | SQL databases | PostgreSQL, MySQL / MariaDB, SQLite, SQL Server |
 | NoSQL | MongoDB, Redis |
-| Infrastructure | Kubernetes (any kubeconfig context), RabbitMQ (management API) |
+| Infrastructure | Kubernetes (any kubeconfig context), Docker (any context, or a host over SSH / TCP), RabbitMQ (management API) |
 | Networking | OpenVPN, WireGuard, SSH tunnels (local forwards + SOCKS proxy) |
 | SSH | Saved sessions (password, key, jump host, start folder), terminal tabs, quick-command bar, SFTP, port forwards, pasting images into agents on the server |
 | Mobile | DevCat Mobile (Android, iPhone): agent notifications and control, databases, Redis, VPNs and Kubernetes through DevCat on your computer |
@@ -193,6 +193,9 @@ of these step by step, with every keyboard shortcut on
 - **Kubernetes**: cluster overview, applications, workloads, config, network, storage, events, Helm releases and
   CRDs with live updates; per-row actions (logs, shell, port-forward, scale, restart, edit YAML, delete),
   including logs and shell on Deployments with a pod switcher.
+- **Docker**: containers grouped by Compose project, with CPU and memory; logs (following, find, timestamps),
+  a shell, inspect, start / stop / restart / pause / kill / remove; images, volumes and networks. Any
+  `docker context`, or a host over `ssh://` or `tcp://`. Uses the `docker` CLI.
 - **RabbitMQ**: overview with live message-rate charts; queues, exchanges, bindings, connections,
   channels and consumers; publish and get messages; declare, purge and delete.
   Paste an `amqp://` URL to fill the connection form.

@@ -6,7 +6,7 @@
 //!   m_set_addrs, m_network_changed, m_download
 //! Events: `m-conn` ({ id, state: connecting|online|offline, error? }),
 //!         `m-event` ({ id, event, payload }), `m-pair` ({ stage, hostName }),
-//!         `m-transfer` ({ path, done, total }).
+//!         `m-transfer` ({ path, done, total }), `m-path` ({ id, path: { direct, rttMs, relay? } | null }).
 pub mod client;
 pub mod store;
 
