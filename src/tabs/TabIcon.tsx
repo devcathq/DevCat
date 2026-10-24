@@ -1,7 +1,7 @@
 // What a tab is, at a glance: an icon (the connection's kind for connection tabs) and a short
 // label for its tooltip, so agent chats, terminals, queries and files don't get mixed up.
 import {
-  ArrowDownUp, ArrowLeftRight, Code2, FileCode2, GitBranch, GitCompare, History, Home, NotebookPen, PencilRuler, Shield, SquareTerminal, Table2, Workflow,
+  ArrowDownUp, ArrowLeftRight, Code2, FileCode2, GitBranch, GitCompare, History, Home, NotebookPen, PencilRuler, Shield, SquareTerminal, Table2, Users, Workflow,
 } from "lucide-react";
 import { KindIcon } from "../components/ui/KindIcon";
 import { AiTerminalIcon } from "../components/ui/AppIcons";
@@ -26,6 +26,7 @@ export function TabIcon({ tab }: { tab: Tab }) {
     case "file": return <FileIcon name={tab.path.split("/").pop() ?? tab.path} className={CLS} />;
     case "git": return <GitBranch className={`${CLS} text-warn`} />;
     case "note": return <NotebookPen className={`${CLS} text-muted`} />;
+    case "room": return <Users className={`${CLS} text-accent`} />;
     case "network": return <Shield className={`${CLS} text-ok`} />;
     case "history": return <History className={`${CLS} text-muted`} />;
     case "schema-compare": return <GitCompare className={`${CLS} text-muted`} />;
@@ -53,9 +54,11 @@ export function tabKindLabel(tab: Tab, connName?: string): string {
     case "er-diagram": return `ER diagram${on}`;
     case "k8s": return `Kubernetes${on}`;
     case "rabbitmq": return `RabbitMQ${on}`;
+    case "docker": return `Docker${on}`;
     case "file": return `File · ${tab.path}`;
     case "git": return `Git · ${tab.repo}`;
     case "note": return "Note";
+    case "room": return "Room";
     case "network": return "VPN / tunnel";
     case "history": return "History";
     case "schema-compare": return "Schema compare";

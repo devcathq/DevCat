@@ -1,4 +1,4 @@
-// Saved SSH sessions (Xshell-style; desktop only, see CLAUDE.md): a session's folders are
+// Saved SSH sessions (Xshell-style; desktop only, see AGENTS.md): a session's folders are
 // `ssh://devcat-<connection id>/path`, which the backend resolves to the saved host, user, key,
 // jump host and password (src-tauri/src/claude/remote.rs).
 import type { ConnectionConfig } from "../../lib/types";

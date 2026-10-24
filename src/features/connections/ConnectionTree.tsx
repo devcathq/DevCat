@@ -263,7 +263,7 @@ export default function ConnectionTree() {
   if (connections.length === 0 && projects.length === 0) {
     return (
       <Empty title="No connections yet">
-        <p className="mb-3">Add a database, Kubernetes cluster or RabbitMQ broker, or create a project to organize them.</p>
+        <p className="mb-3">Add a database, Kubernetes cluster, Docker engine or RabbitMQ broker, or create a project to organize them.</p>
         <div className="flex justify-center gap-2">
           <Button variant="primary" onClick={() => openDialog(null)}><Plus className="size-3.5" />New connection</Button>
           <Button onClick={() => void createProject()}><FolderPlus className="size-3.5" />New project</Button>

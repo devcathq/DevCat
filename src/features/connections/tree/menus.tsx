@@ -110,7 +110,7 @@ function connectionMenu(conn: ConnectionConfig): MenuItem[] {
     ];
   }
   if (isInfra(conn)) {
-    return [{ label: "Open", icon: ic(ExternalLink), onClick: () => openInfra(conn.id, conn.kind === "kubernetes" ? "k8s" : "rabbitmq") }, "separator", ...edit];
+    return [{ label: "Open", icon: ic(ExternalLink), onClick: () => openInfra(conn.id, conn.kind === "kubernetes" ? "k8s" : conn.kind === "docker" ? "docker" : "rabbitmq") }, "separator", ...edit];
   }
   const isOpen = useConnections.getState().open.has(conn.id);
   return [

@@ -63,6 +63,9 @@ impl Tool for Shell {
                 Ok(())
             });
         }
+        // DevCat has no console of its own: without this, Windows opens one per command and it flashes
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => return ToolOutput::err(format!("Couldn't start {}: {e}", shell_name())),

@@ -103,7 +103,7 @@ export function adoptCarried() {
 
 /** Pairing details from a QR link: `http://host/#v=1&id=…&code=…&s=…&name=…` (served by the
  *  computer; `s` is the browser key) or `https://…/#v=1&id=…&code=…&name=…&relay=…` (hosted). */
-export interface LinkInfo { id: string; code: string; secret: string; name: string; addrs: string[]; relay: string | null }
+export interface LinkInfo { id: string; code: string; secret: string; name: string; addrs: string[]; relay: string | null; home: string | null }
 
 export function parseLink(link: string): LinkInfo | null {
   const frag = link.includes("#") ? link.slice(link.indexOf("#") + 1) : link;
@@ -113,7 +113,8 @@ export function parseLink(link: string): LinkInfo | null {
   // Only the computer serves the page over http: then its address is the page's.
   let host = "";
   try { host = link.startsWith("http://") ? new URL(link).host : ""; } catch { host = ""; }
-  return { id, code, secret, relay, name: p.get("name") ?? "DevCat", addrs: [host, ...p.getAll("addr")].filter((a, i, all) => a && all.indexOf(a) === i) };
+  const home = (relay && p.get("home")) || null;
+  return { id, code, secret, relay, home, name: p.get("name") ?? "DevCat", addrs: [host, ...p.getAll("addr")].filter((a, i, all) => a && all.indexOf(a) === i) };
 }
 
 /** The same pairing for the DevCat Mobile app. */
@@ -121,6 +122,7 @@ export function appLink(l: LinkInfo): string {
   const q = new URLSearchParams({ v: "1", id: l.id, code: l.code, name: l.name });
   l.addrs.forEach((a) => q.append("addr", a));
   if (l.relay) q.append("relay", l.relay);
+  if (l.relay && l.home) q.append("home", l.home);
   return `devcat://pair?${q.toString()}`;
 }
 

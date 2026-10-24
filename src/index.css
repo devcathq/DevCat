@@ -89,3 +89,8 @@ select option, select optgroup { background-color: var(--solid-panel, var(--colo
   from { background-position: 100% 0; }
   to { background-position: -150% 0; }
 }
+
+/* Rooms: a part an agent claimed, and a suggested change waiting for a person (RoomTab). */
+.room-claim { background: rgba(139, 92, 246, 0.16); border-bottom: 1px dashed rgba(139, 92, 246, 0.7); }
+.room-suggestion { background: rgba(245, 158, 11, 0.12); border-bottom: 2px wavy rgba(245, 158, 11, 0.8); }
+.room-suggestion-stale { border-bottom: 2px dotted rgba(148, 163, 184, 0.7); }
