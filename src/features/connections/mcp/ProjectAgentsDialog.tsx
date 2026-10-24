@@ -84,8 +84,9 @@ function AgentsView({ project, onClose }: { project: Project; onClose: () => voi
         <div className="flex flex-col gap-1">
           <Checkbox label="Allow writes from MCP" checked={writes} onChange={setWrites} />
           <span className="pl-5 text-xs text-muted">
-            Agents connected over MCP may change data (INSERT, UPDATE, DELETE, DDL, Redis writes) on this project's connections.
-            Off: they only read. Read-only connections stay read-only either way.
+            For this project's older connections that have no AI access of their own: agents connected over MCP may change data
+            (INSERT, UPDATE, DELETE, DDL, Redis writes). Off: they only read. Each connection's own setting (Edit connection → Advanced →
+            AI / MCP access) wins, and read-only connections stay read-only either way.
           </span>
         </div>
         {error && <ErrorBox error={error} />}

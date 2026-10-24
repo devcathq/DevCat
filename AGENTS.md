@@ -35,7 +35,10 @@ Agents get the user's connections through the tools in `src-tauri/src/agent_tool
 Agent, and served to other agents by `devcat mcp` (`mcp_server.rs`), which Sync MCP (`mcp_sync.rs`) writes into
 Claude Code / Codex / Cursor / Gemini configs. Keep one implementation: a new connection tool goes in
 `agent_tools.rs` and both get it. Which connections an agent sees follows its folder (`agent_tools::Scope`, a
-project's `folders`). Over MCP, data changes need the project's `mcp_writes`. Sync MCP edits files on the
+project's `folders`). Each connection's AI access (`McpAccess`: off / read / full, `ConnectionConfig::agent_access`)
+decides the rest: off hides it from every agent, and over MCP data changes need full (connections without the
+setting follow the project's `mcp_writes`; a read-only connection is never full). `devcat mcp` logs every call in
+`mcp_audit.rs` (the UI's MCP activity). Sync MCP edits files on the
 computer, so it stays out of the phone dispatcher, like the SSH workbench above.
 
 ## Shared memory

@@ -1,6 +1,6 @@
 // Context menu builders for every tree row type.
 import {
-  AppWindow, ArrowDown, Cable, FolderCode, ArrowDownUp, ArrowLeftRight, Bot, Crosshair, LogOut, ArrowUp, Check, Code, Copy, CopyPlus, Eraser, ExternalLink, FilePlus, Folder, FolderInput,
+  Activity, AppWindow, ArrowDown, Cable, FolderCode, ArrowDownUp, ArrowLeftRight, Bot, Crosshair, LogOut, ArrowUp, Check, Code, Copy, CopyPlus, Eraser, ExternalLink, FilePlus, Folder, FolderInput,
   FolderMinus, FolderPlus, GitCompare, Network, Palette, Pencil, PencilRuler, Play, Plug, Plus, RefreshCw, SquareTerminal,
   Star, StarOff, Table2, Trash2, Unplug,
 } from "lucide-react";
@@ -8,6 +8,7 @@ import type { Project } from "../../../lib/types";
 import { openBookmark, opensInTab, revealBookmark } from "../bookmarks/actions";
 import { findBookmark, useBookmarks } from "../bookmarks/store";
 import { COLOR_PRESETS } from "../dialog/sections";
+import { openMcpActivity } from "../mcp/McpActivityDialog";
 import { openMcpSync } from "../mcp/McpSyncDialog";
 import { openProjectAgents } from "../mcp/ProjectAgentsDialog";
 import {
@@ -285,6 +286,7 @@ export function backgroundMenu(): MenuItem[] {
     { label: "New connection…", icon: ic(Plus), onClick: () => useUi.getState().openConnectionDialog(null) },
     { label: "New project…", icon: ic(FolderPlus), onClick: () => void createProject() },
     { label: "Sync MCP…", icon: ic(Cable), onClick: openMcpSync },
+    { label: "MCP activity…", icon: ic(Activity), onClick: openMcpActivity },
     "separator",
     { label: "Refresh all", icon: ic(RefreshCw), onClick: () => void refreshAll() },
     { label: "Collapse all", onClick: () => useTree.getState().collapseAll() },

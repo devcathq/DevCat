@@ -46,7 +46,12 @@ export interface ConnectionConfig {
    *  SSH: { keyPath, jump, startDir, startup } (host = name, IP or ~/.ssh/config alias). */
   options: Record<string, string>;
   readOnly: boolean;
+  /** What agents may do with it: off (hidden from every agent), read (MCP agents only read) or full.
+   *  Missing on connections saved before the setting: they follow the project's `mcpWrites`. */
+  mcpAccess?: McpAccess | null;
 }
+
+export type McpAccess = "off" | "read" | "full";
 
 /** User-created folder that groups connections in the sidebar. */
 /** Markdown note; projectId null = General (shown in every project). Times are Unix ms. */
@@ -67,7 +72,7 @@ export interface Project {
   order: number;
   /** Code folders: agents there get the project's connections (without, they're everyone's). */
   folders?: string[];
-  /** Agents over MCP may change data on its connections (else read only). */
+  /** Agents over MCP may change data on its connections that have no AI access of their own. */
   mcpWrites?: boolean;
 }
 
@@ -80,6 +85,20 @@ export interface McpSyncPlan {
   notes: string[];
   enabled: boolean;
   dismissed: boolean;
+}
+
+/** One tool call an agent made through `devcat mcp` (the MCP activity log). */
+export interface McpAuditEntry {
+  at: number;
+  /** claude-code, codex, cursor, gemini… */
+  client: string;
+  tool: string;
+  connection?: string | null;
+  detail?: string | null;
+  project?: string | null;
+  ok: boolean;
+  error?: string | null;
+  ms: number;
 }
 
 /** Shared memory: where a memory lives (every project, a DevCat project, or a repository). */

@@ -21,6 +21,7 @@ mod history;
 mod infra;
 mod instance;
 mod keep_awake;
+mod mcp_audit;
 mod mcp_server;
 mod mcp_sync;
 mod memory;
@@ -84,6 +85,7 @@ fn init_backend(dir: std::path::PathBuf) {
     agent::init(dir.clone());
     state::init(dir.clone());
     mcp_sync::init(dir.clone());
+    mcp_audit::init(dir.clone());
     memory::init(dir.clone());
     network::start();
     notify::init(dir.clone());
@@ -171,6 +173,8 @@ pub fn run() {
             mcp_sync::mcp_sync_preview,
             mcp_sync::mcp_sync_apply,
             mcp_sync::mcp_sync_dismiss,
+            mcp_audit::mcp_audit,
+            mcp_audit::mcp_audit_clear,
             // Memory shared by the coding agents
             memory::memory_list,
             memory::memory_save,

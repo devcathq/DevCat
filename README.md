@@ -32,6 +32,7 @@ Docker engines, RabbitMQ brokers and VPN / SSH tunnels in the same window, group
 | Area | Supported |
 | --- | --- |
 | AI | AI Workspace (terminal, diff, code review) running your installed coding agent: Claude Code (default), OpenAI Codex, Gemini CLI, GitHub Copilot, Aider, opencode or a custom CLI |
+| MCP | Sync MCP: DevCat's MCP server in Claude Code, Codex, Cursor and Gemini CLI, with off / read-only / full access per connection and an activity log |
 | Tickets | Jira, Trello and Linear: the agent fixes tickets from a column on their own branches, comments on them and moves them on (e.g. to Testing); results to Slack |
 | Git | Nested repo discovery, commit graph, blame, branches, tags, stashes, fetch/pull/push |
 | SQL databases | PostgreSQL, MySQL / MariaDB, SQLite, SQL Server |
@@ -242,6 +243,11 @@ of these step by step, with every keyboard shortcut on
   **Folders on SSH hosts** too (*Open folder on SSH host…*): the agent and terminals run on that machine, and the
   file tree, previews, edits and git status work over your system `ssh` (hosts from `~/.ssh/config`, keys,
   ssh-agent, ProxyJump; one shared connection per host). Diff and Code Review are local-only for now.
+- **Sync MCP** (the plug button above the connections): adds DevCat's MCP server (`devcat mcp`) to Claude Code,
+  Codex, Cursor and Gemini CLI, so they read schemas, run queries and read clusters without seeing a password.
+  Each connection's **AI / MCP access** is off, read-only (the default for new connections) or full, enforced by
+  DevCat; a read-only connection is never full. Every call goes into **MCP activity**. See
+  [the docs](https://devcathq.github.io/DevCat/home/docs/sync-mcp.html).
 - **Appearance** (🎨 in the title bar): dark, light or system mode, 8 dark and 3 light themes (editors and terminals
   follow), and **window glass** on macOS and Windows: the desktop shows through the sidebar and work area, blurred,
   with separate opacity for each.
