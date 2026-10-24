@@ -27,6 +27,7 @@ import { MobileButton, MobileDialog } from "../../features/mobile/MobileDialog";
 import { RoomJoinPrompt, RoomsButton, RoomsDialog } from "../../features/rooms/RoomsDialog";
 import { TicketsButton } from "../../features/tickets/TicketsButton";
 import { AppearanceButton, AppearanceDialog } from "../../features/appearance/AppearanceDialog";
+import { MemoryButton, MemoryDialog } from "../../features/memory/MemoryDialog";
 import { useAppearance, useIsDark } from "../../features/appearance/store";
 import { zoomUi } from "../../features/appearance/fonts";
 import { PairPrompt } from "../../features/mobile/PairPrompt";
@@ -170,6 +171,7 @@ export default function AppShell() {
       <RoomsDialog />
       <RoomJoinPrompt />
       <AppearanceDialog />
+      <MemoryDialog />
       <PairPrompt />
       <QuickOpen />
       <Toaster theme={toastTheme} position="bottom-right" richColors closeButton />
@@ -314,6 +316,7 @@ function ProjectBar() {
       )}
       <div className={clsx("flex items-center gap-0.5", !focus && "ml-auto")}>
         <AppearanceButton />
+        <MemoryButton />
         <RoomsButton />
         <TicketsButton />
         <MobileButton />

@@ -37,3 +37,15 @@ Claude Code / Codex / Cursor / Gemini configs. Keep one implementation: a new co
 `agent_tools.rs` and both get it. Which connections an agent sees follows its folder (`agent_tools::Scope`, a
 project's `folders`). Over MCP, data changes need the project's `mcp_writes`. Sync MCP edits files on the
 computer, so it stays out of the phone dispatcher, like the SSH workbench above.
+
+## Shared memory
+
+Every coding agent shares one memory (`src-tauri/src/memory/`): markdown files in `<data>/memory/` with the
+frontmatter Claude Code's memory uses, per place (every project, a DevCat project, or a repository in no project).
+The tools (`memory/tools.rs`: `memory_search`, `memory_read`, `memory_save`, `memory_forget`, `handoff_write`,
+`handoff_take`) are built into the DevCat Agent and served by `devcat mcp`, and both start sessions with
+`memory::brief`. Keep one implementation, as for connections. "Sync Claude memory to all agents"
+(`memory/claude.rs`) copies `~/.claude/projects/*/memory` in one way only: nothing is written into Claude's
+folder. With the user's consent DevCat keeps a marked block in `~/.codex/AGENTS.md` and `~/.gemini/GEMINI.md`
+(`memory/rules.rs`) and changes nothing else in those files. Memory reads and writes files on the computer, so it
+stays out of the phone dispatcher too, and agents on SSH hosts don't get it (they can't run the local `devcat mcp`).

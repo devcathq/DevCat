@@ -82,6 +82,43 @@ export interface McpSyncPlan {
   dismissed: boolean;
 }
 
+/** Shared memory: where a memory lives (every project, a DevCat project, or a repository). */
+export type MemoryPlace = { kind: "global" } | { kind: "project"; id: string } | { kind: "folder"; id: string };
+export type MemoryKind = "user" | "feedback" | "project" | "reference";
+
+export interface Memory {
+  name: string;
+  description: string;
+  kind: MemoryKind;
+  body: string;
+  /** The agent that wrote it: claude-code, codex, gemini, devcat-agent, you… */
+  origin: string;
+  updated: string;
+  /** Copied from this Claude Code memory file. */
+  source?: string;
+  place: MemoryPlace;
+}
+
+export interface PlaceMemories { place: MemoryPlace; label: string; memories: Memory[]; handoffs: number }
+
+/** "Sync Claude memory to all agents": what happens to each Claude Code memory. */
+export interface ClaudeImportItem {
+  id: string;
+  folder: string;
+  name: string;
+  description: string;
+  kind: MemoryKind | "";
+  /** Goes to every project (else to its folder's project). */
+  global: boolean;
+  target: string;
+  status: "new" | "changed" | "same" | "conflict" | "removed";
+  note?: string;
+}
+
+export interface ClaudeImportPlan { items: ClaudeImportItem[]; notes: string[]; synced: boolean; auto: boolean; rules: boolean; rulesFiles: string[] }
+
+export interface MemorySyncReport { imported: number; updated: number; removed: number; agents: string[]; rulesFiles: string[]; notes: string[] }
+
 export type NodeKind =
   | "database" | "schema" | "folder" | "table" | "view" | "materializedView"
   | "function" | "procedure" | "trigger" | "sequence" | "index" | "foreignKey" | "column"

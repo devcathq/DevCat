@@ -23,6 +23,7 @@ mod instance;
 mod keep_awake;
 mod mcp_server;
 mod mcp_sync;
+mod memory;
 mod models;
 mod network;
 mod notes;
@@ -83,6 +84,7 @@ fn init_backend(dir: std::path::PathBuf) {
     agent::init(dir.clone());
     state::init(dir.clone());
     mcp_sync::init(dir.clone());
+    memory::init(dir.clone());
     network::start();
     notify::init(dir.clone());
     remote::init(dir.clone());
@@ -122,6 +124,11 @@ pub fn run() {
             init_backend(dir);
             // agents' MCP configs point at this program: right again if DevCat moved
             std::thread::spawn(mcp_sync::auto);
+            // Claude's memories changed while DevCat was closed: copy them (when kept in sync)
+            std::thread::spawn(|| {
+                memory::claude::auto();
+                memory::rules::refresh();
+            });
             #[cfg(target_os = "macos")]
             windows::install_menu(app.handle())?;
             // Windows / Linux: files DevCat was launched with.
@@ -164,6 +171,12 @@ pub fn run() {
             mcp_sync::mcp_sync_preview,
             mcp_sync::mcp_sync_apply,
             mcp_sync::mcp_sync_dismiss,
+            // Memory shared by the coding agents
+            memory::memory_list,
+            memory::memory_save,
+            memory::memory_delete,
+            memory::claude::memory_claude_preview,
+            memory::claude::memory_sync_all,
             // bookmarks
             commands::bookmarks::list_bookmarks,
             commands::bookmarks::add_bookmark,
