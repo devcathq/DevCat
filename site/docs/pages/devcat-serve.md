@@ -30,7 +30,12 @@ The CLI on its own has no window code, so it runs on a bare server. On Linux it 
 | `access <n> full` / `access <n> readonly` | Change a phone's access |
 | `revoke <n>` | Unpair a phone |
 | `log` | Recent activity from phones |
+| `sync` | Computers this one shares its agents' [memory](memory.md#other-computers) with |
+| `sync join <code>` | Share memory with a computer: paste the code from its **Memory → Other computers**, then allow it there |
+| `sync now` / `sync remove <n>` / `sync log` | Sync memory now, stop sharing with one, recent memory sync activity |
 | `quit` | Stop (<kbd>Ctrl+C</kbd> works too) |
+
+While it runs, `devcat serve` keeps the memory in sync with the computers it was paired with.
 
 ## Options
 

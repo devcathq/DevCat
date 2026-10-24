@@ -57,6 +57,12 @@ While it runs, type a command and press Enter:
   access <n> full|readonly Change a phone's access
   revoke <n>               Unpair a phone
   log                      Recent activity from phones
+  sync                     Computers this one shares its agents' memory with
+  sync join <code>         Share memory with a computer: paste the code from its DevCat
+                           (Memory → Other computers → Pair a computer); allow it there
+  sync now                 Sync memory with them now
+  sync remove <n>          Stop sharing memory with one
+  sync log                 Recent memory sync activity
   quit                     Stop (Ctrl+C works too)
 ";
 
@@ -339,6 +345,11 @@ async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32
     }
     println!("DevCat {} is sharing this computer (data: {})", env!("DEVCAT_VERSION"), dir.display());
     print_status();
+    match crate::memory::sync::start_headless().await {
+        Ok(0) => {}
+        Ok(n) => println!("  Memory: shared with {n} other computer{}", if n == 1 { "" } else { "s" }),
+        Err(e) => println!("  Memory sync didn't start: {e}"),
+    }
 
     // Pairing requests (answered here or automatically) and changes to print.
     let (req_tx, mut req_rx) = mpsc::unbounded_channel::<PairRequest>();
@@ -618,12 +629,62 @@ async fn command(line: &str) -> bool {
                 println!("  {at}  {}  {}{}{}", e.device_name, e.action, e.detail.as_deref().map(|d| format!("  {d}")).unwrap_or_default(), if e.ok { "" } else { "  (failed)" });
             }
         }
+        "sync" => memory_sync(&rest).await,
         "h" | "help" | "?" => print!("{}", HELP.split("While it runs").nth(1).map(|h| format!("While it runs{h}")).unwrap_or_default()),
         "q" | "quit" | "exit" | "stop" => return true,
         other => println!("Unknown command {other}: type `help`"),
     }
     let _ = std::io::stdout().flush();
     false
+}
+
+/// `sync …`: memory shared with the user's other computers (memory/sync).
+async fn memory_sync(rest: &[&str]) {
+    use crate::memory::sync as ms;
+    match rest.first().copied().unwrap_or("") {
+        "" | "list" | "status" => {
+            let Ok(s) = ms::memory_sync_status().await else { return };
+            if s.peers.is_empty() {
+                println!("Memory isn't shared with another computer yet: `sync join <code>` with the code from its DevCat (Memory → Other computers).");
+            }
+            for (i, p) in s.peers.iter().enumerate() {
+                let when = p.peer.last_sync.and_then(chrono::DateTime::from_timestamp_millis).map(|t| format!("synced {}", t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"))).unwrap_or_else(|| "not synced yet".into());
+                let err = p.peer.last_error.as_deref().map(|e| format!(" — {e}")).unwrap_or_default();
+                println!("  {}. {} ({}) — {when}{err}", i + 1, p.peer.name, p.peer.os);
+            }
+        }
+        "join" | "pair" => match rest.get(1) {
+            Some(code) => {
+                println!("Asking the other computer; allow it there…");
+                match ms::memory_sync_join(code.to_string()).await {
+                    Ok(p) => println!("✓ Memory is shared with {} now", p.name),
+                    Err(e) => println!("✗ {e}"),
+                }
+            }
+            None => println!("Usage: sync join <code> (devcat://memory-sync?…)"),
+        },
+        "now" => match ms::memory_sync_now(None).await {
+            Ok(_) => println!("Syncing memory…"),
+            Err(e) => println!("{e}"),
+        },
+        "remove" | "unpair" => {
+            let peers = ms::memory_sync_status().await.map(|s| s.peers).unwrap_or_default();
+            match rest.get(1).and_then(|n| n.parse::<usize>().ok()).and_then(|n| peers.get(n.wrapping_sub(1))) {
+                Some(p) => {
+                    let _ = ms::memory_sync_remove(p.peer.id.clone()).await;
+                    println!("Memory isn't shared with {} any more", p.peer.name);
+                }
+                None => println!("Usage: sync remove <n> (the number from `sync`)"),
+            }
+        }
+        "log" => {
+            for e in ms::memory_sync_activity(Some(20)).await.unwrap_or_default().iter().rev() {
+                let at = chrono::DateTime::from_timestamp_millis(e.at).map(|t| t.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string()).unwrap_or_default();
+                println!("  {at}  {}  {}{}", e.device_name, e.action, e.detail.as_deref().map(|d| format!("  {d}")).unwrap_or_default());
+            }
+        }
+        other => println!("Unknown: sync {other} (try `sync`, `sync join <code>`, `sync now`, `sync remove <n>`, `sync log`)"),
+    }
 }
 
 async fn list_devices() {

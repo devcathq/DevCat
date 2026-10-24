@@ -119,6 +119,26 @@ export interface ClaudeImportPlan { items: ClaudeImportItem[]; notes: string[]; 
 
 export interface MemorySyncReport { imported: number; updated: number; removed: number; agents: string[]; rulesFiles: string[]; notes: string[] }
 
+/** A computer the memory is shared with (src-tauri/src/memory/sync). */
+export interface MemoryPeer {
+  /** Its sync id (public key). */
+  id: string;
+  name: string;
+  os: string;
+  pairedAt: number;
+  lastSync?: number | null;
+  /** What the last sync moved ("2 received, 1 sent"). */
+  lastResult?: string | null;
+  /** Why the last sync this computer started failed. */
+  lastError?: string | null;
+  syncing: boolean;
+}
+export interface MemoryPairRequest { requestId: string; peerId: string; name: string; os: string }
+export interface MemoryTicket { ticket: string; code: string; expiresAt: number }
+export interface MemoryPeersStatus { running: boolean; name: string; peers: MemoryPeer[]; pending: MemoryPairRequest[]; ticket?: MemoryTicket | null }
+export interface MemoryPeerReport { received: number; sent: number; deleted: number; conflicts: number; skipped: number; elsewhere: number }
+export interface MemorySyncActivity { at: number; device: string; deviceName: string; action: string; detail?: string; ok: boolean }
+
 export type NodeKind =
   | "database" | "schema" | "folder" | "table" | "view" | "materializedView"
   | "function" | "procedure" | "trigger" | "sequence" | "index" | "foreignKey" | "column"

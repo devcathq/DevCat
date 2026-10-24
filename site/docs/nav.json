@@ -1,6 +1,6 @@
 [
   { "title": "Getting started", "pages": ["introduction", "install", "first-steps", "shortcuts"] },
-  { "title": "AI workspace", "pages": ["ai-workspace", "ai-connections", "review-and-commit", "files", "ssh-folders"] },
+  { "title": "AI workspace", "pages": ["ai-workspace", "ai-connections", "memory", "review-and-commit", "files", "ssh-folders"] },
   { "title": "Git", "pages": ["git"] },
   { "title": "Databases", "pages": ["connections", "sql-editor", "data-grid", "schema-tools", "mongodb", "redis"] },
   { "title": "Infrastructure", "pages": ["kubernetes", "docker", "rabbitmq", "vpn-tunnels"] },

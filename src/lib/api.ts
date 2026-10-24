@@ -8,7 +8,7 @@ import type {
   GitRepo, GitLogQuery, GitCommit, GitCommitDetail, GitBlame, GitRefs, GitStash, CommitAction, RemoteOpts,
   AiDetect, AiProvider,
   ClaudeInfo, ClaudeProject, ClaudeStartOptions, FileEntry, FilePreview, FileVersions, GitStatus, SessionMeta,
-  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, McpSyncPlan, Memory, MemoryKind, MemoryPlace, PlaceMemories, ClaudeImportPlan, MemorySyncReport, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
+  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, McpSyncPlan, Memory, MemoryKind, MemoryPlace, PlaceMemories, ClaudeImportPlan, MemorySyncReport, MemoryPeer, MemoryPeersStatus, MemoryTicket, MemoryPeerReport, MemorySyncActivity, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
   SavedQuery, SchemaSnapshot, TableDataPage, TableDataRequest, TableRef, TableStructure, TreeNode, Bookmark,
 } from "./types";
 
@@ -49,6 +49,15 @@ export const api = {
   memoryDelete: (place: MemoryPlace, name: string) => invoke<void>("memory_delete", { place, name }),
   memoryClaudePreview: () => invoke<ClaudeImportPlan>("memory_claude_preview"),
   memorySyncAll: (choices: { id: string; global: boolean }[], auto: boolean, rules: boolean) => invoke<MemorySyncReport>("memory_sync_all", { choices, auto, rules }),
+  // The same memory on your other computers (peer to peer, desktop only)
+  memoryPeers: () => invoke<MemoryPeersStatus>("memory_sync_status"),
+  memoryPairStart: () => invoke<MemoryTicket>("memory_sync_pair_start"),
+  memoryPairCancel: () => invoke<void>("memory_sync_pair_cancel"),
+  memoryPairJoin: (ticket: string) => invoke<MemoryPeer>("memory_sync_join", { ticket }),
+  memoryPairAnswer: (requestId: string, allow: boolean) => invoke<void>("memory_sync_answer", { requestId, allow }),
+  memoryPeerRemove: (id: string) => invoke<MemoryPeersStatus>("memory_sync_remove", { id }),
+  memorySyncNow: (id?: string) => invoke<MemoryPeerReport | null>("memory_sync_now", { id: id ?? null }),
+  memorySyncActivity: (limit?: number) => invoke<MemorySyncActivity[]>("memory_sync_activity", { limit: limit ?? null }),
 
   // bookmarks
   listBookmarks: () => invoke<Bookmark[]>("list_bookmarks"),

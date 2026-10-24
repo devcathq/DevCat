@@ -406,6 +406,8 @@ export function demoInvoke(cmd: string, args: Record<string, unknown>, emit: Emi
     case "notify_settings": case "notify_save": return args.settings ?? notifySettings;
     case "memory_list": return demoMemories;
     case "memory_claude_preview": return demoClaudeImport;
+    case "memory_sync_status": return { running: true, name: "Demo MacBook", peers: [{ id: "ab".repeat(32), name: "Office desktop", os: "linux", pairedAt: Date.now() - 86400000, lastSync: Date.now() - 120000, lastResult: "2 received, 1 sent", syncing: false }], pending: [], ticket: null };
+    case "memory_sync_activity": return [{ at: Date.now() - 120000, device: "ab".repeat(32), deviceName: "Office desktop", action: "synced", detail: "2 received, 1 sent", ok: true }];
     case "memory_sync_all": return { imported: 2, updated: 0, removed: 0, agents: ["Claude Code", "Codex", "Gemini CLI"], rulesFiles: ["~/.codex/AGENTS.md"], notes: [] };
     case "memory_save": return args.memory;
     case "memory_delete": return null;

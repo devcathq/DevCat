@@ -12,6 +12,14 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Memory on all your computers:** pair your laptop, desktop or a server running `devcat serve` once (**Memory →
+  Other computers**: show a code on one, paste it on the other and allow it), and their agents share one memory.
+  Changes reach the other computers within seconds while they're online, and a computer that was off catches up
+  when it's back. Computers connect directly or through your relay, end-to-end encrypted, with no account or
+  server. A project's memories follow it to computers that have the same project (matched by its git remote). When
+  both computers changed the same memory, the newer change wins and the other is kept as a conflict copy, and
+  secrets are removed before anything is shared (#12).
+
 ## 0.12.0 - 2026-10-24
 
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of
