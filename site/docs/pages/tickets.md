@@ -52,7 +52,9 @@ For each ticket:
 
 1. DevCat makes the branch `devcat/<key>-<title>` from the branch the repository is on (in a folder: in each
    repository), and moves the ticket to your *working* column.
-2. The agent reads the ticket (title, description, labels, recent comments) and makes the change.
+2. The agent reads the ticket (title, description, labels, recent comments) and makes the change. The
+   ticket's images (screenshots attached in Jira or Trello, or pasted into a Linear description) are shown to
+   it: png, jpeg, gif or webp, up to 6 of them and 5 MB each. Other attachments are only named.
 3. It answers **fixed**, **needs a person** (with its questions) or **couldn't fix**.
 4. DevCat commits what changed on the branch (unfinished work too, marked `WIP`) and switches the
    repository back to the branch it was on. In a folder, the repositories the agent didn't change have their

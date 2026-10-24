@@ -69,6 +69,16 @@ pub struct Comment {
     pub text: String,
 }
 
+/// A file attached to a ticket (read when the agent starts on it).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Attachment {
+    pub name: String,
+    /// What the tracker says it is ("" when it doesn't say).
+    pub mime: String,
+    pub url: String,
+    pub size: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ticket {
     /// What the API addresses it by (Jira key, Trello card id, Linear issue id).
@@ -86,6 +96,8 @@ pub struct Ticket {
     pub column: String,
     #[serde(default)]
     pub comments: Vec<Comment>,
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
 }
 
 fn yes() -> bool {

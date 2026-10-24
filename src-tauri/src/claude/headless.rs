@@ -20,6 +20,8 @@ pub struct Job {
     pub program: Option<std::path::PathBuf>,
     pub env: Vec<(String, String)>,
     pub timeout: Duration,
+    /// Images sent with the prompt: (media type, base64).
+    pub images: Vec<(String, String)>,
 }
 
 pub struct Outcome {
@@ -50,7 +52,7 @@ pub async fn run(job: Job, activity: Arc<dyn Fn(String) + Send + Sync>, cancelle
         env: job.env.clone(),
     };
     let run_id = spawn_run(sink, &job.cwd, spec).await?;
-    write_to(&run_id, &user_message(&job.prompt, &[])).await?;
+    write_to(&run_id, &user_message(&job.prompt, &job.images)).await?;
 
     let deadline = tokio::time::Instant::now() + job.timeout;
     let mut result: Option<Value> = None;
