@@ -61,6 +61,17 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "room_keeper_add" => out(c!(crate::rooms::room_keeper_add, "room", "keeper", "name")),
         "room_focus" => out(c!(crate::rooms::room_focus, "room", "file", "typing")),
         "room_agent_stop" => out(c!(crate::rooms::room_agent_stop, "room")),
+        // tickets (boards in the throwaway folder, tokens in memory)
+        "tickets_boards" => out(c!(crate::tickets::tickets_boards)),
+        "tickets_board_save" => out(c!(crate::tickets::tickets_board_save, "board")),
+        "tickets_board_delete" => out(c!(crate::tickets::tickets_board_delete, "id")),
+        "tickets_columns" => out(c!(crate::tickets::tickets_columns, "board")),
+        "tickets_list" => out(c!(crate::tickets::tickets_list, "boardId", "column")),
+        "tickets_fix" => out(c!(crate::tickets::tickets_fix, "boardId", "ticketIds")),
+        "tickets_stop" => out(c!(crate::tickets::tickets_stop, "boardId")),
+        "tickets_jobs" => out(c!(crate::tickets::tickets_jobs)),
+        "tickets_history" => out(c!(crate::tickets::tickets_history, "boardId")),
+        "tickets_webhook_test" => out(c!(crate::tickets::tickets_webhook_test, "board")),
         "git_repos" => out(c!(gx::git_repos, "root", "maxDepth")),
         "git_log" => out(c!(gx::git_log, "cwd", "query")),
         "git_show" => out(c!(gx::git_show, "cwd", "sha")),
@@ -187,10 +198,11 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
     let d = std::env::temp_dir().join(format!("devcat-bridge-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&d);
     crate::state::init(d.clone());
+    crate::tickets::init(d.clone());
     // Rooms keep their identity and documents here (DEVBRIDGE_DATA: keep them across runs).
     crate::rooms::init(std::env::var_os("DEVBRIDGE_DATA").map(std::path::PathBuf::from).unwrap_or(d));
     crate::events::add_tap(|event, payload| {
-        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward" | "rooms-changed" | "room-join-request" | "room-join-resolved" | "room-agent") {
+        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward" | "rooms-changed" | "room-join-request" | "room-join-resolved" | "room-agent" | "tickets-job" | "tickets-changed") {
             let mut q = EVENTS.lock();
             if q.len() < 20_000 {
                 q.push(json!({ "event": event, "payload": payload }));

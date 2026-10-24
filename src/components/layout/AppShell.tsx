@@ -25,6 +25,7 @@ import { useQuickCommands } from "../../features/terminal/quickCommands";
 import { UpdateDialog } from "../../features/update/UpdateDialog";
 import { MobileButton, MobileDialog } from "../../features/mobile/MobileDialog";
 import { RoomJoinPrompt, RoomsButton, RoomsDialog } from "../../features/rooms/RoomsDialog";
+import { TicketsButton } from "../../features/tickets/TicketsButton";
 import { AppearanceButton, AppearanceDialog } from "../../features/appearance/AppearanceDialog";
 import { useAppearance, useIsDark } from "../../features/appearance/store";
 import { zoomUi } from "../../features/appearance/fonts";
@@ -314,6 +315,7 @@ function ProjectBar() {
       <div className={clsx("flex items-center gap-0.5", !focus && "ml-auto")}>
         <AppearanceButton />
         <RoomsButton />
+        <TicketsButton />
         <MobileButton />
         <KeepAwakeButton />
         <IconButton title={`New window (${NEW_WINDOW_SHORTCUT})`} onClick={() => void openNewWindow(focus?.id)}>
