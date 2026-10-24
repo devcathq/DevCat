@@ -12,9 +12,6 @@ use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Subcommands that only read the repository, whatever their options (see [`writes_a_file`]).
-const READS: &[&str] = &["status", "diff", "log", "show", "blame", "grep", "ls-files", "rev-parse", "describe", "shortlog", "merge-base"];
-
 pub struct Git;
 
 #[async_trait]
@@ -22,7 +19,7 @@ impl Tool for Git {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "git".into(),
-            description: "Run git in the project folder. `args` are the arguments after `git`, one per item: [\"status\", \"--short\"], [\"diff\", \"--stat\", \"HEAD~3\"], [\"log\", \"--oneline\", \"-20\"], [\"show\", \"HEAD:src/main.rs\"]. Commands that only read the repository (status, diff, log, show, blame, grep, ls-files, rev-parse, describe, shortlog, merge-base, reflog, and listing branches, tags, remotes, stashes or config) run without asking; anything else (commit, checkout, reset, merge, stash, fetch, pull, push, …) asks the user first. There's no pager, color or editor: give commit messages with -m. Prefer this over `shell` for git.".into(),
+            description: "Run git in the project folder. `args` are the arguments after `git`, one per item: [\"status\", \"--short\"], [\"diff\", \"--stat\", \"HEAD~3\"], [\"log\", \"--oneline\", \"-20\"], [\"show\", \"HEAD:src/main.rs\"]. Commands that only read the repository (status, diff, log, show, blame, grep, ls-files, rev-parse, describe, shortlog, merge-base, reflog, and listing branches, tags, remotes, stashes or config), with their usual options spelled out, run without asking; anything else (commit, checkout, reset, merge, stash, fetch, pull, push, …) asks the user first. There's no pager, color or editor: give commit messages with -m. Prefer this over `shell` for git.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -86,40 +83,209 @@ fn args(input: &Value) -> Result<Vec<String>, ToolOutput> {
     }
 }
 
-/// Whether `git <args>` only reads the repository.
+/// Whether `git <args>` only reads the repository: a reading subcommand with only options it lists
+/// below. Git accepts option abbreviations (`--verb` for `--verbose`) and short options bunched
+/// together (`-iO<cmd>`), so options aren't matched by their start: each must be one of these,
+/// spelled out, and short ones are taken one letter at a time. Anything else asks.
 fn read_only(a: &[String]) -> bool {
     let (sub, rest) = (a[0].as_str(), &a[1..]);
-    if rest.iter().any(|s| writes_a_file(s)) {
-        return false;
-    }
-    let has = |names: &[&str]| rest.iter().any(|s| names.contains(&s.as_str()));
+    let opts = |lists: &[&[&str]]| options(rest, lists);
+    let list_mode = |pos: &[String]| rest.iter().any(|s| s == "-l" || s == "--list") || pos.is_empty();
     match sub {
-        // -v shows the staged diff through textconv, and status has no --no-textconv
-        "status" => !rest.iter().any(|s| s == "--verbose" || (s.starts_with('-') && !s.starts_with("--") && s.contains('v'))),
-        s if READS.contains(&s) => true,
-        // listing only: no name to create, nothing to delete, move, copy or track
-        "branch" => {
-            let changes = rest.iter().any(|s| {
-                ["-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-u", "--unset-upstream", "--edit-description", "-f", "--force", "-t", "--track", "--no-track", "--create-reflog"].contains(&s.as_str())
-                    || s.starts_with("--set-upstream-to")
-                    || (s.starts_with('-') && !s.starts_with("--") && s.len() > 2 && !s[1..].chars().all(|c| "arvl".contains(c)))
-            });
-            !changes && (rest.iter().all(|s| s.starts_with('-')) || has(&["-l", "--list"]))
-        }
-        "tag" => rest.is_empty() || (has(&["-l", "--list"]) && !has(&["-d", "--delete", "-a", "--annotate", "-s", "--sign", "-f", "--force", "-m", "--message", "-F", "--file", "-u", "--local-user"])),
-        "remote" => rest.is_empty() || rest == ["-v"] || rest == ["--verbose"] || rest.first().is_some_and(|s| s == "get-url"),
-        "stash" => rest.first().is_some_and(|s| s == "list" || s == "show"),
-        "reflog" => rest.first().is_none_or(|s| s == "show"),
-        "config" => has(&["--get", "--get-all", "--get-regexp", "-l", "--list"]) && !has(&["--add", "--unset", "--unset-all", "--replace-all", "--rename-section", "--remove-section", "-e", "--edit"]),
+        "status" => opts(&[STATUS]).is_some(),
+        "diff" => opts(&[DIFF, &["--cached", "--staged", "--merge-base", "--base", "--ours", "--theirs", "-#"]]).is_some(),
+        "log" | "show" => opts(&[DIFF, REVS]).is_some(),
+        // its own first: shortlog's -n is --numbered, log's takes a count
+        "shortlog" => opts(&[SHORTLOG, REVS]).is_some(),
+        "blame" => opts(&[BLAME]).is_some(),
+        "grep" => opts(&[GREP]).is_some(),
+        "ls-files" => opts(&[LS_FILES]).is_some(),
+        "rev-parse" => opts(&[REV_PARSE]).is_some(),
+        "describe" => opts(&[DESCRIBE]).is_some(),
+        "merge-base" => opts(&[&["--all", "-a", "--octopus", "--independent", "--is-ancestor", "--fork-point"]]).is_some(),
+        // listing only: a name without --list would create a branch or tag
+        "branch" => opts(&[BRANCH]).is_some_and(|pos| list_mode(&pos)),
+        "tag" => opts(&[TAG]).is_some_and(|pos| list_mode(&pos) || rest.iter().any(|s| s.starts_with("-n"))),
+        "remote" => rest.is_empty() || rest == ["-v"] || rest == ["--verbose"] || (rest.first().is_some_and(|s| s == "get-url") && options(&rest[1..], &[&["--push", "--all"]]).is_some()),
+        "stash" => match rest.first().map(String::as_str) {
+            Some("list") => options(&rest[1..], &[DIFF, REVS]).is_some(),
+            Some("show") => options(&rest[1..], &[DIFF, &["-u", "--include-untracked", "--only-untracked"]]).is_some(),
+            _ => false,
+        },
+        "reflog" => rest.is_empty() || (rest[0] == "show" && options(&rest[1..], &[DIFF, REVS]).is_some()),
+        "config" => match rest.first().map(String::as_str) {
+            // git 2.46's subcommands
+            Some("get" | "list") => options(&rest[1..], &[CONFIG]).is_some(),
+            _ => opts(&[CONFIG, &["--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list"]]).is_some() && rest.iter().any(|s| ["--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list"].contains(&s.as_str())),
+        },
         _ => false,
     }
 }
 
-/// Options that make even a reading command write a file or start a program: of the model's
-/// choosing, or one the repository's config or .gitattributes names (external diff, textconv,
-/// gpg, git inside a submodule with that submodule's config).
-fn writes_a_file(s: &str) -> bool {
-    ["--output", "--open-files-in-pager", "-O", "--submodule", "--ignore-submodules"].iter().any(|p| s.starts_with(p)) || ["--ext-diff", "--textconv", "--show-signature"].contains(&s)
+// The options reading commands may have (see [`options`] for how they're written). None of them
+// writes a file, starts a program (--output, -O, --ext-diff, --textconv, --show-signature,
+// --remerge-diff, --alternate-refs) or runs git inside submodules (--submodule,
+// --ignore-submodules, --recurse-submodules, status -v, describe --dirty / --broken).
+
+const DIFF: &[&str] = &[
+    "-p", "-u", "-s", "-z", "-R", "-a", "-w", "-b", "-W", "-D", "-U?", "-M?", "-C?", "-B?", "-X?", "-G=", "-S=", "-l=",
+    "--patch", "--no-patch", "--unified?", "--raw", "--patch-with-raw", "--patch-with-stat", "--stat?", "--stat-width=",
+    "--stat-name-width=", "--stat-graph-width=", "--stat-count=", "--numstat", "--shortstat", "--dirstat?",
+    "--cumulative", "--dirstat-by-file?", "--summary", "--compact-summary", "--name-only", "--name-status", "--check",
+    "--full-index", "--binary", "--abbrev?", "--no-abbrev", "--break-rewrites?", "--find-renames?", "--find-copies?",
+    "--find-copies-harder", "--no-renames", "--rename-empty", "--no-rename-empty", "--irreversible-delete",
+    "--diff-filter=", "--find-object=", "--pickaxe-all", "--pickaxe-regex", "--skip-to=", "--rotate-to=", "--relative?",
+    "--no-relative", "--text", "--ignore-cr-at-eol", "--ignore-space-at-eol", "--ignore-space-change",
+    "--ignore-all-space", "--ignore-blank-lines", "--ignore-matching-lines=", "--inter-hunk-context=",
+    "--function-context", "--exit-code", "--quiet", "--minimal", "--patience", "--histogram", "--anchored=",
+    "--diff-algorithm=", "--indent-heuristic", "--no-indent-heuristic", "--word-diff?", "--word-diff-regex=",
+    "--color-words?", "--color?", "--no-color", "--color-moved?", "--no-color-moved", "--color-moved-ws=",
+    "--no-color-moved-ws", "--ws-error-highlight=", "--src-prefix=", "--dst-prefix=", "--no-prefix",
+    "--default-prefix", "--line-prefix=", "--ita-invisible-in-index", "--ita-visible-in-index", "--no-ext-diff",
+    "--no-textconv", "--output-indicator-new=", "--output-indicator-old=", "--output-indicator-context=",
+];
+
+const REVS: &[&str] = &[
+    "-#", "-n=", "-i", "-E", "-F", "-P", "-g", "-m", "-c", "-t", "-L=", "--max-count=", "--skip=", "--since=", "--after=",
+    "--until=", "--before=", "--since-as-filter=", "--max-age=", "--min-age=", "--author=", "--committer=", "--grep=",
+    "--grep-reflog=", "--all-match", "--invert-grep", "--regexp-ignore-case", "--extended-regexp", "--fixed-strings",
+    "--perl-regexp", "--basic-regexp", "--remove-empty", "--merges", "--no-merges", "--min-parents=", "--max-parents=",
+    "--no-min-parents", "--no-max-parents", "--first-parent", "--exclude-first-parent-only", "--not", "--all",
+    "--branches?", "--tags?", "--remotes?", "--glob=", "--exclude=", "--reflog", "--single-worktree", "--ignore-missing",
+    "--bisect", "--cherry-mark", "--cherry-pick", "--left-only", "--right-only", "--cherry", "--walk-reflogs", "--merge",
+    "--boundary", "--simplify-by-decoration", "--show-pulls", "--full-history", "--dense", "--sparse",
+    "--simplify-merges", "--ancestry-path?", "--date-order", "--author-date-order", "--topo-order", "--reverse",
+    "--no-walk?", "--do-walk", "--format=", "--pretty?", "--abbrev-commit", "--no-abbrev-commit", "--oneline",
+    "--encoding=", "--expand-tabs?", "--no-expand-tabs", "--notes?", "--no-notes", "--show-notes?", "--standard-notes",
+    "--no-standard-notes", "--show-linear-break?", "--relative-date", "--date=", "--parents", "--children",
+    "--left-right", "--graph", "--no-graph", "--cc", "--dd", "--combined-all-paths", "--no-diff-merges", "--follow",
+    "--decorate?", "--no-decorate", "--decorate-refs=", "--decorate-refs-exclude=", "--clear-decorations", "--source",
+    "--mailmap", "--no-mailmap", "--use-mailmap", "--no-use-mailmap", "--full-diff", "--log-size", "--count",
+];
+
+/// shortlog's own (it takes the revision options too).
+const SHORTLOG: &[&str] = &["-n", "-s", "-e", "-c", "-w?", "--numbered", "--summary", "--email", "--committer", "--group=", "--format="];
+
+const STATUS: &[&str] = &[
+    "-s", "-b", "-z", "-u?", "--short", "--branch", "--show-stash", "--porcelain?", "--long", "--untracked-files?",
+    "--ignored?", "--column?", "--no-column", "--ahead-behind", "--no-ahead-behind", "--renames", "--no-renames",
+    "--find-renames?", "--null",
+];
+
+const BLAME: &[&str] = &[
+    "-b", "-c", "-e", "-f", "-l", "-n", "-p", "-s", "-t", "-w", "-L=", "-S=", "-M?", "-C?", "--root", "--show-stats",
+    "--score-debug", "--show-name", "--show-number", "--show-email", "--porcelain", "--line-porcelain", "--incremental",
+    "--encoding=", "--contents=", "--date=", "--no-progress", "--reverse", "--first-parent", "--abbrev?", "--ignore-rev=",
+    "--ignore-revs-file=", "--color-lines", "--color-by-age", "--minimal", "--no-textconv", "--since=",
+];
+
+const GREP: &[&str] = &[
+    "-#", "-a", "-i", "-I", "-w", "-v", "-h", "-H", "-E", "-G", "-F", "-P", "-n", "-l", "-L", "-c", "-o", "-q", "-z", "-p",
+    "-W", "-e=", "-f=", "-A=", "-B=", "-C=", "-m=", "--cached", "--untracked", "--no-exclude-standard",
+    "--exclude-standard", "--text", "--no-textconv", "--ignore-case", "--word-regexp", "--invert-match", "--full-name",
+    "--extended-regexp", "--basic-regexp", "--perl-regexp", "--fixed-strings", "--line-number", "--column",
+    "--files-with-matches", "--name-only", "--files-without-match", "--null", "--only-matching", "--count", "--color?",
+    "--no-color", "--break", "--heading", "--show-function", "--function-context", "--context=", "--after-context=",
+    "--before-context=", "--threads=", "--max-depth=", "--max-count=", "--and", "--or", "--not", "--all-match", "--quiet",
+];
+
+const LS_FILES: &[&str] = &[
+    "-c", "-d", "-m", "-o", "-i", "-s", "-u", "-k", "-z", "-t", "-v", "-f", "-x=", "-X=", "--cached", "--deleted",
+    "--modified", "--others", "--ignored", "--stage", "--directory", "--no-empty-directory", "--unmerged", "--killed",
+    "--resolve-undo", "--eol", "--exclude=", "--exclude-from=", "--exclude-per-directory=", "--exclude-standard",
+    "--error-unmatch", "--with-tree=", "--full-name", "--abbrev?", "--debug", "--deduplicate", "--sparse", "--format=",
+];
+
+const REV_PARSE: &[&str] = &[
+    "-q", "--quiet", "--verify", "--short?", "--abbrev-ref?", "--symbolic", "--symbolic-full-name", "--all",
+    "--branches?", "--tags?", "--remotes?", "--glob=", "--exclude=", "--disambiguate=", "--since=", "--after=",
+    "--until=", "--before=", "--default=", "--revs-only", "--no-revs", "--flags", "--no-flags", "--not", "--sq",
+    "--show-toplevel", "--show-prefix", "--show-cdup", "--show-superproject-working-tree", "--git-dir",
+    "--git-common-dir", "--absolute-git-dir", "--is-inside-work-tree", "--is-inside-git-dir", "--is-bare-repository",
+    "--is-shallow-repository", "--shared-index-path", "--local-env-vars", "--git-path=", "--path-format=",
+    "--show-object-format?", "--show-ref-format",
+];
+
+const DESCRIBE: &[&str] = &[
+    "--tags", "--all", "--long", "--abbrev?", "--always", "--contains", "--exact-match", "--first-parent", "--match=",
+    "--exclude=", "--candidates=", "--debug",
+];
+
+const BRANCH: &[&str] = &[
+    "-a", "-r", "-v", "-l", "-i", "--all", "--remotes", "--verbose", "--list", "--ignore-case", "--show-current",
+    "--contains=", "--no-contains=", "--merged=", "--no-merged=", "--points-at=", "--sort=", "--format=", "--column?",
+    "--no-column", "--abbrev?", "--no-abbrev", "--omit-empty",
+];
+
+const TAG: &[&str] = &[
+    "-l", "-i", "-n?", "--list", "--ignore-case", "--contains=", "--no-contains=", "--merged=", "--no-merged=",
+    "--points-at=", "--sort=", "--format=", "--column?", "--no-column", "--omit-empty",
+];
+
+const CONFIG: &[&str] = &[
+    "-z", "--null", "--show-origin", "--show-scope", "--name-only", "--type=", "--bool", "--int", "--bool-or-int",
+    "--path", "--expiry-date", "--local", "--global", "--system", "--worktree", "--default=", "--includes",
+    "--no-includes", "--all", "--regexp", "--value=", "--fixed-value",
+];
+
+/// Check `args` against option lists, and return the other arguments (revisions, paths, names).
+/// None if an option isn't listed. An entry is `-p` / `--stat` (a flag), `-n=` / `--format=` (a
+/// value: attached, or the next argument), `-U?` / `--stat?` (a value only when attached: `-U5`,
+/// `--stat=80`), or `-#` (`-5`, a count). Short options may be bunched (`-sb`); a value-taking one
+/// takes the rest of the bunch. Long ones must be spelled out. After `--` there are only paths. A
+/// value from the next argument can't start with `-`: where git reads that as an option after all,
+/// it's checked as one here too.
+fn options(args: &[String], lists: &[&[&str]]) -> Option<Vec<String>> {
+    let kind = |opt: &str| {
+        lists.iter().flat_map(|l| l.iter()).find_map(|e| match e.strip_suffix('=').or_else(|| e.strip_suffix('?')) {
+            Some(name) if name == opt => Some(e.as_bytes()[e.len() - 1]),
+            None if *e == opt => Some(b' '),
+            _ => None,
+        })
+    };
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--" {
+            rest.extend(it.cloned());
+            break;
+        }
+        if !a.starts_with('-') || a == "-" {
+            rest.push(a.clone());
+            continue;
+        }
+        if let Some(long) = a.strip_prefix("--") {
+            let (name, value) = match long.split_once('=') {
+                Some((n, v)) => (n, Some(v)),
+                None => (long, None),
+            };
+            match kind(&format!("--{name}"))? {
+                b' ' if value.is_some() => return None,
+                b'=' if value.is_none() => {
+                    it.next().filter(|v| !v.starts_with('-'))?;
+                }
+                _ => {}
+            }
+            continue;
+        }
+        let bunch = &a[1..];
+        if bunch.chars().all(|c| c.is_ascii_digit()) {
+            kind("-#")?;
+            continue;
+        }
+        for (i, c) in bunch.char_indices() {
+            match kind(&format!("-{c}"))? {
+                b' ' => continue,
+                // a value: the rest of the bunch, or the next argument
+                b'=' if i + c.len_utf8() == bunch.len() => {
+                    it.next().filter(|v| !v.starts_with('-'))?;
+                }
+                _ => {}
+            }
+            break;
+        }
+    }
+    Some(rest)
 }
 
 /// What the gpg settings point at for a reading command: no such program, so a signature shows as
@@ -191,13 +357,24 @@ mod tests {
 
     #[test]
     fn reading_commands_dont_ask_and_the_rest_do() {
-        for a in [&["status", "--short"][..], &["diff", "--stat", "HEAD~3"], &["log", "--oneline", "-20"], &["show", "HEAD:src/main.rs"], &["blame", "-L", "1,20", "a.rs"], &["branch"], &["branch", "-av"], &["branch", "--list", "feat/*"], &["tag"], &["tag", "-l", "v1.*"], &["remote", "-v"], &["stash", "list"], &["reflog"], &["config", "--get", "user.name"]] {
+        for a in [&["status", "--short"][..], &["status", "-sb"], &["status", "-uno", "--porcelain=v2"], &["diff", "--stat", "HEAD~3"], &["diff", "--cached", "-U5", "--", "src/a.rs"],
+            &["log", "--oneline", "-20"], &["log", "-p", "-n", "3", "--format=%h %s", "--", "-weird-path"], &["show", "HEAD:src/main.rs"], &["show", "--stat", "HEAD"],
+            &["blame", "-L", "1,20", "a.rs"], &["blame", "-wL10,+5", "a.rs"], &["grep", "-in", "-e", "TODO", "--", "src"], &["grep", "-C", "2", "fn main"],
+            &["ls-files", "-mo", "--exclude-standard"], &["rev-parse", "--abbrev-ref", "HEAD"], &["describe", "--tags", "--always"], &["shortlog", "-sn", "--all"],
+            &["merge-base", "--is-ancestor", "a", "b"], &["branch"], &["branch", "-av"], &["branch", "--list", "feat/*"], &["branch", "--contains", "HEAD"],
+            &["tag"], &["tag", "-l", "v1.*"], &["tag", "-n5"], &["remote", "-v"], &["remote", "get-url", "origin"], &["stash", "list"], &["stash", "show", "-p", "stash@{1}"],
+            &["reflog"], &["reflog", "show", "-5"], &["config", "--get", "user.name"], &["config", "--list", "--show-origin"], &["config", "get", "user.email"]] {
             assert!(ro(a), "{a:?} should only read");
         }
         for a in [&["commit", "-m", "x"][..], &["checkout", "main"], &["reset", "--hard"], &["push"], &["fetch"], &["branch", "new-name"], &["branch", "-D", "old"], &["branch", "-rd", "origin/x"], &["tag", "v2"], &["tag", "-l", "-d", "v1"], &["remote", "add", "x", "url"], &["stash"], &["stash", "pop"], &["reflog", "expire"], &["reflog", "-n", "5"], &["config", "user.name", "me"], &["diff", "--output=/tmp/x"], &["grep", "-Ovim", "x"], &["st"],
             // programs the repository's config names
             &["diff", "--ext-diff"], &["log", "-p", "--textconv"], &["grep", "--textconv", "x"], &["log", "--show-signature"], &["status", "-v"], &["status", "-sv"], &["status", "--verbose"],
-            &["diff", "--submodule=diff"], &["status", "--ignore-submodules=none"]] {
+            &["diff", "--submodule=diff"], &["status", "--ignore-submodules=none"],
+            // bunched and shortened options (git takes both)
+            &["grep", "-iOtouch /tmp/x; true", "hello"], &["grep", "--open=touch /tmp/x; true", "hello"], &["status", "--verb"],
+            &["status", "--ignore-sub=none"], &["diff", "--ext"], &["log", "--show-sig"], &["describe", "--dirty"], &["describe", "--broken"],
+            &["branch", "--set-u=origin/x"], &["branch", "--unset-u"], &["log", "--remerge-diff"], &["diff", "--no-index", "a", "b"],
+            &["config", "--file", "x", "--list"], &["remote", "show", "origin"], &["branch", "--", "new"]] {
             assert!(!ro(a), "{a:?} should ask");
         }
     }
@@ -210,6 +387,28 @@ mod tests {
         assert_eq!(Git.summary(&json!({ "args": ["commit", "-m", "fix it"] })), "git commit -m \"fix it\"");
         let ctx = ToolCtx { cwd: std::env::temp_dir() };
         assert_eq!(Git.kind(&json!({ "args": ["-c", "x=y", "status"] }), &ctx), Kind::Exec);
+    }
+
+    /// The ways around a reading command's rules found in review (git 2.45): each must ask.
+    #[test]
+    fn options_git_reads_another_way_ask() {
+        let ctx = ToolCtx { cwd: std::env::temp_dir() };
+        for a in [
+            json!(["grep", "-iOtouch /tmp/x; true", "hello"]),
+            json!(["grep", "--open=touch /tmp/x; true", "hello"]),
+            json!(["status", "--verb"]),
+            json!(["status", "--ignore-sub=none"]),
+            json!(["describe", "--dirty"]),
+            json!(["describe", "--broken"]),
+            json!(["branch", "--set-u=origin/main"]),
+            json!(["branch", "--unset-u"]),
+            // a value that's really an option
+            json!(["log", "-n", "--output=/tmp/x"]),
+            json!(["grep", "-e", "--open-files-in-pager=sh", "x"]),
+        ] {
+            assert_eq!(Git.kind(&json!({ "args": a }), &ctx), Kind::Exec, "{a}");
+        }
+        assert_eq!(Git.kind(&json!({ "args": ["status", "--short"] }), &ctx), Kind::Read);
     }
 
     #[tokio::test]
