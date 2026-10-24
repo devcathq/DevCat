@@ -50,7 +50,8 @@ impl Tool for Git {
             Err(e) => return e,
         };
         // one that runs without asking mustn't start a program the repository's config names
-        let a = if read_only(&a) {
+        let reading = read_only(&a);
+        let a = if reading {
             match harmless(&a, ctx).await {
                 Ok(a) => a,
                 Err(e) => return e,
@@ -60,6 +61,11 @@ impl Tool for Git {
         };
         let mut cmd = tokio::process::Command::new("git");
         cmd.args(["--no-pager", "-c", "color.ui=false", "-c", "core.quotePath=false"]).args(&a);
+        if reading {
+            // a missing object isn't fetched from a "promisor" remote: that runs core.sshCommand
+            // and the like (git 2.45+; older git refuses in `harmless` instead)
+            cmd.env("GIT_NO_LAZY_FETCH", "1");
+        }
         // no prompt can wait for an answer that never comes: credentials, editors (commit without -m,
         // rebase -i), and no optional locks, so reading doesn't get in the way of the user's own git
         cmd.env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "devcat-agent-no-editor").env("GIT_SEQUENCE_EDITOR", "devcat-agent-no-editor").env("GIT_OPTIONAL_LOCKS", "0");
@@ -302,8 +308,16 @@ const LFS: &[&str] = &["git-lfs clean -- %f", "git-lfs smudge -- %f", "git-lfs f
 async fn harmless(a: &[String], ctx: &ToolCtx) -> Result<Vec<String>, ToolOutput> {
     let mut set = vec!["core.fsmonitor=false".to_string(), "log.showSignature=false".into(), "diff.submodule=short".into(), "status.submoduleSummary=false".into()];
     set.extend(["gpg.program", "gpg.ssh.program", "gpg.x509.program"].map(|k| format!("{k}={NO_GPG}")));
-    for (key, value) in filters(ctx).await? {
-        if LFS.contains(&value.as_str()) {
+    for (key, value) in risky_config(ctx).await? {
+        // a partial clone fetches missing objects from its promisor remote (over ssh, with the
+        // config's core.sshCommand); GIT_NO_LAZY_FETCH stops that, from git 2.45 on
+        if key == "extensions.partialclone" || (key.starts_with("remote.") && key.ends_with(".promisor") && truthy(&value)) {
+            if !lazy_fetch_can_be_off().await {
+                return Err(ToolOutput::err(format!("This repository is a partial clone (`{key}`): reading a missing object would fetch it from the remote, and this git (older than 2.45) can't be told not to. Run it with `shell` instead, which asks the user.")));
+            }
+            continue;
+        }
+        if !key.starts_with("filter.") || LFS.contains(&value.as_str()) {
             continue;
         }
         // `-c` splits at the first `=`, so such a filter can't be turned off
@@ -328,10 +342,38 @@ async fn harmless(a: &[String], ctx: &ToolCtx) -> Result<Vec<String>, ToolOutput
     Ok(out)
 }
 
-/// The clean / smudge / process filter commands in the repository's config, with their values.
-async fn filters(ctx: &ToolCtx) -> Result<Vec<(String, String)>, ToolOutput> {
+/// A config value git reads as true.
+fn truthy(v: &str) -> bool {
+    ["true", "yes", "on", "1"].contains(&v.trim().to_lowercase().as_str())
+}
+
+/// Whether this git knows GIT_NO_LAZY_FETCH (2.45 and newer).
+async fn lazy_fetch_can_be_off() -> bool {
+    static VERSION: tokio::sync::OnceCell<Option<(u32, u32)>> = tokio::sync::OnceCell::const_new();
+    let v = VERSION
+        .get_or_init(|| async {
+            let mut cmd = tokio::process::Command::new("git");
+            cmd.arg("version").stdin(std::process::Stdio::null());
+            #[cfg(windows)]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let out = cmd.output().await.ok()?;
+            git_version(&String::from_utf8_lossy(&out.stdout))
+        })
+        .await;
+    v.is_some_and(|v| v >= (2, 45))
+}
+
+/// "git version 2.49.0.windows.1" -> (2, 49).
+fn git_version(s: &str) -> Option<(u32, u32)> {
+    let mut n = s.trim().strip_prefix("git version ")?.split('.');
+    Some((n.next()?.parse().ok()?, n.next()?.parse().ok()?))
+}
+
+/// What in the repository's config a reading command must know about: clean / smudge / process
+/// filter commands, and whether it's a partial clone (`remote.*.promisor`, `extensions.partialClone`).
+async fn risky_config(ctx: &ToolCtx) -> Result<Vec<(String, String)>, ToolOutput> {
     let mut cmd = tokio::process::Command::new("git");
-    cmd.args(["config", "-z", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"]).current_dir(&ctx.cwd).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null()).kill_on_drop(true);
+    cmd.args(["config", "-z", "--get-regexp", r"^(filter\..*\.(clean|smudge|process)|remote\..*\.promisor|extensions\.partialclone)$"]).current_dir(&ctx.cwd).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null()).kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let out = match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
@@ -470,6 +512,36 @@ mod tests {
         plain(&dir, &["config", "filter.a=b.clean", "echo ran > clean-ran; cat"]);
         let out = Git.run(json!({ "args": ["status"] }), &ctx).await;
         assert!(out.is_error && out.content.contains("filter.a=b.clean"), "{out:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn reading_a_missing_object_doesnt_fetch_it() {
+        let dir = std::env::temp_dir().join(format!("devcat-git-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        plain(&dir, &["init", "-q"]);
+        plain(&dir, &["commit", "-q", "--allow-empty", "-m", "a"]);
+        // a partial clone's promisor remote, reached with an ssh command the config names
+        plain(&dir, &["config", "remote.origin.url", "ssh://x.invalid/y"]);
+        plain(&dir, &["config", "remote.origin.promisor", "true"]);
+        plain(&dir, &["config", "core.sshCommand", "echo ran > ssh-ran; false"]);
+        let missing = "1234567890123456789012345678901234567890";
+        // it does run, outside the tool
+        plain(&dir, &["show", missing]);
+        assert!(dir.join("ssh-ran").exists(), "plain git didn't fetch: the test sets nothing up");
+        std::fs::remove_file(dir.join("ssh-ran")).unwrap();
+
+        let ctx = ToolCtx { cwd: dir.clone() };
+        let peeled = format!("{missing}^{{commit}}");
+        for a in [&["show", missing][..], &["log", missing], &["rev-parse", "--verify", &peeled], &["diff", missing]] {
+            // the object isn't there (or, with git before 2.45, the command is refused), and
+            // nothing was fetched
+            let out = Git.run(json!({ "args": a }), &ctx).await;
+            assert!(out.is_error, "{a:?}: {out:?}");
+            assert!(!dir.join("ssh-ran").exists(), "{a:?} fetched from the promisor remote");
+        }
+        assert_eq!(git_version("git version 2.49.0.windows.1"), Some((2, 49)));
+        assert_eq!(git_version("git version 2.39.5 (Apple Git-154)"), Some((2, 39)));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

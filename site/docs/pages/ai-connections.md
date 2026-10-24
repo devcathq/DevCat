@@ -51,7 +51,8 @@ that tool until the chat closes.
 - A `git` command runs without asking only when it just reads the repository, with that command's usual options
   written out in full (`--verbose`, not `--verb`). Anything else asks, and so does an option that could make git
   start a program (`--ext-diff`, `--textconv`, `--output`, `describe --dirty`). Reading commands also don't run
-  the programs a repository's config names: fsmonitor hooks, external diff tools, textconv and clean filters.
+  the programs a repository's config names (fsmonitor hooks, external diff tools, textconv and clean filters), and
+  don't fetch a missing object from a partial clone's remote.
 - When the context fills up, the conversation is summarized and the chat carries on (or type `/compact`).
 
 ## Logins and API keys
