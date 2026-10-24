@@ -1090,6 +1090,7 @@ mod integration {
             project_id: None,
             options: Default::default(),
             read_only: false,
+            mcp_access: None,
         }
     }
 

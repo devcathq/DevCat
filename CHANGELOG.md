@@ -12,6 +12,15 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Sync MCP:** each connection now has its own **AI / MCP access** (Edit connection → Advanced): **Off** hides it
+  from every agent, **Read-only** lets agents only read, **Full** lets agents over MCP change data too. New
+  connections start read-only, and a read-only connection can never be full. DevCat enforces it, whatever the
+  agent asks. Connections saved before keep following their project's **Allow writes from MCP** until you pick
+  one. **MCP activity** (Sync MCP → Activity…, or the connections menu) lists every call agents made through
+  DevCat's MCP server: the agent, the connection, what it ran and whether DevCat refused it. Agents can also
+  attach the connection list and a database's schema as MCP resources (`devcat://project/…/connections`,
+  `devcat://conn/…/schema`).
+
 ## 0.12.0 - 2026-10-24
 
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of

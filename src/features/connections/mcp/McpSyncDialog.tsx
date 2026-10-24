@@ -10,6 +10,7 @@ import { Badge, Button, Checkbox, Dialog, ErrorBox, Spinner } from "../../../com
 import { api, errMsg } from "../../../lib/api";
 import type { McpSyncPlan } from "../../../lib/types";
 import { useConnections } from "../../../store/connections";
+import { openMcpActivity } from "./McpActivityDialog";
 
 const useMcpSync = create<{ open: boolean }>(() => ({ open: false }));
 
@@ -80,6 +81,7 @@ function SyncView({ onClose }: { onClose: () => void }) {
       onClose={onClose}
       footer={
         <>
+          <Button className="mr-auto" onClick={() => { onClose(); openMcpActivity(); }}>Activity…</Button>
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" loading={busy} disabled={!plan || !plan.agents.length} onClick={() => void apply()}>Sync</Button>
         </>
@@ -89,7 +91,8 @@ function SyncView({ onClose }: { onClose: () => void }) {
         <p className="text-fg/90">
           Adds DevCat's MCP server to your coding agents, so they can read schemas and run queries on your connections
           without any setup. In a project's code folder an agent gets that project's connections plus the shared ones;
-          anywhere else, only the shared ones. Passwords stay in DevCat.
+          anywhere else, only the shared ones. Passwords stay in DevCat. Each connection's AI / MCP access (Edit connection →
+          Advanced) says whether agents see it, only read, or may change data; new connections start read-only.
         </p>
         {error && <ErrorBox error={error} />}
         {!plan && !error && <div className="flex justify-center py-6"><Spinner /></div>}

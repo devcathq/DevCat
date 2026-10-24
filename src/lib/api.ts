@@ -8,7 +8,7 @@ import type {
   GitRepo, GitLogQuery, GitCommit, GitCommitDetail, GitBlame, GitRefs, GitStash, CommitAction, RemoteOpts,
   AiDetect, AiProvider,
   ClaudeInfo, ClaudeProject, ClaudeStartOptions, FileEntry, FilePreview, FileVersions, GitStatus, SessionMeta,
-  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, McpSyncPlan, Memory, MemoryKind, MemoryPlace, PlaceMemories, ClaudeImportPlan, MemorySyncReport, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
+  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, McpSyncPlan, McpAuditEntry, Memory, MemoryKind, MemoryPlace, PlaceMemories, ClaudeImportPlan, MemorySyncReport, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
   SavedQuery, SchemaSnapshot, TableDataPage, TableDataRequest, TableRef, TableStructure, TreeNode, Bookmark,
 } from "./types";
 
@@ -43,6 +43,8 @@ export const api = {
   mcpSyncPreview: () => invoke<McpSyncPlan>("mcp_sync_preview"),
   mcpSyncApply: (replace: string[]) => invoke<McpSyncPlan>("mcp_sync_apply", { replace }),
   mcpSyncDismiss: () => invoke<void>("mcp_sync_dismiss"),
+  mcpAudit: (limit = 300) => invoke<McpAuditEntry[]>("mcp_audit", { limit }),
+  mcpAuditClear: () => invoke<void>("mcp_audit_clear"),
   // Memory every coding agent shares (served by `devcat mcp`)
   memoryList: () => invoke<PlaceMemories[]>("memory_list"),
   memorySave: (memory: { place: MemoryPlace; name: string; description: string; kind: MemoryKind; body: string; oldName?: string }) => invoke<Memory>("memory_save", { memory }),

@@ -286,6 +286,11 @@ const audit = [
   { at: NOW - 1_800_000, device: PHONE_ID, deviceName: "Ava's iPhone", action: "k8s_restart", detail: "[c-k8s] deployments search-indexer", ok: true },
   { at: NOW - 2_400_000, device: PHONE_ID, deviceName: "Ava's iPhone", action: "net_connect", detail: "n-wg — handshake timed out", ok: false },
 ];
+const mcpAudit = [
+  { at: NOW - 60_000, client: "claude-code", tool: "db_query", connection: "orders-db", detail: "orders-db: SELECT status, count(*) FROM orders GROUP BY 1", project: "Shop", ok: true, ms: 42 },
+  { at: NOW - 300_000, client: "codex", tool: "db_query", connection: "orders-db", detail: "orders-db: DELETE FROM orders WHERE status = 'test'", project: "Shop", ok: false, error: "DevCat only lets agents read orders-db over MCP, and this query may change data.", ms: 3 },
+  { at: NOW - 720_000, client: "cursor", tool: "k8s_logs", connection: "staging", detail: "staging: shop/api-7d9f", ok: true, ms: 380 },
+];
 /** The QR code comes from the Rust devbridge (remote_qr), so it's a real, scannable one. */
 const bridgeQr = (text: string) =>
   fetch("http://127.0.0.1:1430/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cmd: "remote_qr", args: { text } }) })
@@ -396,6 +401,8 @@ export function demoInvoke(cmd: string, args: Record<string, unknown>, emit: Emi
     case "remote_save": return { ...remoteStatus, settings: args.settings };
     case "remote_devices": return remoteDevices;
     case "remote_audit": return audit;
+    case "mcp_audit": return mcpAudit;
+    case "mcp_audit_clear": return null;
     case "remote_qr": return bridgeQr(String(args.text));
     case "remote_pair_start": {
       const appLink = `devcat://pair?v=1&id=${remoteStatus.id}&code=K7Q2X9MPLA&name=Acme%20MacBook%20Pro&addr=192.168.1.24%3A47100`;

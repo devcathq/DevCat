@@ -80,6 +80,31 @@ pub struct ConnectionConfig {
     pub options: HashMap<String, String>,
     #[serde(default)]
     pub read_only: bool,
+    /// What agents may do with it (DevCat Agent and `devcat mcp`); see [`McpAccess`]. `None` on
+    /// connections saved before the setting existed: they follow their project's `mcp_writes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_access: Option<McpAccess>,
+}
+
+/// A connection's AI / MCP access. `Off` hides it from every agent; `Read` lets agents over MCP
+/// only read; `Full` lets them change data too. A read-only connection never gets `Full` (see
+/// [`ConnectionConfig::agent_access`]). New connections start at `Read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpAccess {
+    Off,
+    Read,
+    Full,
+}
+
+impl ConnectionConfig {
+    /// What agents may do with this connection: its own setting, else its project's "Allow writes
+    /// from MCP" (connections saved before the setting existed); capped at `Read` when the
+    /// connection itself is read-only.
+    pub fn agent_access(&self, project: Option<&Project>) -> McpAccess {
+        let a = self.mcp_access.unwrap_or(if project.is_some_and(|p| p.mcp_writes) { McpAccess::Full } else { McpAccess::Read });
+        if self.read_only && a == McpAccess::Full { McpAccess::Read } else { a }
+    }
 }
 
 /// A user-defined project used to group connections in the sidebar.
@@ -100,7 +125,8 @@ pub struct Project {
     /// without, its connections are everyone's, like connections in no project.
     #[serde(default)]
     pub folders: Vec<String>,
-    /// Agents over MCP may change data on the project's connections (else they only read).
+    /// Agents over MCP may change data on the project's connections that have no AI access of
+    /// their own (saved before that setting existed); else they only read.
     #[serde(default)]
     pub mcp_writes: bool,
 }
