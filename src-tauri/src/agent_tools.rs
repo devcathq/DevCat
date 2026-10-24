@@ -393,7 +393,7 @@ impl Tool for DbQuery {
         }
         if self.0.mcp && !reads_only(&c, query) && view(&self.0).access(&c) != McpAccess::Full {
             return ToolOutput::err(format!(
-                "DevCat only lets agents read {} over MCP, and this query may change data. To allow changes, the user sets the connection's AI access to \"Full\" in DevCat (Edit connection → Advanced); a read-only connection can't be.",
+                "DevCat only lets agents read {} over MCP, and this query may change data. To allow changes, the user sets the connection's AI / MCP access to \"Full\" in DevCat (Edit connection → Advanced); a read-only connection can't be.",
                 c.name
             ));
         }
