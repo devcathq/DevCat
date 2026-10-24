@@ -24,7 +24,7 @@ import { RemoteFolderDialog, openRemoteFolderDialog } from "./sidebar/RemoteFold
 import { openTerminal } from "../terminal/open";
 import { displayPath, isRemote, remoteParts } from "../../lib/remotePath";
 import { useConnections } from "../../store/connections";
-import { inProjectFolder } from "../../store/folderProjects";
+import { folderKey, inProjectFolder, useFolderProjects } from "../../store/folderProjects";
 
 const REFRESH_MS = 15_000;
 const INSTALL_CMD = "curl -fsSL https://claude.ai/install.sh | bash";
@@ -150,6 +150,11 @@ function WorkspaceHeader() {
         ...(isRemote(cwd) ? [] : [{ label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(cwd) } as MenuItem]),
         { label: "Close folder", icon: <X className="size-3.5" />, onClick: () => setCwd(null) },
       );
+      // the folder stops being the focused project's: its tabs hide, and it's closed here
+      const fp = useFolderProjects.getState();
+      if (focus && fp.folders[folderKey(cwd)]?.includes(focus)) {
+        items.push({ label: "Remove from this project", icon: <X className="size-3.5" />, onClick: () => { fp.remove(cwd, focus); setCwd(null); } });
+      }
     }
     menu.show(at, items);
   };

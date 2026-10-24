@@ -34,6 +34,7 @@ import { startUpdateChecks, useUpdate } from "../../features/update/store";
 import { IS_MAC, IS_MAIN_WINDOW, NEW_WINDOW_SHORTCUT, openNewWindow, takeLaunchTab, type TabTransfer } from "../../lib/windows";
 import "../../store/projectFolders";
 import { folderInFocus, useFolderProjects } from "../../store/folderProjects";
+import { sessionIdOf } from "../../lib/remotePath";
 import "../../features/files/openedFiles";
 import { openQuickOpen, QuickOpen, useQuickOpen } from "../../features/files/QuickOpen";
 import { openTab, useTabs } from "../../store/tabs";
@@ -387,7 +388,9 @@ function Workspace() {
     ]);
   };
   // Focus mode hides tabs of other projects' connections, notes and folders (chats, terminals,
-  // files, Git): they stay mounted and come back on exit.
+  // files, Git): they stay mounted and come back on exit. A folder on an SSH session goes by that
+  // session's project, so its chat and terminal show together.
+  const connOf = (t: Tab) => tabConnId(t) ?? sessionIdOf(tabFolder(t));
   const focusId = useConnections((s) => s.focusProjectId);
   const connections = useConnections((s) => s.connections);
   const notes = useNotes((s) => s.notes);
@@ -395,7 +398,7 @@ function Workspace() {
   const tabs = useMemo(
     () => allTabs.filter((t) => t.type === "note"
       ? noteInFocus(notes.find((n) => n.id === t.noteId)?.projectId)
-      : tabConnId(t) ? inFocus(tabConnId(t)) : folderInFocus(tabFolder(t))),
+      : connOf(t) ? inFocus(connOf(t)) : folderInFocus(tabFolder(t))),
     [allTabs, focusId, connections, notes, folders], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const hiddenCount = allTabs.length - tabs.length;
