@@ -12,6 +12,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Focus mode hides other folders' tabs too:** chats, terminals, files and Git tabs of folders that aren't the
+  focused project's are hidden, like other projects' connections and notes. A folder is the project's once you use
+  it while the project is focused. The AI Workspace's recent folders list the project's own; the others are under
+  **Other folders** (#77).
+
 ## 0.10.0 - 2026-10-24
 
 - **Rooms:** share documents with other people and let everyone's DevCat Agent join in, peer to peer

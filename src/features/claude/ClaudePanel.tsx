@@ -23,6 +23,8 @@ import { pickFolder, useWorkspace } from "./sidebar/workspace";
 import { RemoteFolderDialog, openRemoteFolderDialog } from "./sidebar/RemoteFolderDialog";
 import { openTerminal } from "../terminal/open";
 import { displayPath, isRemote, remoteParts } from "../../lib/remotePath";
+import { useConnections } from "../../store/connections";
+import { inProjectFolder } from "../../store/folderProjects";
 
 const REFRESH_MS = 15_000;
 const INSTALL_CMD = "curl -fsSL https://claude.ai/install.sh | bash";
@@ -129,9 +131,15 @@ function WorkspaceHeader() {
         : []),
     ];
     const others = recent.filter((r) => r !== cwd);
+    // in focus, the project's folders; the others (picking one makes it the project's) under a submenu
+    const focus = useConnections.getState().focusProjectId;
+    const mine = focus ? others.filter((r) => inProjectFolder(r, focus)) : others;
+    const elsewhere = others.filter((r) => !mine.includes(r));
+    const folderItem = (r: string): MenuItem => ({ label: tildify(r), icon: isRemote(r) ? <Server className="size-3.5" /> : <FolderOpen className="size-3.5" />, onClick: () => setCwd(r) });
     if (others.length) {
       items.push("separator");
-      for (const r of others) items.push({ label: tildify(r), icon: isRemote(r) ? <Server className="size-3.5" /> : <FolderOpen className="size-3.5" />, onClick: () => setCwd(r) });
+      items.push(...mine.map(folderItem));
+      if (elsewhere.length) items.push({ label: "Other folders", icon: <FolderOpen className="size-3.5" />, submenu: elsewhere.map(folderItem) });
       items.push({ label: "Clear recent folders", icon: <X className="size-3.5" />, onClick: () => others.forEach(forgetRecent) });
     }
     if (cwd) {

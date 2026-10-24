@@ -26,6 +26,12 @@ A project groups the connections, chats, repositories and notes of one piece of 
 Right-click a project → **Focus on this project** to show only that project everywhere. **Exit focus mode** shows
 everything again. The project menu at the top left switches between projects.
 
+In focus, tabs that belong to another project are hidden (they come back when you leave focus): its connections and
+notes, and chats, terminals, files and Git tabs of folders that aren't the project's. A folder becomes the
+project's when you use it while the project is focused, as the AI Workspace folder or by opening a chat, terminal,
+file or Git tab in it. The AI Workspace's recent folders list the project's own; the others are under
+**Other folders**.
+
 ## Tabs
 
 - Drag a tab along the tab bar to reorder it.

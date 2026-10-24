@@ -45,6 +45,22 @@ export type Tab = TabSpec & {
   dirty?: boolean;
 };
 
+/** The folder (or file) a tab works in, for project focus mode; null = none. */
+export function tabFolder(t: TabSpec): string | null {
+  switch (t.type) {
+    case "claude":
+    case "terminal":
+    case "sftp":
+      return t.cwd;
+    case "file":
+      return t.root ?? t.path;
+    case "git":
+      return t.repo;
+    default:
+      return null;
+  }
+}
+
 /** Connection a tab belongs to (used by project focus mode); null = not tied to a connection. */
 export function tabConnId(t: TabSpec): string | null {
   if ("connId" in t && t.connId) return t.connId;
