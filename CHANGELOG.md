@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Terminal:** copying from Claude Code works. Text you select in Claude Code (or tmux, vim, a program on an SSH
+  host) now reaches the clipboard: DevCat accepts OSC 52 copies, and never lets a program read the clipboard. New
+  **Terminal** settings in Appearance: **Selecting text** copies on select (as before) or only with ⌘C / Ctrl+C
+  (Ctrl+C with nothing selected still interrupts), and **Allow programs to copy to the clipboard (OSC 52)**. Both
+  apply to every terminal at once, open tabs too (#61).
+
 ## 0.12.0 - 2026-10-24
 
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of

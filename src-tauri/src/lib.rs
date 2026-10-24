@@ -289,6 +289,7 @@ pub fn run() {
             claude::files::fs_write_text,
             claude::open_external::fs_open_external,
             claude::clipboard::fs_copy_files,
+            claude::clipboard::clipboard_write_text,
             claude::clipboard::fs_paste,
             claude::git::git_status,
             claude::git::git_file_versions,

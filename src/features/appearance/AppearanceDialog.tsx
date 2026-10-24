@@ -1,14 +1,15 @@
 // "🎨 Appearance": dark / light / system, theme presets, and window glass, for all projects or
-// just the one this window is focused on; fonts, for all of them.
+// just the one this window is focused on; fonts and terminal behaviour, for all of them.
 import clsx from "clsx";
 import { Check, Palette as PaletteIcon, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import { useConnections } from "../../store/connections";
-import { Button, Dialog, Input, Select } from "../../components/ui";
+import { Button, Checkbox, Dialog, Input, Select } from "../../components/ui";
 import { IS_MAC } from "../../lib/windows";
 import { FONT_DEFAULTS, MONO_CHOICES, SANS_CHOICES, UI_ZOOMS, fontInstalled, installedFonts, monoStack, BUNDLED_MONO, useFonts, type Fonts, type InstalledFont } from "./fonts";
 import { Segmented } from "../connections/dialog/formBits";
+import { useTerminalPrefs, type TerminalPrefs } from "./terminal";
 import { GLASS_SUPPORTED, effectiveOf, useAppearance, type Appearance, type Glass, type GlassStyle, type Mode } from "./store";
 import { DARK_PRESETS, LIGHT_PRESETS, type Palette } from "./themes";
 
@@ -137,6 +138,7 @@ export function AppearanceDialog() {
           )}
         </Section>
         <FontsSection />
+        <TerminalSection />
       </div>
     </Dialog>
   );
@@ -209,6 +211,28 @@ function FontsSection() {
           </Select>
           <span className="text-muted">{IS_MAC ? "⌘" : "Ctrl"} + / − / 0</span>
         </label>
+      </div>
+    </Section>
+  );
+}
+
+/** Terminal behaviour (global, like the fonts): every terminal follows at once, open tabs too. */
+function TerminalSection() {
+  const t = useTerminalPrefs();
+  const copyKey = IS_MAC ? "⌘C" : "Ctrl+C";
+  return (
+    <Section title="Terminal"
+      hint={<>{t.copy === "select"
+        ? "Releasing the mouse after selecting copies the text."
+        : `Selecting only highlights the text; copy it with ${copyKey}.${IS_MAC ? "" : " With nothing selected, Ctrl+C still stops the running program."}`}{" "}
+        OSC 52 is how Claude Code, tmux or vim copy, also from an SSH host. Programs can only copy: they never read your clipboard.</>}>
+      <div className="space-y-2">
+        <div className="flex items-center gap-3 text-[12px]">
+          <span className="w-28 text-muted">Selecting text</span>
+          <Segmented<TerminalPrefs["copy"]> value={t.copy} onChange={(copy) => t.set({ copy })}
+            options={[{ value: "select", label: "Copy on select" }, { value: "shortcut", label: `Copy with ${copyKey} only` }]} />
+        </div>
+        <Checkbox label="Allow programs to copy to the clipboard (OSC 52)" checked={t.osc52} onChange={(osc52) => t.set({ osc52 })} />
       </div>
     </Section>
   );

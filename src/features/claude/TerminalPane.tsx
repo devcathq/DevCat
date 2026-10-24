@@ -17,7 +17,7 @@ import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/font
 import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
 import { loadUnicode } from "../../lib/xtermUnicode";
-import { copyOnSelect, IS_MAC, IS_WIN, terminalEditKey } from "../../lib/terminalKeys";
+import { copyOnSelect, IS_MAC, IS_WIN, programCopy, terminalEditKey } from "../../lib/terminalKeys";
 import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
 import { isRemote, remoteHost } from "../../lib/remotePath";
 import { toast } from "sonner";
@@ -145,6 +145,8 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     const hostEl = host.current!;
     hostEl.addEventListener("paste", onPaste, true);
     const offCopy = copyOnSelect(term, hostEl);
+    // Claude Code copies its own selections with OSC 52 (it has the mouse, so xterm selects nothing).
+    const offOsc52 = programCopy(term);
 
     // File paths (src/foo.ts:12) → file preview tab (.html renders there); ⌘/Ctrl+click → the default app.
     const links = term.registerLinkProvider({
@@ -211,6 +213,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       ro.disconnect();
       hostEl.removeEventListener("paste", onPaste, true);
       offCopy();
+      offOsc52();
       hostEl.removeEventListener("mousedown", onPress, true);
       links.dispose();
       input.dispose();

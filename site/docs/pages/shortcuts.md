@@ -26,7 +26,7 @@ Every shortcut in one place. On Windows and Linux, ⌘ is Ctrl and ⌥ is Alt.
 
 | Action | macOS | Windows, Linux |
 | --- | --- | --- |
-| Copy the selection | <kbd>⌘C</kbd> | <kbd>Ctrl+Shift+C</kbd>; on Windows also <kbd>Ctrl+C</kbd> (with nothing selected it interrupts, as always) |
+| Copy the selection | <kbd>⌘C</kbd> | <kbd>Ctrl+Shift+C</kbd>; on Windows also <kbd>Ctrl+C</kbd>, and on Linux too when copying is set to [a shortcut only](appearance.md#terminal) (with nothing selected it interrupts, as always) |
 | Paste | <kbd>⌘V</kbd> | <kbd>Ctrl+Shift+V</kbd>; on Windows also <kbd>Ctrl+V</kbd> |
 | Open a file path in DevCat / in its default app | click / <kbd>⌘</kbd>-click | click / <kbd>Ctrl</kbd>-click |
 | Clear | <kbd>⌘K</kbd> | <kbd>Ctrl+Shift+K</kbd> |
