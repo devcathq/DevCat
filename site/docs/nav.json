@@ -4,7 +4,7 @@
   { "title": "Git", "pages": ["git"] },
   { "title": "Databases", "pages": ["connections", "sql-editor", "data-grid", "schema-tools", "mongodb", "redis"] },
   { "title": "Infrastructure", "pages": ["kubernetes", "docker", "rabbitmq", "vpn-tunnels"] },
-  { "title": "Working together", "pages": ["rooms"] },
+  { "title": "Working together", "pages": ["rooms", "tickets"] },
   { "title": "Phone and remote", "pages": ["mobile", "devcat-serve"] },
   { "title": "More", "pages": ["notes", "appearance", "updates-and-more", "troubleshooting"] }
 ]

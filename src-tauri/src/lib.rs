@@ -21,6 +21,9 @@ mod history;
 mod infra;
 mod instance;
 mod keep_awake;
+mod mcp_server;
+mod mcp_sync;
+mod memory;
 mod models;
 mod network;
 mod notes;
@@ -38,6 +41,7 @@ pub mod remotedemo;
 mod secrets;
 mod state;
 mod store;
+mod tickets;
 #[cfg(feature = "gui")]
 mod updater;
 #[cfg(feature = "gui")]
@@ -79,9 +83,12 @@ fn init_backend(dir: std::path::PathBuf) {
     ai::init(dir.clone());
     agent::init(dir.clone());
     state::init(dir.clone());
+    mcp_sync::init(dir.clone());
+    memory::init(dir.clone());
     network::start();
     notify::init(dir.clone());
     remote::init(dir.clone());
+    tickets::init(dir.clone());
     rooms::init(dir);
 }
 
@@ -115,6 +122,13 @@ pub fn run() {
             let dir = app.path().app_data_dir().expect("no app data dir");
             events::set_app(app.handle().clone());
             init_backend(dir);
+            // agents' MCP configs point at this program: right again if DevCat moved
+            std::thread::spawn(mcp_sync::auto);
+            // Claude's memories changed while DevCat was closed: copy them (when kept in sync)
+            std::thread::spawn(|| {
+                memory::claude::auto();
+                memory::rules::refresh();
+            });
             #[cfg(target_os = "macos")]
             windows::install_menu(app.handle())?;
             // Windows / Linux: files DevCat was launched with.
@@ -153,6 +167,16 @@ pub fn run() {
             commands::projects::delete_project,
             commands::projects::move_connections,
             commands::projects::reorder_projects,
+            // Sync MCP (agents' configs)
+            mcp_sync::mcp_sync_preview,
+            mcp_sync::mcp_sync_apply,
+            mcp_sync::mcp_sync_dismiss,
+            // Memory shared by the coding agents
+            memory::memory_list,
+            memory::memory_save,
+            memory::memory_delete,
+            memory::claude::memory_claude_preview,
+            memory::claude::memory_sync_all,
             // bookmarks
             commands::bookmarks::list_bookmarks,
             commands::bookmarks::add_bookmark,
@@ -318,6 +342,17 @@ pub fn run() {
             rooms::room_keeper_add,
             rooms::room_focus,
             rooms::room_agent_stop,
+            // tickets (Jira, Trello, Linear → the agent)
+            tickets::tickets_boards,
+            tickets::tickets_board_save,
+            tickets::tickets_board_delete,
+            tickets::tickets_columns,
+            tickets::tickets_list,
+            tickets::tickets_fix,
+            tickets::tickets_stop,
+            tickets::tickets_jobs,
+            tickets::tickets_history,
+            tickets::tickets_webhook_test,
             // notes
             notes::notes_list,
             notes::note_save,

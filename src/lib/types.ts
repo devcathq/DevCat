@@ -65,7 +65,59 @@ export interface Project {
   color?: string | null;
   description?: string | null;
   order: number;
+  /** Code folders: agents there get the project's connections (without, they're everyone's). */
+  folders?: string[];
+  /** Agents over MCP may change data on its connections (else read only). */
+  mcpWrites?: boolean;
 }
+
+/** Sync MCP: what it changes (or changed) in the coding agents' configs. */
+export interface McpSyncPlan {
+  changes: { agent: string; file: string; scope: string; action: "add" | "update" | "remove" | "unchanged" }[];
+  /** Other MCP servers that reach one of the user's connections; ticked ones get replaced. */
+  lookalikes: { id: string; agent: string; file: string; scope: string; server: string; connection: string }[];
+  agents: string[];
+  notes: string[];
+  enabled: boolean;
+  dismissed: boolean;
+}
+
+/** Shared memory: where a memory lives (every project, a DevCat project, or a repository). */
+export type MemoryPlace = { kind: "global" } | { kind: "project"; id: string } | { kind: "folder"; id: string };
+export type MemoryKind = "user" | "feedback" | "project" | "reference";
+
+export interface Memory {
+  name: string;
+  description: string;
+  kind: MemoryKind;
+  body: string;
+  /** The agent that wrote it: claude-code, codex, gemini, devcat-agent, you… */
+  origin: string;
+  updated: string;
+  /** Copied from this Claude Code memory file. */
+  source?: string;
+  place: MemoryPlace;
+}
+
+export interface PlaceMemories { place: MemoryPlace; label: string; memories: Memory[]; handoffs: number }
+
+/** "Sync Claude memory to all agents": what happens to each Claude Code memory. */
+export interface ClaudeImportItem {
+  id: string;
+  folder: string;
+  name: string;
+  description: string;
+  kind: MemoryKind | "";
+  /** Goes to every project (else to its folder's project). */
+  global: boolean;
+  target: string;
+  status: "new" | "changed" | "same" | "conflict" | "removed";
+  note?: string;
+}
+
+export interface ClaudeImportPlan { items: ClaudeImportItem[]; notes: string[]; synced: boolean; auto: boolean; rules: boolean; rulesFiles: string[] }
+
+export interface MemorySyncReport { imported: number; updated: number; removed: number; agents: string[]; rulesFiles: string[]; notes: string[] }
 
 export type NodeKind =
   | "database" | "schema" | "folder" | "table" | "view" | "materializedView"
