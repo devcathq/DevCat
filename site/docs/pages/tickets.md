@@ -23,6 +23,8 @@ Trello lists, Linear workflow states), then choose:
 - **While the agent works, move to**: e.g. *In Progress*, or leave the ticket where it is.
 - **When fixed, move to**: e.g. *Testing* or *In Review*.
 - **When it needs a person, move to**: e.g. *Blocked*, or back where it was.
+- **Assigned to**: **Anyone**, **Me** (whoever the token belongs to) or **Me, or nobody yet**. On a shared board,
+  **Me** keeps the agent on your own tickets.
 - **Only tickets labelled**: only pick up tickets with this label (e.g. `agent`). Leave it empty for every ticket in the column.
 
 In Jira a ticket moves through your workflow's transitions: if there's no transition from where the ticket is
@@ -30,8 +32,11 @@ to the column you chose, the move is skipped and the reason shows in the history
 
 ## The agent
 
-- **Repository**: the git repository the agent works in. It must have no uncommitted changes when a ticket
-  starts, so the agent's work never mixes with yours.
+- **Repository**: the git repository the agent works in, or a folder of repositories (say, a front end and its
+  API next to each other). A single repository must have no uncommitted changes when a ticket starts, so the
+  agent's work never mixes with yours. In a folder, each repository gets the ticket's branch and the agent
+  changes the ones the ticket needs; a repository with uncommitted changes (or not on a branch) is left alone,
+  and the ticket's history says so.
 - **AI connection**: Claude Code (your login, or a Claude Code connection with an API key) or a DevCat Agent
   connection (any model API). Optionally a **Model** (`sonnet`, `haiku`…).
 - **Instructions for every ticket**: conventions, where things are, how to test. They're added to each ticket.
@@ -45,12 +50,15 @@ are done one at a time; the panel on the right shows what the agent is doing, an
 
 For each ticket:
 
-1. DevCat makes the branch `devcat/<key>-<title>` from the branch the repository is on, and moves the ticket
-   to your *working* column.
-2. The agent reads the ticket (title, description, labels, recent comments) and makes the change.
+1. DevCat makes the branch `devcat/<key>-<title>` from the branch the repository is on (in a folder: in each
+   repository), and moves the ticket to your *working* column.
+2. The agent reads the ticket (title, description, labels, recent comments) and makes the change. The
+   ticket's images (screenshots attached in Jira or Trello, or pasted into a Linear description) are shown to
+   it: png, jpeg, gif or webp, up to 6 of them and 5 MB each. Other attachments are only named.
 3. It answers **fixed**, **needs a person** (with its questions) or **couldn't fix**.
 4. DevCat commits what changed on the branch (unfinished work too, marked `WIP`) and switches the
-   repository back to the branch it was on. With **Push** on, a fixed ticket's branch is pushed to `origin`.
+   repository back to the branch it was on. In a folder, the repositories the agent didn't change have their
+   branch removed, and the comment names the ones it did. With **Push** on, a fixed ticket's branch is pushed to `origin`.
 5. The ticket gets a comment (the summary, how to test, the branch) and moves to *done* or *needs a person*.
 
 If the agent is stopped or crashes, the ticket goes back where it was, without a comment. A ticket the agent

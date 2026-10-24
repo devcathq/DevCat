@@ -4,10 +4,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type TrackerKind = "jira" | "trello" | "linear";
+/** Whose tickets the agent takes (the token owner = "me"). */
+export type Assigned = "anyone" | "me" | "meOrNobody";
 
 export interface Column { id: string; name: string }
 export interface Ticket {
-  id: string; key: string; title: string; description: string; url: string; labels: string[]; column: string;
+  id: string; key: string; title: string; description: string; url: string; labels: string[]; assignees: string[]; column: string;
   comments: { author: string; text: string }[];
 }
 
@@ -28,6 +30,7 @@ export interface Board {
   /** Write-only: a webhook to store, "" = remove it, undefined = keep. */
   webhook?: string;
   hasWebhook?: boolean;
+  /** A git repository, or a folder of them. */
   repo: string;
   providerId: string;
   model?: string | null;
@@ -36,6 +39,7 @@ export interface Board {
   doneTo?: Column | null;
   failedTo?: Column | null;
   label: string;
+  assigned: Assigned;
   comment: boolean;
   push: boolean;
   allowCommands: boolean;
@@ -53,15 +57,19 @@ export interface JobView {
 export type Outcome = "fixed" | "needs_info" | "failed" | "error" | "stopped";
 export interface RunRecord {
   ticketId: string; key: string; title: string; url: string; outcome: Outcome;
-  summary: string; testing: string; branch?: string | null; filesChanged: number; movedTo?: string | null;
+  summary: string; testing: string; branch?: string | null; filesChanged: number;
+  /** A folder of repositories: the ones changed, "name (n files)". */
+  repos: string[]; movedTo?: string | null;
   notes: string[]; started: number; finished: number; costUsd?: number | null;
 }
+
+export const ASSIGNED: Record<Assigned, string> = { anyone: "Anyone", me: "Me", meOrNobody: "Me, or nobody yet" };
 
 export const TRACKERS: Record<TrackerKind, string> = { jira: "Jira", trello: "Trello", linear: "Linear" };
 
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", providerId: "claude", model: null,
-  pickFrom: null, working: null, doneTo: null, failedTo: null, label: "",
+  pickFrom: null, working: null, doneTo: null, failedTo: null, label: "", assigned: "anyone",
   comment: true, push: false, allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
 });
 

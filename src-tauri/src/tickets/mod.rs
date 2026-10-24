@@ -46,6 +46,16 @@ impl TrackerKind {
     }
 }
 
+/// Whose tickets the agent takes: anyone's, the token owner's, or theirs and unassigned ones.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Assigned {
+    #[default]
+    Anyone,
+    Me,
+    MeOrNobody,
+}
+
 /// A column of a board: a Jira status, a Trello list, a Linear workflow state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Column {
@@ -59,6 +69,16 @@ pub struct Comment {
     pub text: String,
 }
 
+/// A file attached to a ticket (read when the agent starts on it).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Attachment {
+    pub name: String,
+    /// What the tracker says it is ("" when it doesn't say).
+    pub mime: String,
+    pub url: String,
+    pub size: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ticket {
     /// What the API addresses it by (Jira key, Trello card id, Linear issue id).
@@ -69,10 +89,15 @@ pub struct Ticket {
     pub description: String,
     pub url: String,
     pub labels: Vec<String>,
+    /// Who it's assigned to (names).
+    #[serde(default)]
+    pub assignees: Vec<String>,
     /// Column id it's in.
     pub column: String,
     #[serde(default)]
     pub comments: Vec<Comment>,
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
 }
 
 fn yes() -> bool {
@@ -114,7 +139,8 @@ pub struct Board {
     #[serde(default)]
     pub has_webhook: bool,
 
-    /// The git repository the agent works in.
+    /// The git repository the agent works in, or a folder of repositories (the agent may change any
+    /// of them; each gets the ticket's branch).
     #[serde(default)]
     pub repo: String,
     /// AI connection that does the work (Claude Code or DevCat Agent).
@@ -137,6 +163,9 @@ pub struct Board {
     /// Only tickets with this label (empty: all of the column).
     #[serde(default)]
     pub label: String,
+    /// Only tickets assigned to the token's owner (and, with MeOrNobody, unassigned ones).
+    #[serde(default)]
+    pub assigned: Assigned,
     /// Comment on the ticket with what was done.
     #[serde(default = "yes")]
     pub comment: bool,
@@ -173,6 +202,9 @@ pub struct RunRecord {
     pub testing: String,
     pub branch: Option<String>,
     pub files_changed: usize,
+    /// A folder of repositories: the ones the agent changed, "name (n files)".
+    #[serde(default)]
+    pub repos: Vec<String>,
     /// Column it was moved to (name).
     pub moved_to: Option<String>,
     /// Things that went wrong around the work (a move or comment the tracker refused…).

@@ -12,6 +12,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of
+  repositories, not just one: the agent changes the ones the ticket needs, on the same branch in each, and a
+  repository with your uncommitted changes is left alone (before, such a folder failed with "is not a git
+  repository"). The agent also sees the ticket's screenshots (Jira and Trello attachments, images in a Linear
+  description).
 - **Memory:** one memory for all your coding agents, with nothing else to install. Claude Code, Codex, Gemini,
   Cursor and the DevCat Agent read and save it through DevCat's MCP server, and each new session starts with a
   short brief of it, so you can switch models mid-task and the next one knows what the last one learned. An agent
