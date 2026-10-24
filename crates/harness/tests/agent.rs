@@ -240,7 +240,7 @@ async fn compact_on_request_and_nothing_to_compact() {
 }
 
 #[tokio::test]
-async fn in_the_sandbox_auto_edit_runs_commands_without_asking() {
+async fn in_the_sandbox_commands_still_ask() {
     for sandbox in [false, true] {
         let (dir, mut session) = project().await;
         let model = Scripted::new(vec![vec![tool("s1", "shell", json!({ "command": "echo hi" }))], vec![text("done")]]);
@@ -256,8 +256,8 @@ async fn in_the_sandbox_auto_edit_runs_commands_without_asking() {
             })
             .await
             .unwrap();
-        // outside the sandbox a command asks; inside it, it can change only the project
-        assert_eq!(approver.1.lock().unwrap().len(), if sandbox { 0 } else { 1 }, "sandbox {sandbox}");
+        // the sandbox limits writes, not reads or the network: Auto-edit asks for commands either way
+        assert_eq!(approver.1.lock().unwrap().len(), 1, "sandbox {sandbox}");
         match devcat_harness::sandbox::available() {
             Ok(()) => assert!(!results[0].1 && results[0].0.contains("hi"), "{results:?}"),
             // no sandbox on this system: the command isn't run unsandboxed

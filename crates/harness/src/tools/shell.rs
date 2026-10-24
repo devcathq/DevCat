@@ -40,9 +40,6 @@ impl Tool for Shell {
     fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
         Kind::Exec
     }
-    fn contained(&self) -> bool {
-        true
-    }
     fn summary(&self, input: &Value) -> String {
         input.get("command").and_then(Value::as_str).unwrap_or("?").to_string()
     }
@@ -123,10 +120,11 @@ fn command_for(command: &str, ctx: &ToolCtx) -> Result<(tokio::process::Command,
         // UTF-8 output instead of the console code page
         let script = format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ProgressPreference = 'SilentlyContinue'; {command}");
         let args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script].map(String::from);
-        crate::sandbox::command("powershell.exe", &args, &ctx.cwd, ctx.sandbox)
+        crate::sandbox::command("powershell.exe", &args, &ctx.cwd, ctx.sandbox, true)
     } else {
         let sh = if std::path::Path::new("/bin/bash").exists() { "/bin/bash" } else { "/bin/sh" };
-        crate::sandbox::command(sh, &["-c".to_string(), command.to_string()], &ctx.cwd, ctx.sandbox)
+        // the repository is git's: no hooks or config planted for a later git call
+        crate::sandbox::command(sh, &["-c".to_string(), command.to_string()], &ctx.cwd, ctx.sandbox, true)
     }
 }
 

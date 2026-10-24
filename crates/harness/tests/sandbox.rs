@@ -62,6 +62,12 @@ async fn sandboxed_commands_write_only_in_the_project() {
     let commit = git(&["commit", "-q", "--allow-empty", "-m", "sandboxed"]).await;
     assert!(!commit.is_error, "{commit:?}");
     assert!(git(&["log", "--oneline"]).await.content.contains("sandboxed"));
+    // on macOS a shell command can't plant a hook or config in .git for git to run later
+    let hook = sh("echo 'touch /tmp/x' > .git/hooks/post-commit && echo planted".into()).await;
+    if cfg!(target_os = "macos") {
+        assert!(hook.is_error && !proj.join(".git/hooks/post-commit").exists(), "{hook:?}");
+        assert!(sh("echo x > notes.txt".into()).await.content.contains("no output"), "the rest of the project stays writable");
+    }
 
     // the same command without the sandbox writes outside
     let free = Shell.run(json!({ "command": format!("echo out > '{}'", outside.join("y.txt").display()) }), &ToolCtx::at(&proj)).await;

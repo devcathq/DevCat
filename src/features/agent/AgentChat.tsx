@@ -356,7 +356,7 @@ function SandboxChip({ tabId }: { tabId: string }) {
   return (
     <button onClick={() => setSandbox(tabId, !on)} aria-pressed={on}
       title={on
-        ? "Sandbox on: the agent's commands can write only in this project (and the temp folders); in Auto-edit they run without asking. The network isn't limited. Click to turn it off."
+        ? "Sandbox on: the agent's commands can write only in this project (and the temp folders). They still ask: reading and the network aren't limited. Click to turn it off."
         : "Sandbox off: the agent's commands can change anything you can. Click to run them in the OS sandbox, where they can write only in this project."}
       className={clsx("flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] transition-colors", on ? "border-ok/40 bg-ok/10 text-ok" : "border-line text-muted hover:border-faint hover:text-fg")}>
       <Container className="size-3.5" />Sandbox

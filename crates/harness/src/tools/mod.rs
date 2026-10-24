@@ -138,10 +138,6 @@ pub trait Tool: Send + Sync {
     fn timeout(&self, _input: &Value) -> Duration {
         Duration::from_secs(60)
     }
-    /// Its commands run in the OS sandbox when it's on, so they can change only the project.
-    fn contained(&self) -> bool {
-        false
-    }
     async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput;
 }
 

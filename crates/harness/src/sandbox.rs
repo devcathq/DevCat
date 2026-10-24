@@ -1,6 +1,9 @@
 //! The OS sandbox for the commands the agent runs (`shell`, `git`): when it's on, a command can
 //! read anything but write only in the project folder, the temp folders and `/dev` (`/dev/null`,
-//! the terminal). It limits writes, not the network.
+//! the terminal). It limits writes, not reading or the network, so commands still ask as commands.
+//! On macOS a shell command can't write in the project's `.git` either (hooks and config there run
+//! on the next git call, outside the sandbox); the `git` tool can. Landlock can't leave out a
+//! folder of an allowed one, so on Linux `.git` stays writable.
 //!
 //! - macOS: Seatbelt, through `sandbox-exec` with a profile that denies file writes elsewhere.
 //! - Linux: Landlock (Linux 5.13+). The ruleset is built in DevCat; the child only turns it on
@@ -51,8 +54,8 @@ pub struct Guard {
 }
 
 /// `program args` as a command, inside the sandbox when `sandboxed` (writes only in `cwd` and the
-/// folders of [`writable`]).
-pub fn command(program: &str, args: &[String], cwd: &Path, sandboxed: bool) -> Result<(tokio::process::Command, Guard), String> {
+/// folders of [`writable`]; with `protect_git`, not in `cwd`'s `.git` on macOS).
+pub fn command(program: &str, args: &[String], cwd: &Path, sandboxed: bool, protect_git: bool) -> Result<(tokio::process::Command, Guard), String> {
     if !sandboxed {
         let mut c = tokio::process::Command::new(program);
         c.args(args);
@@ -62,11 +65,13 @@ pub fn command(program: &str, args: &[String], cwd: &Path, sandboxed: bool) -> R
     {
         available()?;
         let mut c = tokio::process::Command::new(SANDBOX_EXEC);
-        c.args(["-p", &seatbelt_profile(&writable(cwd)), "--", program]).args(args);
+        let git: Vec<PathBuf> = if protect_git { std::fs::canonicalize(cwd.join(".git")).into_iter().collect() } else { vec![] };
+        c.args(["-p", &seatbelt_profile(&writable(cwd), &git), "--", program]).args(args);
         Ok((c, Guard {}))
     }
     #[cfg(target_os = "linux")]
     {
+        let _ = protect_git;
         let ruleset = landlock::ruleset(&writable(cwd))?;
         let fd = std::os::fd::AsRawFd::as_raw_fd(&ruleset);
         let mut c = tokio::process::Command::new(program);
@@ -79,7 +84,7 @@ pub fn command(program: &str, args: &[String], cwd: &Path, sandboxed: bool) -> R
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = (program, args, cwd);
+        let _ = (program, args, cwd, protect_git);
         Err(available().unwrap_err())
     }
 }
@@ -94,13 +99,17 @@ fn guard_none() -> Guard {
 #[cfg(target_os = "macos")]
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-/// Everything is allowed but writing files, which is allowed only beneath `writable`. (In Seatbelt
-/// profiles the last rule that matches wins.)
+/// Everything is allowed but writing files, which is allowed only beneath `writable`, and not
+/// beneath `read_only` after all. (In Seatbelt profiles the last rule that matches wins.)
 #[cfg(any(target_os = "macos", test))]
-fn seatbelt_profile(writable: &[PathBuf]) -> String {
+fn seatbelt_profile(writable: &[PathBuf], read_only: &[PathBuf]) -> String {
     let quote = |p: &Path| p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
-    let paths: Vec<String> = writable.iter().map(|p| format!("(subpath \"{}\")", quote(p))).collect();
-    format!("(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* {})\n", paths.join(" "))
+    let paths = |list: &[PathBuf]| list.iter().map(|p| format!("(subpath \"{}\")", quote(p))).collect::<Vec<_>>().join(" ");
+    let mut p = format!("(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* {})\n", paths(writable));
+    if !read_only.is_empty() {
+        p.push_str(&format!("(deny file-write* {})\n", paths(read_only)));
+    }
+    p
 }
 
 #[cfg(target_os = "linux")]
@@ -214,9 +223,12 @@ mod tests {
 
     #[test]
     fn profile_allows_writes_only_beneath_the_folders() {
-        let p = seatbelt_profile(&[PathBuf::from("/Users/me/my \"proj\""), PathBuf::from("/private/tmp")]);
+        let p = seatbelt_profile(&[PathBuf::from("/Users/me/my \"proj\""), PathBuf::from("/private/tmp")], &[]);
         assert!(p.starts_with("(version 1)\n(allow default)\n(deny file-write*)\n"));
         assert!(p.contains(r#"(allow file-write* (subpath "/Users/me/my \"proj\"") (subpath "/private/tmp"))"#), "{p}");
+        // .git after the project, so it wins
+        let p = seatbelt_profile(&[PathBuf::from("/p")], &[PathBuf::from("/p/.git")]);
+        assert!(p.ends_with("(allow file-write* (subpath \"/p\"))\n(deny file-write* (subpath \"/p/.git\"))\n"), "{p}");
     }
 
     #[test]

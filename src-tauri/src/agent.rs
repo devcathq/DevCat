@@ -282,6 +282,31 @@ fn today() -> String {
 
 /// Hooks run commands on this computer, so they run only in folders where the user allowed the
 /// hooks as they are now: `<data>/agent-hooks.json` maps a folder to the digest of its hooks.
+/// Chats whose commands run in the sandbox, in `<data>/agent-sandbox.json`: the setting comes
+/// from the computer, and a chat continued later (from a phone, after a restart) keeps it.
+fn sandbox_file() -> AppResult<PathBuf> {
+    Ok(dir()?.parent().unwrap_or(dir()?).join("agent-sandbox.json"))
+}
+
+fn sandbox_saved(session_id: &str) -> bool {
+    let Ok(text) = sandbox_file().and_then(|f| std::fs::read_to_string(f).map_err(Into::into)) else { return false };
+    serde_json::from_str::<Value>(&text).ok().and_then(|v| v["on"].as_array().map(|a| a.iter().any(|s| s.as_str() == Some(session_id)))).unwrap_or(false)
+}
+
+fn sandbox_save(session_id: &str, on: bool) -> AppResult<()> {
+    if sandbox_saved(session_id) == on {
+        return Ok(());
+    }
+    let file = sandbox_file()?;
+    let mut ids: Vec<String> = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v["on"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())).unwrap_or_default();
+    ids.retain(|s| s != session_id);
+    if on {
+        ids.push(session_id.to_string());
+    }
+    std::fs::write(&file, serde_json::to_string_pretty(&json!({ "on": ids })).unwrap_or_default())?;
+    Ok(())
+}
+
 fn hooks_file() -> AppResult<PathBuf> {
     Ok(dir()?.parent().unwrap_or(dir()?).join("agent-hooks.json"))
 }
@@ -381,6 +406,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     (context.hooks, context.hooks_review) = (hook_files, review);
     let mut agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
     agent.hooks = Arc::new(hooks);
+    agent.sandbox = sandbox_saved(&session.id);
     let log = Snapshot::of(&agent, &session);
     let run = Arc::new(Run {
         id,
@@ -727,6 +753,7 @@ fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<Stri
         agent.context_window = context_window.filter(|&w| w > 0);
         if let Some(s) = sandbox {
             agent.sandbox = s;
+            let _ = sandbox_save(&run.id, s);
         }
         let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
         // `/compact [what to keep]`: summarize the conversation now instead of sending a message.

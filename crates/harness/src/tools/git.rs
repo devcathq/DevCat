@@ -47,9 +47,6 @@ impl Tool for Git {
         // the pipeline's limit; a little over git's own, so its message wins
         TIMEOUT + Duration::from_secs(5)
     }
-    fn contained(&self) -> bool {
-        true
-    }
     async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
         let a = match args(&input) {
             Ok(a) => a,
@@ -57,7 +54,7 @@ impl Tool for Git {
         };
         let args: Vec<String> = ["--no-pager", "-c", "color.ui=false", "-c", "core.quotePath=false"].iter().map(|s| s.to_string()).chain(a).collect();
         // the sandbox's guard lives until git has started
-        let (mut cmd, _guard) = match crate::sandbox::command("git", &args, &ctx.cwd, ctx.sandbox) {
+        let (mut cmd, _guard) = match crate::sandbox::command("git", &args, &ctx.cwd, ctx.sandbox, false) {
             Ok(c) => c,
             Err(e) => return ToolOutput::err(format!("Not run: the sandbox is on and couldn't be used. {e}")),
         };

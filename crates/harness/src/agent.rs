@@ -150,8 +150,9 @@ pub struct Agent {
     pub context_window: Option<u64>,
     /// Commands the user set up to run at points of the loop (see [`crate::hooks`]); none by default.
     pub hooks: Arc<Hooks>,
-    /// Commands (`shell`, `git`) run in the OS sandbox: they can write only in the project, so
-    /// they ask like edits inside it (see [`crate::sandbox`]).
+    /// Commands (`shell`, `git`) run in the OS sandbox, where they can write only in the project
+    /// (see [`crate::sandbox`]). They still ask as commands: it limits writes, not what a command
+    /// reads or sends over the network.
     pub sandbox: bool,
     /// Tools the user allowed for the rest of the session.
     allowed: HashSet<String>,
@@ -570,9 +571,7 @@ impl Agent {
         }
         // 2. approval (fail closed); a hook can allow it or make it ask, PermissionRequest hooks
         // can answer for the user, and a helper can't ask
-        // a command in the sandbox can change only the project: it asks like an edit inside it
-        let asks_as = if self.sandbox && kind == Kind::Exec && tool.contained() { Kind::Edit } else { kind };
-        let mut ask = (self.policy.needs_approval(asks_as) && !self.allowed.contains(name) && !pre.allow) || pre.ask;
+        let mut ask = (self.policy.needs_approval(kind) && !self.allowed.contains(name) && !pre.allow) || pre.ask;
         if ask {
             let o = self.hook(session, "PermissionRequest", Some(&names), foreign(&input), on).await;
             if o.block.is_some() || o.allow {
