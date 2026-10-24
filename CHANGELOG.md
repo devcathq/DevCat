@@ -15,7 +15,38 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Focus mode hides other folders' tabs too:** chats, terminals, files and Git tabs of folders that aren't the
   focused project's are hidden, like other projects' connections and notes. A folder is the project's once you use
   it while the project is focused. The AI Workspace's recent folders list the project's own; the others are under
-  **Other folders** (#77).
+  **Other folders**, and **Remove from this project** takes one out (#77).
+
+## 0.12.0 - 2026-10-24
+
+- **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of
+  repositories, not just one: the agent changes the ones the ticket needs, on the same branch in each, and a
+  repository with your uncommitted changes is left alone (before, such a folder failed with "is not a git
+  repository"). The agent also sees the ticket's screenshots: Jira and Trello attachments, and images in a
+  Linear description (#82).
+- **Memory:** one memory for all your coding agents, with nothing else to install. Claude Code, Codex, Gemini,
+  Cursor and the DevCat Agent read and save it through DevCat's MCP server, and each new session starts with a
+  short brief of it, so you can switch models mid-task and the next one knows what the last one learned. An agent
+  that stops mid-task can leave a handoff that the next agent picks up. **Sync Claude memory to all agents** (the
+  brain button at the top right) copies Claude Code's own memory in and can keep it in sync. Browse, edit and
+  forget memories in the same dialog (#81).
+- **Sync MCP:** your coding agents can now use your DevCat connections without setup. The plug button above
+  the connections (or a project's menu) adds DevCat's MCP server to Claude Code, Codex, Cursor and Gemini CLI,
+  replacing DevCat's earlier entry instead of adding a second one. You can also tick other MCP servers that reach
+  the same databases to have DevCat replace them. Agents then read schemas and run queries (SQL, MongoDB, Redis)
+  and read Kubernetes clusters, with passwords staying in DevCat. Give a project its **code folders** (project
+  menu → Code folders & MCP…) and its connections go only to agents working in those folders, DevCat Agent
+  included; connections in no project, or in a project without folders, go to every folder. Over MCP, agents
+  only read unless the project has **Allow writes from MCP** turned on. After the first sync, DevCat keeps the
+  agents' configs up to date as your projects change. `devcat mcp` runs the server by hand (#80).
+
+## 0.11.0 - 2026-10-24
+
+- **Tickets:** connect a Jira (Cloud or Data Center), Trello or Linear board and let the agent work through a
+  column. Pick tickets (or let DevCat watch the column) and the agent fixes each on its own `devcat/<ticket>`
+  branch. DevCat commits the work, comments on the ticket with what changed and how to test it, and moves it
+  on (say, To Do → In Progress → Testing, or to Blocked when it needs a person). Works with Claude Code or a
+  DevCat Agent connection; results can be posted to Slack. Open it from **Tickets** in the title bar (#78).
 
 ## 0.10.0 - 2026-10-24
 

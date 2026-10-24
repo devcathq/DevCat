@@ -34,6 +34,8 @@ export type TabSpec =
   | { type: "note"; noteId: string }
   /** A room: documents, thread and agents shared with other people (see features/rooms). */
   | { type: "room"; roomId: string }
+  /** Jira / Trello / Linear boards whose tickets the agent works on (see features/tickets). */
+  | { type: "tickets" }
   | { type: "git"; repo: string; view?: GitView; path?: string | null; sha?: string | null };
 
 export type GitView = "history" | "changes" | "branches" | "stashes";

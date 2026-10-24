@@ -22,6 +22,8 @@ Usage:
   devcat keeper [options]  Keep rooms' changes for members who are offline (a blind keeper:
                            it stores them encrypted and can't read them). Run it on an
                            always-on machine, then add its id in the room (owner only)
+  devcat mcp [options]     Your connections as an MCP server (stdio) for Claude Code, Codex,
+                           Cursor or Gemini; Sync MCP in the app sets it up (`devcat mcp --help`)
   devcat help              This help
   devcat version           The version
 
@@ -69,6 +71,8 @@ pub fn main(args: &[String]) -> Option<i32> {
             attach_console();
             stop_main(&args[1..])
         }
+        // no console attached: stdin / stdout are the agent's pipes
+        "mcp" => crate::mcp_server::main(&args[1..]),
         "keeper" => {
             attach_console();
             keeper_main(&args[1..])
@@ -176,7 +180,7 @@ fn apply(o: &Opts, s: &mut RemoteSettings) {
 }
 
 /// The app's data folder (what Tauri's `app_data_dir` gives the app).
-fn default_data_dir() -> Option<PathBuf> {
+pub(crate) fn default_data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("dev.devcat.app"))
 }
 

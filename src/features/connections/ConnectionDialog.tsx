@@ -1,5 +1,6 @@
 // New / edit connection dialog, driven by useUi().connectionDialog ({ id, kind, projectId }).
-// Also hosts the global confirm/prompt dialogs (<DialogHost/>), since AppShell mounts this once.
+// Also hosts the global confirm/prompt dialogs (<DialogHost/>) and the Sync MCP / project code
+// folders dialogs, since AppShell mounts this once.
 import clsx from "clsx";
 import { ArrowLeft, CheckCircle2, PlugZap, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -15,12 +16,16 @@ import {
   SslSection, SSH_KINDS, SSL_KINDS, suggestName, URL_KINDS, emptySsh,
 } from "./dialog/sections";
 import { DialogHost } from "./dialogs";
+import { McpSyncDialog } from "./mcp/McpSyncDialog";
+import { ProjectAgentsDialog } from "./mcp/ProjectAgentsDialog";
 
 export default function ConnectionDialog() {
   const state = useUi((s) => s.connectionDialog);
   return (
     <>
       {state && <ConnectionDialogInner key={`${state.id ?? "new"}:${state.kind ?? ""}:${state.projectId ?? ""}`} id={state.id} kind={state.kind as ConnectionKind | undefined} projectId={state.projectId ?? (state.id ? null : useConnections.getState().focusProjectId)} />}
+      <McpSyncDialog />
+      <ProjectAgentsDialog />
       <DialogHost />
     </>
   );

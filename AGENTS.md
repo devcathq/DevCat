@@ -28,3 +28,24 @@ Why the phone can't simply reuse the desktop flow:
 
 What the phone side does today: `list_connections` leaves SSH sessions out, and `pty_open` refuses
 an SSH-session folder (`ssh://devcat-…`). Keep it that way unless the work above is done.
+
+## Connections over MCP
+
+Agents get the user's connections through the tools in `src-tauri/src/agent_tools.rs`: built into the DevCat
+Agent, and served to other agents by `devcat mcp` (`mcp_server.rs`), which Sync MCP (`mcp_sync.rs`) writes into
+Claude Code / Codex / Cursor / Gemini configs. Keep one implementation: a new connection tool goes in
+`agent_tools.rs` and both get it. Which connections an agent sees follows its folder (`agent_tools::Scope`, a
+project's `folders`). Over MCP, data changes need the project's `mcp_writes`. Sync MCP edits files on the
+computer, so it stays out of the phone dispatcher, like the SSH workbench above.
+
+## Shared memory
+
+Every coding agent shares one memory (`src-tauri/src/memory/`): markdown files in `<data>/memory/` with the
+frontmatter Claude Code's memory uses, per place (every project, a DevCat project, or a repository in no project).
+The tools (`memory/tools.rs`: `memory_search`, `memory_read`, `memory_save`, `memory_forget`, `handoff_write`,
+`handoff_take`) are built into the DevCat Agent and served by `devcat mcp`, and both start sessions with
+`memory::brief`. Keep one implementation, as for connections. "Sync Claude memory to all agents"
+(`memory/claude.rs`) copies `~/.claude/projects/*/memory` in one way only: nothing is written into Claude's
+folder. With the user's consent DevCat keeps a marked block in `~/.codex/AGENTS.md` and `~/.gemini/GEMINI.md`
+(`memory/rules.rs`) and changes nothing else in those files. Memory reads and writes files on the computer, so it
+stays out of the phone dispatcher too, and agents on SSH hosts don't get it (they can't run the local `devcat mcp`).
