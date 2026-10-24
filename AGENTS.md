@@ -28,3 +28,12 @@ Why the phone can't simply reuse the desktop flow:
 
 What the phone side does today: `list_connections` leaves SSH sessions out, and `pty_open` refuses
 an SSH-session folder (`ssh://devcat-…`). Keep it that way unless the work above is done.
+
+## Connections over MCP
+
+Agents get the user's connections through the tools in `src-tauri/src/agent_tools.rs`: built into the DevCat
+Agent, and served to other agents by `devcat mcp` (`mcp_server.rs`), which Sync MCP (`mcp_sync.rs`) writes into
+Claude Code / Codex / Cursor / Gemini configs. Keep one implementation: a new connection tool goes in
+`agent_tools.rs` and both get it. Which connections an agent sees follows its folder (`agent_tools::Scope`, a
+project's `folders`). Over MCP, data changes need the project's `mcp_writes`. Sync MCP edits files on the
+computer, so it stays out of the phone dispatcher, like the SSH workbench above.

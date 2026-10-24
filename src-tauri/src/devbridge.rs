@@ -143,7 +143,11 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "note_save" => out(arg(args, "note").and_then(|n| Ok(crate::notes::save_checked(&bridge_stores().0, &bridge_stores().1, n)))?),
         "note_delete" => out(arg::<String>(args, "id").map(|id| bridge_stores().0.delete(&id))?),
         "list_projects" => out(bridge_stores().1.list()),
-        "save_project" => out(arg(args, "project").map(|p| bridge_stores().1.save(p))?),
+        // the app's command (same throwaway folder): it also keeps synced MCP configs right
+        "save_project" => out(crate::commands::projects::save_project(crate::state::St::get(), arg(args, "project")?).await),
+        "mcp_sync_preview" => out(c!(crate::mcp_sync::mcp_sync_preview)),
+        "mcp_sync_apply" => out(c!(crate::mcp_sync::mcp_sync_apply, "replace")),
+        "mcp_sync_dismiss" => out(c!(crate::mcp_sync::mcp_sync_dismiss)),
         "list_bookmarks" => out(bridge_bookmarks().list()),
         "add_bookmark" => out(arg(args, "bookmark").map(|b| bridge_bookmarks().add(b))?),
         "remove_bookmark" => out(arg::<String>(args, "id").map(|id| bridge_bookmarks().remove(&id))?),
@@ -198,6 +202,16 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
     let d = std::env::temp_dir().join(format!("devcat-bridge-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&d);
     crate::state::init(d.clone());
+    // Sync MCP edits agents' configs in a pretend home folder (DEVBRIDGE_MCP_HOME, else one with
+    // an empty ~/.claude.json and ~/.codex), never the real ones.
+    crate::mcp_sync::init(d.clone());
+    let home = std::env::var_os("DEVBRIDGE_MCP_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let h = d.join("home");
+        let _ = std::fs::create_dir_all(h.join(".codex"));
+        let _ = std::fs::write(h.join(".claude.json"), "{}");
+        h
+    });
+    crate::mcp_sync::set_home(home);
     crate::tickets::init(d.clone());
     // Rooms keep their identity and documents here (DEVBRIDGE_DATA: keep them across runs).
     crate::rooms::init(std::env::var_os("DEVBRIDGE_DATA").map(std::path::PathBuf::from).unwrap_or(d));

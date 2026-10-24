@@ -146,6 +146,14 @@ fn store() -> AppResult<&'static NetStore> {
     STORE.get().ok_or_else(|| AppError::msg("network store not initialised"))
 }
 
+/// Connections never start a VPN / tunnel in this process (`devcat mcp`: the app owns them, and
+/// one it already connected works for every process on the computer).
+static PASSIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_passive() {
+    PASSIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Called once from `lib.rs` setup.
 pub fn init(data_dir: PathBuf) {
     let _ = STORE.set(NetStore::new(data_dir, Box::new(store::Keyring)));
@@ -190,6 +198,9 @@ pub async fn shutdown_async() {
 
 /// Connect the network profile a connection depends on (`options.networkId`), if any.
 pub(crate) async fn ensure_for(cfg: &ConnectionConfig) -> AppResult<()> {
+    if PASSIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
     let Some(id) = cfg.options.get("networkId").map(|s| s.trim()).filter(|s| !s.is_empty()) else {
         return Ok(());
     };

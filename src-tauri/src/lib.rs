@@ -21,6 +21,8 @@ mod history;
 mod infra;
 mod instance;
 mod keep_awake;
+mod mcp_server;
+mod mcp_sync;
 mod models;
 mod network;
 mod notes;
@@ -80,6 +82,7 @@ fn init_backend(dir: std::path::PathBuf) {
     ai::init(dir.clone());
     agent::init(dir.clone());
     state::init(dir.clone());
+    mcp_sync::init(dir.clone());
     network::start();
     notify::init(dir.clone());
     remote::init(dir.clone());
@@ -117,6 +120,8 @@ pub fn run() {
             let dir = app.path().app_data_dir().expect("no app data dir");
             events::set_app(app.handle().clone());
             init_backend(dir);
+            // agents' MCP configs point at this program: right again if DevCat moved
+            std::thread::spawn(mcp_sync::auto);
             #[cfg(target_os = "macos")]
             windows::install_menu(app.handle())?;
             // Windows / Linux: files DevCat was launched with.
@@ -155,6 +160,10 @@ pub fn run() {
             commands::projects::delete_project,
             commands::projects::move_connections,
             commands::projects::reorder_projects,
+            // Sync MCP (agents' configs)
+            mcp_sync::mcp_sync_preview,
+            mcp_sync::mcp_sync_apply,
+            mcp_sync::mcp_sync_dismiss,
             // bookmarks
             commands::bookmarks::list_bookmarks,
             commands::bookmarks::add_bookmark,

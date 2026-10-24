@@ -12,6 +12,16 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Sync MCP:** your coding agents can now use your DevCat connections without setup. The plug button above
+  the connections (or a project's menu) adds DevCat's MCP server to Claude Code, Codex, Cursor and Gemini CLI,
+  replacing DevCat's earlier entry instead of adding a second one. You can also tick other MCP servers that reach
+  the same databases to have DevCat replace them. Agents then read schemas and run queries (SQL, MongoDB, Redis)
+  and read Kubernetes clusters, with passwords staying in DevCat. Give a project its **code folders** (project
+  menu → Code folders & MCP…) and its connections go only to agents working in those folders, DevCat Agent
+  included; connections in no project, or in a project without folders, go to every folder. Over MCP, agents
+  only read unless the project has **Allow writes from MCP** turned on. After the first sync, DevCat keeps the
+  agents' configs up to date as your projects change. `devcat mcp` runs the server by hand.
+
 ## 0.11.0 - 2026-10-24
 
 - **Tickets:** connect a Jira (Cloud or Data Center), Trello or Linear board and let the agent work through a

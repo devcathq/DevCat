@@ -65,6 +65,21 @@ export interface Project {
   color?: string | null;
   description?: string | null;
   order: number;
+  /** Code folders: agents there get the project's connections (without, they're everyone's). */
+  folders?: string[];
+  /** Agents over MCP may change data on its connections (else read only). */
+  mcpWrites?: boolean;
+}
+
+/** Sync MCP: what it changes (or changed) in the coding agents' configs. */
+export interface McpSyncPlan {
+  changes: { agent: string; file: string; scope: string; action: "add" | "update" | "remove" | "unchanged" }[];
+  /** Other MCP servers that reach one of the user's connections; ticked ones get replaced. */
+  lookalikes: { id: string; agent: string; file: string; scope: string; server: string; connection: string }[];
+  agents: string[];
+  notes: string[];
+  enabled: boolean;
+  dismissed: boolean;
 }
 
 export type NodeKind =
