@@ -38,6 +38,7 @@ pub mod remotedemo;
 mod secrets;
 mod state;
 mod store;
+mod tickets;
 #[cfg(feature = "gui")]
 mod updater;
 #[cfg(feature = "gui")]
@@ -82,6 +83,7 @@ fn init_backend(dir: std::path::PathBuf) {
     network::start();
     notify::init(dir.clone());
     remote::init(dir.clone());
+    tickets::init(dir.clone());
     rooms::init(dir);
 }
 
@@ -318,6 +320,17 @@ pub fn run() {
             rooms::room_keeper_add,
             rooms::room_focus,
             rooms::room_agent_stop,
+            // tickets (Jira, Trello, Linear → the agent)
+            tickets::tickets_boards,
+            tickets::tickets_board_save,
+            tickets::tickets_board_delete,
+            tickets::tickets_columns,
+            tickets::tickets_list,
+            tickets::tickets_fix,
+            tickets::tickets_stop,
+            tickets::tickets_jobs,
+            tickets::tickets_history,
+            tickets::tickets_webhook_test,
             // notes
             notes::notes_list,
             notes::note_save,
