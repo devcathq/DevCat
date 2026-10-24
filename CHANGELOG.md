@@ -36,7 +36,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   on (say, To Do → In Progress → Testing, or to Blocked when it needs a person). Works with Claude Code or a
   DevCat Agent connection; results can be posted to Slack. Only take tickets assigned to you (or nobody yet),
   and point a board at one repository or a folder of them: the agent changes the ones the ticket needs, on the
-  same branch in each. Open it from **Tickets** in the title bar (#78).
+  same branch in each. The agent sees the ticket's screenshots too. Open it from **Tickets** in the title bar (#78).
 
 ## 0.10.0 - 2026-10-24
 
