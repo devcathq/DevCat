@@ -30,7 +30,7 @@ In focus, tabs that belong to another project are hidden (they come back when yo
 notes, and chats, terminals, files and Git tabs of folders that aren't the project's. A folder becomes the
 project's when you use it while the project is focused, as the AI Workspace folder or by opening a chat, terminal,
 file or Git tab in it (also one that's already open, hidden). Folders on an SSH session go by that session's
-project. Your home folder never becomes a project's. The AI Workspace's recent folders list the project's own; the
+project. Your home folder counts only for itself, not for the folders in it. The AI Workspace's recent folders list the project's own; the
 others are under **Other folders**, and **Remove from this project** in the same menu takes the open folder out.
 
 ## Tabs

@@ -31,11 +31,11 @@ function save(folders: Record<string, string[]>) {
   useFolderProjects.setState({ folders });
 }
 
-/** The home folder (and the folders above it) never become a project's: a terminal opened there
- *  would claim everything under it. */
+/** The home folder and the folders above it count only for themselves, not for what's in them: a
+ *  terminal opened in ~ would otherwise claim every folder under it. */
 let home: string | null = null;
 void homeDir().then((h) => { home = folderKey(h); }, () => {});
-const tooWide = (key: string) => !key || (home !== null && (key === home || home.startsWith(`${key}/`)));
+const wide = (key: string) => home !== null && (key === home || home.startsWith(`${key}/`));
 
 interface FolderProjectsState {
   /** Folder (see `folderKey`) → the projects it belongs to. */
@@ -49,7 +49,7 @@ export const useFolderProjects = create<FolderProjectsState>(() => ({
   add: (folder, projectId) => {
     const key = folderKey(folder);
     const folders = load();
-    if (tooWide(key) || folders[key]?.includes(projectId)) return;
+    if (!key || folders[key]?.includes(projectId)) return;
     save({ ...folders, [key]: [...(folders[key] ?? []), projectId] });
   },
   remove: (folder, projectId) => {
@@ -70,7 +70,7 @@ window.addEventListener("storage", (e) => {
 /** Whether `path` (a folder, or a file in one) is in one of `projectId`'s folders. */
 export function inProjectFolder(path: string, projectId: string, folders = useFolderProjects.getState().folders): boolean {
   const key = folderKey(path);
-  return Object.entries(folders).some(([f, ids]) => ids.includes(projectId) && (key === f || key.startsWith(`${f}/`)));
+  return Object.entries(folders).some(([f, ids]) => ids.includes(projectId) && (key === f || (!wide(f) && key.startsWith(`${f}/`))));
 }
 
 /** Whether a tab in `path` shows under the window's focus (always without one, or without a path). */
