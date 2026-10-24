@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import { Button, Checkbox, Dialog, ErrorBox, Field, Input, Select, Textarea } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { AiProvider } from "../../lib/types";
-import { TRACKERS, newBoard, tickets, type Board, type Column, type TrackerKind } from "./api";
+import { ASSIGNED, TRACKERS, newBoard, tickets, type Board, type Column, type TrackerKind } from "./api";
 
 const TOKEN_HELP: Record<TrackerKind, { url: string; text: string }> = {
   jira: { url: "https://id.atlassian.com/manage-profile/security/api-tokens", text: "Create an API token" },
@@ -153,6 +153,11 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
             <Field label="While the agent works, move to">{colSelect(b.working, (c) => set({ working: c }), "Leave it where it is")}</Field>
             <Field label="When fixed, move to">{colSelect(b.doneTo, (c) => set({ doneTo: c }))}</Field>
             <Field label="When it needs a person, move to">{colSelect(b.failedTo, (c) => set({ failedTo: c }), "Back where it was")}</Field>
+            <Field label="Assigned to" hint="Me: whoever the token belongs to.">
+              <Select value={b.assigned} onChange={(e) => set({ assigned: e.target.value as Board["assigned"] })}>
+                {(Object.keys(ASSIGNED) as Board["assigned"][]).map((k) => <option key={k} value={k}>{ASSIGNED[k]}</option>)}
+              </Select>
+            </Field>
             <Field label="Only tickets labelled" hint="Empty: every ticket in the column."><Input value={b.label} onChange={(e) => set({ label: e.target.value })} placeholder="agent" /></Field>
             <Field label="Board name"><Input value={b.name} onChange={(e) => set({ name: e.target.value })} placeholder={`${TRACKERS[b.kind]} ${b.project}`.trim()} /></Field>
           </div>
@@ -160,9 +165,9 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
 
         <section className="space-y-3 border-t border-line pt-4">
           <div className="text-xs font-semibold tracking-wide text-muted uppercase">Agent</div>
-          <Field label="Repository" hint="The agent works on a new branch here (devcat/<ticket>); the repository must have no uncommitted changes.">
+          <Field label="Repository" hint="A git repository, or a folder of them (the agent changes the ones the ticket needs). Each gets a new branch, devcat/<ticket>; a repository with uncommitted changes is left alone.">
             <div className="flex gap-2">
-              <Input value={b.repo} onChange={(e) => set({ repo: e.target.value })} placeholder="/path/to/repo" />
+              <Input value={b.repo} onChange={(e) => set({ repo: e.target.value })} placeholder="/path/to/repo or /path/to/folder-of-repos" />
               <Button onClick={() => void pickRepo()}><FolderOpen className="size-3.5" />Choose</Button>
             </div>
           </Field>
