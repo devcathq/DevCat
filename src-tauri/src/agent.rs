@@ -49,6 +49,8 @@ struct Run {
     /// The connection's model API (with its key); the chat can switch `model`.
     cfg: devcat_harness::LlmConfig,
     turn: tokio::sync::Mutex<(Agent, Session)>,
+    /// Messages sent while it works (the agent's own inbox): read before its next step.
+    inbox: devcat_harness::Inbox,
     cancel: Mutex<Cancel>,
     approver: Arc<UiApprover>,
     busy: AtomicBool,
@@ -296,6 +298,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     context.connections = crate::agent_tools::names(&scope);
     let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
     let log = Snapshot::of(&agent, &session);
+    let inbox = agent.inbox.clone();
     let run = Arc::new(Run {
         id,
         cwd: cwd.to_string(),
@@ -307,6 +310,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         since: AtomicU64::new(now_ms()),
         cfg,
         turn: tokio::sync::Mutex::new((agent, session)),
+        inbox,
         cancel: Mutex::new(Cancel::default()),
         approver,
         busy: AtomicBool::new(false),
@@ -502,8 +506,25 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
     if text.trim().is_empty() && attachments.is_empty() {
         return Err(AppError::msg("Type a message first"));
     }
-    if run.busy.swap(true, Ordering::SeqCst) {
-        return Err(AppError::msg("The agent is still working. Stop it or wait for it to finish."));
+    // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
+    let compact = text.trim().strip_prefix("/compact").filter(|rest| attachments.is_empty() && (rest.is_empty() || rest.starts_with(char::is_whitespace))).map(str::to_string);
+    let (message, images) = with_attachments(&text, &attachments).await;
+    // While it works, the message goes in before its next step, as in Claude Code: no need to stop
+    // it first. Decided under `live`, where a turn also ends, so a message is either read by the
+    // turn or starts the next one.
+    {
+        let mut live = run.approver.live.lock();
+        if run.busy.load(Ordering::SeqCst) {
+            if compact.is_some() {
+                return Err(AppError::msg("The agent is working: send /compact when it's done."));
+            }
+            run.inbox.push(message, images);
+            run.approver.send_with(&mut live, json!({ "type": "queued", "text": text, "attachments": attachments }));
+            drop(live);
+            chat_changed(&run.id);
+            return Ok(());
+        }
+        run.busy.store(true, Ordering::SeqCst);
     }
     let cancel = Cancel::default();
     *run.cancel.lock() = cancel.clone();
@@ -513,7 +534,6 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
         let ap = run.approver.clone();
         ap.send(json!({ "type": "turnStart", "text": text, "attachments": attachments }));
         chat_changed(&run.id);
-        let (message, images) = with_attachments(&text, &attachments).await;
         let mut g = run.turn.lock().await;
         let (agent, session) = &mut *g;
         agent.policy = policy;
@@ -522,29 +542,46 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
         }
         agent.context_window = context_window.filter(|&w| w > 0);
         let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
-        // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
-        let compact = text.trim().strip_prefix("/compact").filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
-        let res = match compact {
-            Some(focus) if attachments.is_empty() => agent.compact(session, Some(focus), &cancel, &mut on).await.map(|_| devcat_harness::TurnEnd::Answered),
-            _ => agent.turn_with_images(session, &message, images, &cancel, &mut on).await,
+        let mut res = match compact {
+            Some(focus) => agent.compact(session, Some(&focus), &cancel, &mut on).await.map(|_| devcat_harness::TurnEnd::Answered),
+            None => agent.turn_with_images(session, &message, images, &cancel, &mut on).await,
         };
-        let (end, error) = match res {
-            Ok(end) => (serde_json::to_value(end).unwrap_or(Value::Null), None),
-            Err(devcat_harness::Error::Cancelled) => (json!("stopped"), None),
-            Err(e) => (json!("error"), Some(e.to_string())),
-        };
-        let snap = Snapshot::of(agent, session);
-        drop(g);
-        // All at once for `open`: the turn moves from `live` to `log`, and the chat is done.
-        {
-            let mut live = ap.live.lock();
-            let (usage, title) = (snap.usage.clone(), snap.title.clone());
-            *run.log.lock() = snap;
-            ap.send_with(&mut live, json!({ "type": "turnEnd", "end": end, "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64 }));
-            live.events.clear();
-            run.since.store(now_ms(), Ordering::SeqCst);
-            run.busy.store(false, Ordering::SeqCst);
+        loop {
+            let (end, error) = match &res {
+                Ok(end) => (serde_json::to_value(end).unwrap_or(Value::Null), None),
+                Err(devcat_harness::Error::Cancelled) => (json!("stopped"), None),
+                Err(e) => (json!("error"), Some(e.to_string())),
+            };
+            let snap = Snapshot::of(agent, session);
+            // All at once for `open` and for messages sent meanwhile: either some came as it
+            // finished (the next turn starts with them), or the turn moves from `live` to `log`
+            // and the chat is done. After a stop or an error, the ones it didn't read go back
+            // to the chat box (`unsent`).
+            let next = {
+                let mut live = ap.live.lock();
+                let mut queued = agent.inbox.take();
+                if res.is_ok() && !queued.is_empty() && !cancel.is_cancelled() {
+                    Some(queued.remove(0)).map(|first| (first, queued))
+                } else {
+                    let unsent: Vec<String> = queued.into_iter().map(|(t, _)| t).collect();
+                    let (usage, title) = (snap.usage.clone(), snap.title.clone());
+                    *run.log.lock() = snap;
+                    ap.send_with(&mut live, json!({ "type": "turnEnd", "end": end, "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64, "unsent": unsent }));
+                    live.events.clear();
+                    run.since.store(now_ms(), Ordering::SeqCst);
+                    run.busy.store(false, Ordering::SeqCst);
+                    None
+                }
+            };
+            let Some(((first, first_images), rest)) = next else { break };
+            // the others are read at its first step
+            for (t, i) in rest {
+                agent.inbox.push(t, i);
+            }
+            ap.send(json!({ "type": "userMessage", "text": first }));
+            res = agent.turn_with_images(session, &first, first_images, &cancel, &mut on).await;
         }
+        drop(g);
         chat_changed(&run.id);
     });
     Ok(())

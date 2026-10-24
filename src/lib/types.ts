@@ -514,4 +514,8 @@ export type AgentLiveEvent =
   | { type: "approval"; request: AgentApprovalRequest }
   | { type: "toolCall"; id: string; name: string; summary: string; input: Record<string, unknown> }
   | { type: "toolResult"; id: string; content: string; is_error: boolean }
-  | { type: "turnEnd"; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; usage: AgentUsage; title: string; elapsedMs: number };
+  /** A message sent while the agent works: shown at once, read before its next step. */
+  | { type: "queued"; text: string; attachments?: string[] }
+  /** A queued message is now in the conversation. */
+  | { type: "userMessage"; text: string }
+  | { type: "turnEnd"; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; usage: AgentUsage; title: string; elapsedMs: number; /** Sent while it worked, not read (it stopped or failed). */ unsent?: string[] };

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use devcat_harness::approval::{ApprovalRequest, DenyAll};
 use devcat_harness::llm::{Delta, Reply, Request};
 use devcat_harness::tools::Registry;
-use devcat_harness::{Agent, AgentEvent, Approver, Block, Cancel, Decision, Error, Model, Policy, Role, Session, SessionEvent, TurnEnd, Usage};
+use devcat_harness::{Agent, AgentEvent, Approver, Block, Cancel, Decision, Error, Inbox, Model, Policy, Role, Session, SessionEvent, TurnEnd, Usage};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -256,5 +256,77 @@ async fn todo_list_needs_no_approval_and_fetch_asks() {
     assert_eq!(*approver.1.lock().unwrap(), vec!["web_fetch: https://example.invalid/x"]);
     assert_eq!(results[0], "Todo list updated:\n[x] Read\n[>] Fix");
     assert!(results[1].starts_with("The user declined"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Plays a script, and plays the user too: before step `n` returns, it sends `say[n]` (if any)
+/// through the agent's inbox, as if typed while the agent worked. Records each request's last message.
+struct Typist {
+    steps: Mutex<Vec<Vec<Block>>>,
+    say: Vec<Option<&'static str>>,
+    inbox: Inbox,
+    n: Mutex<usize>,
+    last: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl Model for Typist {
+    fn name(&self) -> String {
+        "typist".into()
+    }
+    async fn step(&self, req: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
+        let n = {
+            let mut n = self.n.lock().unwrap();
+            *n += 1;
+            *n - 1
+        };
+        let last = req.messages.last().unwrap();
+        self.last.lock().unwrap().push(last.content.iter().map(|b| match b {
+            Block::Text { text } => text.clone(),
+            Block::ToolResult { tool_use_id, .. } => format!("result {tool_use_id}"),
+            _ => String::new(),
+        }).collect::<Vec<_>>().join(" + "));
+        if let Some(Some(s)) = self.say.get(n) {
+            self.inbox.push(s.to_string(), vec![]);
+        }
+        let content = self.steps.lock().unwrap().remove(0);
+        Ok(Reply { content, usage: Usage::default(), truncated: false })
+    }
+}
+
+#[tokio::test]
+async fn what_the_user_sends_while_it_works_goes_in_at_the_next_step() {
+    let (dir, mut session) = project().await;
+    let inbox = Inbox::default();
+    let model = Arc::new(Typist {
+        steps: Mutex::new(vec![
+            vec![tool("t1", "read", json!({ "path": "notes.txt" }))],
+            vec![text("Version 1.")],
+            vec![text("And README is missing.")],
+        ]),
+        // during the read, and again while it answers
+        say: vec![Some("also check the README"), Some("one more thing: be brief")],
+        inbox: inbox.clone(),
+        n: Mutex::new(0),
+        last: Mutex::new(vec![]),
+    });
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.inbox = inbox.clone();
+    let mut said = Vec::new();
+    let end = agent
+        .turn(&mut session, "what's the version?", &Cancel::default(), &mut |e| {
+            if let AgentEvent::UserMessage { text } = e {
+                said.push(text);
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    // the first went in with the tool's result; the one sent while it answered kept it going
+    assert_eq!(*model.last.lock().unwrap(), ["what's the version?", "result t1 + also check the README", "one more thing: be brief"]);
+    assert_eq!(said, ["also check the README", "one more thing: be brief"]);
+    assert!(inbox.is_empty());
+    let users: Vec<&str> = session.events().iter().filter_map(|e| if let SessionEvent::User { text, .. } = e { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(users, ["what's the version?", "also check the README", "one more thing: be brief"]);
     let _ = std::fs::remove_dir_all(dir);
 }
