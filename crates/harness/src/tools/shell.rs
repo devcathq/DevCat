@@ -53,7 +53,12 @@ impl Tool for Shell {
             Err(e) => return e,
         };
         let limit = input.get("timeout_secs").and_then(Value::as_u64).map(Duration::from_secs).unwrap_or(DEFAULT_TIMEOUT).min(MAX_TIMEOUT);
-        let (text, code) = match run_process(command_for(command), ctx, limit, shell_name()).await {
+        // the sandbox's guard lives until the command has started
+        let (cmd, _guard) = match command_for(command, ctx) {
+            Ok(c) => c,
+            Err(e) => return ToolOutput::err(format!("Not run: the sandbox is on and couldn't be used. {e}")),
+        };
+        let (text, code) = match run_process(cmd, ctx, limit, shell_name()).await {
             Ok(r) => r,
             Err(e) => return e,
         };
@@ -110,18 +115,16 @@ pub(super) fn exit_output(text: String, code: Option<i32>) -> ToolOutput {
     }
 }
 
-fn command_for(command: &str) -> tokio::process::Command {
+fn command_for(command: &str, ctx: &ToolCtx) -> Result<(tokio::process::Command, crate::sandbox::Guard), String> {
     if cfg!(windows) {
-        let mut c = tokio::process::Command::new("powershell.exe");
         // UTF-8 output instead of the console code page
         let script = format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ProgressPreference = 'SilentlyContinue'; {command}");
-        c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script]);
-        c
+        let args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script].map(String::from);
+        crate::sandbox::command("powershell.exe", &args, &ctx.cwd, ctx.sandbox, true)
     } else {
         let sh = if std::path::Path::new("/bin/bash").exists() { "/bin/bash" } else { "/bin/sh" };
-        let mut c = tokio::process::Command::new(sh);
-        c.args(["-c", command]);
-        c
+        // the repository is git's: no hooks or config planted for a later git call
+        crate::sandbox::command(sh, &["-c".to_string(), command.to_string()], &ctx.cwd, ctx.sandbox, true)
     }
 }
 
@@ -142,7 +145,7 @@ mod tests {
 
     #[tokio::test]
     async fn runs_reports_exit_code_and_times_out() {
-        let ctx = ToolCtx { cwd: std::env::temp_dir() };
+        let ctx = ToolCtx::at(std::env::temp_dir());
         let ok = Shell.run(json!({ "command": "echo hello" }), &ctx).await;
         assert_eq!((ok.content.trim(), ok.is_error), ("hello", false));
 

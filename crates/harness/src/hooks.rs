@@ -555,7 +555,7 @@ fn git_bash() -> Option<PathBuf> {
 /// How Claude Code and Codex name a DevCat Agent tool, and its input in their shape (`file_path`
 /// instead of `path`, `git` as a `Bash` command). Hooks get these.
 pub fn foreign_tool(name: &str, input: &Value, cwd: &Path) -> (String, Value) {
-    let ctx = ToolCtx { cwd: cwd.to_path_buf() };
+    let ctx = ToolCtx::at(cwd);
     let mut v = input.clone();
     let with_file_path = |v: &mut Value| {
         if let Some(obj) = v.as_object_mut()

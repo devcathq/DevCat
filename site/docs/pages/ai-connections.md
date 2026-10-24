@@ -70,6 +70,24 @@ that tool until the chat closes.
   tokens, each tool call with its input, output and time, who approved it, hook messages and summaries. A bar
   shows where each step falls in its turn. Click a helper's call to see its own run. **Log** opens the session file.
 
+### Sandbox
+
+**Sandbox** (next to the permission mode under the chat box) runs the agent's commands (`shell`, `git`) in the
+operating system's sandbox. They can still read any file, but they can write only in the project folder, the temp
+folders and `/dev`, so a command you allow can't change your home folder or other projects. Commands still ask in
+**Ask first** and **Auto-edit**: the sandbox limits what a command writes, not what it reads or sends.
+
+- macOS uses Seatbelt (`sandbox-exec`); Linux uses Landlock (Linux 5.13 or newer). Windows isn't supported yet, so
+  the button doesn't show there.
+- It limits writing, not reading or the network: a command can still read your files and download or send things.
+- On macOS a command can't write in the project's `.git` either (a hook or a setting planted there would run on
+  the next git call, outside the sandbox); the agent's `git` tool can, for commits. On Linux `.git` stays writable.
+- Tools that write outside the project fail inside it: package caches (`~/.npm`, `~/.cargo`), global installs, your
+  git config. Turn the sandbox off for those, or run them yourself.
+- If the sandbox can't be used, the command isn't run (it doesn't run unsandboxed instead).
+- A scheduled job can run its commands in the sandbox too (an option in its editor). The sandbox is set on the
+  computer: a chat you continue on your phone keeps it, also after DevCat restarts.
+
 ### Scheduled jobs
 
 A scheduled job runs a prompt on a schedule in a folder: a morning report, a nightly check of the tests, a weekly

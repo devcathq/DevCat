@@ -150,6 +150,10 @@ pub struct Agent {
     pub context_window: Option<u64>,
     /// Commands the user set up to run at points of the loop (see [`crate::hooks`]); none by default.
     pub hooks: Arc<Hooks>,
+    /// Commands (`shell`, `git`) run in the OS sandbox, where they can write only in the project
+    /// (see [`crate::sandbox`]). They still ask as commands: it limits writes, not what a command
+    /// reads or sends over the network.
+    pub sandbox: bool,
     /// Tools the user allowed for the rest of the session.
     allowed: HashSet<String>,
     /// A helper started by `subagent` (that call's id): it only looks, never asks, and starts no
@@ -161,7 +165,7 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(model: Arc<dyn Model>, tools: Registry, policy: Policy, approver: Arc<dyn Approver>, system: String) -> Agent {
-        Agent { model, tools, policy, approver, system, context_window: None, hooks: Arc::default(), allowed: HashSet::new(), helper: None, started: false }
+        Agent { model, tools, policy, approver, system, context_window: None, hooks: Arc::default(), sandbox: false, allowed: HashSet::new(), helper: None, started: false }
     }
 
     /// Run the hooks of `event` (see [`Hooks::run`]); what they say to the user is sent on.
@@ -279,7 +283,7 @@ impl Agent {
 
     async fn run(&mut self, session: &mut Session, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<TurnEnd> {
         let specs: Vec<ToolSpec> = self.tools.specs();
-        let ctx = ToolCtx { cwd: session.cwd.clone().into() };
+        let ctx = ToolCtx { cwd: session.cwd.clone().into(), sandbox: self.sandbox };
         // the last call and how many times in a row it was made (repeat guard)
         let mut last: Option<(String, Value)> = None;
         let mut same = 0;
@@ -462,6 +466,7 @@ impl Agent {
                 system: format!("{}\n\n{HELPER}", self.system),
                 context_window: self.context_window,
                 hooks: self.hooks.clone(),
+                sandbox: self.sandbox,
                 allowed: self.allowed.clone(),
                 helper: Some(id.to_string()),
                 started: true,

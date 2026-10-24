@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, Webhook, X,
+  ArrowUp, Ban, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
@@ -16,7 +16,7 @@ import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
 import { POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { fmtCost } from "../claude/util";
-import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, trustHooks, unattach, useAgent } from "./store";
+import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
 
 export default function AgentChat({ tabId, cwd, provider, visible, onReview }: { tabId: string; cwd: string; provider: AiProvider; visible: boolean; onReview: () => void }) {
   const chat = useAgent((s) => s.chats[tabId]);
@@ -344,6 +344,23 @@ function ToolDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
       {item.output && !(item.name === "write" || item.name === "edit") && <Code muted={item.status !== "error"} danger={item.status === "error"}>{item.output}</Code>}
       {item.output && (item.name === "write" || item.name === "edit") && (item.status === "error" || item.status === "denied") && <Code danger>{item.output}</Code>}
     </div>
+  );
+}
+
+/** The OS sandbox for the agent's commands, on or off (only where there is one: macOS, Linux). */
+function SandboxChip({ tabId }: { tabId: string }) {
+  const on = useAgent((s) => s.chats[tabId]?.sandbox ?? false);
+  const available = useSandbox((s) => s.available);
+  useEffect(() => loadSandbox(), []);
+  if (!available) return null;
+  return (
+    <button onClick={() => setSandbox(tabId, !on)} aria-pressed={on}
+      title={on
+        ? "Sandbox on: the agent's commands can write only in this project (and the temp folders). They still ask: reading and the network aren't limited. Click to turn it off."
+        : "Sandbox off: the agent's commands can change anything you can. Click to run them in the OS sandbox, where they can write only in this project."}
+      className={clsx("flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] transition-colors", on ? "border-ok/40 bg-ok/10 text-ok" : "border-line text-muted hover:border-faint hover:text-fg")}>
+      <Container className="size-3.5" />Sandbox
+    </button>
   );
 }
 
@@ -686,6 +703,7 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
               {POLICIES.map((p) => <option key={p.id} value={p.id}>{p.label}: {p.hint}</option>)}
             </select>
           </label>
+          <SandboxChip tabId={tabId} />
           <label className="relative flex h-7 max-w-[240px] cursor-pointer items-center gap-1.5 rounded-full bg-hover/70 px-2.5 text-[12px] text-muted hover:text-fg"
             title={models.length ? `Model for the next messages (${chat.providerName})` : `${chat.providerName}: ${chat.model}`}>
             <Cpu className="size-3.5 shrink-0" /><span className="truncate">{chat.model}</span>
