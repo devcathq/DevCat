@@ -12,11 +12,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.11.0 - 2026-10-24
+
 - **Tickets:** connect a Jira (Cloud or Data Center), Trello or Linear board and let the agent work through a
   column. Pick tickets (or let DevCat watch the column) and the agent fixes each on its own `devcat/<ticket>`
   branch. DevCat commits the work, comments on the ticket with what changed and how to test it, and moves it
   on (say, To Do → In Progress → Testing, or to Blocked when it needs a person). Works with Claude Code or a
-  DevCat Agent connection; results can be posted to Slack. Open it from **Tickets** in the title bar.
+  DevCat Agent connection; results can be posted to Slack. Open it from **Tickets** in the title bar (#78).
 
 ## 0.10.0 - 2026-10-24
 
