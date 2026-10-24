@@ -47,7 +47,9 @@ async fn serves_the_folders_connections() {
     // in the project's folder: its connections and the shared ones
     let tools = start(&data, &["--folder", &repo.to_string_lossy()]).await;
     let names: Vec<String> = tools.iter().map(|t| t.spec().name).collect();
-    assert_eq!(names, ["mcp__devcat__devcat_connections", "mcp__devcat__db_schema", "mcp__devcat__db_query"]);
+    let memory = ["memory_search", "memory_read", "memory_save", "memory_forget", "handoff_write", "handoff_take"].map(|n| format!("mcp__devcat__{n}"));
+    assert_eq!(names[..memory.len()], memory, "the shared memory first");
+    assert_eq!(names[memory.len()..], ["mcp__devcat__devcat_connections", "mcp__devcat__db_schema", "mcp__devcat__db_query"]);
     let list = call(&tools, "devcat_connections", json!({})).await;
     assert!(list.content.contains("Project Shop") && list.content.contains("shop-db") && list.content.contains("notes"), "{}", list.content);
 
@@ -75,6 +77,36 @@ async fn serves_the_folders_connections() {
     assert!(call(&tools, "devcat_connections", json!({})).await.content.contains("shop-db"));
 
     for d in [data, repo, elsewhere] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[tokio::test]
+async fn agents_share_one_memory() {
+    let (data, repo, other) = (tmp("data"), tmp("repo"), tmp("other"));
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("api")).unwrap();
+    let first = start(&data, &["--folder", &repo.to_string_lossy()]).await;
+    let saved = call(&first, "memory_save", json!({ "name": "staging-first", "description": "Deploy to staging before prod", "type": "feedback", "body": "Always deploy to staging first.\n**Why:** prod broke once." })).await;
+    assert!(!saved.is_error, "{}", saved.content);
+    let user = call(&first, "memory_save", json!({ "name": "prefers-pnpm", "description": "Uses pnpm, not npm", "type": "user", "body": "pnpm everywhere" })).await;
+    assert!(user.content.contains("every project"), "{}", user.content);
+    call(&first, "handoff_write", json!({ "summary": "Migrated users; orders still to do" })).await;
+
+    // another agent, another process, in a subfolder of the same repository
+    let second = start(&data, &["--folder", &repo.join("api").to_string_lossy()]).await;
+    let found = call(&second, "memory_search", json!({ "query": "staging" })).await;
+    assert!(found.content.contains("staging-first"), "{}", found.content);
+    let handoff = call(&second, "handoff_take", json!({})).await;
+    assert!(handoff.content.contains("orders still to do"), "{}", handoff.content);
+    assert!(call(&first, "handoff_take", json!({})).await.content.contains("No open handoff"), "taken once");
+
+    // elsewhere: the memories for every project, not this project's
+    let elsewhere = start(&data, &["--folder", &other.to_string_lossy()]).await;
+    let all = call(&elsewhere, "memory_search", json!({ "query": "" })).await;
+    assert!(all.content.contains("prefers-pnpm") && !all.content.contains("staging-first"), "{}", all.content);
+
+    for d in [data, repo, other] {
         let _ = std::fs::remove_dir_all(d);
     }
 }

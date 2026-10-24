@@ -98,6 +98,11 @@ pub fn set_home(dir: PathBuf) {
     let _ = HOME.set(dir);
 }
 
+/// The folder the agents' configs live under (the home folder, or the dev bridge's).
+pub(crate) fn home() -> Option<PathBuf> {
+    HOME.get().cloned().or_else(dirs::home_dir)
+}
+
 fn state_path() -> AppResult<PathBuf> {
     DATA_DIR.get().map(|d| d.join("mcp-sync.json")).ok_or_else(|| AppError::msg("DevCat isn't ready yet"))
 }
@@ -547,7 +552,7 @@ fn write_json(path: &Path, v: &Value) -> AppResult<()> {
 }
 
 /// Back the file up once, then replace it in one step (keeping its permissions).
-fn write_file(path: &Path, bytes: &[u8]) -> AppResult<()> {
+pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> AppResult<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

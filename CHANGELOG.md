@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Memory:** one memory for all your coding agents, with nothing else to install. Claude Code, Codex, Gemini,
+  Cursor and the DevCat Agent read and save it through DevCat's MCP server, and each new session starts with a
+  short brief of it, so you can switch models mid-task and the next one knows what the last one learned. An agent
+  that stops mid-task can leave a handoff that the next agent picks up. **Sync Claude memory to all agents** (the
+  brain button at the top right) copies Claude Code's own memory in and can keep it in sync. Browse, edit and
+  forget memories in the same dialog.
 - **Sync MCP:** your coding agents can now use your DevCat connections without setup. The plug button above
   the connections (or a project's menu) adds DevCat's MCP server to Claude Code, Codex, Cursor and Gemini CLI,
   replacing DevCat's earlier entry instead of adding a second one. You can also tick other MCP servers that reach

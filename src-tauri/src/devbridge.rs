@@ -148,6 +148,11 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "mcp_sync_preview" => out(c!(crate::mcp_sync::mcp_sync_preview)),
         "mcp_sync_apply" => out(c!(crate::mcp_sync::mcp_sync_apply, "replace")),
         "mcp_sync_dismiss" => out(c!(crate::mcp_sync::mcp_sync_dismiss)),
+        "memory_list" => out(c!(crate::memory::memory_list)),
+        "memory_save" => out(c!(crate::memory::memory_save, "memory")),
+        "memory_delete" => out(c!(crate::memory::memory_delete, "place", "name")),
+        "memory_claude_preview" => out(c!(crate::memory::claude::memory_claude_preview)),
+        "memory_sync_all" => out(c!(crate::memory::claude::memory_sync_all, "choices", "auto", "rules")),
         "list_bookmarks" => out(bridge_bookmarks().list()),
         "add_bookmark" => out(arg(args, "bookmark").map(|b| bridge_bookmarks().add(b))?),
         "remove_bookmark" => out(arg::<String>(args, "id").map(|id| bridge_bookmarks().remove(&id))?),
@@ -205,6 +210,7 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
     // Sync MCP edits agents' configs in a pretend home folder (DEVBRIDGE_MCP_HOME, else one with
     // an empty ~/.claude.json and ~/.codex), never the real ones.
     crate::mcp_sync::init(d.clone());
+    crate::memory::init(d.clone());
     let home = std::env::var_os("DEVBRIDGE_MCP_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| {
         let h = d.join("home");
         let _ = std::fs::create_dir_all(h.join(".codex"));
