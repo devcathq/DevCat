@@ -12,17 +12,19 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.12.0 - 2026-10-24
+
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of
   repositories, not just one: the agent changes the ones the ticket needs, on the same branch in each, and a
   repository with your uncommitted changes is left alone (before, such a folder failed with "is not a git
-  repository"). The agent also sees the ticket's screenshots (Jira and Trello attachments, images in a Linear
-  description).
+  repository"). The agent also sees the ticket's screenshots: Jira and Trello attachments, and images in a
+  Linear description (#82).
 - **Memory:** one memory for all your coding agents, with nothing else to install. Claude Code, Codex, Gemini,
   Cursor and the DevCat Agent read and save it through DevCat's MCP server, and each new session starts with a
   short brief of it, so you can switch models mid-task and the next one knows what the last one learned. An agent
   that stops mid-task can leave a handoff that the next agent picks up. **Sync Claude memory to all agents** (the
   brain button at the top right) copies Claude Code's own memory in and can keep it in sync. Browse, edit and
-  forget memories in the same dialog.
+  forget memories in the same dialog (#81).
 - **Sync MCP:** your coding agents can now use your DevCat connections without setup. The plug button above
   the connections (or a project's menu) adds DevCat's MCP server to Claude Code, Codex, Cursor and Gemini CLI,
   replacing DevCat's earlier entry instead of adding a second one. You can also tick other MCP servers that reach
@@ -31,7 +33,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   menu → Code folders & MCP…) and its connections go only to agents working in those folders, DevCat Agent
   included; connections in no project, or in a project without folders, go to every folder. Over MCP, agents
   only read unless the project has **Allow writes from MCP** turned on. After the first sync, DevCat keeps the
-  agents' configs up to date as your projects change. `devcat mcp` runs the server by hand.
+  agents' configs up to date as your projects change. `devcat mcp` runs the server by hand (#80).
 
 ## 0.11.0 - 2026-10-24
 
