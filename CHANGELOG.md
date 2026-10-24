@@ -12,6 +12,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Focus mode hides other folders' tabs too:** chats, terminals, files and Git tabs of folders that aren't the
+  focused project's are hidden, like other projects' connections and notes. A folder is the project's once you use
+  it while the project is focused. The AI Workspace's recent folders list the project's own; the others are under
+  **Other folders**, and **Remove from this project** takes one out (#77).
+
 ## 0.12.0 - 2026-10-24
 
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of

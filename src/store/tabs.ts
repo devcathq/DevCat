@@ -4,6 +4,9 @@ import type { Tab, TabSpec } from "../tabs/types";
 interface TabsState {
   tabs: Tab[];
   activeId: string | null;
+  /** The tab `open` last opened or brought forward (`n` changes every time), unlike one that
+   *  became active because its neighbour closed. Project focus goes by it. */
+  opened: { id: string; n: number } | null;
   /** Open a tab. If `key` matches an existing tab it is focused instead. */
   open: (spec: TabSpec, title: string, key?: string) => string;
   /** Close a tab; a registered close guard (see setCloseGuard) may veto it unless `force`. */
@@ -36,13 +39,15 @@ async function mayClose(id: string): Promise<boolean> {
 export const useTabs = create<TabsState>((set, get) => ({
   tabs: [{ id: "welcome", type: "welcome", title: "Welcome" }],
   activeId: "welcome",
+  opened: null,
   open: (spec, title, key) => {
     const id = key ?? `${spec.type}-${++seq}`;
+    const opened = { id, n: ++seq };
     if (get().tabs.some((t) => t.id === id)) {
-      set({ activeId: id });
+      set({ activeId: id, opened });
       return id;
     }
-    set((s) => ({ tabs: [...s.tabs, { ...spec, id, title } as Tab], activeId: id }));
+    set((s) => ({ tabs: [...s.tabs, { ...spec, id, title } as Tab], activeId: id, opened }));
     return id;
   },
   close: (id, force) => {
