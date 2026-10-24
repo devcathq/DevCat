@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  POLICIES, SUGGESTIONS, ZERO, allowAllLabel, applyAll, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, itemsFromLog, lastContext, str, summarize, toBlocks,
+  POLICIES, SUGGESTIONS, ZERO, allowAllLabel, applyAll, approvalTitle, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, itemsFromLog, lastContext, str, summarize, toBlocks,
   type ChatView, type Item, type ToolItem, type ToolStatus,
 } from "../../../src/features/agent/model";
 import type { AgentDecision, AgentLiveEvent, AgentModel, AgentOpened, AgentPolicy } from "../../../src/lib/types";
@@ -445,9 +445,7 @@ function Diff({ before, after, max = 200 }: { before: string; after: string; max
 function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
   const req = item.request!;
   const i = item.input ?? {};
-  const title = item.name === "db_query" ? (req.kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`)
-    : req.kind === "query" ? `Read from ${str(i.connection)}?`
-    : req.kind === "exec" ? "Run this command?" : req.kind === "fetch" ? "Fetch this page?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+  const title = approvalTitle(item.name, req.kind, item.input);
   return (
     <div className="rounded-xl border border-accent/40 bg-accent/5 p-3">
       <div className="mb-2 flex items-center gap-2 text-[14px] font-semibold"><ShieldAlert className="size-4 text-accent" />{title}</div>
@@ -455,7 +453,8 @@ function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
       {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
       {item.name === "db_query" && <Code>{str(i.query)}</Code>}
-      {!["shell", "edit", "write", "db_query"].includes(item.name) && <Code>{req.summary}</Code>}
+      {item.name === "devcat_note_write" && <Code>{str(i.body)}</Code>}
+      {!["shell", "edit", "write", "db_query", "devcat_note_write"].includes(item.name) && <Code>{req.summary}</Code>}
       {ctx.readonly ? (
         <div className="mt-2 text-[12px] text-muted">Waiting for an answer on the computer or a phone with full access.</div>
       ) : (

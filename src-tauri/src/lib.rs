@@ -2,6 +2,7 @@
 #![cfg_attr(not(feature = "gui"), allow(dead_code, unused_imports))]
 
 mod agent;
+mod agent_notes;
 mod agent_tools;
 mod ai;
 mod bookmarks;
@@ -301,6 +302,7 @@ pub fn run() {
             agent::agent_answer,
             agent::agent_attach,
             agent::agent_sessions,
+            agent::agent_rename,
             ai::ai_providers_list,
             ai::ai_agent_models,
             ai::ai_provider_save,

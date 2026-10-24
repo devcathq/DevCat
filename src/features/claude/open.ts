@@ -17,6 +17,12 @@ export function claudeTabKey(cwd: string, sessionId?: string | null): string {
   return `claude:${cwd}:new-${Date.now().toString(36)}-${++newChats}`;
 }
 
+/** A chat tab's title: the folder, then the chat's name cut to fit. */
+export function chatTabTitle(cwd: string, chatTitle: string): string {
+  const t = chatTitle.trim();
+  return `${basename(cwd)} · ${t.slice(0, 28)}${t.length > 28 ? "…" : ""}`;
+}
+
 /** Open (or focus) the AI workspace tab for a folder. Returns the tab id.
  *  providerId defaults to the AI connection selected for new chats; sessions are Claude's. */
 export function openClaudeWorkspace(
@@ -32,8 +38,7 @@ export function openClaudeWorkspace(
   const isClaude = provider.id === CLAUDE_PROVIDER_ID;
   const sessionId = isClaude || provider.kind === "agent" ? (opts?.sessionId ?? null) : null;
   const key = claudeTabKey(cwd, sessionId);
-  const short = opts?.title ? opts.title.trim().slice(0, 28) + (opts.title.trim().length > 28 ? "…" : "") : null;
-  const title = short ? `${basename(cwd)} · ${short}` : isClaude ? basename(cwd) : `${basename(cwd)} · ${provider.name}`;
+  const title = opts?.title?.trim() ? chatTabTitle(cwd, opts.title) : isClaude ? basename(cwd) : `${basename(cwd)} · ${provider.name}`;
   const id = openTab({ type: "claude", cwd, sessionId, view: opts?.view ?? "chat", providerId: isClaude ? null : provider.id }, title, key);
   // Tab may already exist: still honor a requested view.
   if (opts?.view) useTabs.getState().update(id, { view: opts.view } as never);
