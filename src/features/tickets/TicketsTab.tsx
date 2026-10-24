@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { Badge, Button, Empty, ErrorBox, IconButton, Select, Spinner, Toolbar } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { confirmDialog } from "../connections/dialogs";
-import { TRACKERS, tickets, type Board, type JobView, type Outcome, type RunRecord, type Ticket } from "./api";
+import { ASSIGNED, TRACKERS, tickets, type Board, type JobView, type Outcome, type RunRecord, type Ticket } from "./api";
 import { BoardDialog } from "./BoardDialog";
 import { startTickets, useTickets } from "./store";
 
@@ -180,6 +180,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
               {columns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </Select>
             <IconButton title="Refresh" onClick={() => void load()}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+            {board.assigned !== "anyone" && <Badge tone="info">assigned: {ASSIGNED[board.assigned].toLowerCase()}</Badge>}
             {board.label && <Badge tone="info">label: {board.label}</Badge>}
             <Button size="sm" variant="primary" className="ml-auto" disabled={!ready || picked.size === 0} onClick={() => void fix([...picked])}>
               <Play className="size-3" />Fix {picked.size || ""} with the agent
@@ -188,7 +189,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
           <div className="min-h-0 flex-1 overflow-auto">
             {error && <ErrorBox error={error} />}
             {list === null && loading && <div className="flex justify-center p-6"><Spinner /></div>}
-            {list && list.length === 0 && <Empty title="No tickets here">Nothing in this column{board.label ? ` labelled “${board.label}”` : ""}.</Empty>}
+            {list && list.length === 0 && <Empty title="No tickets here">Nothing in this column{board.assigned !== "anyone" ? ` assigned to ${board.assigned === "me" ? "you" : "you or nobody"}` : ""}{board.label ? ` labelled “${board.label}”` : ""}.</Empty>}
             {list?.map((t) => {
               const r = last.get(t.id);
               const busy = job?.key === t.key || job?.queue.includes(t.id);
@@ -203,6 +204,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
                     {t.description && <div className="mt-0.5 line-clamp-2 text-[12px] text-faint">{t.description}</div>}
                     <div className="mt-1 flex flex-wrap items-center gap-1">
                       {t.labels.map((l) => <Badge key={l}>{l}</Badge>)}
+                      {t.assignees.length > 0 && <span className="text-[11px] text-muted">{t.assignees.join(", ")}</span>}
                       {busy && <Badge tone="accent">{job?.key === t.key ? "agent working" : "queued"}</Badge>}
                       {!busy && r && <Badge tone={OUTCOME[r.outcome].tone}>last try: {OUTCOME[r.outcome].label}</Badge>}
                     </div>
@@ -267,7 +269,7 @@ function HistoryItem({ r }: { r: RunRecord }) {
       {open && r.testing && <div className="selectable mt-1.5 text-[12px] whitespace-pre-wrap text-muted"><span className="font-medium text-fg/80">How to test: </span>{r.testing}</div>}
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-faint">
         {r.branch && <span className="flex items-center gap-1 font-mono"><GitBranch className="size-3" />{r.branch}</span>}
-        {r.filesChanged > 0 && <span>{r.filesChanged} file{r.filesChanged === 1 ? "" : "s"}</span>}
+        {r.repos?.length ? <span>{r.repos.join(", ")}</span> : r.filesChanged > 0 && <span>{r.filesChanged} file{r.filesChanged === 1 ? "" : "s"}</span>}
         {r.costUsd != null && <span>${r.costUsd.toFixed(2)}</span>}
         {r.url && <button className="hover:text-fg" onClick={() => void openUrl(r.url)}>open ticket</button>}
       </div>

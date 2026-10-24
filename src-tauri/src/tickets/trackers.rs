@@ -7,7 +7,7 @@
 //!   comments, and it exists on both Cloud and Data Center.
 //! - Trello (API key + token). Columns are the board's lists.
 //! - Linear (personal API key). Columns are the team's workflow states.
-use super::{Board, Column, Comment, Ticket, TrackerKind};
+use super::{Assigned, Board, Column, Comment, Ticket, TrackerKind};
 use crate::error::{AppError, AppResult};
 use reqwest::{Client, RequestBuilder, Response};
 use serde_json::{Value, json};
@@ -54,6 +54,39 @@ async fn json_of(r: Response, what: &str) -> AppResult<Value> {
 fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }
+
+/// JQL for a project's tickets in one status, filtered by assignee.
+pub fn jira_jql(project: &str, status: &str, assigned: Assigned) -> String {
+    let who = match assigned {
+        Assigned::Anyone => "",
+        Assigned::Me => " AND assignee = currentUser()",
+        Assigned::MeOrNobody => " AND (assignee = currentUser() OR assignee is EMPTY)",
+    };
+    format!("project = \"{}\" AND status = {}{who} ORDER BY created ASC", project.replace('"', ""), status.trim().replace(|c: char| !c.is_ascii_digit(), ""))
+}
+
+/// Linear's IssueFilter for a team's issues in one state, filtered by assignee.
+pub fn linear_filter(team: &str, state: &str, assigned: Assigned) -> Value {
+    let mut f = json!({ "team": { "key": { "eq": team } }, "state": { "id": { "eq": state } } });
+    match assigned {
+        Assigned::Anyone => {}
+        Assigned::Me => f["assignee"] = json!({ "isMe": { "eq": true } }),
+        Assigned::MeOrNobody => f["or"] = json!([{ "assignee": { "isMe": { "eq": true } } }, { "assignee": { "null": true } }]),
+    }
+    f
+}
+
+/// Whether a Trello card with these members is wanted (`me`: the token's member id).
+pub fn trello_wanted(members: &[String], me: &str, assigned: Assigned) -> bool {
+    match assigned {
+        Assigned::Anyone => true,
+        Assigned::Me => members.iter().any(|m| m == me),
+        Assigned::MeOrNobody => members.is_empty() || members.iter().any(|m| m == me),
+    }
+}
+
+/// Card fields DevCat reads, with the members' names.
+const TRELLO_CARD: [(&str, &str); 3] = [("fields", "name,desc,url,idShort,idList,labels,idMembers"), ("members", "true"), ("member_fields", "fullName")];
 
 /// `https://trello.com/b/AbC123/name` -> `AbC123` (an id or short link is kept as it is).
 pub fn trello_board_id(board: &str) -> String {
@@ -149,8 +182,8 @@ impl Tracker {
     pub async fn list(&self, column: &str) -> AppResult<Vec<Ticket>> {
         match self.board.kind {
             TrackerKind::Jira => {
-                let jql = format!("project = \"{}\" AND status = {} ORDER BY created ASC", self.project().replace('"', ""), column.trim().replace(|c: char| !c.is_ascii_digit(), ""));
-                let q = [("jql", jql.as_str()), ("fields", "summary,description,labels,status"), ("maxResults", "50")];
+                let jql = jira_jql(&self.project(), column, self.board.assigned);
+                let q = [("jql", jql.as_str()), ("fields", "summary,description,labels,status,assignee"), ("maxResults", "50")];
                 // Cloud moved search to /search/jql; Data Center only has /search.
                 let mut r = self.jira(reqwest::Method::GET, "/search/jql").query(&q).send().await?;
                 if matches!(r.status().as_u16(), 404 | 405 | 410) {
@@ -160,15 +193,31 @@ impl Tracker {
                 Ok(v["issues"].as_array().into_iter().flatten().take(MAX_TICKETS).map(|i| self.jira_ticket(i)).collect())
             }
             TrackerKind::Trello => {
-                let r = self.trello(reqwest::Method::GET, &format!("/lists/{column}/cards")).query(&[("fields", "name,desc,url,idShort,idList,labels")]).send().await?;
+                let me = match self.board.assigned {
+                    Assigned::Anyone => String::new(),
+                    _ => {
+                        let r = self.trello(reqwest::Method::GET, "/members/me").query(&[("fields", "id")]).send().await?;
+                        s(&json_of(r, "Trello member").await?, "id")
+                    }
+                };
+                let r = self.trello(reqwest::Method::GET, &format!("/lists/{column}/cards")).query(&TRELLO_CARD).send().await?;
                 let v = json_of(r, "Trello cards").await?;
-                Ok(v.as_array().into_iter().flatten().take(MAX_TICKETS).map(trello_ticket).collect())
+                Ok(v.as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|c| {
+                        let ids: Vec<String> = c["idMembers"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+                        trello_wanted(&ids, &me, self.board.assigned)
+                    })
+                    .take(MAX_TICKETS)
+                    .map(trello_ticket)
+                    .collect())
             }
             TrackerKind::Linear => {
                 let d = self
                     .linear(
-                        "query($k:String!,$s:ID!){issues(first:50,filter:{team:{key:{eq:$k}},state:{id:{eq:$s}}}){nodes{id identifier title description url state{id} labels{nodes{name}}}}}",
-                        json!({ "k": self.project(), "s": column }),
+                        "query($f:IssueFilter){issues(first:50,filter:$f){nodes{id identifier title description url state{id} labels{nodes{name}} assignee{name}}}}",
+                        json!({ "f": linear_filter(&self.project(), column, self.board.assigned) }),
                     )
                     .await?;
                 let mut out: Vec<Ticket> = d["issues"]["nodes"].as_array().into_iter().flatten().map(linear_ticket).collect();
@@ -182,7 +231,7 @@ impl Tracker {
     pub async fn get(&self, id: &str) -> AppResult<Ticket> {
         match self.board.kind {
             TrackerKind::Jira => {
-                let r = self.jira(reqwest::Method::GET, &format!("/issue/{id}")).query(&[("fields", "summary,description,labels,status,comment")]).send().await?;
+                let r = self.jira(reqwest::Method::GET, &format!("/issue/{id}")).query(&[("fields", "summary,description,labels,status,assignee,comment")]).send().await?;
                 let v = json_of(r, "Jira issue").await?;
                 let mut t = self.jira_ticket(&v);
                 let all: Vec<&Value> = v["fields"]["comment"]["comments"].as_array().into_iter().flatten().collect();
@@ -190,7 +239,7 @@ impl Tracker {
                 Ok(t)
             }
             TrackerKind::Trello => {
-                let r = self.trello(reqwest::Method::GET, &format!("/cards/{id}")).query(&[("fields", "name,desc,url,idShort,idList,labels")]).send().await?;
+                let r = self.trello(reqwest::Method::GET, &format!("/cards/{id}")).query(&TRELLO_CARD).send().await?;
                 let mut t = trello_ticket(&json_of(r, "Trello card").await?);
                 let r = self.trello(reqwest::Method::GET, &format!("/cards/{id}/actions")).query(&[("filter", "commentCard"), ("limit", "10")]).send().await?;
                 let v = json_of(r, "Trello comments").await?;
@@ -201,7 +250,7 @@ impl Tracker {
             TrackerKind::Linear => {
                 let d = self
                     .linear(
-                        "query($id:String!){issue(id:$id){id identifier title description url state{id} labels{nodes{name}} comments(last:10){nodes{body createdAt user{name}}}}}",
+                        "query($id:String!){issue(id:$id){id identifier title description url state{id} labels{nodes{name}} assignee{name} comments(last:10){nodes{body createdAt user{name}}}}}",
                         json!({ "id": id }),
                     )
                     .await?;
@@ -225,6 +274,7 @@ impl Tracker {
             title: s(f, "summary"),
             description: s(f, "description"),
             labels: f["labels"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
+            assignees: Some(s(&f["assignee"], "displayName")).filter(|n| !n.is_empty()).into_iter().collect(),
             column: s(&f["status"], "id"),
             comments: vec![],
         }
@@ -289,6 +339,7 @@ fn trello_ticket(c: &Value) -> Ticket {
         description: s(c, "desc"),
         url: s(c, "url"),
         labels: c["labels"].as_array().into_iter().flatten().map(|l| s(l, "name")).filter(|n| !n.is_empty()).collect(),
+        assignees: c["members"].as_array().into_iter().flatten().map(|m| s(m, "fullName")).filter(|n| !n.is_empty()).collect(),
         column: s(c, "idList"),
         comments: vec![],
     }
@@ -302,6 +353,7 @@ fn linear_ticket(i: &Value) -> Ticket {
         description: s(i, "description"),
         url: s(i, "url"),
         labels: i["labels"]["nodes"].as_array().into_iter().flatten().map(|l| s(l, "name")).collect(),
+        assignees: Some(s(&i["assignee"], "name")).filter(|n| !n.is_empty()).into_iter().collect(),
         column: s(&i["state"], "id"),
         comments: vec![],
     }
@@ -334,9 +386,25 @@ mod tests {
     }
 
     #[test]
+    fn assignee_filters() {
+        assert_eq!(jira_jql("ABC", "10001", Assigned::Anyone), "project = \"ABC\" AND status = 10001 ORDER BY created ASC");
+        assert!(jira_jql("ABC", "1", Assigned::Me).contains(" AND assignee = currentUser() ORDER"));
+        assert!(jira_jql("ABC", "1", Assigned::MeOrNobody).contains("(assignee = currentUser() OR assignee is EMPTY)"));
+        assert!(linear_filter("ENG", "s", Assigned::Anyone).get("assignee").is_none());
+        assert_eq!(linear_filter("ENG", "s", Assigned::Me)["assignee"], json!({ "isMe": { "eq": true } }));
+        assert_eq!(linear_filter("ENG", "s", Assigned::MeOrNobody)["or"][1], json!({ "assignee": { "null": true } }));
+        let (me, other) = ("m1".to_string(), "m2".to_string());
+        assert!(trello_wanted(&[other.clone()], &me, Assigned::Anyone));
+        assert!(!trello_wanted(&[other.clone()], &me, Assigned::Me));
+        assert!(trello_wanted(&[other, me.clone()], &me, Assigned::Me));
+        assert!(!trello_wanted(&[], &me, Assigned::Me));
+        assert!(trello_wanted(&[], &me, Assigned::MeOrNobody));
+    }
+
+    #[test]
     fn parses_tickets() {
-        let t = trello_ticket(&json!({ "id": "c1", "idShort": 7, "name": "Fix", "desc": "d", "url": "u", "idList": "l1", "labels": [{ "name": "bug" }, { "name": "" }] }));
-        assert_eq!((t.key.as_str(), t.column.as_str(), t.labels.clone()), ("#7", "l1", vec!["bug".to_string()]));
+        let t = trello_ticket(&json!({ "id": "c1", "idShort": 7, "name": "Fix", "desc": "d", "url": "u", "idList": "l1", "labels": [{ "name": "bug" }, { "name": "" }], "members": [{ "fullName": "Ana" }] }));
+        assert_eq!((t.key.as_str(), t.column.as_str(), t.labels.clone(), t.assignees.clone()), ("#7", "l1", vec!["bug".to_string()], vec!["Ana".to_string()]));
         let t = linear_ticket(&json!({ "id": "i1", "identifier": "ENG-4", "title": "T", "description": null, "url": "u", "state": { "id": "s1" }, "labels": { "nodes": [] } }));
         assert_eq!((t.key.as_str(), t.description.as_str(), t.column.as_str()), ("ENG-4", "", "s1"));
     }
