@@ -2,10 +2,11 @@
 // State lives in tree/store.ts; rows are flattened in tree/rows.ts and virtualized here.
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
-import { ChevronsDownUp, FolderMinus, FolderPlus, Plus, RefreshCw, Search, Star, X } from "lucide-react";
+import { Cable, ChevronsDownUp, FolderMinus, FolderPlus, Plus, RefreshCw, Search, Star, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { Button, Empty, IconButton } from "../../components/ui";
 import { api } from "../../lib/api";
+import { IS_MAIN_WINDOW } from "../../lib/windows";
 import { useConnections } from "../../store/connections";
 import { useUi } from "../../store/ui";
 import { openBookmark } from "./bookmarks/actions";
@@ -14,6 +15,7 @@ import { useAutoExpandBookmarks } from "./bookmarks/useAutoExpand";
 import { useContextMenu } from "./ContextMenu";
 import { activateConnection, activateNode, refreshAll, toggleConnection, toggleNode } from "./tree/actions";
 import { backgroundMenu, rowMenu } from "./tree/menus";
+import { openMcpSync, suggestMcpSync } from "./mcp/McpSyncDialog";
 import { createProject, DRAG_MIME, moveConnections, newConnectionIn } from "./tree/projectActions";
 import { buildRows, isExpandable, isExpanded, isInfra, type Row, type SelectableRow } from "./tree/rows";
 import { nodeKey, useTree } from "./tree/store";
@@ -38,6 +40,11 @@ export default function ConnectionTree() {
   const connecting = useTree((s) => s.connecting);
   const allProjects = useConnections((s) => s.projects);
   const focusId = useConnections((s) => s.focusProjectId);
+  // Once there are connections: offer Sync MCP (main window only, until it's set up or declined)
+  const hasConnections = allConnections.length > 0;
+  useEffect(() => {
+    if (hasConnections && IS_MAIN_WINDOW) void suggestMcpSync();
+  }, [hasConnections]);
   // Focus mode: only the focused project and its connections are visible.
   const projects = useMemo(() => (focusId ? allProjects.filter((p) => p.id === focusId) : allProjects), [allProjects, focusId]);
   const connections = useMemo(
@@ -301,6 +308,7 @@ export default function ConnectionTree() {
           )}
         </div>
         <IconButton title="New project" onClick={() => void createProject()}><FolderPlus className="size-3.5" /></IconButton>
+        <IconButton title="Sync MCP: let Claude Code, Codex, Cursor and Gemini use these connections" onClick={openMcpSync}><Cable className="size-3.5" /></IconButton>
         <IconButton title="Show only bookmarked" active={bookmarksOnly} onClick={() => useTree.getState().setBookmarksOnly(!bookmarksOnly)}>
           <Star className={clsx("size-3.5", bookmarksOnly && "fill-current")} />
         </IconButton>

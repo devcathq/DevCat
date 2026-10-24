@@ -8,7 +8,7 @@ import type {
   GitRepo, GitLogQuery, GitCommit, GitCommitDetail, GitBlame, GitRefs, GitStash, CommitAction, RemoteOpts,
   AiDetect, AiProvider,
   ClaudeInfo, ClaudeProject, ClaudeStartOptions, FileEntry, FilePreview, FileVersions, GitStatus, SessionMeta,
-  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
+  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, McpSyncPlan, Memory, MemoryKind, MemoryPlace, PlaceMemories, ClaudeImportPlan, MemorySyncReport, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
   SavedQuery, SchemaSnapshot, TableDataPage, TableDataRequest, TableRef, TableStructure, TreeNode, Bookmark,
 } from "./types";
 
@@ -39,6 +39,16 @@ export const api = {
   deleteProject: (id: string, deleteConnections = false) => invoke<void>("delete_project", { id, deleteConnections }),
   moveConnections: (ids: string[], projectId: string | null) => invoke<void>("move_connections", { ids, projectId }),
   reorderProjects: (ids: string[]) => invoke<Project[]>("reorder_projects", { ids }),
+  // Sync MCP: DevCat's MCP server in Claude Code / Codex / Cursor / Gemini configs
+  mcpSyncPreview: () => invoke<McpSyncPlan>("mcp_sync_preview"),
+  mcpSyncApply: (replace: string[]) => invoke<McpSyncPlan>("mcp_sync_apply", { replace }),
+  mcpSyncDismiss: () => invoke<void>("mcp_sync_dismiss"),
+  // Memory every coding agent shares (served by `devcat mcp`)
+  memoryList: () => invoke<PlaceMemories[]>("memory_list"),
+  memorySave: (memory: { place: MemoryPlace; name: string; description: string; kind: MemoryKind; body: string; oldName?: string }) => invoke<Memory>("memory_save", { memory }),
+  memoryDelete: (place: MemoryPlace, name: string) => invoke<void>("memory_delete", { place, name }),
+  memoryClaudePreview: () => invoke<ClaudeImportPlan>("memory_claude_preview"),
+  memorySyncAll: (choices: { id: string; global: boolean }[], auto: boolean, rules: boolean) => invoke<MemorySyncReport>("memory_sync_all", { choices, auto, rules }),
 
   // bookmarks
   listBookmarks: () => invoke<Bookmark[]>("list_bookmarks"),

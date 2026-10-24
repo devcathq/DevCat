@@ -296,6 +296,25 @@ const bridgeQr = (text: string) =>
 let streamSeq = 0;
 
 /** Returns the demo answer, or `undefined` to let the devbridge handle the command. */
+const demoMemories = [
+  { place: { kind: "global" }, label: "Every project", handoffs: 0, memories: [
+    { name: "prefers-pnpm", description: "Uses pnpm, never npm or yarn", kind: "user", body: "pnpm everywhere, including CI.", origin: "codex", updated: "2026-10-23T09:12:00Z", place: { kind: "global" } },
+  ] },
+  { place: { kind: "project", id: "p-shop" }, label: "Shop", handoffs: 1, memories: [
+    { name: "staging-first", description: "Deploy to staging before prod", kind: "feedback", body: "Always deploy to staging first.\n**Why:** prod broke once.", origin: "claude-code", updated: "2026-10-22T16:40:00Z", place: { kind: "project", id: "p-shop" } },
+    { name: "orders-schema-owner", description: "The billing team owns the orders schema", kind: "project", body: "Ask #billing before changing orders.*", origin: "gemini", updated: "2026-10-20T11:05:00Z", place: { kind: "project", id: "p-shop" } },
+  ] },
+];
+
+const demoClaudeImport = {
+  synced: false, auto: true, rules: true, rulesFiles: ["~/.codex/AGENTS.md", "~/.gemini/GEMINI.md"], notes: [],
+  items: [
+    { id: "/Users/demo/.claude/projects/-src-shop/memory/real-db-tests.md", folder: "~/src/shop", name: "real-db-tests", description: "Integration tests hit a real database, never mocks", kind: "feedback", global: false, target: "Shop", status: "new" },
+    { id: "/Users/demo/.claude/projects/-src-shop/memory/role.md", folder: "~/src/shop", name: "user-role", description: "Backend engineer, new to the React side", kind: "user", global: true, target: "Shop", status: "new" },
+    { id: "/Users/demo/.claude/projects/-src-shop/memory/staging.md", folder: "~/src/shop", name: "staging-first", description: "Deploy to staging before prod", kind: "feedback", global: false, target: "Shop", status: "same" },
+  ],
+};
+
 export function demoInvoke(cmd: string, args: Record<string, unknown>, emit: Emit): unknown {
   switch (cmd) {
     case "list_projects": return projects;
@@ -385,6 +404,11 @@ export function demoInvoke(cmd: string, args: Record<string, unknown>, emit: Emi
       return bridgeQr(link).then((svg: string) => ({ link, appLink: `${appLink}&relay=public`, webLink, hostedLink: link, code: "K7Q2X9MPLA", svg, expiresAt: Date.now() + 272_000 }));
     }
     case "notify_settings": case "notify_save": return args.settings ?? notifySettings;
+    case "memory_list": return demoMemories;
+    case "memory_claude_preview": return demoClaudeImport;
+    case "memory_sync_all": return { imported: 2, updated: 0, removed: 0, agents: ["Claude Code", "Codex", "Gemini CLI"], rulesFiles: ["~/.codex/AGENTS.md"], notes: [] };
+    case "memory_save": return args.memory;
+    case "memory_delete": return null;
     default: return undefined;
   }
 }
