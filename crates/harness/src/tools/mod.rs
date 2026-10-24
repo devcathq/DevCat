@@ -117,6 +117,10 @@ impl Registry {
         self.tools.push(Arc::new(t));
     }
 
+    pub fn add_arc(&mut self, t: Arc<dyn Tool>) {
+        self.tools.push(t);
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.iter().find(|t| t.spec().name == name).cloned()
     }
