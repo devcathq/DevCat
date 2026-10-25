@@ -33,11 +33,16 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
   const repo = useRepoRoot(tab.path);
   const dirty = useRef(false);
   const loadSeq = useRef(0);
+  /** The file's change stamp when it was last loaded (null: it wasn't there; undefined: not known). */
+  const loadedStamp = useRef<string | null | undefined>(undefined);
+  const remote = isRemote(tab.path);
 
   const load = useCallback(async () => {
     // only the latest load applies (e.g. one started before a save must not undo it)
     const seq = ++loadSeq.current;
     setLoading(true);
+    // taken before reading, so a change made meanwhile still shows as one
+    const stamp = remote ? undefined : await api.fsStamp(tab.path).catch(() => undefined);
     try {
       const p = await api.fsPreview(tab.path);
       if (seq !== loadSeq.current) return;
@@ -46,11 +51,35 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
     } catch (e) {
       if (seq === loadSeq.current) setError(String(e));
     } finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current) {
+        setLoading(false);
+        loadedStamp.current = stamp;
+      }
     }
-  }, [tab.path]);
+  }, [tab.path, remote]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // An agent often names a file before it has written it, and rewrites an image or a PDF while it's
+  // open: while this tab shows, look every second, and load the file again once a change has
+  // settled (the same stamp twice). Text waits for the window's focus (below): it may be edited here.
+  const active = useTabs((s) => s.activeId === tab.id);
+  const watch = active && !remote && preview?.kind !== "text";
+  useEffect(() => {
+    if (!watch) return;
+    let pending: string | null | undefined;
+    const tick = window.setInterval(() => {
+      if (document.hidden || loadedStamp.current === undefined) return;
+      void api.fsStamp(tab.path).then((now) => {
+        if (now === loadedStamp.current) pending = undefined;
+        else if (now === pending) {
+          pending = undefined;
+          void load();
+        } else pending = now;
+      }, () => {});
+    }, 1000);
+    return () => window.clearInterval(tick);
+  }, [watch, load, tab.path]);
 
   // Pick up changes made outside DevCat when the window regains focus (text files without edits).
   const isText = preview?.kind === "text";

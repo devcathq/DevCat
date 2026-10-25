@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **A preview tab keeps up with its file:** opened before the file exists (an agent mentions a path, then writes
+  it), it shows the file as soon as it's written, instead of staying on "Cannot open …". Images, PDFs and other
+  previews that change on disk are shown again a moment later (#88).
+
 ## 0.12.0 - 2026-10-24
 
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of

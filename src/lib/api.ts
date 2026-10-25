@@ -138,6 +138,8 @@ export const api = {
   /** An ssh:// folder as the host sees it (~ and symlinks resolved); fails if it isn't reachable. */
   remoteResolveDir: (uri: string) => invoke<string>("remote_resolve_dir", { uri }),
   fsPreview: (path: string) => invoke<FilePreview>("fs_preview", { path }),
+  /** Modification time and size of a local file (null: it isn't there); changes when the file does. */
+  fsStamp: (path: string) => invoke<string | null>("fs_stamp", { path }),
   // SSH hosts (desktop only, see AGENTS.md)
   /** Copy an image (base64 `data`, else the OS clipboard's) to the SSH host of `cwd`; its path
    *  there, or null when the clipboard has no image. */
