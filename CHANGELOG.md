@@ -12,6 +12,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Closing or restarting a Claude Code tab lets Claude Code exit on its own** (Ctrl+C, then up to 3 seconds) instead
+  of killing it. Killed while starting, Claude Code counted it as a failed full-screen start, and after two it
+  turned full-screen off on the computer, so its agent list could no longer be clicked. Run `/tui fullscreen` once
+  to turn it back on (#87).
+
 ## 0.12.0 - 2026-10-24
 
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of
