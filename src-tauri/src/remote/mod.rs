@@ -164,6 +164,12 @@ fn settings() -> RemoteSettings {
     REMOTE.get().map(|r| r.host.store.settings()).unwrap_or_default()
 }
 
+/// The relay choice (DevCat → Mobile → Reach from other networks), which rooms use too:
+/// [`devcat_remote_proto::RELAY_PUBLIC`], a relay URL, or none.
+pub fn relay_value() -> Option<String> {
+    settings().relay_value()
+}
+
 fn host_info_now() -> HostInfo {
     let s = settings();
     HostInfo {
@@ -173,6 +179,7 @@ fn host_info_now() -> HostInfo {
         app_version: env!("DEVCAT_VERSION").to_string(),
         addrs: phone_addrs(&s),
         relay: s.relay_value(),
+        home: REMOTE.get().and_then(|r| r.host.home_relay()),
     }
 }
 
@@ -462,7 +469,7 @@ pub async fn remote_pair_start(addr: Option<String>) -> AppResult<PairInfo> {
         addrs.retain(|x| x != &a);
         addrs.insert(0, a);
     }
-    let pl = PairLink { id, code: code.clone(), name: host_name(&s), addrs, relay: s.relay_value() };
+    let pl = PairLink { id, code: code.clone(), name: host_name(&s), addrs, relay: s.relay_value(), home: r.host.home_relay() };
     let app_link = pl.to_url();
     let web_link = (s.web && r.host.web_running() && web::has_assets()).then(|| pl.to_web_url(&devcat_remote_proto::web::b64url(&web_secret)));
     // With a relay the QR opens the hosted page, which works on any network (and hands over to the app).

@@ -213,7 +213,7 @@ function HooksReview({ tabId }: { tabId: string }) {
   if (!review || hidden || !chat.sessionId) return null;
   const allow = async () => {
     setBusy(true);
-    await trustHooks(tabId);
+    await trustHooks(tabId, review.digest);
     setBusy(false);
   };
   return (
@@ -228,7 +228,7 @@ function HooksReview({ tabId }: { tabId: string }) {
         <div className="flex items-center gap-2">
           <Button size="sm" variant="primary" loading={busy} onClick={() => void allow()}>Run hooks</Button>
           <Button size="sm" variant="ghost" onClick={() => setHidden(true)}>Not now</Button>
-          <span className="text-[11px] text-faint">Asked again when a hook changes.</span>
+          <span className="text-[11px] text-faint">Asked again when a hook or a script it runs changes; a changed script doesn't run until then.</span>
         </div>
       </div>
     </div>
@@ -472,7 +472,7 @@ function CompactedRow({ item, cwd }: { item: Extract<Item, { kind: "compacted" }
   );
 }
 
-/** The agent's checklist (its latest `todo_write`), above the composer while there's work in it. */
+/** The agent's checklist (its latest `todo_write`), above the composer while the agent works. */
 function TodoPanel({ items, busy }: { items: Item[]; busy: boolean }) {
   const [open, setOpen] = useState(true);
   const todos = useMemo(() => {
@@ -483,7 +483,9 @@ function TodoPanel({ items, busy }: { items: Item[]; busy: boolean }) {
     }
     return [];
   }, [items]);
-  if (!todos.length || (!busy && todos.every((t) => t.status === "completed"))) return null;
+  // the plan shows the turn's progress: when the turn ends it goes (the conversation keeps each
+  // update), even if the model left an item open
+  if (!todos.length || !busy) return null;
   const done = todos.filter((t) => t.status === "completed").length;
   const current = todos.find((t) => t.status === "in_progress");
   return (
@@ -705,7 +707,7 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
             )}
           </span>
           {chat.busy ? (
-            <button onClick={() => stop(tabId)} title="Stop" className="flex size-8 items-center justify-center rounded-full bg-fg text-app transition hover:opacity-85"><Square className="size-3 fill-current" /></button>
+            <button onClick={() => stop(tabId)} title="Stop" className="solid flex size-8 items-center justify-center rounded-full bg-fg text-app transition hover:opacity-85"><Square className="size-3 fill-current" /></button>
           ) : (
             <button onClick={() => void submit()} disabled={!text.trim() && !chat.attachments.length} title="Send (Enter) · new line: Shift+Enter"
               className="flex size-8 items-center justify-center rounded-full bg-accent text-accent-fg transition hover:brightness-110 disabled:bg-hover disabled:text-faint"><ArrowUp className="size-4" /></button>

@@ -1,5 +1,6 @@
 // New / edit connection dialog, driven by useUi().connectionDialog ({ id, kind, projectId }).
-// Also hosts the global confirm/prompt dialogs (<DialogHost/>), since AppShell mounts this once.
+// Also hosts the global confirm/prompt dialogs (<DialogHost/>) and the Sync MCP / project code
+// folders dialogs, since AppShell mounts this once.
 import clsx from "clsx";
 import { ArrowLeft, CheckCircle2, PlugZap, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -11,16 +12,20 @@ import type { ConnectionConfig, ConnectionKind } from "../../lib/types";
 import { newConnection, useConnections } from "../../store/connections";
 import { useUi } from "../../store/ui";
 import {
-  AdvancedSection, IdentitySection, KubernetesSection, RabbitSection, ServerSection, SqliteSection, SshSection, SshSessionSection,
+  AdvancedSection, DockerSection, IdentitySection, KubernetesSection, RabbitSection, ServerSection, SqliteSection, SshSection, SshSessionSection,
   SslSection, SSH_KINDS, SSL_KINDS, suggestName, URL_KINDS, emptySsh,
 } from "./dialog/sections";
 import { DialogHost } from "./dialogs";
+import { McpSyncDialog } from "./mcp/McpSyncDialog";
+import { ProjectAgentsDialog } from "./mcp/ProjectAgentsDialog";
 
 export default function ConnectionDialog() {
   const state = useUi((s) => s.connectionDialog);
   return (
     <>
       {state && <ConnectionDialogInner key={`${state.id ?? "new"}:${state.kind ?? ""}:${state.projectId ?? ""}`} id={state.id} kind={state.kind as ConnectionKind | undefined} projectId={state.projectId ?? (state.id ? null : useConnections.getState().focusProjectId)} />}
+      <McpSyncDialog />
+      <ProjectAgentsDialog />
       <DialogHost />
     </>
   );
@@ -37,6 +42,7 @@ const KIND_BLURB: Record<ConnectionKind, string> = {
   redis: "Redis, Valkey, KeyDB",
   kubernetes: "Clusters from your kubeconfig",
   rabbitmq: "Management HTTP API",
+  docker: "Containers, images, volumes: this computer or a remote engine",
   ssh: "Terminal, SFTP and agents on a server",
 };
 
@@ -46,7 +52,7 @@ type TestState = { status: "idle" } | { status: "testing" } | { status: "ok"; me
 function freshConfig(kind: ConnectionKind, projectId: string | null): ConnectionConfig {
   const c = newConnection(kind, projectId);
   c.port = KIND_META[kind].defaultPort ?? null;
-  if (kind === "sqlite" || kind === "kubernetes" || kind === "ssh") c.host = "";
+  if (kind === "sqlite" || kind === "kubernetes" || kind === "docker" || kind === "ssh") c.host = "";
   // Empty = 22, or the port of a ~/.ssh/config alias.
   if (kind === "ssh") c.port = null;
   if (kind === "redis") c.database = "0";
@@ -127,6 +133,7 @@ function ConnectionDialogInner({ id, kind, projectId }: { id: string | null; kin
       if (!out.database) out.database = "/";
     }
     if (c.kind === "kubernetes") out.host = "";
+    if (c.kind === "docker") out.host = c.host.trim();
     if (c.kind === "ssh") {
       out.host = c.host.trim();
       out.user = c.user.trim();
@@ -280,6 +287,7 @@ function ConnectionDialogInner({ id, kind, projectId }: { id: string | null; kin
               {cfg.kind === "sqlite" ? <SqliteSection {...sp} />
                 : cfg.kind === "kubernetes" ? <KubernetesSection {...sp} />
                 : cfg.kind === "rabbitmq" ? <RabbitSection {...sp} />
+                : cfg.kind === "docker" ? <DockerSection {...sp} />
                 : cfg.kind === "ssh" ? <SshSessionSection {...sp} />
                 : <ServerSection {...sp} useUrl={useUrl} setUseUrl={(v) => { setUseUrl(v); setTest({ status: "idle" }); }} />}
             </>

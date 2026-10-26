@@ -1,4 +1,4 @@
-// SFTP tab (Xftp-style; desktop only, see CLAUDE.md): this computer's files on the left, the SSH
+// SFTP tab (Xftp-style; desktop only, see AGENTS.md): this computer's files on the left, the SSH
 // host's on the right. Copy with the arrow buttons, the context menu, or by dragging rows from one
 // side to the other (files from Finder / Explorer can be dropped on the host's side too).
 // Copies run in the backend (src-tauri/src/claude/sftp.rs) and report progress as events.

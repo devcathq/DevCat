@@ -81,10 +81,21 @@ pub fn configured(cwd: &Path, home: Option<&Path>) -> (Vec<ServerConfig>, Vec<St
             continue;
         }
         let Some(command) = cfg.get("command").and_then(Value::as_str) else { continue };
-        let args = cfg.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(expand).collect()).unwrap_or_default();
+        let args: Vec<String> = cfg.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(expand).collect()).unwrap_or_default();
+        if is_devcat_server(command, &args) {
+            // DevCat's own server (written by Sync MCP): the agent has these tools built in
+            continue;
+        }
         out.push(ServerConfig { name, command: expand(command), args, env: pairs("env"), source, ..Default::default() });
     }
     (out, errors)
+}
+
+/// Whether a configured server is DevCat's own (`devcat mcp`, written by Sync MCP).
+pub fn is_devcat_server(command: &str, args: &[String]) -> bool {
+    // the file name, whichever separator (configs written on Windows use `\\`)
+    let file = command.trim().rsplit(['/', '\\']).next().unwrap_or("").to_lowercase();
+    matches!(file.as_str(), "devcat" | "devcat.exe") && args.first().is_some_and(|a| a == "mcp")
 }
 
 /// `${VAR}` / `${VAR:-default}` from the environment.
@@ -395,5 +406,17 @@ mod tests {
         assert_eq!(s[3].env, vec![("A".to_string(), "1".to_string())]);
         assert!(errors[0].contains("\"old\"") && errors[0].contains("SSE"));
         let _ = (std::fs::remove_dir_all(proj), std::fs::remove_dir_all(home));
+    }
+
+    #[test]
+    fn leaves_out_devcats_own_server() {
+        let proj = std::env::temp_dir().join(format!("devcat-mcp-own-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(proj.join(".mcp.json"), r#"{"mcpServers":{"devcat":{"command":"/Applications/DevCat.app/Contents/MacOS/devcat","args":["mcp"]},"pg":{"command":"devcat","args":["serve"]}}}"#).unwrap();
+        let (s, _) = configured(&proj, None);
+        assert_eq!(s.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["pg"]);
+        assert!(is_devcat_server(r"C:\Program Files\DevCat\devcat.exe", &["mcp".into(), "--project".into()]));
+        assert!(!is_devcat_server("npx", &["mcp".into()]));
+        let _ = std::fs::remove_dir_all(proj);
     }
 }

@@ -3,7 +3,7 @@
 What DevCat is, what's in the window, and where to start reading.
 
 DevCat is a desktop app for developers. It puts your coding agent, your Git repositories, your databases, your
-Kubernetes clusters, RabbitMQ and your VPNs in one window, grouped by project. It runs on macOS, Windows and Linux,
+Kubernetes clusters, Docker, RabbitMQ and your VPNs in one window, grouped by project. It runs on macOS, Windows and Linux,
 and needs no account.
 
 ![The AI workspace with a Claude Code session, the session list and the file tree](../img/ai.png)
@@ -15,7 +15,7 @@ and needs no account.
 | AI workspace | Claude Code, Codex, Gemini CLI, Copilot, Aider, opencode or your own CLI in a real terminal, with the diff, code review and the project's files | [AI workspace](ai-workspace.md) |
 | Git | Every repository in a folder, commit graph, blame, branches, stashes, fetch / pull / push | [Git](git.md) |
 | Databases | PostgreSQL, MySQL / MariaDB, SQLite, SQL Server, MongoDB, Redis, with a SQL editor and a data grid | [Connections](connections.md) |
-| Infrastructure | Kubernetes (any kubeconfig context) and RabbitMQ | [Kubernetes](kubernetes.md) |
+| Infrastructure | Kubernetes (any kubeconfig context), Docker (containers, Compose projects, images, volumes) and RabbitMQ | [Kubernetes](kubernetes.md), [Docker](docker.md) |
 | Network | OpenVPN, WireGuard, SSH tunnels and Kubernetes port-forwards | [VPN and tunnels](vpn-tunnels.md) |
 | Phone | DevCat Mobile and the browser version: answer your agent, run a query or check a pod from your phone | [DevCat Mobile](mobile.md) |
 

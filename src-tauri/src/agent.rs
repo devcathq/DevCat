@@ -89,6 +89,8 @@ pub struct HooksReview {
     pub commands: Vec<String>,
     /// What wouldn't run anyway (other events and hook types).
     pub skipped: Vec<String>,
+    /// The hooks as shown: allowing them sends it back, so what's allowed is what the user saw.
+    pub digest: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -320,20 +322,21 @@ fn hooks_for(cwd: &str) -> (devcat_harness::hooks::Hooks, Vec<String>, Option<Ho
     if hooks_trusted(cwd, &found.digest) {
         (found.hooks, files, None)
     } else {
-        (Default::default(), vec![], Some(HooksReview { files, commands: found.commands, skipped: found.skipped }))
+        (Default::default(), vec![], Some(HooksReview { files, commands: found.commands, skipped: found.skipped, digest: found.digest }))
     }
 }
 
-/// Allow the hooks of a chat's folder as they are now (the chat shows them first). Every open chat
-/// in that folder runs them from its next step on.
+/// Allow the hooks of a chat's folder as the chat showed them (`digest`, from its review). If they
+/// changed since (an edit, a `git pull`), nothing is allowed: the chats show them as they are now,
+/// to look at again. Every open chat in that folder runs them from its next step on.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn agent_trust_hooks(session_id: String) -> AppResult<()> {
+pub async fn agent_trust_hooks(session_id: String, digest: String) -> AppResult<()> {
     let run = run_of(&session_id)?;
     let found = devcat_harness::hooks::load(std::path::Path::new(&run.cwd), home_dir().as_deref());
-    if found.digest.is_empty() {
-        return Ok(());
+    let same = !found.digest.is_empty() && found.digest == digest;
+    if same {
+        trust_hooks(&run.cwd, &found.digest)?;
     }
-    trust_hooks(&run.cwd, &found.digest)?;
     let key = folder_key(&run.cwd);
     let runs: Vec<Arc<Run>> = RUNS.lock().values().filter(|r| folder_key(&r.cwd) == key).cloned().collect();
     for run in runs {
@@ -350,6 +353,9 @@ pub async fn agent_trust_hooks(session_id: String) -> AppResult<()> {
             run.turn.lock().await.0.hooks = Arc::new(hooks);
         });
     }
+    if !same {
+        return Err(AppError::msg("The hooks changed since this chat showed them, so they weren't allowed. Here they are as they are now: look at them again."));
+    }
     Ok(())
 }
 
@@ -363,7 +369,11 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     let dir = std::path::Path::new(cwd);
     let home = home_dir();
     let shell = if cfg!(windows) { "PowerShell" } else { "bash" };
-    let system = system_prompt(&Environment { cwd: dir, os: std::env::consts::OS, shell, date: &today() });
+    let mut system = system_prompt(&Environment { cwd: dir, os: std::env::consts::OS, shell, date: &today() });
+    // the memory every agent of the user's shares (see memory/mod.rs)
+    let scope = crate::agent_tools::Scope::folder(dir);
+    system.push_str("\n\n");
+    system.push_str(&crate::memory::brief(crate::memory::place_for(&scope).as_ref(), None));
 
     // What the agent picks up from the folder, for the chat to show.
     let mut context = AgentContext::default();
@@ -376,9 +386,12 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     context.mcp_loading = configured;
     // the user's DevCat connections (databases, Redis, MongoDB, clusters) and notes
     let mut tools = Registry::standard();
-    crate::agent_tools::add(&mut tools);
+    for t in crate::memory::tools::for_scope(&scope, "devcat-agent") {
+        tools.add_arc(t);
+    }
+    crate::agent_tools::add(&mut tools, &scope);
     crate::agent_notes::add(&mut tools);
-    context.connections = crate::agent_tools::names();
+    context.connections = crate::agent_tools::names(&scope);
     let (hooks, hook_files, review) = hooks_for(cwd);
     (context.hooks, context.hooks_review) = (hook_files, review);
     let mut agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);

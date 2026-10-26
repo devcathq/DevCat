@@ -81,6 +81,9 @@ pub(super) async fn run_process(mut cmd: tokio::process::Command, ctx: &ToolCtx,
             Ok(())
         });
     }
+    // DevCat has no console of its own: without this, Windows opens one per command and it flashes
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let mut child = cmd.spawn().map_err(|e| ToolOutput::err(format!("Couldn't start {what}: {e}")))?;
     let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let read = async {
