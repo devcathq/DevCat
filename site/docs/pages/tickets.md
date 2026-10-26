@@ -7,7 +7,7 @@ branch, DevCat commits the work, comments on the ticket with what changed and ho
 
 ## Connect a board
 
-Click **Tickets** in the title bar (the list icon), then **Connect a board**.
+Open **Settings** (the gear at the top right) → **Tickets**, then **Connect a board**.
 
 | Tracker | What you enter | Token |
 | --- | --- | --- |

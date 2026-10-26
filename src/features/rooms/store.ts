@@ -13,9 +13,11 @@ interface RoomsState {
   agents: Record<string, boolean>;
   agentErrors: Record<string, string | undefined>;
   dialog: boolean;
+  /** What the dialog opens on. */
+  dialogMode: "list" | "new" | "join";
   /** Bumped on every change of a room, by room id (tabs refresh on it). */
   ticks: Record<string, number>;
-  show: (open?: boolean) => void;
+  show: (open?: boolean, mode?: "list" | "new" | "join") => void;
   refresh: (start?: boolean) => Promise<void>;
 }
 
@@ -26,9 +28,10 @@ export const useRooms = create<RoomsState>((set) => ({
   agents: {},
   agentErrors: {},
   dialog: false,
+  dialogMode: "list",
   ticks: {},
-  show: (open = true) => {
-    set({ dialog: open });
+  show: (open = true, mode = "list") => {
+    set({ dialog: open, dialogMode: mode });
     if (open) void useRooms.getState().refresh();
   },
   refresh: async (start = true) => {

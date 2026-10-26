@@ -75,6 +75,7 @@ pub fn main(args: &[String]) -> i32 {
         crate::secrets::memory_only();
     }
     crate::init_process();
+    crate::secrets::follow_data_dir(&dir);
     crate::network::init(dir.clone());
     crate::network::set_passive();
     crate::memory::init(dir.clone());

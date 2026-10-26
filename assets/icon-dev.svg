@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- DevCat Dev: the app icon with a DEV band, for dev builds (`pnpm tauri dev`). Source for
+       src-tauri/icons/dev/ (see scripts/dev-icons.sh). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232836"/>
+      <stop offset="1" stop-color="#11141b"/>
+    </linearGradient>
+    <linearGradient id="cat" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFC24D"/>
+      <stop offset="1" stop-color="#F2891A"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2030"/>
+      <stop offset="1" stop-color="#121620"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect x="66" y="66" width="892" height="892" rx="200"/>
+    </clipPath>
+  </defs>
+  <rect x="66" y="66" width="892" height="892" rx="200" fill="url(#bg)"/>
+  <!-- ears -->
+  <path d="M250 392 L292 178 Q298 152 320 168 L470 300 Z" fill="url(#cat)" stroke="url(#cat)" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M774 392 L732 178 Q726 152 704 168 L554 300 Z" fill="url(#cat)" stroke="url(#cat)" stroke-width="24" stroke-linejoin="round"/>
+  <!-- head = terminal window -->
+  <rect x="214" y="282" width="596" height="500" rx="96" fill="url(#cat)"/>
+  <!-- title-bar dots -->
+  <circle cx="300" cy="346" r="17" fill="#9a4f06" opacity="0.55"/>
+  <circle cx="352" cy="346" r="17" fill="#9a4f06" opacity="0.55"/>
+  <circle cx="404" cy="346" r="17" fill="#9a4f06" opacity="0.55"/>
+  <!-- screen -->
+  <rect x="262" y="392" width="500" height="338" rx="52" fill="url(#screen)"/>
+  <!-- >_ prompt -->
+  <polyline points="352,486 446,560 352,634" fill="none" stroke="#FFB23F" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="488" y="602" width="164" height="44" rx="22" fill="#FFB23F"/>
+  <!-- DEV band -->
+  <g clip-path="url(#tile)">
+    <rect x="0" y="806" width="1024" height="160" fill="#22C55E"/>
+  </g>
+  <text x="512" y="916" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="800" font-size="118" letter-spacing="22" fill="#0b1a10">DEV</text>
+</svg>

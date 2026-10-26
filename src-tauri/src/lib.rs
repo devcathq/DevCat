@@ -12,6 +12,7 @@ mod cli;
 mod commands;
 mod crashlog;
 mod db;
+mod devdata;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub mod devbridge;
@@ -60,6 +61,14 @@ pub fn vpn_helper_main(args: &[String]) -> i32 {
     network::helper::cli_main(args)
 }
 
+/// The app's identifier: its data folder, keychain entries and single-instance lock. Dev builds
+/// (`pnpm tauri dev`, `cargo run`) are "DevCat Dev" with their own, so they run next to an installed
+/// DevCat without handing off to it or sharing its data (src-tauri/tauri.dev.conf.json gives them
+/// the DEV icon; devdata.rs runs them on, or copies, the installed DevCat's data).
+pub const APP_ID: &str = if cfg!(debug_assertions) { "dev.devcat.app.dev" } else { PROD_ID };
+/// The installed (release) DevCat's identifier.
+pub const PROD_ID: &str = "dev.devcat.app";
+
 /// Why this process must not open the app window (it is the root VPN helper), if so.
 pub fn gui_refusal() -> Option<String> {
     network::helper::gui_refusal()
@@ -81,6 +90,7 @@ fn init_process() {
 /// Everything behind the commands, the same with or without a window. Call `events::set_app`
 /// first when there is one.
 fn init_backend(dir: std::path::PathBuf) {
+    secrets::follow_data_dir(&dir);
     network::init(dir.clone());
     ai::init(dir.clone());
     agent::init(dir.clone());
@@ -105,6 +115,14 @@ fn shutdown_backend() {
     keep_awake::shutdown();
 }
 
+/// Tauri's context, on APP_ID (also when a dev build runs without tauri.dev.conf.json).
+#[cfg(feature = "gui")]
+fn context() -> tauri::Context {
+    let mut ctx = tauri::generate_context!();
+    ctx.config_mut().identifier = APP_ID.into();
+    ctx
+}
+
 /// The app (windows). Not in the CLI build (`--no-default-features`).
 #[cfg(feature = "gui")]
 pub fn run() {
@@ -121,7 +139,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let dir = app.path().app_data_dir().expect("no app data dir");
+            // `pnpm tauri dev --prod-data`: the installed DevCat's data
+            let dir = devdata::prod_data_dir().unwrap_or_else(|| app.path().app_data_dir().expect("no app data dir"));
             events::set_app(app.handle().clone());
             init_backend(dir.clone());
             // scheduled DevCat Agent jobs run in the app (where they're managed), not in `devcat serve`
@@ -442,7 +461,7 @@ pub fn run() {
             infra::rabbitmq::rmq_purge_queue,
             infra::rabbitmq::rmq_request,
         ])
-        .build(tauri::generate_context!())
+        .build(context())
         .expect("error while building tauri application")
         .run(|app, event| {
             // macOS: files opened with DevCat (Finder, Dock icon).

@@ -20,7 +20,7 @@ its own result tab. **Stop** cancels a running query.
 | --- | --- |
 | Explain the statement | <kbd>⌘E</kbd> (<kbd>Ctrl+E</kbd>) |
 | Format SQL | <kbd>⇧⌥F</kbd> (<kbd>Shift+Alt+F</kbd>) or the toolbar button |
-| Save the query | <kbd>⌘S</kbd> (<kbd>Ctrl+S</kbd>); it then appears in *History & saved queries* |
+| Save the query | <kbd>⌘S</kbd> (<kbd>Ctrl+S</kbd>); it then appears under *Queries* in the Connections sidebar |
 | Limit rows | the row limit in the toolbar (*Maximum rows fetched per result set*) |
 
 ## Results
@@ -28,4 +28,4 @@ its own result tab. **Stop** cancels a running query.
 Results open in the [data grid](data-grid.md): sort, filter, copy as CSV / TSV / JSON / INSERT statements, or
 export them. The messages tab shows row counts and errors.
 
-> **Tip:** Every query you run is kept in *History & saved queries*, so you can find yesterday's query again.
+> **Tip:** Every query you run is kept under *Queries* in the Connections sidebar, so you can find yesterday's query again.

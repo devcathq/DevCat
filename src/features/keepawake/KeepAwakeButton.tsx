@@ -1,7 +1,6 @@
-// Title-bar toggle that keeps the screen and system awake (like Caffeine / Amphetamine).
-// Click: on (until turned off) / off. Right-click: for a set time.
+// Keeps the screen and system awake (like Caffeine / Amphetamine): the Settings menu turns it on,
+// a title-bar chip shows it while it's on.
 import { listen } from "@tauri-apps/api/event";
-import clsx from "clsx";
 import { Coffee, Power, Timer } from "lucide-react";
 import { useEffect, useState, type MouseEvent } from "react";
 import { toast } from "sonner";
@@ -16,12 +15,10 @@ function remaining(until: number, now: number): string {
   return mins >= 60 ? `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m` : `${mins}m`;
 }
 
-export function KeepAwakeButton() {
+/** Keep-awake state, shared by all windows: read once, then follow the backend's broadcasts. */
+export function useKeepAwake() {
   const [state, setState] = useState<KeepAwakeState>({ on: false });
   const [now, setNow] = useState(() => Date.now());
-  const menu = useContextMenu();
-
-  // Shared by all windows: read once, then follow the backend's broadcasts.
   useEffect(() => {
     api.keepAwakeStatus().then((s) => { if (s) setState(s); }).catch(() => {});
     const un = listen<KeepAwakeState>("keep-awake", (e) => setState(e.payload));
@@ -42,34 +39,34 @@ export function KeepAwakeButton() {
       toast.error(errMsg(e));
     }
   };
+  const items: MenuItem[] = [
+    ...DURATIONS.map(([m, label]): MenuItem => ({ label: `Keep awake for ${label}`, icon: <Timer className="size-3.5" />, onClick: () => void set(true, m) })),
+    { label: "Keep awake until turned off", icon: <Coffee className="size-3.5" />, onClick: () => void set(true) },
+    "separator",
+    { label: "Allow sleep", icon: <Power className="size-3.5" />, disabled: !state.on, onClick: () => void set(false) },
+  ];
+  const left = state.on && state.until ? remaining(state.until, now) : null;
+  return { on: state.on, left, set, items };
+}
 
+/** Title-bar chip while the screen is kept awake (turned on from the Settings menu).
+ *  Click: allow sleep. Right-click: for a set time. */
+export function KeepAwakeButton({ keepAwake }: { keepAwake: ReturnType<typeof useKeepAwake> }) {
+  const { on, left, set, items } = keepAwake;
+  const menu = useContextMenu();
+  if (!on) return null;
   const openMenu = (e: MouseEvent) => {
     e.preventDefault();
-    const items: MenuItem[] = [
-      ...DURATIONS.map(([m, label]): MenuItem => ({ label: `Keep awake for ${label}`, icon: <Timer className="size-3.5" />, onClick: () => void set(true, m) })),
-      { label: "Keep awake until turned off", icon: <Coffee className="size-3.5" />, onClick: () => void set(true) },
-      "separator",
-      { label: "Allow sleep", icon: <Power className="size-3.5" />, disabled: !state.on, onClick: () => void set(false) },
-    ];
     menu.show(e, items);
   };
-
-  const left = state.on && state.until ? remaining(state.until, now) : null;
-  const title = state.on
-    ? `Keeping the screen awake${left ? ` for ${left} more` : ""}. Click to allow sleep. Right-click for a set time.`
-    : "Keep the screen awake. Right-click for a set time.";
-
   return (
     <>
       <button
-        title={title}
-        aria-pressed={state.on}
-        onClick={() => void set(!state.on)}
+        title={`Keeping the screen awake${left ? ` for ${left} more` : ""}. Click to allow sleep. Right-click for a set time.`}
+        aria-pressed
+        onClick={() => void set(false)}
         onContextMenu={openMenu}
-        className={clsx(
-          "flex h-6 items-center gap-1 rounded px-1.5 text-[11px] tabular-nums",
-          state.on ? "bg-accent/20 text-accent hover:bg-accent/30" : "text-muted hover:bg-hover hover:text-fg",
-        )}
+        className="flex h-6 items-center gap-1 rounded bg-accent/20 px-1.5 text-[11px] text-accent tabular-nums hover:bg-accent/30"
       >
         <Coffee className="size-3.5" />
         {left}

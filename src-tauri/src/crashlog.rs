@@ -11,7 +11,7 @@ pub fn log_path() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         dirs::home_dir().map(|h| h.join("Library/Logs/DevCat/panic.log"))
     } else {
-        dirs::data_local_dir().map(|d| d.join("dev.devcat.app/logs/panic.log"))
+        dirs::data_local_dir().map(|d| d.join(crate::APP_ID).join("logs/panic.log"))
     }
 }
 
