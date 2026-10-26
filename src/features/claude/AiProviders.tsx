@@ -163,6 +163,7 @@ function AgentFields({ value, onChange, providerId, apiKey }: { value: AgentSett
         <Field label="API style">
           <Select value={value.protocol} onChange={(e) => onChange({ ...value, protocol: e.target.value as AgentSettings["protocol"] })}>
             <option value="openai-chat">OpenAI-compatible (chat completions)</option>
+            <option value="openai-responses">OpenAI Responses API</option>
             <option value="anthropic">Anthropic (messages)</option>
           </Select>
         </Field>

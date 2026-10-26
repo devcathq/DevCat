@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, X,
+  ArrowUp, Ban, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
@@ -14,8 +14,11 @@ import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { POLICIES, SUGGESTIONS, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
-import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent } from "./store";
+import { POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { fmtCost } from "../claude/util";
+import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
+import { useClaude } from "../claude/store";
+import { historyFor, remember } from "./history";
 
 export default function AgentChat({ tabId, cwd, provider, visible, onReview }: { tabId: string; cwd: string; provider: AiProvider; visible: boolean; onReview: () => void }) {
   const chat = useAgent((s) => s.chats[tabId]);
@@ -110,8 +113,9 @@ function ChatBody({ tabId, cwd, visible, onReview, provider }: { tabId: string; 
         </div>
       )}
       <TodoPanel items={chat.items} busy={chat.busy} />
-      <EditedFiles items={chat.items} onReview={onReview} />
-      <Composer tabId={tabId} visible={visible} provider={provider} />
+      <EditedFiles items={chat.items} tabId={tabId} cwd={cwd} onReview={onReview} />
+      <HooksReview tabId={tabId} />
+      <Composer tabId={tabId} cwd={cwd} visible={visible} provider={provider} />
     </div>
   );
 }
@@ -176,7 +180,8 @@ const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: I
       return (
         <div className="flex flex-col items-end gap-1.5">
           {item.attachments.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">{item.attachments.map((p) => <AttachmentChip key={p} path={p} />)}</div>}
-          {item.text && <div className="max-w-[85%] rounded-2xl rounded-br-md bg-raised px-3.5 py-2 text-[13px] whitespace-pre-wrap text-fg">{item.text}</div>}
+          {item.text && <div className={clsx("max-w-[85%] rounded-2xl rounded-br-md bg-raised px-3.5 py-2 text-[13px] whitespace-pre-wrap text-fg", item.queued && "opacity-60")}>{item.text}</div>}
+          {item.queued && <span className="text-[11px] text-faint">Sent while it works: it reads this after its current step</span>}
         </div>
       );
     case "answer":
@@ -187,8 +192,51 @@ const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: I
       return <TurnEnd item={item} />;
     case "compacted":
       return <CompactedRow item={item} cwd={cwd} />;
+    case "hook":
+      return <HookNote item={item} />;
   }
 });
+
+/** A hook's message: what it told the user, that it failed, or why it sent the agent on. */
+function HookNote({ item }: { item: Extract<Item, { kind: "hook" }> }) {
+  return (
+    <div className="flex items-start gap-2 px-1 text-[12px] text-muted">
+      <Webhook className="mt-0.5 size-3.5 shrink-0" />
+      <span className="min-w-0 whitespace-pre-wrap"><span className="text-fg">{item.event} hook</span> · {item.text.replace(/^\w+ hook feedback:\n/, "")}</span>
+    </div>
+  );
+}
+
+/** Hooks in this folder that aren't allowed yet: what they'd run, and the button that allows them. */
+function HooksReview({ tabId }: { tabId: string }) {
+  const chat = useAgent((s) => s.chats[tabId])!;
+  const review = chat.context?.hooksReview;
+  const [hidden, setHidden] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (!review || hidden || !chat.sessionId) return null;
+  const allow = async () => {
+    setBusy(true);
+    await trustHooks(tabId, review.digest);
+    setBusy(false);
+  };
+  return (
+    <div className="mx-auto w-full max-w-[780px] px-5 pb-2">
+      <div className="flex flex-col gap-2 rounded-lg border border-warn/40 bg-warn/5 px-3 py-2.5 text-[12px]">
+        <div className="flex items-start gap-2 text-fg">
+          <Webhook className="mt-0.5 size-3.5 shrink-0 text-warn" />
+          <span>This folder has hooks from Claude Code or Codex ({review.files.join(", ")}). They run these commands on this computer while the agent works, so they're off until you allow them:</span>
+        </div>
+        <pre className="max-h-32 overflow-auto rounded-md border border-line bg-panel px-2.5 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted">{review.commands.join("\n")}</pre>
+        {review.skipped.length > 0 && <div className="text-[11px] text-faint" title={review.skipped.join("\n")}>Not run by DevCat Agent: {review.skipped.length} other hook{review.skipped.length === 1 ? "" : "s"} (hover for which)</div>}
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="primary" loading={busy} onClick={() => void allow()}>Run hooks</Button>
+          <Button size="sm" variant="ghost" onClick={() => setHidden(true)}>Not now</Button>
+          <span className="text-[11px] text-faint">Asked again when a hook or a script it runs changes; a changed script doesn't run until then.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AttachmentChip({ path, onRemove }: { path: string; onRemove?: () => void }) {
   return (
@@ -208,6 +256,7 @@ function ContextLine({ tabId }: { tabId: string }) {
   if (ctx.skills.length) parts.push(<span key="s" title={ctx.skills.join("\n")}>{ctx.skills.length} skill{ctx.skills.length === 1 ? "" : "s"}</span>);
   for (const m of ctx.mcp) parts.push(<span key={`m${m.name}`} className="flex items-center gap-1"><Plug className="size-3" />{m.name} ({m.tools} tool{m.tools === 1 ? "" : "s"})</span>);
   if (ctx.connections?.length) parts.push(<span key="c" title={ctx.connections.join("\n")} className="flex items-center gap-1"><Database className="size-3" />{ctx.connections.length} DevCat connection{ctx.connections.length === 1 ? "" : "s"}</span>);
+  if (ctx.hooks?.length) parts.push(<span key="h" title={ctx.hooks.join("\n")} className="flex items-center gap-1"><Webhook className="size-3" />hooks from {ctx.hooks.length === 1 ? ctx.hooks[0] : `${ctx.hooks.length} files`}</span>);
   if (ctx.mcpLoading) parts.push(<span key="ml" className="flex items-center gap-1"><Spinner className="size-3" />connecting MCP servers…</span>);
   return (
     <div className="flex flex-col items-center gap-1 text-[11.5px] text-faint">
@@ -278,14 +327,18 @@ function ToolRow({ item, tabId, cwd, working }: { item: ToolItem; tabId: string;
           <ChevronRight className={clsx("size-3 text-faint opacity-0 transition group-hover:opacity-100", open && "rotate-90 opacity-100")} />
         </span>
       </button>
-      {open && <ToolDetails item={item} />}
+      {item.name === SUBAGENT && item.status === "running" && !stale && !open && !!item.helper?.length && (
+        <div className="ml-[22px] truncate text-[11.5px] text-faint">{helperProgress(item.helper, cwd)}</div>
+      )}
+      {open && <ToolDetails item={item} cwd={cwd} />}
     </div>
   );
 }
 
 /** What a step did: the diff of an edit, the file written, the command and its output. */
-function ToolDetails({ item }: { item: ToolItem }) {
+function ToolDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
   const i = item.input ?? {};
+  if (item.name === SUBAGENT) return <HelperDetails item={item} cwd={cwd} />;
   return (
     <div className="mt-1 ml-5 flex flex-col gap-1.5">
       {item.name === "edit" && <Diff before={str(i.old_string)} after={str(i.new_string)} />}
@@ -293,6 +346,45 @@ function ToolDetails({ item }: { item: ToolItem }) {
       {item.name === "shell" && <Code>{`$ ${str(i.command)}`}</Code>}
       {item.output && !(item.name === "write" || item.name === "edit") && <Code muted={item.status !== "error"} danger={item.status === "error"}>{item.output}</Code>}
       {item.output && (item.name === "write" || item.name === "edit") && (item.status === "error" || item.status === "denied") && <Code danger>{item.output}</Code>}
+    </div>
+  );
+}
+
+/** The OS sandbox for the agent's commands, on or off (only where there is one: macOS, Linux). */
+function SandboxChip({ tabId }: { tabId: string }) {
+  const on = useAgent((s) => s.chats[tabId]?.sandbox ?? false);
+  const available = useSandbox((s) => s.available);
+  useEffect(() => loadSandbox(), []);
+  if (!available) return null;
+  return (
+    <button onClick={() => setSandbox(tabId, !on)} aria-pressed={on}
+      title={on
+        ? "Sandbox on: the agent's commands can write only in this project (and the temp folders). They still ask: reading and the network aren't limited. Click to turn it off."
+        : "Sandbox off: the agent's commands can change anything you can. Click to run them in the OS sandbox, where they can write only in this project."}
+      className={clsx("flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] transition-colors", on ? "border-ok/40 bg-ok/10 text-ok" : "border-line text-muted hover:border-faint hover:text-fg")}>
+      <Container className="size-3.5" />Sandbox
+    </button>
+  );
+}
+
+/** A helper's card, opened: the question it got, what it did, and its answer. */
+function HelperDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
+  const steps = item.helper ?? [];
+  return (
+    <div className="mt-1 ml-5 flex flex-col gap-1.5">
+      <Code muted>{str(item.input?.prompt)}</Code>
+      {steps.length > 0 && (
+        <div className="flex flex-col gap-0.5 text-[11.5px] text-muted">
+          {steps.map((s, n) => {
+            const d = describe(s.name, s.input, item.status === "running" && n === steps.length - 1 ? "running" : "done", cwd);
+            const Icon = d.icon;
+            return <div key={n} className="flex min-w-0 items-center gap-1.5"><Icon className="size-3 shrink-0" /><span className="shrink-0">{d.verb}</span><span className="min-w-0 truncate font-mono text-[11px]">{d.target}</span></div>;
+          })}
+        </div>
+      )}
+      {item.output && (item.status === "error"
+        ? <Code danger>{item.output}</Code>
+        : <div className="rounded-md border border-line bg-panel px-3 py-2"><Markdown text={item.output} cwd={cwd} className="text-[12.5px]" /></div>)}
     </div>
   );
 }
@@ -323,9 +415,7 @@ function Diff({ before, after, max = 200 }: { before: string; after: string; max
 function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
   const req = item.request!;
   const i = item.input ?? {};
-  const title = item.name === "db_query" ? (req.kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`)
-    : req.kind === "query" ? `Read from ${str(i.connection)}?`
-    : req.kind === "exec" ? "Run this command?" : req.kind === "fetch" ? "Fetch this page?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+  const title = approvalTitle(item.name, req.kind, item.input);
   const deny = () => void answer(tabId, item.id, { decision: "deny" });
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); deny(); }
@@ -335,13 +425,14 @@ function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
       <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-fg"><ShieldAlert className="size-4 text-accent" />{title}</div>
       {item.name === "shell" && <Code>{str(i.command)}</Code>}
       {item.name === "db_query" && <Code>{str(i.query)}</Code>}
+      {item.name === "devcat_note_write" && <Code>{str(i.body)}</Code>}
       {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
-      {!["shell", "edit", "write", "db_query"].includes(item.name) && <Code>{req.summary}</Code>}
+      {!["shell", "edit", "write", "db_query", "devcat_note_write"].includes(item.name) && <Code>{req.summary}</Code>}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <Button autoFocus size="sm" variant="primary" onClick={() => void answer(tabId, item.id, { decision: "allow" })}>Allow <kbd className="ml-1 opacity-60">↵</kbd></Button>
         <Button size="sm" onClick={() => void answer(tabId, item.id, { decision: "allow-for-session" })}>
-          Always allow {item.name === "shell" ? "commands" : item.name === "web_fetch" ? "fetching pages" : item.name === "db_query" ? "queries" : item.name.startsWith("k8s_") ? "cluster reads" : item.name.startsWith("mcp__") ? "this tool" : "edits"} in this chat
+          Always allow {allowAllLabel(item.name)} in this chat
         </Button>
         <Button size="sm" variant="ghost" onClick={deny}>Deny <kbd className="ml-1 opacity-60">Esc</kbd></Button>
       </div>
@@ -456,8 +547,10 @@ function TurnEnd({ item }: { item: Extract<Item, { kind: "end" }> }) {
 }
 
 /** Files this chat changed, with a shortcut to the Diff view (like Zed's edits bar). */
-function EditedFiles({ items, onReview }: { items: Item[]; onReview: () => void }) {
-  const files = useMemo(() => editedFiles(items), [items]);
+/** Files the agent changed that are still changed in the project: the ones Review shows. */
+function EditedFiles({ items, tabId, cwd, onReview }: { items: Item[]; tabId: string; cwd: string; onReview: () => void }) {
+  const git = useClaude((s) => s.tabs[tabId]?.git ?? null);
+  const files = useMemo(() => stillChanged(editedFiles(items), git, cwd), [items, git, cwd]);
   if (!files.length) return null;
   const plus = files.reduce((n, [, f]) => n + f.plus, 0);
   const minus = files.reduce((n, [, f]) => n + f.minus, 0);
@@ -527,9 +620,11 @@ function ContextMeter({ tabId, models }: { tabId: string; models: AgentModel[] }
   );
 }
 
-function Composer({ tabId, visible, provider }: { tabId: string; visible: boolean; provider: AiProvider }) {
+function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: string; visible: boolean; provider: AiProvider }) {
   const chat = useAgent((s) => s.chats[tabId])!;
   const [text, setText] = useState("");
+  // ↑ / ↓: where in the history (null = the message being written), and that message meanwhile
+  const [recall, setRecall] = useState<{ at: number; draft: string } | null>(null);
   const [models, setModels] = useState<AgentModel[]>([]);
   useEffect(() => { void connectionModels(provider).then(setModels); }, [provider]);
   const box = useRef<HTMLTextAreaElement>(null);
@@ -543,24 +638,86 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   }, [text]);
 
+  // what it didn't read (it was stopped) comes back here
+  useEffect(() => {
+    if (!chat.draft) return;
+    const d = chat.draft;
+    setText((t) => (t.trim() ? `${t}\n\n${d}` : d));
+    clearDraft(tabId);
+  }, [chat.draft, tabId]);
+
+  // while it works too: the message goes in before its next step, as in Claude Code
   const submit = async () => {
-    if ((!text.trim() && !chat.attachments.length) || chat.busy) return;
+    if (!text.trim() && !chat.attachments.length) return;
     const t = text;
     setText("");
-    if (!(await send(tabId, t))) setText(t);
+    setRecall(null);
+    if (await send(tabId, t)) remember(cwd, t);
+    else setText(t);
+  };
+  /** Step through what was sent in this folder; false when there's nowhere to go. */
+  const step = (back: boolean, el: HTMLTextAreaElement) => {
+    const list = historyFor(cwd, chat.items.flatMap((i) => (i.kind === "user" && !i.queued ? [i.text] : [])));
+    const at = recall?.at ?? list.length;
+    const next = back ? at - 1 : at + 1;
+    if (next < 0 || (!recall && !back)) return false;
+    if (next >= list.length) {
+      setText(recall?.draft ?? "");
+      setRecall(null);
+    } else {
+      setText(list[next]);
+      setRecall({ at: next, draft: recall?.draft ?? text });
+    }
+    // the cursor at the end, as in a shell
+    requestAnimationFrame(() => el.setSelectionRange(el.value.length, el.value.length));
+    return true;
   };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.nativeEvent.isComposing) return;
+    // ↑ on the first line goes back through what you sent here, ↓ on the last line forward
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const el = e.currentTarget;
+      if (el.selectionStart !== el.selectionEnd) return;
+      const edge = e.key === "ArrowUp" ? !el.value.slice(0, el.selectionStart).includes("\n") : !el.value.slice(el.selectionEnd).includes("\n");
+      if (edge && step(e.key === "ArrowUp", el)) e.preventDefault();
+      return;
+    }
+    if (e.key !== "Enter") return;
+    // Shift+Enter makes a new line by itself; Ctrl+Enter and Alt+Enter do too, here
+    if (e.ctrlKey || e.altKey || e.metaKey) {
+      e.preventDefault();
+      document.execCommand("insertText", false, "\n");
+      return;
+    }
+    if (!e.shiftKey) {
       e.preventDefault();
       void submit();
     }
   };
   const tokens = chat.usage.input_tokens + chat.usage.output_tokens;
   const cacheRate = chat.usage.input_tokens ? Math.round((chat.usage.cache_read_tokens / chat.usage.input_tokens) * 100) : null;
+  const price = models.find((m) => m.id === chat.model)?.price ?? null;
+  const cost = tokens > 0 ? chatCost(chat.usage, price) : null;
   const policy = POLICIES.find((p) => p.id === chat.policy)!;
-  const PolicyIcon = chat.policy === "bypass" ? ShieldOff : chat.policy === "auto-edit" ? ShieldCheck : Shield;
+  const PolicyIcon = chat.policy === "bypass" ? ShieldOff : chat.policy === "auto-edit" ? ShieldCheck : chat.policy === "plan" ? ClipboardList : Shield;
+  // plan mode, after the agent's answer: start the plan in one click (or keep chatting to change it)
+  const last = chat.items[chat.items.length - 1];
+  const planReady = chat.policy === "plan" && !chat.busy && last?.kind === "end" && last.end === "answered";
+  const startPlan = (p: "ask" | "auto-edit") => {
+    setPolicy(tabId, p);
+    void send(tabId, "Go ahead with the plan.");
+  };
   return (
     <div className="mx-auto w-full max-w-[780px] px-5 pt-2 pb-3">
+      {planReady && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 text-[12.5px]">
+          <ClipboardList className="size-4 shrink-0 text-accent" />
+          <span className="text-fg">Start with this plan?</span>
+          <Button size="sm" variant="primary" onClick={() => startPlan("ask")}>Start, ask first</Button>
+          <Button size="sm" onClick={() => startPlan("auto-edit")}>Start, auto-edit</Button>
+          <span className="text-faint">or keep chatting to change it</span>
+        </div>
+      )}
       <div className="rounded-2xl border border-line bg-panel shadow-[0_6px_24px_rgba(0,0,0,0.25)] transition-[border-color,box-shadow] focus-within:border-accent/60 focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--color-accent)_14%,transparent)]">
         {chat.attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-3 pt-3">
@@ -571,13 +728,13 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
           ref={box}
           rows={2}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => { setText(e.target.value); setRecall(null); }}
           onKeyDown={onKey}
           onPaste={(e) => {
             const files = [...e.clipboardData.files];
             if (files.length) { e.preventDefault(); void attach(tabId, files); }
           }}
-          placeholder={chat.busy ? "Working… type your next message" : "Ask DevCat Agent to build, fix or explain something  ·  /compact to summarize the chat"}
+          placeholder={chat.busy ? "Working… send a message and it reads it after its current step" : "Ask DevCat Agent to build, fix or explain something  ·  Ctrl+Enter for a new line  ·  /compact"}
           className="block max-h-[240px] min-h-[52px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[13.5px] leading-relaxed text-fg outline-none placeholder:text-faint focus-visible:outline-none"
           // the composer's border shows focus; no second outline around the text box
           style={{ outline: "none", boxShadow: "none" }}
@@ -591,7 +748,7 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
             }}
             className="flex size-7 items-center justify-center rounded-full text-muted hover:bg-hover hover:text-fg"><Paperclip className="size-3.5" /></button>
           <label title={policy.hint} className={clsx("relative flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-[12px] transition-colors",
-            chat.policy === "bypass" ? "border-warn/40 bg-warn/10 text-warn" : "border-line text-muted hover:border-faint hover:text-fg")}>
+            chat.policy === "bypass" ? "border-warn/40 bg-warn/10 text-warn" : chat.policy === "plan" ? "border-accent/40 bg-accent/10 text-accent" : "border-line text-muted hover:border-faint hover:text-fg")}>
             <PolicyIcon className="size-3.5" />
             {policy.label}
             <ChevronDown className="size-3 opacity-60" />
@@ -599,6 +756,7 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
               {POLICIES.map((p) => <option key={p.id} value={p.id}>{p.label}: {p.hint}</option>)}
             </select>
           </label>
+          <SandboxChip tabId={tabId} />
           <label className="relative flex h-7 max-w-[240px] cursor-pointer items-center gap-1.5 rounded-full bg-hover/70 px-2.5 text-[12px] text-muted hover:text-fg"
             title={models.length ? `Model for the next messages (${chat.providerName})` : `${chat.providerName}: ${chat.model}`}>
             <Cpu className="size-3.5 shrink-0" /><span className="truncate">{chat.model}</span>
@@ -613,11 +771,14 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
           <span className="ml-auto flex items-center gap-2 text-[11px] text-faint">
             <ContextMeter tabId={tabId} models={models} />
             {tokens > 0 && cacheRate !== null && cacheRate > 0 && <span title="Share of this chat's input the provider read from its cache">{cacheRate}% cached</span>}
+            {cost !== null && price && (
+              <span title={`Estimated at ${chat.model}'s list price: $${price.input.toFixed(2)} in, $${price.output.toFixed(2)} out${price.cacheRead !== null ? `, $${price.cacheRead.toFixed(2)} cached` : ""} per million tokens (OpenRouter's catalog when the provider doesn't say)`}>≈{fmtCost(cost)}</span>
+            )}
           </span>
-          {chat.busy ? (
+          {chat.busy && !text.trim() && !chat.attachments.length ? (
             <button onClick={() => stop(tabId)} title="Stop" className="solid flex size-8 items-center justify-center rounded-full bg-fg text-app transition hover:opacity-85"><Square className="size-3 fill-current" /></button>
           ) : (
-            <button onClick={() => void submit()} disabled={!text.trim() && !chat.attachments.length} title="Send (Enter) · new line: Shift+Enter"
+            <button onClick={() => void submit()} disabled={!text.trim() && !chat.attachments.length} title={chat.busy ? "Send now: it reads it after its current step (Enter)" : "Send (Enter) · new line: Shift+Enter or Ctrl+Enter"}
               className="flex size-8 items-center justify-center rounded-full bg-accent text-accent-fg transition hover:brightness-110 disabled:bg-hover disabled:text-faint"><ArrowUp className="size-4" /></button>
           )}
         </div>

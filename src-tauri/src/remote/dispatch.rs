@@ -226,7 +226,8 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
                     super::paths::check_within(p, &own).map_err(|e| json!(e))?;
                 }
             }
-            out(crate::agent::agent_send(session_id, a!("text"), a!("policy"), arg(args, "model").unwrap_or(None), Some(attachments), arg(args, "contextWindow").unwrap_or(None)).await)
+            // the sandbox is chosen on the computer: the chat keeps it
+            out(crate::agent::agent_send(session_id, a!("text"), a!("policy"), arg(args, "model").unwrap_or(None), Some(attachments), arg(args, "contextWindow").unwrap_or(None), None).await)
         }
         "agent_attach" => out(crate::agent::agent_attach(a!("sessionId"), a!("name"), a!("data")).await),
         "agent_stop" => out(crate::agent::agent_stop(a!("sessionId")).await),
@@ -238,6 +239,7 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             match crate::agent::owner(&id) {
                 Some(o) if o == client.device.id => {}
                 Some(o) if o == "desktop" => return Err(json!("This chat is open on the computer; close its tab there.")),
+                Some(o) if o == crate::agent::SCHEDULE => return Err(json!("This is a scheduled job's chat; it closes by itself.")),
                 Some(_) => return Err(json!("Another phone started this chat; it can end it there.")),
                 None => {}
             }

@@ -5,11 +5,11 @@
 import clsx from "clsx";
 import {
   ArrowUp, Ban, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, File as FileIcon, FilePen, FolderOpen, Layers, MessageCircleQuestion, MoreVertical, Paperclip, Plug,
-  Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TriangleAlert, X,
+  ClipboardList, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TriangleAlert, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  POLICIES, SUGGESTIONS, ZERO, applyAll, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, itemsFromLog, lastContext, str, summarize, toBlocks,
+  POLICIES, SUBAGENT, SUGGESTIONS, ZERO, allowAllLabel, applyAll, approvalTitle, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, itemsFromLog, lastContext, str, summarize, toBlocks,
   type ChatView, type Item, type ToolItem, type ToolStatus,
 } from "../../../src/features/agent/model";
 import type { AgentDecision, AgentLiveEvent, AgentModel, AgentOpened, AgentPolicy } from "../../../src/lib/types";
@@ -270,10 +270,13 @@ function ContextLine({ chat }: { chat: Chat }) {
   if (ctx.skills.length) parts.push(<span key="s">{ctx.skills.length} skill{ctx.skills.length === 1 ? "" : "s"}</span>);
   for (const m of ctx.mcp) parts.push(<span key={`m${m.name}`} className="flex items-center gap-1"><Plug className="size-3" />{m.name} ({m.tools} tool{m.tools === 1 ? "" : "s"})</span>);
   if (ctx.mcpLoading) parts.push(<span key="ml" className="flex items-center gap-1"><Spinner className="size-3" />connecting MCP servers…</span>);
+  if (ctx.hooks?.length) parts.push(<span key="h" className="flex items-center gap-1"><Webhook className="size-3" />hooks from {ctx.hooks.length === 1 ? ctx.hooks[0] : `${ctx.hooks.length} files`}</span>);
   return (
     <div className="flex flex-col items-center gap-1 text-[11.5px] text-faint">
       {parts.length > 0 && <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1"><span>Using</span>{parts}</div>}
       {ctx.notices.map((n) => <div key={n} className="flex items-start gap-1.5 text-warn"><TriangleAlert className="mt-0.5 size-3 shrink-0" />{n}</div>)}
+      {/* they run commands on the computer: allowing them is the computer's call */}
+      {ctx.hooksReview && <div className="flex items-start gap-1.5 text-warn"><Webhook className="mt-0.5 size-3 shrink-0" />This folder has hooks ({ctx.hooksReview.files.join(", ")}). They're off until you allow them in DevCat on the computer.</div>}
     </div>
   );
 }
@@ -335,6 +338,13 @@ const ItemView = memo(function ItemView({ item, ctx, working }: { item: Item; ct
             : item.state === "failed" ? <span className="text-danger">Couldn't summarize the conversation</span>
             : <>Conversation summarized{item.tokensBefore ? ` (${fmtTokens(item.tokensBefore)} tokens)` : ""}</>}
           <span className="h-px flex-1 bg-line" />
+        </div>
+      );
+    case "hook":
+      return (
+        <div className="flex items-start gap-2 px-1 text-[12.5px] text-muted">
+          <Webhook className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 whitespace-pre-wrap"><span className="text-fg">{item.event} hook</span> · {item.text.replace(/^\w+ hook feedback:\n/, "")}</span>
         </div>
       );
   }
@@ -401,14 +411,18 @@ function ToolRow({ item, cwd, working }: { item: ToolItem; cwd: string; working:
           {stale ? <X className="size-3.5 text-faint" /> : <StatusIcon status={item.status} />}
         </span>
       </button>
-      {open && <ToolDetails item={item} />}
+      {item.name === SUBAGENT && item.status === "running" && !stale && !open && !!item.helper?.length && (
+        <div className="ml-[22px] truncate text-[12px] text-faint">{helperProgress(item.helper, cwd)}</div>
+      )}
+      {open && <ToolDetails item={item} cwd={cwd} />}
     </div>
   );
 }
 
-function ToolDetails({ item }: { item: ToolItem }) {
+function ToolDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
   const i = item.input ?? {};
   const file = item.name === "write" || item.name === "edit";
+  if (item.name === SUBAGENT) return <HelperDetails item={item} cwd={cwd} />;
   return (
     <div className="mt-1 ml-5 flex flex-col gap-1.5">
       {item.name === "edit" && <Diff before={str(i.old_string)} after={str(i.new_string)} />}
@@ -416,6 +430,28 @@ function ToolDetails({ item }: { item: ToolItem }) {
       {item.name === "shell" && <Code>{`$ ${str(i.command)}`}</Code>}
       {item.output && !file && <Code tone={item.status === "error" ? "danger" : "muted"}>{item.output}</Code>}
       {item.output && file && (item.status === "error" || item.status === "denied") && <Code tone="danger">{item.output}</Code>}
+    </div>
+  );
+}
+
+/** A helper's card, opened: the question it got, what it did, and its answer. */
+function HelperDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
+  const steps = item.helper ?? [];
+  return (
+    <div className="mt-1 ml-5 flex flex-col gap-1.5">
+      <Code tone="muted">{str(item.input?.prompt)}</Code>
+      {steps.length > 0 && (
+        <div className="flex flex-col gap-0.5 text-[12px] text-muted">
+          {steps.map((s, n) => {
+            const d = describe(s.name, s.input, item.status === "running" && n === steps.length - 1 ? "running" : "done", cwd);
+            const Icon = d.icon;
+            return <div key={n} className="flex min-w-0 items-center gap-1.5"><Icon className="size-3 shrink-0" /><span className="shrink-0">{d.verb}</span><span className="min-w-0 truncate font-mono text-[11px]">{d.target}</span></div>;
+          })}
+        </div>
+      )}
+      {item.output && (item.status === "error"
+        ? <Code tone="danger">{item.output}</Code>
+        : <div className="rounded-lg border border-line bg-panel px-3 py-2"><Markdown text={item.output} className="text-[13px]" /></div>)}
     </div>
   );
 }
@@ -445,9 +481,7 @@ function Diff({ before, after, max = 200 }: { before: string; after: string; max
 function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
   const req = item.request!;
   const i = item.input ?? {};
-  const title = item.name === "db_query" ? (req.kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`)
-    : req.kind === "query" ? `Read from ${str(i.connection)}?`
-    : req.kind === "exec" ? "Run this command?" : req.kind === "fetch" ? "Fetch this page?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+  const title = approvalTitle(item.name, req.kind, item.input);
   return (
     <div className="rounded-xl border border-accent/40 bg-accent/5 p-3">
       <div className="mb-2 flex items-center gap-2 text-[14px] font-semibold"><ShieldAlert className="size-4 text-accent" />{title}</div>
@@ -455,13 +489,14 @@ function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
       {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
       {item.name === "db_query" && <Code>{str(i.query)}</Code>}
-      {!["shell", "edit", "write", "db_query"].includes(item.name) && <Code>{req.summary}</Code>}
+      {item.name === "devcat_note_write" && <Code>{str(i.body)}</Code>}
+      {!["shell", "edit", "write", "db_query", "devcat_note_write"].includes(item.name) && <Code>{req.summary}</Code>}
       {ctx.readonly ? (
         <div className="mt-2 text-[12px] text-muted">Waiting for an answer on the computer or a phone with full access.</div>
       ) : (
         <div className="mt-2.5 flex flex-col gap-2">
           <Btn variant="primary" block onClick={() => ctx.onDecide(item.id, { decision: "allow" })}>Allow</Btn>
-          <Btn block onClick={() => ctx.onDecide(item.id, { decision: "allow-for-session" })}>Always allow {item.name === "shell" ? "commands" : item.name === "web_fetch" ? "fetching pages" : item.name === "db_query" ? "queries" : item.name.startsWith("k8s_") ? "cluster reads" : item.name.startsWith("mcp__") ? "this tool" : "edits"} in this chat</Btn>
+          <Btn block onClick={() => ctx.onDecide(item.id, { decision: "allow-for-session" })}>Always allow {allowAllLabel(item.name)} in this chat</Btn>
           <Btn variant="ghost" block onClick={() => ctx.onDecide(item.id, { decision: "deny" })}>Deny</Btn>
         </div>
       )}
@@ -599,7 +634,7 @@ function Composer({ chat, models, policy, onPolicy, onModel, attachments, setAtt
     }
   };
   const p = POLICIES.find((x) => x.id === policy)!;
-  const PolicyIcon = policy === "bypass" ? ShieldOff : policy === "auto-edit" ? ShieldCheck : Shield;
+  const PolicyIcon = policy === "bypass" ? ShieldOff : policy === "auto-edit" ? ShieldCheck : policy === "plan" ? ClipboardList : Shield;
   const { pct } = usedPct(chat, models);
   const r = 6, circ = 2 * Math.PI * r;
   return (
@@ -619,7 +654,7 @@ function Composer({ chat, models, policy, onPolicy, onModel, attachments, setAtt
           <button aria-label="Attach files" disabled={uploading > 0} onClick={() => picker.current?.click()} className="flex size-9 shrink-0 items-center justify-center rounded-full text-muted active:bg-hover disabled:opacity-60">
             {uploading > 0 ? <Spinner className="size-4" /> : <Paperclip className="size-4" />}
           </button>
-          <label className={clsx("relative flex h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[12px]", policy === "bypass" ? "border-warn/40 bg-warn/10 text-warn" : "border-line text-muted")}>
+          <label className={clsx("relative flex h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[12px]", policy === "bypass" ? "border-warn/40 bg-warn/10 text-warn" : policy === "plan" ? "border-accent/40 bg-accent/10 text-accent" : "border-line text-muted")}>
             <PolicyIcon className="size-3.5" />{p.label}<ChevronDown className="size-3 opacity-60" />
             <select value={policy} onChange={(e) => onPolicy(e.target.value as AgentPolicy)} className="absolute inset-0 opacity-0" aria-label="Permission mode">
               {POLICIES.map((x) => <option key={x.id} value={x.id}>{x.label}: {x.hint}</option>)}

@@ -14,14 +14,16 @@
 
 pub mod agent;
 pub mod approval;
+pub mod hooks;
 pub mod llm;
 pub mod mcp;
 pub mod message;
 pub mod prompt;
+pub mod sandbox;
 pub mod session;
 pub mod tools;
 
-pub use agent::{Agent, AgentEvent, Cancel, Model, TurnEnd};
+pub use agent::{Agent, AgentEvent, Cancel, Inbox, Model, TurnEnd};
 pub use approval::{Approver, Decision, Policy};
 pub use llm::{Llm, LlmConfig, Protocol};
 pub use message::{Block, Message, Role, Usage};
@@ -38,6 +40,8 @@ pub enum Error {
     Session(String),
     /// The turn was stopped by the user.
     Cancelled,
+    /// A hook stopped it (a blocked prompt, `continue: false`), with its reason.
+    Hook(String),
 }
 
 impl std::fmt::Display for Error {
@@ -47,6 +51,7 @@ impl std::fmt::Display for Error {
             Error::Io(m) => write!(f, "{m}"),
             Error::Session(m) => write!(f, "session: {m}"),
             Error::Cancelled => write!(f, "stopped"),
+            Error::Hook(m) => write!(f, "{m}"),
         }
     }
 }
