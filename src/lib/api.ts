@@ -200,6 +200,8 @@ export const api = {
   agentModels: (settings: AgentSettings, providerId: string | null, apiKey: string | null) => invoke<AgentModel[]>("ai_agent_models", { settings, providerId, apiKey }),
   /** Put local files / folders on the OS clipboard (paste attaches them in Slack, copies them in Explorer / Finder). */
   fsCopyFiles: (paths: string[]) => invoke<void>("fs_copy_files", { paths }),
+  /** Put text on the OS clipboard (when the webview refuses a copy no click or key started). */
+  clipboardWriteText: (text: string) => invoke<void>("clipboard_write_text", { text }),
   /** Paste the files / folders (or else the image) on the OS clipboard into `dir`, a folder of the workspace `root`; returns the new paths. */
   fsPaste: (dir: string, root: string) => invoke<string[]>("fs_paste", { dir, root }),
   gitStatus: (cwd: string) => invoke<GitStatus>("git_status", { cwd }),

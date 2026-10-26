@@ -38,6 +38,26 @@ fn set_files(paths: Vec<String>) -> AppResult<()> {
     ctx.set_files(paths).map_err(|e| AppError::msg(format!("Couldn't copy to the clipboard: {e}")))
 }
 
+/// Put text on the clipboard. For copies the webview refuses because no click or key started them:
+/// a program in a terminal copying with OSC 52 (Claude Code), which arrives with its output.
+/// Desktop only: the clipboard is this computer's, so it stays out of the phone dispatcher.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn clipboard_write_text(text: String) -> AppResult<()> {
+    #[cfg(feature = "gui")]
+    return crate::rt::spawn_blocking(move || {
+        use clipboard_rs::{Clipboard, ClipboardContext};
+        let ctx = ClipboardContext::new().map_err(|e| AppError::msg(format!("Couldn't open the clipboard: {e}")))?;
+        ctx.set_text(text).map_err(|e| AppError::msg(format!("Couldn't copy to the clipboard: {e}")))
+    })
+    .await
+    .map_err(|e| AppError::msg(e.to_string()))?;
+    #[cfg(not(feature = "gui"))]
+    {
+        let _ = text;
+        Err(AppError::msg("Copying needs the DevCat app"))
+    }
+}
+
 /// Paste the OS clipboard into the folder `dir` of the workspace `root`: files and folders copied in
 /// Explorer / Finder / a Linux file manager (or with Copy in the tree), or else an image (a
 /// screenshot), saved as a PNG. A taken name gets " copy" (`a.ts` → `a copy.ts`, `a copy 2.ts`), so

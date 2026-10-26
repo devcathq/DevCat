@@ -81,6 +81,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Room agents see the room's images:** an agent mentioned in a room now looks at shared PNG, JPEG, GIF and WebP
   images (up to 5 MB) when it reads them, and can read text files shared read-only because of their size.
 - **Rooms:** an image open in a room no longer blinks each time someone in the room types, moves or posts.
+- **Terminal:** copying from Claude Code works. Text you select in Claude Code (or tmux, vim, a program on an SSH
+  host) now reaches the clipboard: DevCat accepts OSC 52 copies, and never lets a program read the clipboard. New
+  **Terminal** settings in Appearance: **Selecting text** copies on select (as before) or only with ⌘C / Ctrl+C
+  (Ctrl+C with nothing selected still interrupts), and **Allow programs to copy to the clipboard (OSC 52)**. Both
+  apply to every terminal at once, open tabs too (#61).
 
 ## 0.12.0 - 2026-10-24
 
