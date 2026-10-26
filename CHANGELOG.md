@@ -12,6 +12,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
+  agent's reply there) opens that file from the server, over the same session, instead of looking for it on
+  this computer.
 - **Send while DevCat Agent works:** a message you send while it's busy goes in before its next step, as in Claude
   Code: no need to stop it first. It shows right away as waiting; if you stop the agent before it reads it, the
   text comes back to the chat box (#69).
