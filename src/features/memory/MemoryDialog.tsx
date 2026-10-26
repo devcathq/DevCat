@@ -12,22 +12,12 @@ import { Badge, Button, Checkbox, Dialog, ErrorBox, Field, Input, Select, Spinne
 import { api, errMsg } from "../../lib/api";
 import type { ClaudeImportItem, ClaudeImportPlan, Memory, MemoryKind, MemoryPlace, PlaceMemories } from "../../lib/types";
 import { Segmented } from "../connections/dialog/formBits";
-import { OtherComputers, startMemoryPeers, useMemoryChanged } from "./OtherComputers";
+import { OtherComputers, useMemoryChanged } from "./OtherComputers";
 
 const useOpen = create<{ open: boolean; view: View }>(() => ({ open: false, view: "claude" }));
 type View = "claude" | "memories" | "computers";
 
 export const openMemory = (view: View = "claude") => useOpen.setState({ open: true, view });
-
-export function MemoryButton() {
-  // pairing requests from other computers show in any window
-  useEffect(() => startMemoryPeers(), []);
-  return (
-    <button onClick={() => openMemory()} title="Memory: one memory for all your coding agents" className="flex h-6 items-center rounded px-1.5 text-muted hover:bg-hover hover:text-fg">
-      <Brain className="size-3.5" />
-    </button>
-  );
-}
 
 export function MemoryDialog() {
   const open = useOpen((s) => s.open);

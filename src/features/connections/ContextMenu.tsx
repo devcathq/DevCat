@@ -110,8 +110,15 @@ export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; it
 }
 
 function SubMenu({ items, onClose }: { items: MenuItem[]; onClose: () => void }) {
+  // Opens to the left when there's no room on the right (a menu at the window's right edge).
+  const ref = useRef<HTMLDivElement>(null);
+  const [left, setLeft] = useState(false);
+  useLayoutEffect(() => {
+    const r = ref.current?.getBoundingClientRect();
+    if (r && r.right > window.innerWidth - 4) setLeft(true);
+  }, []);
   return (
-    <div data-ctxmenu className="absolute top-[-4px] left-full z-[61] ml-0.5 min-w-44 rounded-md border border-line bg-raised py-1 shadow-2xl shadow-black/50">
+    <div ref={ref} data-ctxmenu className={clsx("absolute top-[-4px] z-[61] min-w-44 rounded-md border border-line bg-raised py-1 shadow-2xl shadow-black/50", left ? "right-full mr-0.5" : "left-full ml-0.5")}>
       {items.map((it, i) =>
         it === "separator" ? <div key={i} className="my-1 h-px bg-line" /> : "onClick" in it ? (
           <button

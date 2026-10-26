@@ -7,11 +7,11 @@ There's no account and no server holding your documents.
 
 ## Make a room and invite someone
 
-1. Click **Rooms** in the title bar (the two-people icon), then **New room**. Give it a name and say what
+1. Click **Rooms** in the left bar (the two-people icon), then **+** (**New room**). Give it a name and say what
    others should call you.
 2. In the room, click **People & invites**, choose **Editor** or **Reads only**, and click
    **Make an invite link**. Send the link to one person (chat, email…).
-3. They open **Rooms → Join with an invite**, paste it and click **Ask to join**.
+3. They click **Rooms** in the left bar → **Join with an invite** (the door icon), paste it and click **Ask to join**.
 4. You see *Someone wants to join a room*: click **Let in** (or **Refuse**).
 
 An invite works once, for 24 hours, and only lets its holder *ask*: nobody gets in without you letting them in,

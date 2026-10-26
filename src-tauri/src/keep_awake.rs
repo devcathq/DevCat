@@ -47,7 +47,7 @@ static HOLDER: Lazy<Mutex<Holder>> = Lazy::new(|| {
                                 .idle(true)
                                 .reason("Keep awake is on in DevCat")
                                 .app_name("DevCat")
-                                .app_reverse_domain("dev.devcat.app")
+                                .app_reverse_domain(crate::APP_ID)
                                 .create()
                             {
                                 Ok(g) => guard = Some(g),

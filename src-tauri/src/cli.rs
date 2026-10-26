@@ -79,6 +79,11 @@ pub fn main(args: &[String]) -> Option<i32> {
         }
         // no console attached: stdin / stdout are the agent's pipes
         "mcp" => crate::mcp_server::main(&args[1..]),
+        // dev builds: `pnpm dev:copy-data` (devdata.rs)
+        "dev-copy-data" if cfg!(debug_assertions) => {
+            attach_console();
+            crate::devdata::copy_main(&args[1..])
+        }
         "keeper" => {
             attach_console();
             keeper_main(&args[1..])
@@ -187,7 +192,7 @@ fn apply(o: &Opts, s: &mut RemoteSettings) {
 
 /// The app's data folder (what Tauri's `app_data_dir` gives the app).
 pub(crate) fn default_data_dir() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("dev.devcat.app"))
+    dirs::data_dir().map(|d| d.join(crate::APP_ID))
 }
 
 fn serve_main(args: &[String]) -> i32 {

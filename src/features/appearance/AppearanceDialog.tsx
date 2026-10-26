@@ -15,14 +15,7 @@ import { DARK_PRESETS, LIGHT_PRESETS, type Palette } from "./themes";
 
 const useOpen = create<{ open: boolean; set: (o: boolean) => void }>((set) => ({ open: false, set: (open) => set({ open }) }));
 
-export function AppearanceButton() {
-  const show = useOpen((s) => s.set);
-  return (
-    <button onClick={() => show(true)} title="Appearance: themes and window glass" className="flex h-6 items-center rounded px-1.5 text-muted hover:bg-hover hover:text-fg">
-      <PaletteIcon className="size-3.5" />
-    </button>
-  );
-}
+export const openAppearance = () => useOpen.getState().set(true);
 
 /** A small picture of the theme: sidebar, work area, a line of text and the accent. */
 function Swatch({ p, active, onClick }: { p: Palette; active: boolean; onClick: () => void }) {

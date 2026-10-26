@@ -20,6 +20,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   DevCat's MCP server: the agent, the connection, what it ran and whether DevCat refused it. Agents can also
   attach the connection list and a database's schema as MCP resources (`devcat://project/…/connections`,
   `devcat://conn/…/schema`).
+- **Tidier window:** the row of icons at the top right is now one **Settings** menu (Appearance, AI memory, Mobile
+  pairing, Tickets, Keep awake, New window); a coffee cup still shows while keep awake is on. **Rooms** moved to
+  the left bar, and saved queries and query history now sit under the connection list (**Queries**) instead of
+  having their own icon.
 - **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
   agent's reply there) opens that file from the server, over the same session, instead of looking for it on
   this computer.

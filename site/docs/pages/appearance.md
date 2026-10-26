@@ -2,7 +2,7 @@
 
 Pick a theme, make the window see-through, and choose the fonts and sizes for terminals and editors.
 
-Click the palette icon in the title bar to open **Appearance**.
+Open **Settings** (the gear at the top right) → **Appearance**.
 
 ## Theme
 
