@@ -71,6 +71,9 @@ that tool until the chat closes.
   <kbd>Esc</kbd> cancels).
 - Next to the token meter, **≈ $** estimates what the chat's tokens cost at the model's list price (from the
   provider's model list, or else OpenRouter's catalog). Hover it for the prices used.
+- **Trace** (next to Chat and Diff) shows how the chat went, turn by turn: each model step with its time and
+  tokens, each tool call with its input, output and time, who approved it, hook messages and summaries. A bar
+  shows where each step falls in its turn. Click a helper's call to see its own run. **Log** opens the session file.
 
 ### Hooks
 

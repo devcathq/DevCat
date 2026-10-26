@@ -38,6 +38,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   in your home folder): before and after tool calls, when you send a message, when the agent is done, around
   summaries. They're off until you allow them for the folder, and you're asked again when a hook or a script it
   runs changes. Stop ends a running hook (#62).
+- **DevCat Agent Trace:** a Trace view next to Chat and Diff shows each turn's model steps and tool calls with
+  their times, tokens, inputs and outputs, who approved what, and the helpers' own runs (#63).
 
 ## 0.12.0 - 2026-10-24
 

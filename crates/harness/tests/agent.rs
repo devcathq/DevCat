@@ -593,6 +593,11 @@ async fn helpers_run_at_the_same_time_only_look_and_count_for_the_chat() {
     assert_eq!(resumed.usage().input_tokens, 700);
     let m = resumed.messages();
     assert!(matches!(&m[2].content[..], [Block::ToolResult { tool_use_id: a, .. }, Block::ToolResult { tool_use_id: b, .. }] if a == "h1" && b == "h2"));
+    // each call's time is kept for the trace, in call order
+    assert!(resumed.events().iter().all(|e| match e {
+        SessionEvent::ToolResults { results, took_ms, .. } => took_ms.len() == results.len(),
+        _ => true,
+    }));
     let _ = std::fs::remove_dir_all(dir);
 }
 
