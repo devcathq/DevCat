@@ -24,7 +24,7 @@ async fn start(data: &Path, args: &[&str]) -> Vec<McpTool> {
 
 async fn call(tools: &[McpTool], name: &str, input: Value) -> ToolOutput {
     let t = tools.iter().find(|t| t.spec().name == format!("mcp__devcat__{name}")).unwrap_or_else(|| panic!("no tool {name}"));
-    t.run(input, &ToolCtx { cwd: std::env::temp_dir() }).await
+    t.run(input, &ToolCtx::at(std::env::temp_dir())).await
 }
 
 #[tokio::test]

@@ -150,6 +150,20 @@ async fn publish(s: &NotifySettings, msg: &Value) -> AppResult<()> {
     Ok(())
 }
 
+/// A scheduled DevCat Agent job finished (`needs_you` false) or waits for the user, as the
+/// settings want it (agent_jobs.rs).
+pub(crate) async fn job(title: &str, message: &str, needs_you: bool) {
+    let s = load();
+    if !s.enabled || !(if needs_you { s.on_input } else { s.on_done }) || (s.only_when_away && app_focused()) {
+        return;
+    }
+    let (tags, priority) = if needs_you { ("raising_hand", 4) } else { ("alarm_clock", 3) };
+    let msg = json!({ "topic": s.topic, "title": title, "message": message, "tags": [tags], "priority": priority });
+    if let Err(e) = publish(&s, &msg).await {
+        eprintln!("notification failed: {e}");
+    }
+}
+
 pub(crate) async fn on_change(status: &hooks::AgentStatus, change: hooks::Change) {
     let s = load();
     if !s.enabled || (s.only_when_away && app_focused()) {
