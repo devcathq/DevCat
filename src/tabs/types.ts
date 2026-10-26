@@ -20,7 +20,7 @@ export type TabSpec =
   | { type: "network"; profileId: string; kind?: "ssh" | "openvpn" | "wireguard" | "k8s"; importPath?: string }
   /** AI workspace for a folder: Chat / Diff / Code Review. providerId = AI connection the chat runs
    *  (absent = Claude Code); sessionId resumes a past Claude session. */
-  | { type: "claude"; cwd: string; sessionId?: string | null; view?: "chat" | "diff" | "review"; providerId?: string | null }
+  | { type: "claude"; cwd: string; sessionId?: string | null; view?: "chat" | "diff" | "review" | "trace"; providerId?: string | null }
   /** Preview of a file (code, markdown, pdf, image, spreadsheet, …). blame = show git blame instead. */
   | { type: "file"; path: string; root?: string | null; blame?: boolean }
   /** Git repository: history graph / working-tree changes / branches / stashes.
@@ -46,6 +46,22 @@ export type Tab = TabSpec & {
   /** dirty indicator (unsaved edits) */
   dirty?: boolean;
 };
+
+/** The folder (or file) a tab works in, for project focus mode; null = none. */
+export function tabFolder(t: TabSpec): string | null {
+  switch (t.type) {
+    case "claude":
+    case "terminal":
+    case "sftp":
+      return t.cwd;
+    case "file":
+      return t.root ?? t.path;
+    case "git":
+      return t.repo;
+    default:
+      return null;
+  }
+}
 
 /** Connection a tab belongs to (used by project focus mode); null = not tied to a connection. */
 export function tabConnId(t: TabSpec): string | null {

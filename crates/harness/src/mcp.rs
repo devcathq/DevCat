@@ -7,7 +7,7 @@
 //! project, `~/.claude.json` (user and per-project servers) and `~/.cursor/mcp.json`.
 use crate::approval::Kind;
 use crate::message::ToolSpec;
-use crate::tools::{Tool, ToolCtx, ToolOutput, truncate};
+use crate::tools::{Tool, ToolCtx, ToolOutput};
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -323,7 +323,7 @@ impl Server {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let text = if text.is_empty() { r.get("structuredContent").map(Value::to_string).unwrap_or_else(|| "(no output)".into()) } else { text };
-                ToolOutput { content: truncate(&text), is_error: r.get("isError").and_then(Value::as_bool).unwrap_or(false) }
+                ToolOutput { content: text, is_error: r.get("isError").and_then(Value::as_bool).unwrap_or(false) }
             }
         }
     }

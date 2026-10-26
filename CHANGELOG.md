@@ -15,6 +15,48 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
   agent's reply there) opens that file from the server, over the same session, instead of looking for it on
   this computer.
+- **DevCat Agent: a `git` tool.** Commands that only read the repository (status, diff, log, show, blame, …)
+  run without asking; commit, checkout, push and anything else that changes it asks first, like a shell
+  command (#53).
+- **DevCat Agent: long tool output** (over 30,000 characters) is saved to a file next to the chat, and the
+  agent reads it in parts instead of losing the middle (#53).
+- **DevCat Agent stops repeating itself:** the same tool call a 4th time in a row is refused, so a looping
+  model tries something else (#53).
+- **DevCat Agent and your notes:** it searches and reads your DevCat notes (asking first in **Ask first**) and
+  saves a note when you ask, showing its text before it does. The Notes list updates at once (#55).
+- **Rename a DevCat Agent chat:** right-click it in the sidebar → **Rename…** (#55).
+- **Estimated cost** of a DevCat Agent chat next to its token meter, at the model's list price (#55).
+- **DevCat Agent plan mode:** pick **Plan** in the permission menu and the agent only looks around and answers
+  with a plan; edits and commands don't run. **Start, ask first** or **Start, auto-edit** under the plan carries
+  it out (#56).
+- **DevCat Agent and the OpenAI Responses API:** a new API style and an **OpenAI (Responses API)** preset, for
+  OpenAI's newer models, including the ones only offered there such as `gpt-5-codex` (#57).
+- **DevCat Agent helpers:** for research that takes many reads, the agent hands questions to helpers. Each starts
+  with a fresh context and only looks: it never edits, runs commands or asks you. Several run at the same time, their
+  rows show what they're doing, and their tokens count in the chat's total and cost (#59).
+- **DevCat Agent runs your Claude Code and Codex hooks** (`.claude/settings.json`, `.codex/hooks.json` and the ones
+  in your home folder): before and after tool calls, when you send a message, when the agent is done, around
+  summaries. They're off until you allow them for the folder, and you're asked again when a hook or a script it
+  runs changes. Stop ends a running hook (#62).
+- **DevCat Agent Trace:** a Trace view next to Chat and Diff shows each turn's model steps and tool calls with
+  their times, tokens, inputs and outputs, who approved what, and the helpers' own runs (#63).
+- **Scheduled DevCat Agent jobs:** run a prompt in a folder at a time of day or every so many minutes (**+** next to
+  **Scheduled** in the AI workspace sidebar). Each run is a chat in the folder, and you get a toast (and a phone
+  notification, if they're on) when it finishes or needs your OK. Jobs run while DevCat is open (#64).
+- **DevCat Agent sandbox** (macOS and Linux): **Sandbox** under the chat box runs the agent's commands in the
+  operating system's sandbox, where they can write only in the project (and, on macOS, not in its `.git`). Commands
+  still ask: the sandbox limits writes, not reading or the network (#67).
+- **Focus mode hides other folders' tabs too:** chats, terminals, files and Git tabs of folders that aren't the
+  focused project's are hidden, like other projects' connections and notes. A folder is the project's once you use
+  it while the project is focused. The AI Workspace's recent folders list the project's own; the others are under
+  **Other folders**, and **Remove from this project** takes one out (#77).
+- **Closing or restarting a Claude Code tab lets Claude Code exit on its own** (Ctrl+C, then up to 3 seconds) instead
+  of killing it. Killed while starting, Claude Code counted it as a failed full-screen start, and after two it
+  turned full-screen off on the computer, so its agent list could no longer be clicked. Run `/tui fullscreen` once
+  to turn it back on (#87).
+- **A preview tab keeps up with its file:** opened before the file exists (an agent mentions a path, then writes
+  it), it shows the file as soon as it's written, instead of staying on "Cannot open …". Images, PDFs and other
+  previews that change on disk are shown again a moment later (#88).
 - **Rename a Claude Code session:** right-click it in the sidebar's Sessions list → **Rename…**. It's saved the
   way Claude Code's `/rename` does, so `claude --resume` shows the same name. Clear the name to go back to
   Claude's own title (#89).

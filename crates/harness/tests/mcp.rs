@@ -20,6 +20,6 @@ async fn lists_and_calls_tools() {
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].spec().name, "mcp__calc__add");
     assert!(tools[0].spec().description.contains("Add two numbers"));
-    let out = tools[0].run(json!({ "a": 2, "b": 40 }), &ToolCtx { cwd: std::env::temp_dir() }).await;
+    let out = tools[0].run(json!({ "a": 2, "b": 40 }), &ToolCtx::at(std::env::temp_dir())).await;
     assert_eq!((out.content.as_str(), out.is_error), ("42", false));
 }
