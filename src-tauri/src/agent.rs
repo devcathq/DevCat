@@ -51,6 +51,8 @@ struct Run {
     /// The connection's model API (with its key); the chat can switch `model`.
     cfg: devcat_harness::LlmConfig,
     turn: tokio::sync::Mutex<(Agent, Session)>,
+    /// Messages sent while it works (the agent's own inbox): read before its next step.
+    inbox: devcat_harness::Inbox,
     cancel: Mutex<Cancel>,
     approver: Arc<UiApprover>,
     busy: AtomicBool,
@@ -423,6 +425,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     agent.hooks = Arc::new(hooks);
     agent.sandbox = sandbox_saved(&session.id);
     let log = Snapshot::of(&agent, &session);
+    let inbox = agent.inbox.clone();
     let run = Arc::new(Run {
         id,
         cwd: cwd.to_string(),
@@ -435,6 +438,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         since: AtomicU64::new(now_ms()),
         cfg,
         turn: tokio::sync::Mutex::new((agent, session)),
+        inbox,
         cancel: Mutex::new(Cancel::default()),
         approver,
         busy: AtomicBool::new(false),
@@ -718,7 +722,7 @@ pub async fn agent_answer(session_id: String, tool_use_id: String, answer: Strin
 #[cfg_attr(feature = "gui", tauri::command)]
 /// `sandbox` turns the OS sandbox for its commands on or off from this message on (None = as it was).
 pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>, sandbox: Option<bool>) -> AppResult<()> {
-    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window, sandbox).map(|_| ())
+    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window, sandbox, true).await.map(|_| ())
 }
 
 /// Whether this computer can run the agent's commands in the OS sandbox (and why not).
@@ -738,13 +742,16 @@ pub async fn agent_sandbox() -> AppResult<SandboxInfo> {
 /// Send a message the way the chat does, and wait for the turn to end: (how it ended, the error).
 /// For scheduled jobs (agent_jobs.rs).
 pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_window: Option<u64>, sandbox: bool) -> AppResult<(String, Option<String>)> {
-    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window, Some(sandbox))?;
+    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window, Some(sandbox), false)
+        .await?
+        .ok_or_else(|| AppError::msg("The agent is still working. Stop it or wait for it to finish."))?;
     let (end, error) = done.await.map_err(|e| AppError::msg(e.to_string()))?;
     Ok((end.as_str().unwrap_or("error").to_string(), error))
 }
 
-/// Start a turn in the background; the handle gives how it ended.
-fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>, sandbox: Option<bool>) -> AppResult<tokio::task::JoinHandle<(Value, Option<String>)>> {
+/// Start a turn in the background; the handle gives how it ended. While one runs, the message is
+/// queued for it instead (`queue`, the chat's messages: no handle then), or refused (a job's).
+async fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>, sandbox: Option<bool>, queue: bool) -> AppResult<Option<tokio::task::JoinHandle<(Value, Option<String>)>>> {
     let run = run_of(session_id)?;
     if text.trim().is_empty() && attachments.is_empty() {
         return Err(AppError::msg("Type a message first"));
@@ -754,18 +761,37 @@ fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<Stri
     {
         return Err(AppError::msg(format!("The sandbox isn't available here: {why}")));
     }
-    if run.busy.swap(true, Ordering::SeqCst) {
-        return Err(AppError::msg("The agent is still working. Stop it or wait for it to finish."));
+    // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
+    let compact = text.trim().strip_prefix("/compact").filter(|rest| attachments.is_empty() && (rest.is_empty() || rest.starts_with(char::is_whitespace))).map(str::to_string);
+    let (message, images) = with_attachments(&text, &attachments).await;
+    // While it works, a message from the chat goes in before its next step, as in Claude Code: no
+    // need to stop it first (a job's is refused). Decided under `live`, where a turn also ends, so
+    // a message is either read by the turn or starts the next one.
+    {
+        let mut live = run.approver.live.lock();
+        if run.busy.load(Ordering::SeqCst) {
+            if !queue {
+                return Err(AppError::msg("The agent is still working. Stop it or wait for it to finish."));
+            }
+            if compact.is_some() {
+                return Err(AppError::msg("The agent is working: send /compact when it's done."));
+            }
+            run.inbox.push(message, images);
+            run.approver.send_with(&mut live, json!({ "type": "queued", "text": text, "attachments": attachments }));
+            drop(live);
+            chat_changed(&run.id);
+            return Ok(None);
+        }
+        run.busy.store(true, Ordering::SeqCst);
     }
     let cancel = Cancel::default();
     *run.cancel.lock() = cancel.clone();
     run.since.store(now_ms(), Ordering::SeqCst);
-    Ok(tokio::spawn(async move {
+    Ok(Some(tokio::spawn(async move {
         let started = std::time::Instant::now();
         let ap = run.approver.clone();
         ap.send(json!({ "type": "turnStart", "text": text, "attachments": attachments }));
         chat_changed(&run.id);
-        let (message, images) = with_attachments(&text, &attachments).await;
         let mut g = run.turn.lock().await;
         let (agent, session) = &mut *g;
         agent.policy = policy;
@@ -778,32 +804,49 @@ fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<Stri
             let _ = sandbox_save(&run.id, s);
         }
         let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
-        // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
-        let compact = text.trim().strip_prefix("/compact").filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
-        let res = match compact {
-            Some(focus) if attachments.is_empty() => agent.compact(session, Some(focus), &cancel, &mut on).await.map(|_| devcat_harness::TurnEnd::Answered),
-            _ => agent.turn_with_images(session, &message, images, &cancel, &mut on).await,
+        let mut res = match compact {
+            Some(focus) => agent.compact(session, Some(&focus), &cancel, &mut on).await.map(|_| devcat_harness::TurnEnd::Answered),
+            None => agent.turn_with_images(session, &message, images, &cancel, &mut on).await,
         };
-        let (end, error) = match res {
-            Ok(end) => (serde_json::to_value(end).unwrap_or(Value::Null), None),
-            Err(devcat_harness::Error::Cancelled) => (json!("stopped"), None),
-            Err(e) => (json!("error"), Some(e.to_string())),
+        let (end, error) = loop {
+            let (end, error) = match &res {
+                Ok(end) => (serde_json::to_value(end).unwrap_or(Value::Null), None),
+                Err(devcat_harness::Error::Cancelled) => (json!("stopped"), None),
+                Err(e) => (json!("error"), Some(e.to_string())),
+            };
+            let snap = Snapshot::of(agent, session);
+            // All at once for `open` and for messages sent meanwhile: either some came as it
+            // finished (the next turn starts with them), or the turn moves from `live` to `log`
+            // and the chat is done. After a stop or an error, the ones it didn't read go back
+            // to the chat box (`unsent`).
+            let next = {
+                let mut live = ap.live.lock();
+                let mut queued = agent.inbox.take();
+                if res.is_ok() && !queued.is_empty() && !cancel.is_cancelled() {
+                    Some(queued.remove(0)).map(|first| (first, queued))
+                } else {
+                    let unsent: Vec<String> = queued.into_iter().map(|(t, _)| t).collect();
+                    let (usage, title) = (snap.usage.clone(), snap.title.clone());
+                    *run.log.lock() = snap;
+                    ap.send_with(&mut live, json!({ "type": "turnEnd", "end": end, "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64, "unsent": unsent }));
+                    live.events.clear();
+                    run.since.store(now_ms(), Ordering::SeqCst);
+                    run.busy.store(false, Ordering::SeqCst);
+                    None
+                }
+            };
+            let Some(((first, first_images), rest)) = next else { break (end, error) };
+            // the others are read at its first step
+            for (t, i) in rest {
+                agent.inbox.push(t, i);
+            }
+            ap.send(json!({ "type": "userMessage", "text": first, "blocked": false }));
+            res = agent.turn_with_images(session, &first, first_images, &cancel, &mut on).await;
         };
-        let snap = Snapshot::of(agent, session);
         drop(g);
-        // All at once for `open`: the turn moves from `live` to `log`, and the chat is done.
-        {
-            let mut live = ap.live.lock();
-            let (usage, title) = (snap.usage.clone(), snap.title.clone());
-            *run.log.lock() = snap;
-            ap.send_with(&mut live, json!({ "type": "turnEnd", "end": end, "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64 }));
-            live.events.clear();
-            run.since.store(now_ms(), Ordering::SeqCst);
-            run.busy.store(false, Ordering::SeqCst);
-        }
         chat_changed(&run.id);
         (end, error)
-    }))
+    })))
 }
 
 /// Stop the running turn (pending approvals count as a no).

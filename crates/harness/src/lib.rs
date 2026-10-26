@@ -23,7 +23,7 @@ pub mod sandbox;
 pub mod session;
 pub mod tools;
 
-pub use agent::{Agent, AgentEvent, Cancel, Model, TurnEnd};
+pub use agent::{Agent, AgentEvent, Cancel, Inbox, Model, TurnEnd};
 pub use approval::{Approver, Decision, Policy};
 pub use llm::{Llm, LlmConfig, Protocol};
 pub use message::{Block, Message, Role, Usage};

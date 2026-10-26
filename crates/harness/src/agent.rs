@@ -105,6 +105,31 @@ pub enum AgentEvent {
     /// A hook has something to tell the user: its `systemMessage`, that it failed, or (Stop) why
     /// the agent goes on.
     Hook { event: String, message: String },
+    /// A message the user sent while the agent worked is now part of the conversation, or
+    /// (`blocked`) a UserPromptSubmit hook refused it: it's dropped, and a `Hook` event says why.
+    UserMessage { text: String, blocked: bool },
+}
+
+/// Messages the user sends while a turn runs. The agent reads them before its next step (also
+/// when it was about to answer), so the user doesn't have to stop it to say something.
+#[derive(Clone, Default)]
+pub struct Inbox(Arc<std::sync::Mutex<Vec<Queued>>>);
+
+/// A queued message: its text and any images.
+pub type Queued = (String, Vec<Block>);
+
+impl Inbox {
+    /// Queue a message (with any images) for the running turn.
+    pub fn push(&self, text: String, images: Vec<Block>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push((text, images));
+    }
+    /// Everything queued, oldest first; the inbox is empty afterwards.
+    pub fn take(&self) -> Vec<Queued> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -154,6 +179,8 @@ pub struct Agent {
     /// (see [`crate::sandbox`]). They still ask as commands: it limits writes, not what a command
     /// reads or sends over the network.
     pub sandbox: bool,
+    /// Messages sent while a turn runs (the app keeps a clone to put them in).
+    pub inbox: Inbox,
     /// Tools the user allowed for the rest of the session.
     allowed: HashSet<String>,
     /// A helper started by `subagent` (that call's id): it only looks, never asks, and starts no
@@ -168,7 +195,7 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(model: Arc<dyn Model>, tools: Registry, policy: Policy, approver: Arc<dyn Approver>, system: String) -> Agent {
-        Agent { model, tools, policy, approver, system, context_window: None, hooks: Arc::default(), sandbox: false, allowed: HashSet::new(), helper: None, started: false, halt: None }
+        Agent { model, tools, policy, approver, system, context_window: None, hooks: Arc::default(), sandbox: false, inbox: Inbox::default(), allowed: HashSet::new(), helper: None, started: false, halt: None }
     }
 
     /// Run the hooks of `event` (see [`Hooks::run`]); what they say to the user is sent on. Stop
@@ -299,6 +326,28 @@ impl Agent {
         // a Stop hook already sent the agent back to work this turn
         let mut stop_hook_active = false;
         for _ in 0..MAX_STEPS {
+            // what the user sent meanwhile goes in before the step (after the tool results), past
+            // the UserPromptSubmit hooks like a message that starts a turn
+            let mut queued = self.inbox.take().into_iter();
+            while let Some((text, images)) = queued.next() {
+                let o = self.hook(session, "UserPromptSubmit", None, json!({ "prompt": text }), cancel, on).await;
+                if cancel.is_cancelled() {
+                    // stopped before its hooks said yes: this one and the rest stay unread (the app
+                    // gives them back to the chat box), in the order they were sent
+                    let later = self.inbox.take();
+                    for (t, i) in std::iter::once((text, images)).chain(queued).chain(later) {
+                        self.inbox.push(t, i);
+                    }
+                    return Err(Error::Cancelled);
+                }
+                if let Some(why) = o.stop.or(o.block) {
+                    on(AgentEvent::Hook { event: "UserPromptSubmit".into(), message: format!("A hook blocked a message you sent: {why}") });
+                    on(AgentEvent::UserMessage { text, blocked: true });
+                    continue;
+                }
+                session.append(SessionEvent::User { text: text.clone(), images, context: o.context, hook: None }).await?;
+                on(AgentEvent::UserMessage { text, blocked: false });
+            }
             if self.over_limit(session) {
                 self.compact(session, None, cancel, on).await?;
             }
@@ -323,6 +372,10 @@ impl Agent {
                 _ => None,
             }).collect();
             if calls.is_empty() {
+                // a message came while it answered: it reads that before ending
+                if !self.inbox.is_empty() {
+                    continue;
+                }
                 // Stop hooks (SubagentStop in a helper) may send the agent back to work
                 let event = if self.helper.is_some() { "SubagentStop" } else { "Stop" };
                 let answer: String = reply.content.iter().filter_map(|b| if let Block::Text { text } = b { Some(text.as_str()) } else { None }).collect();
@@ -487,6 +540,7 @@ impl Agent {
                 context_window: self.context_window,
                 hooks: self.hooks.clone(),
                 sandbox: self.sandbox,
+                inbox: Inbox::default(),
                 allowed: self.allowed.clone(),
                 helper: Some(id.to_string()),
                 started: true,

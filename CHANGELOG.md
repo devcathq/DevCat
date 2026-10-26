@@ -60,6 +60,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Rename a Claude Code session:** right-click it in the sidebar's Sessions list → **Rename…**. It's saved the
   way Claude Code's `/rename` does, so `claude --resume` shows the same name. Clear the name to go back to
   Claude's own title (#89).
+- **Send while DevCat Agent works:** a message you send while it's busy goes in before its next step, as in Claude
+  Code: no need to stop it first. It shows right away as waiting; if you stop the agent before it reads it, the
+  text comes back to the chat box. Your `UserPromptSubmit` hooks check it too (#69).
+- **New lines in the DevCat Agent chat box** with **Ctrl+Enter** and **Alt+Enter** too, not only **Shift+Enter** (#69).
+- **↑ / ↓ in the DevCat Agent chat box** go through what you sent in that folder, as in Claude Code (#69).
+- **The "files changed" bar in a DevCat Agent chat** lists only files git still sees changed, so it goes away when
+  you commit or revert them, also from another tool (#69).
 
 ## 0.12.0 - 2026-10-24
 

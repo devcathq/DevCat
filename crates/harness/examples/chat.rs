@@ -86,6 +86,7 @@ async fn main() {
             AgentEvent::HelperTool { id, name, .. } => println!("  [{id}] {name}"),
             AgentEvent::HelperStep { .. } => {}
             AgentEvent::Hook { event, message } => eprintln!("[{event} hook] {message}"),
+            AgentEvent::UserMessage { text, .. } => println!("\n> {text}"),
         })
         .await;
     println!("\n== {end:?}; total {:?}", session.usage());

@@ -8,7 +8,8 @@ import type { AgentApprovalRequest, AgentBlock, AgentContext, AgentLiveEvent, Ag
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
 
 export type Item =
-  | { kind: "user"; key: string; text: string; attachments: string[] }
+  /** `queued`: sent while the agent worked, not read yet. */
+  | { kind: "user"; key: string; text: string; attachments: string[]; queued?: boolean }
   | { kind: "answer"; key: string; text: string; thinking: string; streaming: boolean; thinkingMs: number | null; thinkingStart: number | null }
   /** `helper`: for a `subagent` call, the tool calls its helper made (live only; they're in the
    *  helper's own session). */
@@ -35,6 +36,8 @@ export interface ChatView {
   context: AgentContext | null;
   /** Input tokens of the last model call: how much of the context window the conversation fills. */
   contextTokens: number;
+  /** Messages it didn't read (it stopped), back for the chat box. */
+  draft?: string | null;
 }
 
 export const ZERO: AgentUsage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0 };
@@ -147,6 +150,16 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
     case "turnStart":
       items.push({ kind: "user", key: key(), text: e.text, attachments: e.attachments ?? [] });
       return { items, busy: true, error: null };
+    case "queued":
+      items.push({ kind: "user", key: key(), text: e.text, attachments: e.attachments ?? [], queued: true });
+      return { items };
+    case "userMessage": {
+      // the oldest one waiting is the one it read (or a hook refused: it goes, the hook's note says why)
+      const i = items.findIndex((x) => x.kind === "user" && x.queued);
+      if (i >= 0 && e.blocked) items.splice(i, 1);
+      else if (i >= 0) items[i] = { ...(items[i] as Extract<Item, { kind: "user" }>), queued: false };
+      return { items };
+    }
     case "context":
       return { context: e.context };
     case "question":
@@ -225,13 +238,15 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
       }));
       return { items };
     case "turnEnd": {
-      const closed = items.map((i): Item => (i.kind === "answer" && i.streaming ? { ...i, streaming: false }
+      // what it didn't read goes back to the chat box
+      const draft = e.unsent?.length ? e.unsent.map((t) => splitAttachments(t).text).join("\n\n") : null;
+      const closed = items.filter((i) => !(i.kind === "user" && i.queued)).map((i): Item => (i.kind === "answer" && i.streaming ? { ...i, streaming: false }
         : i.kind === "tool" && (i.status === "pending" || i.status === "running" || i.status === "approval" || i.status === "question") ? { ...i, status: "error" as const, request: null, question: null }
         : i.kind === "compacted" && i.state === "running" ? { ...i, state: "failed" }
         : i));
       const tokens = e.usage.input_tokens + e.usage.output_tokens;
       closed.push({ kind: "end", key: key(), end: e.end, error: e.error, elapsedMs: e.elapsedMs, tokens });
-      return { items: closed, busy: false, usage: e.usage, title: e.title };
+      return { items: closed, busy: false, usage: e.usage, title: e.title, ...(draft ? { draft } : {}) };
     }
   }
 }
@@ -457,6 +472,23 @@ export function editedFiles(items: Item[]) {
     m.set(d.target, { plus: f.plus + (d.plus ?? 0), minus: f.minus + (d.minus ?? 0) });
   }
   return [...m.entries()];
+}
+
+/** The edited files git still sees changed (what the Diff view shows): files outside the
+ *  repository, or committed or reverted since, drop out. `git` is the folder's status. */
+export function stillChanged(files: [string, { plus: number; minus: number }][], git: { isRepo: boolean; root?: string | null; files: { path: string }[] } | null, cwd: string) {
+  if (!git?.isRepo || !git.root) return [];
+  const norm = (p: string) => {
+    const s = p.replace(/\\/g, "/").replace(/\/+$/, "");
+    return /^[a-z]:\//i.test(s) ? s.toLowerCase() : s;
+  };
+  const root = norm(git.root);
+  const changed = new Set(git.files.map((f) => norm(`${root}/${f.path}`)));
+  const base = norm(cwd);
+  return files.filter(([p]) => {
+    const abs = /^([a-z]:)?[\\/]/i.test(p) ? norm(p) : norm(`${base}/${p}`);
+    return changed.has(abs);
+  });
 }
 
 /** Lines of a diff for an edit (`before` → `after`), removed first. */

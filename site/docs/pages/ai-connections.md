@@ -143,7 +143,7 @@ match too. `git` calls are seen as `Bash` commands.
 | Event | When | What a hook can do |
 | --- | --- | --- |
 | `SessionStart` | The first message of a chat (`startup`, or `resume` for a saved chat) | Add context for the agent |
-| `UserPromptSubmit` | You send a message | Add context, or block the message |
+| `UserPromptSubmit` | You send a message (also one sent while it works) | Add context, or block the message |
 | `PreToolUse` | Before a tool call | Block it, allow it without asking, make it ask, change its input, add context |
 | `PermissionRequest` | A call is about to ask you | Allow or decline it in your place |
 | `PostToolUse` / `PostToolUseFailure` | After a call that worked / failed | Give the agent feedback, add context, replace the result |
