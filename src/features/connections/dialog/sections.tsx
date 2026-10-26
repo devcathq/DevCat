@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { Checkbox, IconButton, Input, Select, Spinner } from "../../../components/ui";
 import { KIND_META } from "../../../components/ui/KindIcon";
 import { api, errMsg } from "../../../lib/api";
-import type { ConnectionConfig, ConnectionKind, SessionForward, SshConfig, SshConfigHost } from "../../../lib/types";
+import type { ConnectionConfig, ConnectionKind, McpAccess, SessionForward, SshConfig, SshConfigHost } from "../../../lib/types";
 import { parseForwards } from "../../ssh/forwards";
 import { useConnections } from "../../../store/connections";
 import { createProject } from "../tree/projectActions";
@@ -590,6 +590,29 @@ function NetworkRow({ cfg, setOpt }: SectionProps) {
   );
 }
 
+const AI_ACCESS: { value: McpAccess; label: string }[] = [
+  { value: "off", label: "Off" },
+  { value: "read", label: "Read-only" },
+  { value: "full", label: "Full" },
+];
+
+/** AI / MCP access: what agents (Claude Code, Codex… over MCP, and DevCat Agent) may do with it. */
+function AiAccessRow({ cfg, set }: Pick<SectionProps, "cfg" | "set">) {
+  const project = useConnections((s) => s.projects.find((p) => p.id === cfg.projectId));
+  // saved before the setting: the project's "Allow writes from MCP" decides
+  const own = cfg.mcpAccess ?? (project?.mcpWrites ? "full" : "read");
+  const value: McpAccess = cfg.readOnly && own === "full" ? "read" : own;
+  const options = cfg.readOnly ? AI_ACCESS.filter((o) => o.value !== "full") : AI_ACCESS;
+  const hint = value === "off" ? "Hidden from every agent: they don't see this connection at all."
+    : value === "read" ? "Agents read schemas and run queries that only read; anything that may change data is refused."
+    : "Agents over MCP may also change data (INSERT, UPDATE, DELETE, DDL, Redis writes).";
+  return (
+    <Row label="AI / MCP access" hint={<>{hint}{cfg.readOnly && " A read-only connection can't be Full."} Every call is logged under Sync MCP → Activity.</>}>
+      <div><Segmented value={value} options={options} onChange={(v) => set({ mcpAccess: v })} /></div>
+    </Row>
+  );
+}
+
 export function AdvancedSection({ cfg, set, setOpt }: SectionProps) {
   const isDb = cfg.kind !== "kubernetes" && cfg.kind !== "rabbitmq" && cfg.kind !== "docker" && cfg.kind !== "ssh";
   const entries = Object.entries(cfg.options).filter(([k]) => !MANAGED_OPTIONS.has(k));
@@ -604,9 +627,10 @@ export function AdvancedSection({ cfg, set, setOpt }: SectionProps) {
     <>
       {cfg.kind !== "ssh" && (
         <Row label="" hint="Blocks data edits, DDL and destructive actions from the UI for this connection.">
-          <Checkbox label="Read-only connection" checked={cfg.readOnly} onChange={(v) => set({ readOnly: v })} />
+          <Checkbox label="Read-only connection" checked={cfg.readOnly} onChange={(v) => set({ readOnly: v, ...(v && cfg.mcpAccess === "full" ? { mcpAccess: "read" as const } : {}) })} />
         </Row>
       )}
+      {cfg.kind !== "ssh" && <AiAccessRow cfg={cfg} set={set} />}
       <NetworkRow cfg={cfg} set={set} setOpt={setOpt} />
       {isDb && (
         <Row label="Driver options" hint="Extra key/value options passed to the driver.">

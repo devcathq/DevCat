@@ -34,3 +34,12 @@ DejaVu Sans Mono for symbols other fonts lack (like those in Claude Code's statu
 
 > **Tip:** In a terminal, <kbd>⌘=</kbd> / <kbd>⌘-</kbd> / <kbd>⌘0</kbd> (<kbd>Ctrl</kbd> on Windows and Linux)
 > change the terminal size directly, for every terminal.
+
+## Terminal
+
+The **Terminal** section also applies to every project and window, and to terminals that are already open.
+
+| Setting | What it changes |
+| --- | --- |
+| **Selecting text** | **Copy on select** (the default): releasing the mouse after selecting copies the text. **Copy with ⌘C only** (<kbd>Ctrl+C</kbd> on Windows and Linux): selecting only highlights; <kbd>Ctrl+C</kbd> with nothing selected still interrupts the running program |
+| **Allow programs to copy to the clipboard (OSC 52)** | On by default. Programs like Claude Code, tmux and vim copy what you select in them this way, also from an SSH host. Programs can only copy: DevCat never lets them read your clipboard |

@@ -12,6 +12,14 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Sync MCP:** each connection now has its own **AI / MCP access** (Edit connection → Advanced): **Off** hides it
+  from every agent, **Read-only** lets agents only read, **Full** lets agents over MCP change data too. New
+  connections start read-only, and a read-only connection can never be full. DevCat enforces it, whatever the
+  agent asks. Connections saved before keep following their project's **Allow writes from MCP** until you pick
+  one. **MCP activity** (Sync MCP → Activity…, or the connections menu) lists every call agents made through
+  DevCat's MCP server: the agent, the connection, what it ran and whether DevCat refused it. Agents can also
+  attach the connection list and a database's schema as MCP resources (`devcat://project/…/connections`,
+  `devcat://conn/…/schema`).
 - **Tidier window:** the row of icons at the top right is now one **Settings** menu (Appearance, AI memory, Mobile
   pairing, Tickets, Keep awake, New window); a coffee cup still shows while keep awake is on. **Rooms** moved to
   the left bar, and saved queries and query history now sit under the connection list (**Queries**) instead of
@@ -77,6 +85,18 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Room agents see the room's images:** an agent mentioned in a room now looks at shared PNG, JPEG, GIF and WebP
   images (up to 5 MB) when it reads them, and can read text files shared read-only because of their size.
 - **Rooms:** an image open in a room no longer blinks each time someone in the room types, moves or posts.
+- **Terminal:** copying from Claude Code works. Text you select in Claude Code (or tmux, vim, a program on an SSH
+  host) now reaches the clipboard: DevCat accepts OSC 52 copies, and never lets a program read the clipboard. New
+  **Terminal** settings in Appearance: **Selecting text** copies on select (as before) or only with ⌘C / Ctrl+C
+  (Ctrl+C with nothing selected still interrupts), and **Allow programs to copy to the clipboard (OSC 52)**. Both
+  apply to every terminal at once, open tabs too (#61).
+- **Memory on all your computers:** pair your laptop, desktop or a server running `devcat serve` once (**Memory →
+  Other computers**: show a code on one, paste it on the other and allow it), and their agents share one memory.
+  Changes reach the other computers within seconds while they're online, and a computer that was off catches up
+  when it's back. Computers connect directly or through your relay, end-to-end encrypted, with no account or
+  server. A project's memories follow it to computers that have the same project (matched by its git remote). When
+  both computers changed the same memory, the newer change wins and the other is kept as a conflict copy, and
+  secrets are removed before anything is shared (#12).
 - **Rooms: drop files to share them.** Drag files onto a room, from your computer or DevCat's Files tree, and
   everyone in it can open them. Dropped on the thread, or pasted into its message box (a screenshot), they're
   also named in your message, and a file's name in a message opens it. A name that's taken gets a number

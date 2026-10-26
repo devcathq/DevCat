@@ -1,6 +1,6 @@
 //! Persistence for saved connections (JSON in app data dir) and secrets (OS keychain).
 use crate::error::{AppError, AppResult};
-use crate::models::ConnectionConfig;
+use crate::models::{ConnectionConfig, McpAccess};
 use std::path::PathBuf;
 
 
@@ -57,8 +57,18 @@ impl ConnectionStore {
         }
         let mut all = self.load_all()?;
         match all.iter_mut().find(|c| c.id == cfg.id) {
-            Some(existing) => *existing = cfg.clone(),
-            None => all.push(cfg.clone()),
+            Some(existing) => {
+                // a client that doesn't know the AI access setting keeps it as it was
+                if cfg.mcp_access.is_none() {
+                    cfg.mcp_access = existing.mcp_access;
+                }
+                *existing = cfg.clone()
+            }
+            None => {
+                // new connections: agents read only, until the user says otherwise
+                cfg.mcp_access.get_or_insert(McpAccess::Read);
+                all.push(cfg.clone())
+            }
         }
         self.write_all(&all)?;
         Ok(cfg)
@@ -82,3 +92,24 @@ impl ConnectionStore {
 }
 
 use crate::secrets::{delete as delete_secret, get as get_secret, set as set_secret};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn new_connections_start_read_only_for_agents_and_keep_their_setting() {
+        let s = ConnectionStore::new(std::env::temp_dir().join(format!("devcat-store-{}", uuid::Uuid::new_v4())));
+        let conn = |v: serde_json::Value| -> ConnectionConfig { serde_json::from_value(v).unwrap() };
+        let saved = |id: &str| s.load_all().unwrap().into_iter().find(|c| c.id == id).unwrap();
+        let a = s.save(conn(json!({ "id": "", "name": "shop", "kind": "postgres" }))).unwrap();
+        assert_eq!(saved(&a.id).mcp_access, Some(McpAccess::Read), "new: agents read only");
+        s.save(conn(json!({ "id": a.id, "name": "shop", "kind": "postgres", "mcpAccess": "off" }))).unwrap();
+        s.save(conn(json!({ "id": a.id, "name": "shop2", "kind": "postgres" }))).unwrap();
+        let got = saved(&a.id);
+        assert_eq!((got.name.as_str(), got.mcp_access), ("shop2", Some(McpAccess::Off)), "a save without it keeps it");
+        let b = s.save(conn(json!({ "id": "", "name": "w", "kind": "redis", "mcpAccess": "full" }))).unwrap();
+        assert_eq!(saved(&b.id).mcp_access, Some(McpAccess::Full));
+    }
+}

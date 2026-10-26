@@ -6,9 +6,10 @@
 //!
 //! Which connections an agent sees depends on the folder it works in ([`Scope`]): a project with
 //! code folders keeps its connections to those folders; connections in no project, or in a
-//! project without folders, are everyone's. SSH sessions are never offered (see AGENTS.md).
+//! project without folders, are everyone's. SSH sessions are never offered (see AGENTS.md), nor
+//! connections whose AI access is off ([`McpAccess`]). Over MCP, changing data needs `Full`.
 use crate::db::{ExecOptions, QueryResult, TableRef};
-use crate::models::{ConnectionConfig, ConnectionKind, Project};
+use crate::models::{ConnectionConfig, ConnectionKind, McpAccess, Project};
 use crate::state::St;
 use async_trait::async_trait;
 use devcat_harness::approval::Kind;
@@ -33,7 +34,7 @@ pub struct Scope {
     pub project: Option<String>,
     /// Else the project whose code folder holds this one.
     pub folder: Option<PathBuf>,
-    /// Served over MCP: changing data needs the project's "Allow writes from MCP" (the DevCat
+    /// Served over MCP: changing data needs the connection's AI access to be full (the DevCat
     /// Agent asks the user instead).
     pub mcp: bool,
 }
@@ -60,9 +61,25 @@ pub struct View {
 }
 
 impl View {
-    fn project_of(&self, c: &ConnectionConfig) -> Option<&Project> {
-        self.projects.iter().find(|p| Some(&p.id) == c.project_id.as_ref())
+    /// What agents may do with `c` (its own setting, else its project's).
+    pub fn access(&self, c: &ConnectionConfig) -> McpAccess {
+        access(c, &self.projects)
     }
+
+    /// [`describe`], and over MCP whether agents may change its data.
+    pub fn line(&self, c: &ConnectionConfig, mcp: bool) -> String {
+        let l = describe(c);
+        if mcp && !c.read_only {
+            let a = if self.access(c) == McpAccess::Full { "agents may change data" } else { "agents read only" };
+            return format!("{l} ({a})");
+        }
+        l
+    }
+}
+
+/// What agents may do with `c`, given every project.
+pub fn access(c: &ConnectionConfig, projects: &[Project]) -> McpAccess {
+    c.agent_access(projects.iter().find(|p| Some(&p.id) == c.project_id.as_ref()))
 }
 
 pub fn view(scope: &Scope) -> View {
@@ -75,7 +92,7 @@ pub fn view(scope: &Scope) -> View {
 
 /// Whether an agent working in `current` sees `c`.
 pub fn visible(c: &ConnectionConfig, projects: &[Project], current: Option<&Project>) -> bool {
-    if c.kind == ConnectionKind::Ssh {
+    if c.kind == ConnectionKind::Ssh || access(c, projects) == McpAccess::Off {
         return false;
     }
     let Some(pid) = c.project_id.as_deref() else { return true };
@@ -128,6 +145,11 @@ pub fn describe(c: &ConnectionConfig) -> String {
     }
     l.push_str(&format!(") id {}", c.id));
     l
+}
+
+/// Whether `db_schema` reads it (SQL databases and MongoDB).
+pub fn has_schema(k: ConnectionKind) -> bool {
+    is_db(k) && k != ConnectionKind::Redis
 }
 
 fn is_db(k: ConnectionKind) -> bool {
@@ -194,7 +216,7 @@ impl Tool for Connections {
         if v.connections.is_empty() {
             return ToolOutput::ok("The user has no DevCat connections for this folder.");
         }
-        let mut lines: Vec<String> = v.connections.iter().map(describe).collect();
+        let mut lines: Vec<String> = v.connections.iter().map(|c| v.line(c, self.0.mcp)).collect();
         if let Some(p) = &v.project {
             lines.insert(0, format!("Project {} (its connections, then the ones every folder gets):", p.name));
         }
@@ -239,7 +261,7 @@ impl Tool for DbSchema {
             Ok(c) => c,
             Err(e) => return e,
         };
-        if !is_db(c.kind) || c.kind == ConnectionKind::Redis {
+        if !has_schema(c.kind) {
             return ToolOutput::err(format!("{} is a {} connection; `db_schema` reads SQL databases and MongoDB.", c.name, kind_name(c.kind)));
         }
         let arg = |k: &str| input.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
@@ -369,9 +391,9 @@ impl Tool for DbQuery {
         if query.is_empty() {
             return ToolOutput::err("Missing `query`.");
         }
-        if self.0.mcp && !reads_only(&c, query) && !view(&self.0).project_of(&c).is_some_and(|p| p.mcp_writes) {
+        if self.0.mcp && !reads_only(&c, query) && view(&self.0).access(&c) != McpAccess::Full {
             return ToolOutput::err(format!(
-                "DevCat only lets agents read {} over MCP, and this query may change data. To allow changes, the user turns on \"Allow writes from MCP\" on the connection's project in DevCat (connections in no project are read-only over MCP).",
+                "DevCat only lets agents read {} over MCP, and this query may change data. To allow changes, the user sets the connection's AI / MCP access to \"Full\" in DevCat (Edit connection → Advanced); a read-only connection can't be.",
                 c.name
             ));
         }
@@ -624,6 +646,30 @@ mod tests {
         assert_eq!(scope.current(&projects).map(|p| p.id), Some("shop".into()));
         assert_eq!(Scope::folder(Path::new("/src/shopping")).current(&projects).map(|p| p.id), None, "a folder, not a name prefix");
         assert_eq!(Scope { project: Some("misc".into()), ..Scope::default() }.current(&projects).map(|p| p.id), Some("misc".into()));
+    }
+
+    #[test]
+    fn ai_access_is_the_connections_own_else_its_projects_and_read_only_caps_it() {
+        let conn = |v: Value| -> ConnectionConfig { serde_json::from_value(v).unwrap() };
+        let projects = vec![
+            Project { id: "rw".into(), name: "Rw".into(), mcp_writes: true, ..Default::default() },
+            Project { id: "ro".into(), name: "Ro".into(), ..Default::default() },
+        ];
+        let a = |v: Value| access(&conn(v), &projects);
+        // saved before the setting: the project's "Allow writes from MCP"
+        assert_eq!(a(json!({ "id": "1", "name": "a", "kind": "postgres", "projectId": "rw" })), McpAccess::Full);
+        assert_eq!(a(json!({ "id": "1", "name": "a", "kind": "postgres", "projectId": "ro" })), McpAccess::Read);
+        assert_eq!(a(json!({ "id": "1", "name": "a", "kind": "postgres" })), McpAccess::Read);
+        // its own setting wins, either way
+        assert_eq!(a(json!({ "id": "1", "name": "a", "kind": "postgres", "projectId": "rw", "mcpAccess": "read" })), McpAccess::Read);
+        assert_eq!(a(json!({ "id": "1", "name": "a", "kind": "postgres", "projectId": "ro", "mcpAccess": "full" })), McpAccess::Full);
+        // a read-only connection never gets full
+        assert_eq!(a(json!({ "id": "1", "name": "a", "kind": "postgres", "readOnly": true, "mcpAccess": "full" })), McpAccess::Read);
+        assert_eq!(a(json!({ "id": "1", "name": "a", "kind": "postgres", "readOnly": true, "projectId": "rw" })), McpAccess::Read);
+        // off: no agent sees it
+        let off = conn(json!({ "id": "1", "name": "a", "kind": "postgres", "mcpAccess": "off" }));
+        assert!(!visible(&off, &projects, None));
+        assert!(visible(&conn(json!({ "id": "1", "name": "a", "kind": "postgres", "mcpAccess": "read" })), &projects, None));
     }
 
     #[test]

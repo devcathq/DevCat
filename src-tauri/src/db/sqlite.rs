@@ -657,6 +657,7 @@ mod integration {
             project_id: None,
             options: if create { [("create".to_string(), "true".to_string())].into_iter().collect() } else { Default::default() },
             read_only,
+            mcp_access: None,
         }
     }
 
