@@ -1,4 +1,4 @@
-// Rooms from the title bar: the list, a new room, joining one with an invite link, and the
+// Rooms: the sidebar list, a new room, joining one with an invite link, and the
 // owner's answer to someone asking to join.
 import clsx from "clsx";
 import { DoorOpen, Plus, Users } from "lucide-react";
@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Badge, Button, Dialog, Empty, ErrorBox, Field, Input } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { rooms, type JoinRequest } from "./api";
-import { myName, openRoom, setMyName, startRooms, useRooms } from "./store";
+import { myName, openRoom, setMyName, useRooms } from "./store";
 
 type Mode = "list" | "new" | "join";
 
@@ -15,9 +15,10 @@ export function RoomsDialog() {
   const open = useRooms((s) => s.dialog);
   const show = useRooms((s) => s.show);
   const list = useRooms((s) => s.list);
+  const startMode = useRooms((s) => s.dialogMode);
   const [mode, setMode] = useState<Mode>("list");
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { if (open) { setMode("list"); setError(null); } }, [open]);
+  useEffect(() => { if (open) { setMode(startMode); setError(null); } }, [open, startMode]);
   const close = () => show(false);
   return (
     <Dialog open={open} onClose={close} title="Rooms" width={560}>
@@ -160,19 +161,36 @@ export function RoomJoinPrompt() {
   );
 }
 
-/** Title-bar button: amber dot while someone waits to be let in. */
-export function RoomsButton() {
-  const show = useRooms((s) => s.show);
-  const waiting = useRooms((s) => s.pending.length > 0);
-  const n = useRooms((s) => s.list.length);
-  useEffect(() => {
-    startRooms();
-    void useRooms.getState().refresh(false).catch(() => {});
-  }, []);
+/** Sidebar: this user's rooms, a new room, and joining one with an invite. */
+export function RoomsPanel() {
+  const list = useRooms((s) => s.list);
+  const agents = useRooms((s) => s.agents);
+  useEffect(() => { void useRooms.getState().refresh(false).catch(() => {}); }, []);
   return (
-    <button onClick={() => show()} title={waiting ? "Someone wants to join a room: click to answer" : "Rooms: share documents and agents with other people"} className={clsx("relative flex h-6 items-center gap-1 rounded px-1.5 hover:bg-hover hover:text-fg", n ? "text-accent" : "text-muted")}>
-      <Users className="size-3.5" />
-      {waiting && <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-warn" />}
-    </button>
+    <div className="flex h-full flex-col">
+      {list.length === 0 ? (
+        <Empty icon={<Users className="size-6" />} title="No rooms yet">
+          Share documents with other people, talk about them, and let each person's DevCat Agent join in.
+          <div className="mt-3 flex flex-col gap-2">
+            <Button variant="primary" onClick={() => useRooms.getState().show(true, "new")}><Plus className="size-3.5" />New room</Button>
+            <Button onClick={() => useRooms.getState().show(true, "join")}><DoorOpen className="size-3.5" />Join with an invite</Button>
+          </div>
+        </Empty>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto py-0.5">
+          {list.map((r) => (
+            <button key={r.id} onClick={() => openRoom(r)} className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-hover">
+              <Users className={clsx("size-3.5 shrink-0", r.removed ? "text-faint" : "text-accent")} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px]">{r.name}</span>
+                <span className="block truncate text-[11px] text-faint">{r.members} member{r.members === 1 ? "" : "s"} · {r.online} here now</span>
+              </span>
+              {agents[r.id] && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent" title="Your agent is working here" />}
+              {r.removed ? <Badge tone="danger">removed</Badge> : r.role === "owner" && <Badge tone="accent">owner</Badge>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

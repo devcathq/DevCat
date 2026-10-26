@@ -6,7 +6,7 @@ import clsx from "clsx";
 import { Bell, Copy, ExternalLink, Globe, History, LifeBuoy, RefreshCw, Smartphone, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Badge, Button, Checkbox, Dialog, Field, Input, Select, Spinner } from "../../components/ui";
+import { Button, Checkbox, Dialog, Field, Input, Select, Spinner } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import {
   MOBILE_RELEASES_URL, NTFY_ANDROID_URL, NTFY_IOS_URL, mobileApi, ntfyLink, pathLabel,
@@ -484,22 +484,5 @@ export function MobileDialog() {
       </div>
       {tab === "remote" ? <RemoteTab /> : tab === "notify" ? <NotifyTab /> : tab === "activity" ? <ActivityTab /> : <HelpTab />}
     </Dialog>
-  );
-}
-
-/** Title-bar button: green dot while a phone is connected, amber while one waits for approval. */
-export function MobileButton() {
-  const status = useMobile((s) => s.status);
-  const show = useMobile((s) => s.show);
-  const on = status?.settings.enabled && status.running;
-  const n = status?.clients.length ?? 0;
-  const waiting = (status?.pending.length ?? 0) > 0;
-  const title = waiting ? "A phone wants to pair: click to answer" : on ? (n ? `${n} phone${n === 1 ? "" : "s"} connected` : "Remote access is on") : "Mobile: control DevCat from your phone";
-  return (
-    <button onClick={() => show()} title={title} className={clsx("relative flex h-6 items-center gap-1 rounded px-1.5 hover:bg-hover hover:text-fg", on ? "text-accent" : "text-muted")}>
-      <Smartphone className="size-3.5" />
-      {(n > 0 || waiting) && <span className={clsx("absolute top-0.5 right-0.5 size-1.5 rounded-full", waiting ? "bg-warn" : "bg-ok")} />}
-      {waiting && <Badge tone="warn">pair?</Badge>}
-    </button>
   );
 }

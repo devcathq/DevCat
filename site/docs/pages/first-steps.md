@@ -4,12 +4,12 @@ The parts of the window, projects, tabs and windows: what you need before using 
 
 ## The window
 
-- **Left bar**: one icon per area. From top to bottom: *AI Workspace*, *Connections*, *History & saved queries*,
-  *VPN & SSH tunnels*, *Git repositories* and *Notes*.
+- **Left bar**: one icon per area. From top to bottom: *AI Workspace*, *Connections* (with your saved queries and
+  query history under the list), *VPN & SSH tunnels*, *Git repositories*, *Notes* and *Rooms*.
 - **Sidebar**: the list for the selected area (your connections, your repositories, your notes…).
 - **Tabs**: everything you open (a query, a table, a chat, a cluster) opens in a tab on the right.
-- **Title bar**, top right: **Appearance** (palette), **Mobile** (phone), **Keep awake** (coffee cup) and **New
-  window**.
+- **Title bar**, top right: the **Settings** menu (gear): **Appearance**, **AI memory**, **Mobile pairing**,
+  **Tickets**, **Keep awake** and **New window**. While keep awake is on, a coffee cup shows next to it.
 - **Status bar** at the bottom: open connections and the version (click it to check for updates).
 
 To hide the sidebar, click the active icon in the left bar again, use the toggle at the bottom of the left bar, or

@@ -16,7 +16,7 @@ clusters on the go.
 
 ## Pair your phone
 
-1. On the computer, click the phone icon in the title bar and turn on **Remote access**. A QR code appears.
+1. On the computer, open **Settings** (the gear at the top right) → **Mobile pairing** and turn on **Remote access**. A QR code appears.
 2. Point the phone's camera at it. It opens DevCat in the phone's browser.
 3. Choose **Open in DevCat app** if you have the app, or **Continue in browser** to use it right there with
    nothing to install.

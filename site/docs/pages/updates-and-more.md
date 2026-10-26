@@ -4,10 +4,11 @@ Small things that help: keep the computer awake for a long agent run, and stay u
 
 ## Keep awake
 
-The coffee cup at the top right keeps the screen and computer from going to sleep, like Caffeine or Amphetamine.
+**Settings** (the gear at the top right) → **Keep awake** keeps the screen and computer from going to sleep, like
+Caffeine or Amphetamine: until you turn it off, or for 15 minutes to 8 hours.
 
-- **Click** to turn it on or off.
-- **Right-click** to keep awake for a while: from 15 minutes to 8 hours.
+While it's on, a coffee cup shows at the top right. **Click** it to allow sleep again; **right-click** it to change
+the time.
 
 Handy when an agent works for an hour and you want your phone to stay connected to it.
 
