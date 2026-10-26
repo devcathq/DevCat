@@ -12,6 +12,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
+  agent's reply there) opens that file from the server, over the same session, instead of looking for it on
+  this computer.
 - **A preview tab keeps up with its file:** opened before the file exists (an agent mentions a path, then writes
   it), it shows the file as soon as it's written, instead of staying on "Cannot open …". Images, PDFs and other
   previews that change on disk are shown again a moment later (#88).
