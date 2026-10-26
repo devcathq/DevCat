@@ -259,12 +259,13 @@ export function dismissError(tabId: string) {
   patch(tabId, () => ({ error: null }));
 }
 
-/** Allow the hooks of a chat's folder as they are now; the chat's context updates when they're on. */
-export async function trustHooks(tabId: string) {
+/** Allow the hooks of a chat's folder as the chat shows them (`digest`); the chat's context updates
+ *  when they're on, or with the hooks as they are now when they changed meanwhile. */
+export async function trustHooks(tabId: string, digest: string) {
   const c = useAgent.getState().chats[tabId];
   if (!c?.sessionId) return;
   try {
-    await api.agentTrustHooks(c.sessionId);
+    await api.agentTrustHooks(c.sessionId, digest);
   } catch (e) {
     patch(tabId, () => ({ error: errMsg(e) }));
   }

@@ -24,11 +24,11 @@ fn config_dir() -> PathBuf {
     }
 }
 
-fn projects_root() -> PathBuf {
+pub(crate) fn projects_root() -> PathBuf {
     config_dir().join("projects")
 }
 
-pub(super) fn encode_cwd(cwd: &str) -> String {
+pub(crate) fn encode_cwd(cwd: &str) -> String {
     cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
@@ -63,7 +63,7 @@ struct CwdOnly {
     cwd: Option<String>,
 }
 
-fn dir_cwd(dir: &Path) -> Option<String> {
+pub(crate) fn dir_cwd(dir: &Path) -> Option<String> {
     if let Some(c) = DIR_CWD.lock().get(dir) {
         return Some(c.clone());
     }

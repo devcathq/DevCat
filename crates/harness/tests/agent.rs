@@ -709,3 +709,53 @@ async fn prompt_hooks_are_for_the_users_messages_not_a_helpers_prompt() {
     assert!(context(&helper).is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn a_hook_that_stops_the_agent_keeps_what_already_ran() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    let settings = json!({ "hooks": {
+        "PostToolUse": [{ "matcher": "Read", "hooks": [hook(
+            r#"echo '{"continue":false,"stopReason":"enough reading"}'"#,
+            r#"Write-Output '{"continue":false,"stopReason":"enough reading"}'"#,
+        )] }],
+    }});
+    std::fs::create_dir_all(proj.join(".claude")).unwrap();
+    std::fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let model = Scripted::new(vec![vec![tool("t1", "read", json!({ "path": "notes.txt" })), tool("t2", "glob", json!({ "pattern": "*" }))]]);
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.hooks = Arc::new(devcat_harness::hooks::load(&proj, None).hooks);
+    let end = agent.turn(&mut session, "look", &Cancel::default(), &mut |_| {}).await;
+    assert!(matches!(&end, Err(Error::Hook(m)) if m == "A PostToolUse hook stopped the agent: enough reading"), "{end:?}");
+    // the read ran: the model gets its result; the glob after it didn't
+    let results: Vec<(String, String)> = session.messages().iter().flat_map(|m| m.content.clone()).filter_map(|b| match b {
+        Block::ToolResult { tool_use_id, content, .. } => Some((tool_use_id, content)),
+        _ => None,
+    }).collect();
+    assert!(results[0].0 == "t1" && results[0].1.contains("version = 1"), "{results:?}");
+    assert_eq!(results[1], ("t2".to_string(), "Not run: a hook stopped the agent.".to_string()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn stop_doesnt_wait_for_a_hook() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    let settings = json!({ "hooks": { "PreToolUse": [{ "hooks": [hook("sleep 30", "Start-Sleep -Seconds 30")] }] } });
+    std::fs::create_dir_all(proj.join(".claude")).unwrap();
+    std::fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let model = Scripted::new(vec![vec![tool("t1", "read", json!({ "path": "notes.txt" }))]]);
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.hooks = Arc::new(devcat_harness::hooks::load(&proj, None).hooks);
+    let cancel = Cancel::default();
+    let stopper = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        stopper.cancel();
+    });
+    let started = std::time::Instant::now();
+    let end = agent.turn(&mut session, "look", &cancel, &mut |_| {}).await;
+    assert!(matches!(end, Err(Error::Cancelled)), "{end:?}");
+    assert!(started.elapsed() < Duration::from_secs(10), "waited {:?} for the hook", started.elapsed());
+    let _ = std::fs::remove_dir_all(dir);
+}

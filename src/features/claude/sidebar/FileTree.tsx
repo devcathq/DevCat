@@ -2,7 +2,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import {
-  AlertTriangle, AtSign, ChevronRight, ChevronsDownUp, ClipboardCopy, Copy, Eye, Files, EyeOff, FolderGit2, FolderSearch, GitBranch, History, Loader2, RefreshCw, Search,
+  AlertTriangle, AtSign, ChevronRight, ChevronsDownUp, ClipboardCopy, ClipboardPaste, Copy, Eye, Files, EyeOff, FolderGit2, FolderSearch, GitBranch, History, Loader2, RefreshCw, Search,
   SquareArrowOutUpRight, UserSearch, X,
 } from "lucide-react";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
@@ -13,7 +13,7 @@ import type { FileEntry, GitStatus } from "../../../lib/types";
 import { useTabs } from "../../../store/tabs";
 import { useContextMenu, type MenuItem } from "../../connections/ContextMenu";
 import { FileIcon } from "../../files/FileIcon";
-import { copyFile, copyText, dirname, openFilePreview, relPath, revealPath, REVEAL_LABEL } from "../../files/format";
+import { basename, copyFile, copyText, dirname, openFilePreview, relPath, revealPath, REVEAL_LABEL } from "../../files/format";
 import { openBlame, openGitRepo } from "../../git/open";
 import { repoRootOf } from "../../git/repoOf";
 import { useWorkspace } from "./workspace";
@@ -121,6 +121,24 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
     for (const d of expanded) void load(d);
   }, [cwd, expanded, load]);
   const collapseAll = useCallback(() => setExpanded(new Set()), []);
+
+  // Paste the clipboard (files / folders copied in Explorer / Finder or with Copy here, or else an
+  // image) into `dir`, then show it: the folder opens and reloads, and the first new item is selected.
+  const [reveal, setReveal] = useState<string | null>(null);
+  const paste = useCallback(async (dir: string) => {
+    try {
+      const pasted = await api.fsPaste(dir, cwd);
+      if (dir !== cwd) setExpanded((s) => new Set(s).add(dir));
+      await load(dir);
+      if (pasted[0]) {
+        setSelected(pasted[0]);
+        setReveal(pasted[0]);
+      }
+      toast.success(pasted.length === 1 ? `Pasted ${basename(pasted[0])}` : `Pasted ${pasted.length} items`);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }, [cwd, load]);
   useImperativeHandle(ref, () => ({ refresh, collapseAll }), [refresh, collapseAll]);
 
   const toggle = useCallback((dir: string, open?: boolean) => {
@@ -176,6 +194,16 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
     overscan: 12,
   });
 
+  // scroll to what was just pasted once its row is there
+  useEffect(() => {
+    if (!reveal) return;
+    const i = rows.findIndex((r) => r.type === "entry" && r.entry.path === reveal);
+    if (i >= 0) {
+      virt.scrollToIndex(i);
+      setReveal(null);
+    }
+  }, [reveal, rows, virt]);
+
   const rowKey = (r: Row) => (r.type === "entry" ? r.entry.path : r.id);
   const selIndex = selected ? rows.findIndex((r) => r.type === "entry" && r.entry.path === selected) : -1;
 
@@ -200,6 +228,14 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
     else if (cur?.type === "entry" && ev.code === "KeyC" && (IS_MAC ? ev.metaKey : ev.ctrlKey) && !ev.shiftKey && !ev.altKey && !isRemote(cur.entry.path)) {
       ev.preventDefault();
       void copyFile(cur.entry.path);
+    }
+    else if (ev.code === "KeyV" && (IS_MAC ? ev.metaKey : ev.ctrlKey) && !ev.shiftKey && !ev.altKey) {
+      // into the selected folder, the selected file's folder, or the top
+      const dir = cur?.type === "entry" ? (cur.entry.isDir ? cur.entry.path : dirname(cur.entry.path)) : cwd;
+      if (!isRemote(dir)) {
+        ev.preventDefault();
+        void paste(dir);
+      }
     }
     else if (cur?.type === "entry" && ev.key === "ArrowRight" && cur.entry.isDir) {
       ev.preventDefault();
@@ -228,14 +264,17 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
           { label: "File history", icon: <History className="size-3.5" />, onClick: () => void showFileHistory(e.path) },
         ]),
       "separator",
-      ...(isRemote(e.path) ? [] : [{ label: "Copy", shortcut: IS_MAC ? "⌘C" : "Ctrl+C", icon: <Files className="size-3.5" />, onClick: () => void copyFile(e.path) }]),
+      ...(isRemote(e.path) ? [] : [
+        { label: "Copy", shortcut: IS_MAC ? "⌘C" : "Ctrl+C", icon: <Files className="size-3.5" />, onClick: () => void copyFile(e.path) },
+        { label: "Paste", shortcut: IS_MAC ? "⌘V" : "Ctrl+V", icon: <ClipboardPaste className="size-3.5" />, onClick: () => void paste(e.isDir ? e.path : dirname(e.path)) },
+      ]),
       { label: "Copy path", icon: <Copy className="size-3.5" />, onClick: () => void copyText(e.path) },
       { label: "Copy relative path", icon: <ClipboardCopy className="size-3.5" />, onClick: () => void copyText(rel) },
       { label: "Mention in chat", icon: <AtSign className="size-3.5" />, onClick: () => void copyText(`@${rel}${e.isDir ? "/" : ""}`, `Copied @${rel} — paste it in the chat`) },
       ...(isRemote(e.path) ? [] : ["separator", { label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(e.path) }] as MenuItem[]),
     ];
     menu.show(ev, items);
-  }, [cwd, expanded, toggle, menu]);
+  }, [cwd, expanded, toggle, menu, paste]);
 
   const root = listings[cwd];
 

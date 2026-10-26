@@ -40,8 +40,10 @@ struct Run {
     provider_name: String,
     /// Where the chat was opened: "desktop" or "phone:<name>".
     origin: String,
-    /// Who opened it: "desktop" or the phone's device id (only they end it).
+    /// Who opened it: "desktop", the phone's device id (only they end it), or [`SCHEDULE`].
     owner: String,
+    /// A scheduled job's chat is open in a tab: a later run doesn't close it.
+    viewed: AtomicBool,
     /// The session as of the last finished turn (a running turn holds `turn`).
     log: Mutex<Snapshot>,
     /// When it last started or finished working (ms).
@@ -87,6 +89,8 @@ pub struct HooksReview {
     pub commands: Vec<String>,
     /// What wouldn't run anyway (other events and hook types).
     pub skipped: Vec<String>,
+    /// The hooks as shown: allowing them sends it back, so what's allowed is what the user saw.
+    pub digest: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -343,20 +347,21 @@ fn hooks_for(cwd: &str) -> (devcat_harness::hooks::Hooks, Vec<String>, Option<Ho
     if hooks_trusted(cwd, &found.digest) {
         (found.hooks, files, None)
     } else {
-        (Default::default(), vec![], Some(HooksReview { files, commands: found.commands, skipped: found.skipped }))
+        (Default::default(), vec![], Some(HooksReview { files, commands: found.commands, skipped: found.skipped, digest: found.digest }))
     }
 }
 
-/// Allow the hooks of a chat's folder as they are now (the chat shows them first). Every open chat
-/// in that folder runs them from its next step on.
+/// Allow the hooks of a chat's folder as the chat showed them (`digest`, from its review). If they
+/// changed since (an edit, a `git pull`), nothing is allowed: the chats show them as they are now,
+/// to look at again. Every open chat in that folder runs them from its next step on.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn agent_trust_hooks(session_id: String) -> AppResult<()> {
+pub async fn agent_trust_hooks(session_id: String, digest: String) -> AppResult<()> {
     let run = run_of(&session_id)?;
     let found = devcat_harness::hooks::load(std::path::Path::new(&run.cwd), home_dir().as_deref());
-    if found.digest.is_empty() {
-        return Ok(());
+    let same = !found.digest.is_empty() && found.digest == digest;
+    if same {
+        trust_hooks(&run.cwd, &found.digest)?;
     }
-    trust_hooks(&run.cwd, &found.digest)?;
     let key = folder_key(&run.cwd);
     let runs: Vec<Arc<Run>> = RUNS.lock().values().filter(|r| folder_key(&r.cwd) == key).cloned().collect();
     for run in runs {
@@ -373,6 +378,9 @@ pub async fn agent_trust_hooks(session_id: String) -> AppResult<()> {
             run.turn.lock().await.0.hooks = Arc::new(hooks);
         });
     }
+    if !same {
+        return Err(AppError::msg("The hooks changed since this chat showed them, so they weren't allowed. Here they are as they are now: look at them again."));
+    }
     Ok(())
 }
 
@@ -386,7 +394,11 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     let dir = std::path::Path::new(cwd);
     let home = home_dir();
     let shell = if cfg!(windows) { "PowerShell" } else { "bash" };
-    let system = system_prompt(&Environment { cwd: dir, os: std::env::consts::OS, shell, date: &today() });
+    let mut system = system_prompt(&Environment { cwd: dir, os: std::env::consts::OS, shell, date: &today() });
+    // the memory every agent of the user's shares (see memory/mod.rs)
+    let scope = crate::agent_tools::Scope::folder(dir);
+    system.push_str("\n\n");
+    system.push_str(&crate::memory::brief(crate::memory::place_for(&scope).as_ref(), None));
 
     // What the agent picks up from the folder, for the chat to show.
     let mut context = AgentContext::default();
@@ -399,9 +411,12 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     context.mcp_loading = configured;
     // the user's DevCat connections (databases, Redis, MongoDB, clusters) and notes
     let mut tools = Registry::standard();
-    crate::agent_tools::add(&mut tools);
+    for t in crate::memory::tools::for_scope(&scope, "devcat-agent") {
+        tools.add_arc(t);
+    }
+    crate::agent_tools::add(&mut tools, &scope);
     crate::agent_notes::add(&mut tools);
-    context.connections = crate::agent_tools::names();
+    context.connections = crate::agent_tools::names(&scope);
     let (hooks, hook_files, review) = hooks_for(cwd);
     (context.hooks, context.hooks_review) = (hook_files, review);
     let mut agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
@@ -415,6 +430,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         provider_name: provider.name,
         origin: origin.to_string(),
         owner: owner.to_string(),
+        viewed: AtomicBool::new(false),
         log: Mutex::new(log),
         since: AtomicU64::new(now_ms()),
         cfg,
@@ -463,6 +479,9 @@ pub async fn agent_open(cwd: String, provider_id: String, session_id: Option<Str
     open(cwd, provider_id, session_id, "desktop", "desktop").await
 }
 
+/// The owner of a scheduled job's chat: the run goes on when a tab showing it closes.
+pub const SCHEDULE: &str = "schedule";
+
 /// `agent_open` for the window or a phone (`origin`: "desktop" / "phone:<name>", `owner`:
 /// "desktop" / the phone's device id; both kept from whoever opened the chat first).
 pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, origin: &str, owner: &str) -> AppResult<AgentOpened> {
@@ -476,6 +495,9 @@ pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, 
         _ => build(&cwd, &provider_id, Session::create(dir()?, &cwd).await.map_err(|e| AppError::msg(e.to_string()))?, origin, owner).await?,
     };
     RUNS.lock().insert(run.id.clone(), run.clone());
+    if origin == "desktop" && run.owner == SCHEDULE {
+        run.viewed.store(true, Ordering::SeqCst);
+    }
     // While a turn runs: the session as it was when the turn started, and the turn's events so
     // far. A turn ends (log updated, `live` cleared, `turnEnd` sent, not busy) all under `live`,
     // so holding it here, `log` and `live` never both hold the same turn. (Locks: `live`, then
@@ -804,18 +826,25 @@ pub async fn agent_approve(session_id: String, tool_use_id: String, decision: De
 }
 
 /// A chat's tab closed: forget it and stop a running turn, unless a phone started it (that
-/// phone ends it).
+/// phone ends it). A scheduled job's run goes on; a finished one is let go.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_close(session_id: String) -> AppResult<()> {
-    if owner(&session_id).is_some_and(|o| o != "desktop") {
-        return Ok(());
+    match owner(&session_id).as_deref() {
+        Some(SCHEDULE) => {
+            if let Some(run) = RUNS.lock().get(&session_id) {
+                run.viewed.store(false, Ordering::SeqCst);
+            }
+            close_if_idle(&session_id);
+            Ok(())
+        }
+        Some(o) if o != "desktop" => Ok(()),
+        _ => close(&session_id),
     }
-    close(&session_id)
 }
 
-/// End a chat unless it's working (a job's earlier run: its log stays on disk).
+/// End a chat unless it's working or open in a tab (a job's earlier run: its log stays on disk).
 pub fn close_if_idle(session_id: &str) {
-    let idle = RUNS.lock().get(session_id).is_some_and(|r| !r.busy.load(Ordering::SeqCst));
+    let idle = RUNS.lock().get(session_id).is_some_and(|r| !r.busy.load(Ordering::SeqCst) && !r.viewed.load(Ordering::SeqCst));
     if idle {
         let _ = close(session_id);
     }

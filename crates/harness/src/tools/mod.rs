@@ -168,6 +168,10 @@ impl Registry {
         self.tools.push(Arc::new(t));
     }
 
+    pub fn add_arc(&mut self, t: Arc<dyn Tool>) {
+        self.tools.push(t);
+    }
+
     /// The same tools without `names`.
     pub fn without(&self, names: &[&str]) -> Registry {
         Registry { tools: self.tools.iter().filter(|t| !names.contains(&t.spec().name.as_str())).cloned().collect() }

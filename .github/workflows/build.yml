@@ -1,6 +1,7 @@
 # Builds DevCat installers for macOS (Apple Silicon + Intel), Windows and Linux.
-# Push a tag like `v0.1.0` to publish a GitHub release with the installers attached,
-# or run it manually from the Actions tab to get them as workflow artifacts.
+# Merging a release PR (branch `release/vX.Y.Z`) runs it on the new tag `vX.Y.Z` (release.yml),
+# which publishes a GitHub release with the installers attached. Pushing a tag like `v0.1.0`
+# does the same; run it manually from the Actions tab to get them as workflow artifacts.
 name: build
 
 on:

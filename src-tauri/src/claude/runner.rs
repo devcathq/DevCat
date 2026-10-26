@@ -33,6 +33,10 @@ pub(super) struct Spawn {
     pub extra_args: Vec<String>,
     /// Close stdin once a `result` arrives (one-shot runs), so the process exits.
     pub close_after_result: bool,
+    /// Run this binary instead of the claude found on PATH (an AI connection's command).
+    pub program: Option<std::path::PathBuf>,
+    /// Extra environment (an AI connection's variables and API key).
+    pub env: Vec<(String, String)>,
 }
 
 /// Command line flags for a run (without the binary).
@@ -275,9 +279,13 @@ pub(super) async fn spawn_run(sink: Sink, cwd: &str, spec: Spawn) -> AppResult<S
     if !Path::new(cwd).is_dir() {
         return Err(AppError::msg(format!("Not a directory: {cwd}")));
     }
-    let bin = locate::claude_path().ok_or_else(|| AppError::msg("claude CLI not found (install Claude Code or set CLAUDE_PATH)"))?;
+    let bin = match &spec.program {
+        Some(p) => p.clone(),
+        None => locate::claude_path().ok_or_else(|| AppError::msg("claude CLI not found (install Claude Code or set CLAUDE_PATH)"))?,
+    };
     let mut cmd = locate::command(&bin).await;
     cmd.args(build_args(&spec))
+        .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

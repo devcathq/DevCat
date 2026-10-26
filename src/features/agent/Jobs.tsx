@@ -18,12 +18,13 @@ import { loadSandbox, useSandbox } from "./store";
 export function AgentJobs({ cwd, providerId }: { cwd: string; providerId: string }) {
   const version = useJobs((s) => s.version);
   const [jobs, setJobs] = useState<AgentJob[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<AgentJob | null>(null);
   const [now, setNow] = useState(Date.now());
   const menu = useContextMenu();
   useEffect(() => {
     let live = true;
-    api.agentJobs(cwd).then((l) => live && setJobs(l), () => live && setJobs([]));
+    api.agentJobs(cwd).then((l) => { if (live) { setJobs(l); setError(null); } }, (e) => { if (live) { setJobs([]); setError(errMsg(e)); } });
     return () => { live = false; };
   }, [cwd, version]);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(t); }, []);
@@ -47,7 +48,7 @@ export function AgentJobs({ cwd, providerId }: { cwd: string; providerId: string
         <AlarmClock className="size-3" /><span className="flex-1">Scheduled</span>
         <IconButton title="New scheduled job: a prompt that runs on a schedule in this folder" className="size-5" onClick={() => setEditing(newJob())}><Plus className="size-3.5" /></IconButton>
       </div>
-      {jobs === null ? <div className="flex justify-center py-1"><Spinner className="size-3.5" /></div> : jobs.length === 0 ? (
+      {error ? <div className="selectable px-3 pb-1 text-[11.5px] break-words text-danger">{error}</div> : jobs === null ? <div className="flex justify-center py-1"><Spinner className="size-3.5" /></div> : jobs.length === 0 ? (
         <button className="w-full px-3 pb-1 text-left text-[11.5px] text-faint hover:text-muted" onClick={() => setEditing(newJob())}>
           Run a prompt on a schedule here, like a morning report or a nightly check.
         </button>

@@ -73,8 +73,16 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-fn read() -> Vec<Job> {
-    FILE.get().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+/// The jobs on disk; none before the first one is saved. A file that can't be read or parsed is an
+/// error, and nothing is written over it: a newer DevCat's jobs (after a downgrade), a hand edit
+/// with a stray comma or a moment the antivirus holds the file mustn't erase every job.
+fn read() -> AppResult<Vec<Job>> {
+    let Some(f) = FILE.get() else { return Ok(Vec::new()) };
+    match std::fs::read(f) {
+        Ok(b) => serde_json::from_slice(&b).map_err(|e| AppError::msg(format!("Couldn't read the scheduled jobs in {} ({e}). Fix the file or move it away; DevCat doesn't write over it.", f.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(AppError::msg(format!("Couldn't read the scheduled jobs in {}: {e}", f.display()))),
+    }
 }
 
 fn write(jobs: &[Job]) -> AppResult<()> {
@@ -85,17 +93,36 @@ fn write(jobs: &[Job]) -> AppResult<()> {
     Ok(())
 }
 
-/// Change the jobs on disk; the window hears about it.
+/// Change the jobs on disk; the window hears about it. Only a change is written (the scheduler
+/// looks every 20 s), and nothing is when the file can't be read.
 fn update<T>(f: impl FnOnce(&mut Vec<Job>) -> T) -> AppResult<T> {
-    let out = {
+    let (out, changed_any) = {
         let _g = LOCK.lock();
-        let mut jobs = read();
+        let mut jobs = read()?;
+        let before = jobs.clone();
         let out = f(&mut jobs);
-        write(&jobs)?;
-        out
+        let changed_any = jobs != before;
+        if changed_any {
+            write(&jobs)?;
+        }
+        (out, changed_any)
     };
-    changed();
+    if changed_any {
+        changed();
+    }
     Ok(out)
+}
+
+/// Mark a job running unless it is: a double-click on Run now, or Run now as its time comes,
+/// starts it once.
+fn claim(id: &str) -> bool {
+    match RUNNING.lock().entry(id.to_string()) {
+        std::collections::hash_map::Entry::Occupied(_) => false,
+        std::collections::hash_map::Entry::Vacant(v) => {
+            v.insert(String::new());
+            true
+        }
+    }
 }
 
 fn changed() {
@@ -148,6 +175,7 @@ pub fn init(data_dir: PathBuf) {
     if FILE.set(data_dir.join("agent-jobs.json")).is_err() {
         return;
     }
+    end_interrupted_runs();
     crate::rt::spawn(async {
         // let the app finish starting first
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -158,15 +186,26 @@ pub fn init(data_dir: PathBuf) {
     });
 }
 
+/// Runs DevCat quit in the middle of are over (and shown so, not as running forever).
+fn end_interrupted_runs() {
+    let _ = update(|jobs| {
+        for r in jobs.iter_mut().flat_map(|j| j.runs.iter_mut()).filter(|r| r.end.is_none()) {
+            r.end = Some("stopped".into());
+            r.error = Some("DevCat was closed while it ran.".into());
+        }
+    });
+}
+
 /// Start the jobs that are due.
 fn tick() {
     let now = now_ms();
-    let due: Vec<Job> = update(|jobs| {
-        let running = RUNNING.lock();
+    let mut claimed = Vec::new();
+    let due = update(|jobs| {
         let mut due = Vec::new();
         for job in jobs.iter_mut().filter(|j| j.enabled) {
             match job.next_ms {
-                Some(at) if at <= now && !running.contains_key(&job.id) => {
+                Some(at) if at <= now && claim(&job.id) => {
+                    claimed.push(job.id.clone());
                     // runs once even if several runs were missed, then on schedule again
                     job.next_ms = next_after(&job.schedule, now);
                     due.push(job.clone());
@@ -176,19 +215,28 @@ fn tick() {
             }
         }
         due
-    })
-    .unwrap_or_default();
-    for job in due {
-        crate::rt::spawn(run(job));
+    });
+    match due {
+        Ok(due) => {
+            for job in due {
+                crate::rt::spawn(run(job));
+            }
+        }
+        // not started after all (the window shows the error when it lists the jobs)
+        Err(_) => {
+            let mut running = RUNNING.lock();
+            for id in claimed {
+                running.remove(&id);
+            }
+        }
     }
 }
 
-/// One run of a job: a new chat in its folder, the prompt as its message, until the turn ends.
+/// One run of a job (claimed by the caller): a new chat in its folder, the prompt as its message,
+/// until the turn ends. The chat is the scheduler's: a tab that shows it doesn't end it.
 async fn run(job: Job) {
     let started_ms = now_ms();
-    // running from now on (its chat comes next), so it isn't started twice
-    RUNNING.lock().insert(job.id.clone(), String::new());
-    let opened = crate::agent::open(job.cwd.clone(), job.provider_id.clone(), None, "schedule", "desktop").await;
+    let opened = crate::agent::open(job.cwd.clone(), job.provider_id.clone(), None, "schedule", crate::agent::SCHEDULE).await;
     let session_id = match opened {
         Ok(o) => o.session_id,
         Err(e) => {
@@ -251,7 +299,7 @@ async fn finished(job: &Job, session_id: Option<&str>, end: &str, error: Option<
 pub fn waiting(session_id: &str, what: &str) {
     let job = RUNNING.lock().iter().find(|(_, s)| s.as_str() == session_id).map(|(id, _)| id.clone());
     let Some(job_id) = job else { return };
-    let name = read().into_iter().find(|j| j.id == job_id).map(|j| j.name).unwrap_or_else(|| "Scheduled job".into());
+    let name = read().unwrap_or_default().into_iter().find(|j| j.id == job_id).map(|j| j.name).unwrap_or_else(|| "Scheduled job".into());
     crate::events::emit("agent-jobs", json!({ "type": "waiting", "jobId": job_id, "name": name, "sessionId": session_id, "message": what }));
     let (title, what) = (format!("{name}: needs you"), what.to_string());
     crate::rt::spawn(async move { crate::notify::job(&title, &what, true).await });
@@ -278,7 +326,7 @@ pub async fn agent_jobs(cwd: Option<String>) -> AppResult<Vec<JobInfo>> {
         norm(a) == norm(b)
     };
     let running = RUNNING.lock().clone();
-    Ok(read()
+    Ok(read()?
         .into_iter()
         .filter(|j| cwd.as_deref().is_none_or(|c| same(c, &j.cwd)))
         .map(|job| JobInfo { running: running.contains_key(&job.id), job })
@@ -317,8 +365,8 @@ pub async fn agent_job_delete(id: String) -> AppResult<()> {
 /// Run a job now (its schedule stays as it is).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_job_run(id: String) -> AppResult<()> {
-    let job = read().into_iter().find(|j| j.id == id).ok_or_else(|| AppError::msg("That job was deleted"))?;
-    if RUNNING.lock().contains_key(&id) {
+    let job = read()?.into_iter().find(|j| j.id == id).ok_or_else(|| AppError::msg("That job was deleted"))?;
+    if !claim(&id) {
         return Err(AppError::msg("It's running already"));
     }
     crate::rt::spawn(run(job));
@@ -363,5 +411,41 @@ mod tests {
         let v = serde_json::to_value(job(Schedule::Daily { time: "07:30".into(), days: vec![1, 5] })).unwrap();
         assert_eq!(v["schedule"], json!({ "kind": "daily", "time": "07:30", "days": [1, 5] }));
         assert_eq!(v["policy"], json!("plan"));
+    }
+
+    #[test]
+    fn a_file_that_cant_be_read_is_never_written_over() {
+        let dir = std::env::temp_dir().join(format!("devcat-jobs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // the one test that sets the file
+        FILE.set(dir.join("agent-jobs.json")).unwrap();
+        let f = FILE.get().unwrap();
+        let job = Job { id: "j1".into(), name: "Report".into(), cwd: "/p".into(), provider_id: "x".into(), prompt: "Summarize".into(), policy: Policy::Plan, sandbox: false, schedule: Schedule::Every { minutes: 60 }, enabled: true, runs: vec![], next_ms: Some(1) };
+        // no file yet: no jobs
+        assert_eq!(read().unwrap(), vec![]);
+        // a stray comma, or a newer DevCat's kind of schedule: an error, and the file stays as it is
+        for bad in [r#"[{"id":"j1",}]"#.to_string(), serde_json::to_string(&vec![job.clone()]).unwrap().replace(r#""kind":"every""#, r#""kind":"cron""#)] {
+            std::fs::write(f, &bad).unwrap();
+            assert!(read().is_err());
+            assert!(update(|jobs| jobs.clear()).is_err());
+            tick();
+            assert_eq!(std::fs::read_to_string(f).unwrap(), bad);
+        }
+        // nothing changed: nothing written (a compact file stays compact)
+        let compact = serde_json::to_string(&vec![job.clone()]).unwrap();
+        std::fs::write(f, &compact).unwrap();
+        update(|_| ()).unwrap();
+        assert_eq!(std::fs::read_to_string(f).unwrap(), compact);
+        // a change is written
+        update(|jobs| jobs[0].name = "Morning report".into()).unwrap();
+        assert_eq!(read().unwrap()[0].name, "Morning report");
+        // a run still marked running when DevCat starts is over
+        update(|jobs| jobs[0].runs = vec![JobRun { started_ms: 1, session_id: Some("s".into()), end: None, error: None, finished_ms: None }]).unwrap();
+        end_interrupted_runs();
+        assert_eq!(read().unwrap()[0].runs[0].end.as_deref(), Some("stopped"));
+        // started once, however it's asked for
+        assert!(claim("j2") && !claim("j2"));
+        RUNNING.lock().remove("j2");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

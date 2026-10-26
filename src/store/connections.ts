@@ -72,7 +72,7 @@ export const useConnections = create<ConnectionsState>((set, get) => ({
   markOpenLocal: (id, isOpen) => setOpen(id, isOpen),
   byId: (id) => get().connections.find((c) => c.id === id),
   saveProject: async (p) => {
-    const saved = await api.saveProject({ id: "", color: null, description: null, order: 0, ...p });
+    const saved = await api.saveProject({ id: "", color: null, description: null, order: 0, folders: [], mcpWrites: false, ...p });
     await reloadAndNotify(get().load);
     return saved;
   },
