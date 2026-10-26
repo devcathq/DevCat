@@ -1,5 +1,6 @@
 // Small helpers shared by the Claude workspace views.
 import { openTab } from "../../store/tabs";
+import { remoteParts, remoteUri } from "../../lib/remotePath";
 import { basename } from "./open";
 
 export { basename };
@@ -7,6 +8,9 @@ export { basename };
 const isAbs = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\");
 
 export function resolvePath(cwd: string, p: string): string {
+  // in a folder on an SSH host, /abs and ~/… paths are that host's too: open them over the same session
+  const r = remoteParts(cwd);
+  if (r && (p.startsWith("/") || p.startsWith("~"))) return remoteUri(r.dest, r.port, p);
   if (p.startsWith("~")) return p;
   const sep = cwd.includes("\\") && !cwd.includes("/") ? "\\" : "/";
   const abs = isAbs(p) ? p : `${cwd.replace(/[\\/]+$/, "")}${sep}${p.replace(/^\.[\\/]/, "")}`;

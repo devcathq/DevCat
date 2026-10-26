@@ -12,6 +12,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
+  agent's reply there) opens that file from the server, over the same session, instead of looking for it on
+  this computer.
 - **Rename a Claude Code session:** right-click it in the sidebar's Sessions list → **Rename…**. It's saved the
   way Claude Code's `/rename` does, so `claude --resume` shows the same name. Clear the name to go back to
   Claude's own title (#89).
