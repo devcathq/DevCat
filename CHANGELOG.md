@@ -15,10 +15,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Rooms: drop files to share them.** Drag files onto a room, from your computer or DevCat's Files tree, and
   everyone in it can open them. Dropped on the thread, or pasted into its message box (a screenshot), they're
   also named in your message, and a file's name in a message opens it. An agent you mention now sees the images
-  your message names, instead of answering that it can't read them.
+  your message names, instead of answering that it can't read them (#92).
 - **Rooms: big text files.** A text file too large to edit together (over 2 million characters, like a 2 MB log)
   is shared as a text file everyone reads in the room, instead of failing with "too large". Agents read long
-  files in parts, where before they only got a file's start and end.
+  files in parts, where before they only got a file's start and end (#92).
 - **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
   agent's reply there) opens that file from the server, over the same session, instead of looking for it on
   this computer.
