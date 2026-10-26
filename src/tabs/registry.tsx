@@ -18,6 +18,7 @@ const registry: Record<Tab["type"], ComponentType<{ tab: any }>> = {
   history: lazy(() => import("../features/history/HistoryTab")),
   k8s: lazy(() => import("../features/k8s/K8sTab")),
   rabbitmq: lazy(() => import("../features/rabbitmq/RabbitTab")),
+  docker: lazy(() => import("../features/docker/DockerTab")),
   network: lazy(() => import("../features/network/NetworkTab")),
   claude: lazy(() => import("../features/claude/ClaudeTab")),
   file: lazy(() => import("../features/files/FilePreviewTab")),
@@ -25,6 +26,8 @@ const registry: Record<Tab["type"], ComponentType<{ tab: any }>> = {
   note: lazy(() => import("../features/notes/NoteTab")),
   terminal: lazy(() => import("../features/terminal/TerminalTab")),
   sftp: lazy(() => import("../features/ssh/SftpTab")),
+  room: lazy(() => import("../features/rooms/RoomTab")),
+  tickets: lazy(() => import("../features/tickets/TicketsTab")),
 };
 
 export function TabContent({ tab }: { tab: Tab }) {

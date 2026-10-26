@@ -55,6 +55,6 @@ export function openHistoryTab() {
   return openTab({ type: "history" }, "History", "history");
 }
 
-export function openInfra(connId: string, kind: "k8s" | "rabbitmq") {
+export function openInfra(connId: string, kind: "k8s" | "rabbitmq" | "docker") {
   return openTab({ type: kind, connId }, connName(connId), `${kind}:${connId}`);
 }

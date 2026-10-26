@@ -1039,6 +1039,7 @@ dependencies = [
  "hex",
  "iroh",
  "libc",
+ "n0-future",
  "parking_lot",
  "serde",
  "serde_json",

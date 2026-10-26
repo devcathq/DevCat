@@ -8,7 +8,7 @@ import type {
   GitRepo, GitLogQuery, GitCommit, GitCommitDetail, GitBlame, GitRefs, GitStash, CommitAction, RemoteOpts,
   AiDetect, AiProvider,
   ClaudeInfo, ClaudeProject, ClaudeStartOptions, FileEntry, FilePreview, FileVersions, GitStatus, SessionMeta,
-  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
+  Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, McpSyncPlan, Memory, MemoryKind, MemoryPlace, PlaceMemories, ClaudeImportPlan, MemorySyncReport, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
   SavedQuery, SchemaSnapshot, TableDataPage, TableDataRequest, TableRef, TableStructure, TreeNode, Bookmark,
 } from "./types";
 
@@ -39,6 +39,16 @@ export const api = {
   deleteProject: (id: string, deleteConnections = false) => invoke<void>("delete_project", { id, deleteConnections }),
   moveConnections: (ids: string[], projectId: string | null) => invoke<void>("move_connections", { ids, projectId }),
   reorderProjects: (ids: string[]) => invoke<Project[]>("reorder_projects", { ids }),
+  // Sync MCP: DevCat's MCP server in Claude Code / Codex / Cursor / Gemini configs
+  mcpSyncPreview: () => invoke<McpSyncPlan>("mcp_sync_preview"),
+  mcpSyncApply: (replace: string[]) => invoke<McpSyncPlan>("mcp_sync_apply", { replace }),
+  mcpSyncDismiss: () => invoke<void>("mcp_sync_dismiss"),
+  // Memory every coding agent shares (served by `devcat mcp`)
+  memoryList: () => invoke<PlaceMemories[]>("memory_list"),
+  memorySave: (memory: { place: MemoryPlace; name: string; description: string; kind: MemoryKind; body: string; oldName?: string }) => invoke<Memory>("memory_save", { memory }),
+  memoryDelete: (place: MemoryPlace, name: string) => invoke<void>("memory_delete", { place, name }),
+  memoryClaudePreview: () => invoke<ClaudeImportPlan>("memory_claude_preview"),
+  memorySyncAll: (choices: { id: string; global: boolean }[], auto: boolean, rules: boolean) => invoke<MemorySyncReport>("memory_sync_all", { choices, auto, rules }),
 
   // bookmarks
   listBookmarks: () => invoke<Bookmark[]>("list_bookmarks"),
@@ -128,7 +138,7 @@ export const api = {
   /** An ssh:// folder as the host sees it (~ and symlinks resolved); fails if it isn't reachable. */
   remoteResolveDir: (uri: string) => invoke<string>("remote_resolve_dir", { uri }),
   fsPreview: (path: string) => invoke<FilePreview>("fs_preview", { path }),
-  // SSH hosts (desktop only, see CLAUDE.md)
+  // SSH hosts (desktop only, see AGENTS.md)
   /** Copy an image (base64 `data`, else the OS clipboard's) to the SSH host of `cwd`; its path
    *  there, or null when the clipboard has no image. */
   remotePasteImage: (cwd: string, data?: string | null, name?: string | null) =>
@@ -169,6 +179,8 @@ export const api = {
   agentModels: (settings: AgentSettings, providerId: string | null, apiKey: string | null) => invoke<AgentModel[]>("ai_agent_models", { settings, providerId, apiKey }),
   /** Put local files / folders on the OS clipboard (paste attaches them in Slack, copies them in Explorer / Finder). */
   fsCopyFiles: (paths: string[]) => invoke<void>("fs_copy_files", { paths }),
+  /** Paste the files / folders (or else the image) on the OS clipboard into `dir`, a folder of the workspace `root`; returns the new paths. */
+  fsPaste: (dir: string, root: string) => invoke<string[]>("fs_paste", { dir, root }),
   gitStatus: (cwd: string) => invoke<GitStatus>("git_status", { cwd }),
   gitFileVersions: (cwd: string, path: string, staged: boolean) => invoke<FileVersions>("git_file_versions", { cwd, path, staged }),
   gitDiffText: (cwd: string, staged: boolean) => invoke<string>("git_diff_text", { cwd, staged }),
@@ -241,6 +253,8 @@ export const api = {
   // Terminal (PTY). Events: "pty-output" ({ id, data: base64 }), "pty-exit" ({ id, code })
   /** program: "claude" = the resolved Claude Code binary, null = the user's login shell, else a path/name.
    *  providerId: run that AI connection instead (backend resolves program, env and API key; args are appended). */
+  /** Docker contexts in the user's Docker config, for the connection form. */
+  dockerContexts: () => invoke<{ name: string; endpoint: string; current: boolean }[]>("docker_contexts"),
   ptyOpen: (cwd: string, program: string | null, args: string[], cols: number, rows: number, providerId?: string | null) =>
     invoke<string>("pty_open", { cwd, program, args, cols, rows, providerId: providerId ?? null }),
   ptyWrite: (id: string, data: string) => invoke<void>("pty_write", { id, data }),

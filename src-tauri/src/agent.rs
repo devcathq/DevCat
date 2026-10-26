@@ -272,7 +272,11 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     let dir = std::path::Path::new(cwd);
     let home = home_dir();
     let shell = if cfg!(windows) { "PowerShell" } else { "bash" };
-    let system = system_prompt(&Environment { cwd: dir, os: std::env::consts::OS, shell, date: &today() });
+    let mut system = system_prompt(&Environment { cwd: dir, os: std::env::consts::OS, shell, date: &today() });
+    // the memory every agent of the user's shares (see memory/mod.rs)
+    let scope = crate::agent_tools::Scope::folder(dir);
+    system.push_str("\n\n");
+    system.push_str(&crate::memory::brief(crate::memory::place_for(&scope).as_ref(), None));
 
     // What the agent picks up from the folder, for the chat to show.
     let mut context = AgentContext::default();
@@ -285,9 +289,12 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     context.mcp_loading = configured;
     // the user's DevCat connections (databases, Redis, MongoDB, clusters) and notes
     let mut tools = Registry::standard();
-    crate::agent_tools::add(&mut tools);
+    for t in crate::memory::tools::for_scope(&scope, "devcat-agent") {
+        tools.add_arc(t);
+    }
+    crate::agent_tools::add(&mut tools, &scope);
     crate::agent_notes::add(&mut tools);
-    context.connections = crate::agent_tools::names();
+    context.connections = crate::agent_tools::names(&scope);
     let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
     let log = Snapshot::of(&agent, &session);
     let run = Arc::new(Run {

@@ -1,4 +1,4 @@
-//! The SFTP tab and getting files onto an SSH host from a terminal (desktop only: see CLAUDE.md).
+//! The SFTP tab and getting files onto an SSH host from a terminal (desktop only: see AGENTS.md).
 //! Everything goes through the system `ssh` like the rest of `remote.rs` (one shared master
 //! connection per host on macOS / Linux), streaming files with `cat` so progress is ours to count.
 //!
@@ -83,7 +83,7 @@ const IMAGE_EXT: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 /// The OS clipboard's image as PNG bytes (or a copied image file), if any.
 #[cfg(feature = "gui")]
-async fn clipboard_image() -> AppResult<Option<(Vec<u8>, String)>> {
+pub(crate) async fn clipboard_image() -> AppResult<Option<(Vec<u8>, String)>> {
     let found = crate::rt::spawn_blocking(read_clipboard_image).await.map_err(|e| AppError::msg(e.to_string()))??;
     #[cfg(windows)]
     let found = match found {
@@ -98,7 +98,7 @@ async fn clipboard_image() -> AppResult<Option<(Vec<u8>, String)>> {
 }
 
 #[cfg(not(feature = "gui"))]
-async fn clipboard_image() -> AppResult<Option<(Vec<u8>, String)>> {
+pub(crate) async fn clipboard_image() -> AppResult<Option<(Vec<u8>, String)>> {
     Err(AppError::msg("Pasting images needs the DevCat app"))
 }
 

@@ -3,7 +3,10 @@
 // `vite --mode demo` answers database / VPN / cluster / terminal commands with demo data first.
 import { demoInvoke } from "./demo";
 
-const URL_ = "http://127.0.0.1:1430/invoke";
+// `?bridge=<port>` talks to another devbridge (e.g. two DevCats side by side for rooms).
+const BRIDGE_PORT = new URLSearchParams(location.search).get("bridge") ?? sessionStorage.getItem("devbridge.port") ?? "1430";
+sessionStorage.setItem("devbridge.port", BRIDGE_PORT);
+const URL_ = `http://127.0.0.1:${BRIDGE_PORT}/invoke`;
 const DEMO = import.meta.env.MODE === "demo";
 
 function fallback(cmd: string): unknown {
@@ -47,7 +50,7 @@ function pollEvents() {
 }
 
 export async function listen(event: string, h: Handler): Promise<UnlistenFn> {
-  if (/^(pty|sftp|ssh)-/.test(event)) pollEvents();
+  if (/^(pty|sftp|ssh|room)/.test(event)) pollEvents();
   const set = handlers.get(event) ?? new Set<Handler>();
   set.add(h);
   handlers.set(event, set);
