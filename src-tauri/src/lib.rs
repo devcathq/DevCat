@@ -22,6 +22,9 @@ mod history;
 mod infra;
 mod instance;
 mod keep_awake;
+mod mcp_server;
+mod mcp_sync;
+mod memory;
 mod models;
 mod network;
 mod notes;
@@ -30,6 +33,8 @@ mod notify;
 mod opened;
 mod projects;
 mod remote;
+mod rooms;
+mod rooms_agent;
 mod rt;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
@@ -37,6 +42,7 @@ pub mod remotedemo;
 mod secrets;
 mod state;
 mod store;
+mod tickets;
 #[cfg(feature = "gui")]
 mod updater;
 #[cfg(feature = "gui")]
@@ -78,9 +84,13 @@ fn init_backend(dir: std::path::PathBuf) {
     ai::init(dir.clone());
     agent::init(dir.clone());
     state::init(dir.clone());
+    mcp_sync::init(dir.clone());
+    memory::init(dir.clone());
     network::start();
     notify::init(dir.clone());
-    remote::init(dir);
+    remote::init(dir.clone());
+    tickets::init(dir.clone());
+    rooms::init(dir);
 }
 
 /// Stop what must not outlive DevCat (VPNs, the remote server, agent runs, keep-awake).
@@ -88,6 +98,7 @@ fn shutdown_backend() {
     network::shutdown();
     claude::ssh_forward::stop_all();
     crate::rt::block_on(remote::shutdown());
+    crate::rt::block_on(rooms::shutdown());
     claude::runner::shutdown_all();
     agent::shutdown_all();
     keep_awake::shutdown();
@@ -112,6 +123,13 @@ pub fn run() {
             let dir = app.path().app_data_dir().expect("no app data dir");
             events::set_app(app.handle().clone());
             init_backend(dir);
+            // agents' MCP configs point at this program: right again if DevCat moved
+            std::thread::spawn(mcp_sync::auto);
+            // Claude's memories changed while DevCat was closed: copy them (when kept in sync)
+            std::thread::spawn(|| {
+                memory::claude::auto();
+                memory::rules::refresh();
+            });
             #[cfg(target_os = "macos")]
             windows::install_menu(app.handle())?;
             // Windows / Linux: files DevCat was launched with.
@@ -150,6 +168,16 @@ pub fn run() {
             commands::projects::delete_project,
             commands::projects::move_connections,
             commands::projects::reorder_projects,
+            // Sync MCP (agents' configs)
+            mcp_sync::mcp_sync_preview,
+            mcp_sync::mcp_sync_apply,
+            mcp_sync::mcp_sync_dismiss,
+            // Memory shared by the coding agents
+            memory::memory_list,
+            memory::memory_save,
+            memory::memory_delete,
+            memory::claude::memory_claude_preview,
+            memory::claude::memory_sync_all,
             // bookmarks
             commands::bookmarks::list_bookmarks,
             commands::bookmarks::add_bookmark,
@@ -262,6 +290,7 @@ pub fn run() {
             claude::files::fs_write_text,
             claude::open_external::fs_open_external,
             claude::clipboard::fs_copy_files,
+            claude::clipboard::fs_paste,
             claude::git::git_status,
             claude::git::git_file_versions,
             claude::git::git_diff_text,
@@ -288,6 +317,43 @@ pub fn run() {
             remote::remote_device_revoke,
             remote::remote_audit,
             remote::remote_reset_identity,
+            rooms::rooms_info,
+            rooms::room_create,
+            rooms::room_invite,
+            rooms::room_join,
+            rooms::room_join_answer,
+            rooms::room_forget,
+            rooms::room_view,
+            rooms::room_board,
+            rooms::room_doc_updates,
+            rooms::room_doc_import,
+            rooms::room_post,
+            rooms::room_suggest,
+            rooms::room_decide,
+            rooms::room_revert,
+            rooms::room_file_new,
+            rooms::room_file_delete,
+            rooms::room_file_add,
+            rooms::room_blob,
+            rooms::room_blob_save,
+            rooms::room_member_remove,
+            rooms::room_member_role,
+            rooms::room_settings,
+            rooms::room_prefs,
+            rooms::room_keeper_add,
+            rooms::room_focus,
+            rooms::room_agent_stop,
+            // tickets (Jira, Trello, Linear → the agent)
+            tickets::tickets_boards,
+            tickets::tickets_board_save,
+            tickets::tickets_board_delete,
+            tickets::tickets_columns,
+            tickets::tickets_list,
+            tickets::tickets_fix,
+            tickets::tickets_stop,
+            tickets::tickets_jobs,
+            tickets::tickets_history,
+            tickets::tickets_webhook_test,
             // notes
             notes::notes_list,
             notes::note_save,
@@ -334,6 +400,19 @@ pub fn run() {
             gitx::commands::git_pull,
             gitx::commands::git_push,
             // rabbitmq
+            infra::docker::docker_contexts,
+            infra::docker::docker_info,
+            infra::docker::docker_containers,
+            infra::docker::docker_stats,
+            infra::docker::docker_images,
+            infra::docker::docker_volumes,
+            infra::docker::docker_networks,
+            infra::docker::docker_container_action,
+            infra::docker::docker_remove,
+            infra::docker::docker_inspect,
+            infra::docker::docker_shell_command,
+            infra::docker::docker_logs_start,
+            infra::docker::docker_logs_stop,
             infra::rabbitmq::rmq_bindings,
             infra::rabbitmq::rmq_close_connection,
             infra::rabbitmq::rmq_create_binding,

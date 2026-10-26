@@ -56,6 +56,11 @@ that tool until the chat closes.
   other agents' configs (`.mcp.json`, `~/.claude.json`, Cursor).
 - Long tool output (over 30,000 characters) is saved to a file next to the chat; the agent reads it in parts.
 - The same tool call a 4th time in a row is refused, so a looping model tries something else.
+- A `git` command runs without asking only when it just reads the repository, with that command's usual options
+  written out in full (`--verbose`, not `--verb`). Anything else asks, and so does an option that could make git
+  start a program (`--ext-diff`, `--textconv`, `--output`, `describe --dirty`). Reading commands also don't run
+  the programs a repository's config names (fsmonitor hooks, external diff tools, textconv and clean filters), and
+  don't fetch a missing object from a partial clone's remote.
 - When the context fills up, the conversation is summarized and the chat carries on (or type `/compact`).
 - The agent can search and read your [notes](notes.md), and save one when you ask: the approval shows its text.
 - For research that takes many reads, the agent asks **helpers**: each gets one question and a fresh context, looks
@@ -79,8 +84,13 @@ when you send a message or when the agent is done. It reads them from the same f
 - Codex: `~/.codex/hooks.json` and `.codex/hooks.json`.
 
 Hooks run commands on your computer, so they're **off until you allow them** for the folder. A chat in a folder
-with hooks lists the commands and shows **Run hooks**. When a hook file changes, you're asked again. Allowing them
-is done on the computer; DevCat Mobile shows that the folder has hooks waiting.
+with hooks lists the commands and shows **Run hooks**, which allows exactly what it lists: if a hook file changed
+in the meantime, nothing is allowed and the chat shows the hooks as they are now. Allowing them is done on the
+computer; DevCat Mobile shows that the folder has hooks waiting.
+
+What you allow includes the scripts the hooks run (`.claude/hooks/check.sh`, or the file after `bash`, `python3`,
+`node` and the like). When a hook or one of its scripts changes, you're asked again, and a changed script doesn't
+run until then, not even in a chat that's already open.
 
 A hook gets the event as JSON on stdin and answers as it does for Claude Code: exit code 2 blocks (its stderr is
 the reason), or a JSON answer on stdout (`decision`, `hookSpecificOutput`, `systemMessage`, `continue`). Tools have
@@ -99,12 +109,18 @@ match too. `git` calls are seen as `Bash` commands.
 | `PreCompact` / `PostCompact` | Before / after the chat is summarized | Stop the summary |
 
 Hook messages (`systemMessage`, a hook that failed, or why a Stop hook sent the agent on) show up in the chat.
+**Stop** doesn't wait for a running hook: it ends the hook and what it started. A hook that runs past its `timeout`
+(600 seconds unless it sets one; 30 for `UserPromptSubmit`) is ended the same way. When a hook answers
+`"continue": false` after a tool call, that call's result stands, the step's other calls don't run, and the agent
+stops.
 
 - On Windows, hooks run in Git Bash when it's installed (most hooks are shell scripts), else in PowerShell. A
   hook with `"shell": "powershell"` or Codex's `commandWindows` runs in PowerShell.
 - Only `command` hooks run, not `http`, `prompt`, `agent` or `mcp_tool` ones, and only the events above. The chat
   says which hooks it skips.
 - Codex hooks written in `config.toml` (`[hooks]`) aren't read; put them in `hooks.json`.
+- `"disableAllHooks": true` in any Claude Code settings file turns off the hooks of all of them, as in Claude Code.
+  Codex's `hooks.json` isn't affected.
 
 ## Logins and API keys
 

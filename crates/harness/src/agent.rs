@@ -157,19 +157,27 @@ pub struct Agent {
     helper: Option<String>,
     /// SessionStart hooks ran (on the first turn).
     started: bool,
+    /// A tool hook said `continue: false`: the step's other calls don't run, and the turn ends
+    /// with this once their results are in.
+    halt: Option<String>,
 }
 
 impl Agent {
     pub fn new(model: Arc<dyn Model>, tools: Registry, policy: Policy, approver: Arc<dyn Approver>, system: String) -> Agent {
-        Agent { model, tools, policy, approver, system, context_window: None, hooks: Arc::default(), allowed: HashSet::new(), helper: None, started: false }
+        Agent { model, tools, policy, approver, system, context_window: None, hooks: Arc::default(), allowed: HashSet::new(), helper: None, started: false, halt: None }
     }
 
-    /// Run the hooks of `event` (see [`Hooks::run`]); what they say to the user is sent on.
-    async fn hook(&self, session: &Session, event: &str, names: Option<&[&str]>, fields: Value, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Outcome {
+    /// Run the hooks of `event` (see [`Hooks::run`]); what they say to the user is sent on. Stop
+    /// doesn't wait for them: they're dropped (and killed), and nothing they'd say counts.
+    async fn hook(&self, session: &Session, event: &str, names: Option<&[&str]>, fields: Value, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Outcome {
         if !self.hooks.has(event) {
             return Outcome::default();
         }
-        let o = self.hooks.run(event, names, &self.hook_context(session), fields).await;
+        let ctx = self.hook_context(session);
+        let o = tokio::select! {
+            o = self.hooks.run(event, names, &ctx, fields) => o,
+            _ = cancel.cancelled() => return Outcome::default(),
+        };
         for message in &o.notes {
             on(AgentEvent::Hook { event: event.to_string(), message: message.clone() });
         }
@@ -201,7 +209,7 @@ impl Agent {
         }
         // `/compact` passes a focus (maybe empty); the automatic one doesn't
         let trigger = if focus.is_some() { "manual" } else { "auto" };
-        let pre = self.hook(session, "PreCompact", Some(&[trigger]), json!({ "trigger": trigger, "custom_instructions": focus.unwrap_or("") }), on).await;
+        let pre = self.hook(session, "PreCompact", Some(&[trigger]), json!({ "trigger": trigger, "custom_instructions": focus.unwrap_or("") }), cancel, on).await;
         if let Some(why) = pre.stop.or(pre.block) {
             // the automatic one goes on without compacting
             return if trigger == "manual" { Err(Error::Hook(format!("A PreCompact hook stopped the compaction: {why}"))) } else { Ok(()) };
@@ -234,7 +242,7 @@ impl Agent {
         }
         session.append(SessionEvent::Compacted { summary: summary.clone(), model: self.model.name(), usage: reply.usage, tokens_before }).await?;
         on(AgentEvent::Compacted { summary, tokens_before, usage: reply.usage });
-        self.hook(session, "PostCompact", Some(&[trigger]), json!({ "trigger": trigger }), on).await;
+        self.hook(session, "PostCompact", Some(&[trigger]), json!({ "trigger": trigger }), cancel, on).await;
         Ok(())
     }
 
@@ -257,10 +265,10 @@ impl Agent {
         if self.helper.is_none() {
             if !self.started {
                 let source = if session.events().iter().any(|e| matches!(e, SessionEvent::User { .. })) { "resume" } else { "startup" };
-                context.extend(self.hook(session, "SessionStart", Some(&[source]), json!({ "source": source }), on).await.context);
+                context.extend(self.hook(session, "SessionStart", Some(&[source]), json!({ "source": source }), cancel, on).await.context);
                 self.started = true;
             }
-            let o = self.hook(session, "UserPromptSubmit", None, json!({ "prompt": user_text }), on).await;
+            let o = self.hook(session, "UserPromptSubmit", None, json!({ "prompt": user_text }), cancel, on).await;
             if let Some(why) = o.stop.or(o.block) {
                 return Err(Error::Hook(format!("A hook blocked this message: {why}")));
             }
@@ -315,7 +323,10 @@ impl Agent {
                 let event = if self.helper.is_some() { "SubagentStop" } else { "Stop" };
                 let answer: String = reply.content.iter().filter_map(|b| if let Block::Text { text } = b { Some(text.as_str()) } else { None }).collect();
                 let names: &[&str] = &["helper"];
-                let o = self.hook(session, event, self.helper.as_ref().map(|_| names), json!({ "stop_hook_active": stop_hook_active, "last_assistant_message": answer }), on).await;
+                let o = self.hook(session, event, self.helper.as_ref().map(|_| names), json!({ "stop_hook_active": stop_hook_active, "last_assistant_message": answer }), cancel, on).await;
+                if cancel.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
                 if let (None, Some(why)) = (o.stop, o.block) {
                     stop_hook_active = true;
                     let text = format!("{event} hook feedback:\n{why}");
@@ -352,6 +363,8 @@ impl Agent {
                 let started = std::time::Instant::now();
                 let out = if cancel.is_cancelled() {
                     ToolOutput::err("Not run: stopped by the user.")
+                } else if self.halt.is_some() {
+                    ToolOutput::err("Not run: a hook stopped the agent.")
                 } else if repeated.contains(&id) {
                     ToolOutput::err(format!(
                         "Not run: you already made this exact `{name}` call {MAX_SAME_CALL} times in a row. Doing it again won't help: try something different, or tell the user what's in the way."
@@ -366,6 +379,9 @@ impl Agent {
             session.append(SessionEvent::ToolResults { results, usage, took_ms }).await?;
             if cancel.is_cancelled() {
                 return Err(Error::Cancelled);
+            }
+            if let Some(why) = self.halt.take() {
+                return Err(Error::Hook(why));
             }
         }
         Ok(TurnEnd::StepLimit)
@@ -432,7 +448,11 @@ impl Agent {
             let names = hooks::tool_names(SUBAGENT);
             let mut pre = Outcome::default();
             if self.hooks.has("PreToolUse") {
-                pre = self.hooks.run("PreToolUse", Some(&names), &self.hook_context(parent), foreign(&input)).await;
+                let ctx = self.hook_context(parent);
+                pre = tokio::select! {
+                    o = self.hooks.run("PreToolUse", Some(&names), &ctx, foreign(&input)) => o,
+                    _ = cancel.cancelled() => return (ToolOutput::err("Not run: stopped by the user."), Usage::default()),
+                };
                 for message in pre.notes.drain(..) {
                     let _ = tx.send(AgentEvent::Hook { event: "PreToolUse".into(), message });
                 }
@@ -465,6 +485,7 @@ impl Agent {
                 allowed: self.allowed.clone(),
                 helper: Some(id.to_string()),
                 started: true,
+                halt: None,
             };
             let mut forward = |e: AgentEvent| {
                 let e = match e {
@@ -493,7 +514,11 @@ impl Agent {
             if self.hooks.has(event) {
                 let mut fields = foreign(&input);
                 fields["tool_response"] = json!({ "output": out.content });
-                let post = self.hooks.run(event, Some(&names), &self.hook_context(parent), fields).await;
+                let ctx = self.hook_context(parent);
+                let post = tokio::select! {
+                    o = self.hooks.run(event, Some(&names), &ctx, fields) => o,
+                    _ = cancel.cancelled() => Outcome::default(),
+                };
                 for message in post.notes {
                     let _ = tx.send(AgentEvent::Hook { event: event.into(), message });
                 }
@@ -540,9 +565,13 @@ impl Agent {
             let (tool_name, tool_input) = hooks::foreign_tool(name, input, &ctx.cwd);
             json!({ "tool_name": tool_name, "tool_input": tool_input, "tool_use_id": id })
         };
-        let pre = self.hook(session, "PreToolUse", Some(&names), foreign(&input), on).await;
+        let pre = self.hook(session, "PreToolUse", Some(&names), foreign(&input), cancel, on).await;
+        if cancel.is_cancelled() {
+            return Ok(ToolOutput::err("Not run: stopped by the user."));
+        }
         if let Some(why) = pre.stop {
-            return Err(Error::Hook(format!("A PreToolUse hook stopped the agent: {why}")));
+            self.halt = Some(format!("A PreToolUse hook stopped the agent: {why}"));
+            return Ok(ToolOutput::err(format!("Not run: a PreToolUse hook stopped the agent. {why}")));
         }
         if let Some(why) = pre.block {
             return Ok(ToolOutput::err(format!("Not run: a PreToolUse hook blocked it. {why}")));
@@ -568,7 +597,7 @@ impl Agent {
         // can answer for the user, and a helper can't ask
         let mut ask = (self.policy.needs_approval(kind) && !self.allowed.contains(name) && !pre.allow) || pre.ask;
         if ask {
-            let o = self.hook(session, "PermissionRequest", Some(&names), foreign(&input), on).await;
+            let o = self.hook(session, "PermissionRequest", Some(&names), foreign(&input), cancel, on).await;
             if o.block.is_some() || o.allow {
                 session.append(SessionEvent::Approval { tool_use_id: id.to_string(), tool: name.to_string(), allowed: o.block.is_none(), by: "hook".into() }).await?;
             }
@@ -615,9 +644,10 @@ impl Agent {
         if out.is_error {
             fields["error"] = json!(out.content);
         }
-        let post = self.hook(session, event, Some(&names), fields, on).await;
+        let post = self.hook(session, event, Some(&names), fields, cancel, on).await;
+        // it ran: its result stands, and the turn ends after this step
         if let Some(why) = post.stop {
-            return Err(Error::Hook(format!("A {event} hook stopped the agent: {why}")));
+            self.halt = Some(format!("A {event} hook stopped the agent: {why}"));
         }
         if let Some(replaced) = post.updated_output {
             out.content = replaced;

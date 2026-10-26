@@ -155,6 +155,7 @@ pub struct FileVersions {
 
 pub mod runner;
 pub mod review;
+pub mod headless;
 pub mod sessions;
 pub mod files;
 pub mod open_external;

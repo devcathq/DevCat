@@ -85,6 +85,22 @@ pub struct HostInfo {
     /// The relay the host uses: [`RELAY_PUBLIC`] or a relay URL; none when relays are off.
     #[serde(default)]
     pub relay: Option<String>,
+    /// The relay server the host is connected to right now (URL), so phones go straight there
+    /// instead of looking it up through iroh's DNS first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+}
+
+/// How a connection travels right now: straight between the two devices, or through a relay.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnPath {
+    pub direct: bool,
+    /// Round-trip time, milliseconds.
+    pub rtt_ms: u64,
+    /// The relay server (URL) when not direct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
 }
 
 /// [`PairLink::relay`] / [`HostInfo::relay`] value for iroh's public relays (the host's current
@@ -171,6 +187,8 @@ pub struct PairLink {
     pub addrs: Vec<String>,
     /// The host's relay ([`RELAY_PUBLIC`] or a relay URL), for reaching it from other networks.
     pub relay: Option<String>,
+    /// The relay server the host is connected to right now ([`HostInfo::home`]).
+    pub home: Option<String>,
 }
 
 pub const PAIR_SCHEME: &str = "devcat://pair";
@@ -184,6 +202,9 @@ impl PairLink {
         if let Some(r) = &self.relay {
             s.push_str(&format!("&relay={}", enc(r)));
         }
+        if let Some(h) = self.relay.as_ref().and(self.home.as_ref()) {
+            s.push_str(&format!("&home={}", enc(h)));
+        }
         s
     }
 
@@ -193,6 +214,9 @@ impl PairLink {
         let mut s = format!("{page}#v=1&id={}&code={}&name={}", enc(&self.id), enc(&self.code), enc(&self.name));
         if let Some(r) = &self.relay {
             s.push_str(&format!("&relay={}", enc(r)));
+        }
+        if let Some(h) = self.relay.as_ref().and(self.home.as_ref()) {
+            s.push_str(&format!("&home={}", enc(h)));
         }
         for a in &self.addrs {
             s.push_str(&format!("&addr={}", enc(a)));
@@ -210,6 +234,9 @@ impl PairLink {
         }
         if let Some(r) = &self.relay {
             s.push_str(&format!("&relay={}", enc(r)));
+        }
+        if let Some(h) = self.relay.as_ref().and(self.home.as_ref()) {
+            s.push_str(&format!("&home={}", enc(h)));
         }
         s
     }
@@ -229,7 +256,7 @@ impl PairLink {
         } else {
             return Err("Not a DevCat pairing link (it starts with devcat://pair or http://)".to_string());
         };
-        let (mut id, mut code, mut name, mut relay) = (None, None, None, None);
+        let (mut id, mut code, mut name, mut relay, mut home) = (None, None, None, None, None);
         for part in query.split('&') {
             let (k, v) = part.split_once('=').unwrap_or((part, ""));
             let v = dec(v);
@@ -238,6 +265,7 @@ impl PairLink {
                 "code" => code = Some(v),
                 "name" => name = Some(v),
                 "relay" if !v.is_empty() => relay = Some(v),
+                "home" if !v.is_empty() => home = Some(v),
                 "addr" if !v.is_empty() && !addrs.contains(&v) => addrs.push(v),
                 _ => {}
             }
@@ -247,7 +275,7 @@ impl PairLink {
         if addrs.is_empty() && relay.is_none() {
             return Err("The pairing link has no address".into());
         }
-        Ok(PairLink { id, code, name: name.unwrap_or_else(|| "DevCat".into()), addrs, relay })
+        Ok(PairLink { id, code, name: name.unwrap_or_else(|| "DevCat".into()), addrs, home: relay.as_ref().and(home), relay })
     }
 }
 
@@ -340,6 +368,7 @@ mod tests {
             name: "Arif's MacBook Pro".into(),
             addrs: vec!["192.168.1.20:47100".into(), "[fe80::1]:47100".into()],
             relay: None,
+            home: None,
         };
         let url = l.to_url();
         assert!(url.starts_with("devcat://pair?v=1&id=abab"), "{url}");
@@ -363,6 +392,16 @@ mod tests {
         assert_eq!(PairLink::parse(&hosted).unwrap(), relayed);
         let custom = PairLink { relay: Some("https://relay.example.com./".into()), ..l.clone() };
         assert_eq!(PairLink::parse(&custom.to_hosted_url("https://x.dev/")).unwrap(), custom);
+
+        // The host's current relay server rides along with every link, but only with a relay.
+        let homed = PairLink { home: Some("https://euc1-1.relay.n0.iroh.link./".into()), ..relayed.clone() };
+        for url in [homed.to_url(), homed.to_hosted_url("https://x.dev/"), homed.to_web_url("c2VjcmV0")] {
+            assert!(url.contains("&home=https%3A%2F%2Feuc1-1.relay.n0.iroh.link.%2F"), "{url}");
+            assert_eq!(PairLink::parse(&url).unwrap().home, homed.home, "{url}");
+        }
+        let stray = PairLink { home: Some("https://r.example/".into()), ..l.clone() };
+        assert!(!stray.to_url().contains("home="));
+        assert_eq!(PairLink::parse(&format!("{}&home=https%3A%2F%2Fr.example%2F", l.to_url())).unwrap().home, None);
     }
 
     #[test]

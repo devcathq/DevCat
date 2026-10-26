@@ -4,7 +4,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::Project;
 use crate::store::ConnectionStore;
 use parking_lot::Mutex;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct ProjectStore {
     path: PathBuf,
@@ -53,10 +53,14 @@ impl ProjectStore {
                 existing.name = p.name.clone();
                 existing.color = p.color.clone();
                 existing.description = p.description.clone();
+                existing.folders = clean_folders(&p.folders);
+                existing.mcp_writes = p.mcp_writes;
+                p.folders = existing.folders.clone();
                 p.order = existing.order;
             }
             None => {
                 p.id = uuid::Uuid::new_v4().to_string();
+                p.folders = clean_folders(&p.folders);
                 p.order = all.iter().map(|x| x.order).max().map_or(0, |m| m + 1);
                 all.push(p.clone());
             }
@@ -101,7 +105,7 @@ impl ProjectStore {
         }
         for name in all.iter().filter_map(|c| c.group.as_deref().map(str::trim)).filter(|g| !g.is_empty()) {
             if !projects.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
-                let p = self.save(Project { id: String::new(), name: name.into(), color: None, description: None, order: 0 })?;
+                let p = self.save(Project { name: name.into(), ..Default::default() })?;
                 projects.push(p);
             }
         }
@@ -115,6 +119,46 @@ impl ProjectStore {
                 c.project_id = None;
             }
         })
+    }
+}
+
+/// Folders as saved: trimmed, without trailing separators, each once.
+fn clean_folders(list: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for f in list {
+        let f = f.trim();
+        let f = if f.len() > 1 { f.trim_end_matches(['/', '\\']) } else { f };
+        if !f.is_empty() && !out.iter().any(|x| same_path(x, f)) {
+            out.push(f.to_string());
+        }
+    }
+    out
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    if cfg!(windows) { a.replace('\\', "/").eq_ignore_ascii_case(&b.replace('\\', "/")) } else { a == b }
+}
+
+/// The project whose folder holds `dir` (the deepest folder wins when they nest).
+pub fn for_folder<'a>(projects: &'a [Project], dir: &Path) -> Option<&'a Project> {
+    let dir = comparable(dir);
+    projects
+        .iter()
+        .flat_map(|p| p.folders.iter().map(move |f| (p, comparable(Path::new(f)))))
+        .filter(|(_, f)| dir.starts_with(f))
+        .max_by_key(|(_, f)| f.components().count())
+        .map(|(p, _)| p)
+}
+
+/// A path for comparing: symlinks resolved when it exists (macOS /tmp = /private/tmp), and on
+/// Windows in one case with `/` separators.
+fn comparable(p: &Path) -> PathBuf {
+    let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if cfg!(windows) {
+        let s = p.to_string_lossy().trim_start_matches(r"\\?\").replace('\\', "/").to_lowercase();
+        PathBuf::from(s)
+    } else {
+        p
     }
 }
 
@@ -137,7 +181,7 @@ mod tests {
     }
 
     fn p(name: &str) -> Project {
-        Project { id: String::new(), name: name.into(), color: None, description: None, order: 0 }
+        Project { name: name.into(), ..Default::default() }
     }
 
     #[test]
@@ -156,6 +200,24 @@ mod tests {
         assert_eq!(order, ["Beta", "Alpha 2"]);
         s.delete(&b.id).unwrap();
         assert_eq!(s.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn folders_are_saved_clean_and_found_deepest_first() {
+        let s = ProjectStore::new(tmp());
+        let a = s.save(Project { name: "Mono".into(), folders: vec![" /src/mono/ ".into(), "/src/mono".into(), "".into()], ..Default::default() }).unwrap();
+        assert_eq!(a.folders, ["/src/mono"]);
+        let b = s.save(Project { name: "Api".into(), folders: vec!["/src/mono/api".into()], mcp_writes: true, ..Default::default() }).unwrap();
+        let edited = s.save(Project { folders: vec!["/src/mono/api".into(), "/src/api2/".into()], ..b.clone() }).unwrap();
+        assert_eq!(edited.folders, ["/src/mono/api", "/src/api2"]);
+        let all = s.list().unwrap();
+        assert!(all.iter().find(|p| p.id == b.id).unwrap().mcp_writes);
+        let at = |d: &str| for_folder(&all, Path::new(d)).map(|p| p.name.as_str());
+        assert_eq!(at("/src/mono/api/src"), Some("Api"));
+        assert_eq!(at("/src/mono/web"), Some("Mono"));
+        assert_eq!(at("/src/mono"), Some("Mono"));
+        assert_eq!(at("/src/monolith"), None);
+        assert_eq!(at("/elsewhere"), None);
     }
 
     #[test]

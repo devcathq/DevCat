@@ -5,14 +5,13 @@ the app show the section of that version.
 
 When a pull request changes something users notice, add a line under **Unreleased**. At release
 time, rename **Unreleased** to the version (`## 0.8.2 - 2026-10-23`) and start a new empty
-**Unreleased** above it. A version without a section gets the list of merged pull requests instead.
+**Unreleased** above it, in a pull request from a branch named `release/v0.8.2` (with the version
+bumped in `package.json`, `src-tauri/tauri.conf.json` and `mobile/src-tauri/tauri.conf.json`).
+Merging it tags `v0.8.2` and publishes the release (`.github/workflows/release.yml`). A version without a section gets the list of merged pull requests instead.
 Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-- **`devcat stop`:** stops a `devcat serve` that's still holding the port: one in the background, in a closed
-  terminal or from before an update. Starting `devcat serve` while another DevCat has the port now says which
-  one and offers to stop it and take over (`--replace` does it without asking).
 - **DevCat Agent: a `git` tool.** Commands that only read the repository (status, diff, log, show, blame, …)
   run without asking; commit, checkout, push and anything else that changes it asks first, like a shell
   command (#53).
@@ -34,9 +33,85 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   rows show what they're doing, and their tokens count in the chat's total and cost (#59).
 - **DevCat Agent runs your Claude Code and Codex hooks** (`.claude/settings.json`, `.codex/hooks.json` and the ones
   in your home folder): before and after tool calls, when you send a message, when the agent is done, around
-  summaries. They're off until you allow them for the folder, and you're asked again when a hook changes (#62).
+  summaries. They're off until you allow them for the folder, and you're asked again when a hook or a script it
+  runs changes. Stop ends a running hook (#62).
 - **DevCat Agent Trace:** a Trace view next to Chat and Diff shows each turn's model steps and tool calls with
   their times, tokens, inputs and outputs, who approved what, and the helpers' own runs (#63).
+
+## 0.12.0 - 2026-10-24
+
+- **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of
+  repositories, not just one: the agent changes the ones the ticket needs, on the same branch in each, and a
+  repository with your uncommitted changes is left alone (before, such a folder failed with "is not a git
+  repository"). The agent also sees the ticket's screenshots: Jira and Trello attachments, and images in a
+  Linear description (#82).
+- **Memory:** one memory for all your coding agents, with nothing else to install. Claude Code, Codex, Gemini,
+  Cursor and the DevCat Agent read and save it through DevCat's MCP server, and each new session starts with a
+  short brief of it, so you can switch models mid-task and the next one knows what the last one learned. An agent
+  that stops mid-task can leave a handoff that the next agent picks up. **Sync Claude memory to all agents** (the
+  brain button at the top right) copies Claude Code's own memory in and can keep it in sync. Browse, edit and
+  forget memories in the same dialog (#81).
+- **Sync MCP:** your coding agents can now use your DevCat connections without setup. The plug button above
+  the connections (or a project's menu) adds DevCat's MCP server to Claude Code, Codex, Cursor and Gemini CLI,
+  replacing DevCat's earlier entry instead of adding a second one. You can also tick other MCP servers that reach
+  the same databases to have DevCat replace them. Agents then read schemas and run queries (SQL, MongoDB, Redis)
+  and read Kubernetes clusters, with passwords staying in DevCat. Give a project its **code folders** (project
+  menu → Code folders & MCP…) and its connections go only to agents working in those folders, DevCat Agent
+  included; connections in no project, or in a project without folders, go to every folder. Over MCP, agents
+  only read unless the project has **Allow writes from MCP** turned on. After the first sync, DevCat keeps the
+  agents' configs up to date as your projects change. `devcat mcp` runs the server by hand (#80).
+
+## 0.11.0 - 2026-10-24
+
+- **Tickets:** connect a Jira (Cloud or Data Center), Trello or Linear board and let the agent work through a
+  column. Pick tickets (or let DevCat watch the column) and the agent fixes each on its own `devcat/<ticket>`
+  branch. DevCat commits the work, comments on the ticket with what changed and how to test it, and moves it
+  on (say, To Do → In Progress → Testing, or to Blocked when it needs a person). Works with Claude Code or a
+  DevCat Agent connection; results can be posted to Slack. Open it from **Tickets** in the title bar (#78).
+
+## 0.10.0 - 2026-10-24
+
+- **Rooms:** share documents with other people and let everyone's DevCat Agent join in, peer to peer
+  (no account, no server holding your documents). Make a room from **Rooms** in the title bar and send an invite
+  link; you let each person in. Everyone edits the same files live (edits made at the same time merge; undo only
+  undoes yours), talks in a thread, and mentions agents (`@arif-agent`, `@agents`). Agents read the room,
+  claim the part they work on and suggest changes that a person accepts; every applied change can be reverted.
+  Removing someone switches the room to a new key. `devcat keeper` keeps changes for whoever is offline,
+  encrypted so it can't read them (#72).
+- **DevCat Mobile from other networks:** connects faster and more often goes direct instead of through the
+  relay. The computer asks your router to open its port (UPnP / NAT-PMP / PCP), the pairing QR and the
+  computer's details carry the relay server it's on so the phone goes straight there, and the phone waits
+  longer before giving up on mobile data. Phones paired before keep working. DevCat → Mobile and the phone show
+  whether each connection is direct or through the relay (#71).
+- **Docker connections:** add a Docker engine (the current `docker` context, another context, or a host over
+  `ssh://` / `tcp://`) and open it in a tab: containers grouped by Compose project with their CPU and memory,
+  logs that follow (and carry on after a restart), a shell in a terminal tab, inspect, and start / stop /
+  restart / pause / kill / remove; images, volumes and networks with inspect and remove. A read-only
+  connection only looks (#70).
+- **`devcat stop`:** stops a `devcat serve` that's still holding the port: one in the background, in a closed
+  terminal or from before an update. Starting `devcat serve` while another DevCat has the port now says which
+  one and offers to stop it and take over (`--replace` does it without asking).
+- **Paste in the file tree:** in the AI workspace, paste files and folders copied in Explorer / Finder (or with
+  the tree's own Copy) into a folder: right-click → **Paste**, or **Ctrl+V** / **⌘V**. A name
+  that's taken gets "copy", so nothing is overwritten, and an image on the clipboard is saved as `pasted.png`
+  (#54).
+- **DevCat Agent on Windows:** a console window no longer flashes up and closes for every command the agent runs
+  (#68).
+- **DevCat Agent's Stop button** shows its square with window glass on (it was a plain white circle), and so do the
+  search highlights in Kubernetes logs (#68).
+- **DevCat Agent's plan** (the checklist above the chat box) goes away when the agent is done, also when it left an
+  item unticked; each update stays in the conversation (#68).
+
+- **SSH sessions on Windows:** the saved password is typed again (the Windows console's own replies no longer
+  count as typing); answering ssh's own questions (host key, a jump host's password, a one-time code) no longer
+  stops it; pasting a screenshot (Alt+V) works; selecting text in a terminal copies it; terminal tabs follow the
+  program's title (#50).
+- **Open folder on SSH host:** pick one of your saved SSH sessions (with its saved password) instead of typing a
+  host (#66).
+- **Terminal tables with emoji** (like Claude Code's ⚠️ rows) line up: characters are measured by grapheme
+  cluster, as current terminals do (#65).
+- **Browser version of DevCat Mobile:** a pairing the computer no longer knows is forgotten instead of failing
+  forever, and scanning a new QR code for the same computer pairs again (#60).
 
 ## 0.9.1 - 2026-10-23
 

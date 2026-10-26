@@ -230,7 +230,7 @@ export function Computers() {
                 <div className="truncate font-semibold">{m.name}</div>
                 <div className="truncate text-[11.5px] text-muted">{m.addrs[0] ?? "no address"}{m.appVersion ? ` · DevCat ${m.appVersion}` : ""}</div>
               </div>
-              {st === "connecting" ? <Badge>connecting…</Badge> : online ? <Badge tone="ok">● Online</Badge> : <Badge>○ Offline</Badge>}
+              {st === "connecting" ? <Badge>connecting…</Badge> : online ? <Badge tone="ok">● Online{conn[m.id]?.path ? (conn[m.id]?.path?.direct ? " · direct" : " · relay") : ""}</Badge> : <Badge>○ Offline</Badge>}
             </div>
             <div className="mt-2 text-[12px]">
               {online && mine ? (

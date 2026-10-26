@@ -43,15 +43,18 @@ impl Node {
         self.ep.id().to_string()
     }
 
-    /// Connect to the computer `host_id` (hex) through `relay` (as in [`Node::create`]).
-    /// Resolves to a [`Pipe`].
-    pub fn open(&self, host_id: String, relay: String) -> js_sys::Promise {
+    /// Connect to the computer `host_id` (hex) through `relay` (as in [`Node::create`]); `home`:
+    /// the relay server it was last seen on, tried before iroh's DNS lookup. Resolves to a [`Pipe`].
+    pub fn open(&self, host_id: String, relay: String, home: Option<String>) -> js_sys::Promise {
         let ep = self.ep.clone();
         future_to_promise(async move {
             let id = host_id.parse().map_err(|_| err("Invalid computer id"))?;
             let mut addr = EndpointAddr::new(id);
             if relay != RELAY_PUBLIC {
                 addr = addr.with_relay_url(relay.parse::<RelayUrl>().map_err(err)?);
+            }
+            if let Some(url) = home.and_then(|h| h.parse::<RelayUrl>().ok()) {
+                addr = addr.with_relay_url(url);
             }
             let conn = ep.connect(addr, ALPN).await.map_err(err)?;
             let (send, recv) = conn.open_bi().await.map_err(err)?;

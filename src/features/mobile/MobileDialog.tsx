@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { Badge, Button, Checkbox, Dialog, Field, Input, Select, Spinner } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import {
-  MOBILE_RELEASES_URL, NTFY_ANDROID_URL, NTFY_IOS_URL, mobileApi, ntfyLink,
+  MOBILE_RELEASES_URL, NTFY_ANDROID_URL, NTFY_IOS_URL, mobileApi, ntfyLink, pathLabel,
   type Access, type AuditEntry, type Device, type NotifySettings, type PairInfo, type RelayChoice, type RemoteSettings,
 } from "./api";
 import { useMobile, type MobileTab } from "./store";
@@ -133,6 +133,7 @@ function RemoteTab() {
   const browser = !!pair?.webLink || !!pair?.hostedLink;
   const anywhere = !!pair?.hostedLink || (!pair && relayOn);
   const connected = (id: string) => status.clients.some((c) => c.deviceId === id);
+  const pathOf = (id: string) => status.clients.find((c) => c.deviceId === id && c.path)?.path;
 
   return (
     <div className="space-y-5">
@@ -215,7 +216,11 @@ function RemoteTab() {
                   <div className="truncate font-medium">{d.name}</div>
                   <div className="truncate text-[11px] text-muted">
                     {d.kind !== "app" ? "browser" : "app"} · {d.platform || "phone"} · paired {new Date(d.pairedAt).toLocaleDateString()} ·{" "}
-                    {connected(d.id) ? <span className="text-ok">● connected now</span> : d.lastSeen ? `last seen ${ago(d.lastSeen)}` : "never connected"}
+                    {connected(d.id) ? (
+                      <span className="text-ok" title={pathOf(d.id)?.direct === false ? "The phone and this computer couldn't reach each other directly, so the traffic (end-to-end encrypted) goes through the relay. DevCat keeps trying to switch to direct." : undefined}>
+                        ● connected now{pathOf(d.id) ? ` · ${pathLabel(pathOf(d.id)!)}` : ""}
+                      </span>
+                    ) : d.lastSeen ? `last seen ${ago(d.lastSeen)}` : "never connected"}
                   </div>
                 </div>
                 <Select
