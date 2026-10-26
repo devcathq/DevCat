@@ -35,7 +35,10 @@ Agents get the user's connections through the tools in `src-tauri/src/agent_tool
 Agent, and served to other agents by `devcat mcp` (`mcp_server.rs`), which Sync MCP (`mcp_sync.rs`) writes into
 Claude Code / Codex / Cursor / Gemini configs. Keep one implementation: a new connection tool goes in
 `agent_tools.rs` and both get it. Which connections an agent sees follows its folder (`agent_tools::Scope`, a
-project's `folders`). Over MCP, data changes need the project's `mcp_writes`. Sync MCP edits files on the
+project's `folders`). Each connection's AI access (`McpAccess`: off / read / full, `ConnectionConfig::agent_access`)
+decides the rest: off hides it from every agent, and over MCP data changes need full (connections without the
+setting follow the project's `mcp_writes`; a read-only connection is never full). `devcat mcp` logs every call in
+`mcp_audit.rs` (the UI's MCP activity). Sync MCP edits files on the
 computer, so it stays out of the phone dispatcher, like the SSH workbench above.
 
 ## Shared memory
@@ -49,3 +52,10 @@ The tools (`memory/tools.rs`: `memory_search`, `memory_read`, `memory_save`, `me
 folder. With the user's consent DevCat keeps a marked block in `~/.codex/AGENTS.md` and `~/.gemini/GEMINI.md`
 (`memory/rules.rs`) and changes nothing else in those files. Memory reads and writes files on the computer, so it
 stays out of the phone dispatcher too, and agents on SSH hosts don't get it (they can't run the local `devcat mcp`).
+
+Memory sync (`memory/sync/`) shares the memory folder between the user's own computers (desktop and `devcat serve`)
+over its own iroh endpoint (ALPN `devcat/memory-sync/1`, its own key in `<data>/memory-sync/`), paired with a
+one-time code plus approval. Every paired computer reads and writes everything; there are no roles or per-entry
+encryption yet, so don't use it to share memory between people. It isn't a phone feature either: a paired phone must
+not pair computers or start syncs through the dispatcher. Incoming files go through `plan::clean_incoming` (the same
+scrubber and `MAX_BODY` as saving); keep it that way for any new file kind.

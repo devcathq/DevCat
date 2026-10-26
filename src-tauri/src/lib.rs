@@ -24,6 +24,7 @@ mod history;
 mod infra;
 mod instance;
 mod keep_awake;
+mod mcp_audit;
 mod mcp_server;
 mod mcp_sync;
 mod memory;
@@ -96,10 +97,13 @@ fn init_backend(dir: std::path::PathBuf) {
     agent::init(dir.clone());
     state::init(dir.clone());
     mcp_sync::init(dir.clone());
+    mcp_audit::init(dir.clone());
     memory::init(dir.clone());
     network::start();
     notify::init(dir.clone());
     remote::init(dir.clone());
+    // after remote access: sync uses its relay choice
+    memory::sync::init(dir.clone());
     tickets::init(dir.clone());
     rooms::init(dir);
 }
@@ -110,6 +114,7 @@ fn shutdown_backend() {
     claude::ssh_forward::stop_all();
     crate::rt::block_on(remote::shutdown());
     crate::rt::block_on(rooms::shutdown());
+    crate::rt::block_on(memory::sync::shutdown());
     claude::runner::shutdown_all();
     agent::shutdown_all();
     keep_awake::shutdown();
@@ -194,12 +199,22 @@ pub fn run() {
             mcp_sync::mcp_sync_preview,
             mcp_sync::mcp_sync_apply,
             mcp_sync::mcp_sync_dismiss,
+            mcp_audit::mcp_audit,
+            mcp_audit::mcp_audit_clear,
             // Memory shared by the coding agents
             memory::memory_list,
             memory::memory_save,
             memory::memory_delete,
             memory::claude::memory_claude_preview,
             memory::claude::memory_sync_all,
+            memory::sync::memory_sync_status,
+            memory::sync::memory_sync_pair_start,
+            memory::sync::memory_sync_pair_cancel,
+            memory::sync::memory_sync_join,
+            memory::sync::memory_sync_answer,
+            memory::sync::memory_sync_remove,
+            memory::sync::memory_sync_now,
+            memory::sync::memory_sync_activity,
             // bookmarks
             commands::bookmarks::list_bookmarks,
             commands::bookmarks::add_bookmark,
@@ -314,6 +329,7 @@ pub fn run() {
             claude::files::fs_write_text,
             claude::open_external::fs_open_external,
             claude::clipboard::fs_copy_files,
+            claude::clipboard::clipboard_write_text,
             claude::clipboard::fs_paste,
             claude::git::git_status,
             claude::git::git_file_versions,

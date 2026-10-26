@@ -606,6 +606,7 @@ mod tests {
             project_id: None,
             options: HashMap::new(),
             read_only: false,
+            mcp_access: None,
         }
     }
 

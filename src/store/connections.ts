@@ -135,6 +135,6 @@ export function newConnection(kind: ConnectionConfig["kind"], projectId: string 
   return {
     id: "", name: "", kind, host: "localhost", port: null, user: "", password: "",
     database: null, filePath: null, url: null, sslMode: null, ssh: null,
-    color: null, group: null, projectId, options: {}, readOnly: false,
+    color: null, group: null, projectId, options: {}, readOnly: false, mcpAccess: "read",
   };
 }

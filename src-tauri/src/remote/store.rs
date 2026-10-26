@@ -119,7 +119,7 @@ pub struct RemoteStore {
 }
 
 /// Write `data` atomically, readable by the current user only (unix).
-fn write_private(path: &Path, data: &[u8]) -> AppResult<()> {
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> AppResult<()> {
     let tmp = path.with_extension("tmp");
     {
         let mut opts = std::fs::OpenOptions::new();
@@ -218,34 +218,43 @@ impl RemoteStore {
     }
 
     pub fn audit(&self, e: &AuditEntry) {
-        let path = self.dir.join("audit.jsonl");
-        let line = match serde_json::to_string(e) {
-            Ok(l) => l,
-            Err(_) => return,
-        };
-        let mut opts = std::fs::OpenOptions::new();
-        opts.append(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        if let Ok(mut f) = opts.open(&path) {
-            let _ = writeln!(f, "{line}");
-        }
-        // Trim now and then (the file is only ever appended to otherwise).
-        if std::fs::metadata(&path).map(|m| m.len() > 1_500_000).unwrap_or(false) {
-            let keep = self.audit_tail(AUDIT_KEEP / 2);
-            let text: String = keep.iter().rev().filter_map(|e| serde_json::to_string(e).ok()).map(|l| l + "\n").collect();
-            let _ = write_private(&path, text.as_bytes());
-        }
+        audit_append(&self.dir.join("audit.jsonl"), e);
     }
 
     /// Newest first.
     pub fn audit_tail(&self, n: usize) -> Vec<AuditEntry> {
-        let text = std::fs::read_to_string(self.dir.join("audit.jsonl")).unwrap_or_default();
-        text.lines().rev().filter_map(|l| serde_json::from_str(l).ok()).take(n).collect()
+        audit_read(&self.dir.join("audit.jsonl"), n)
     }
+}
+
+/// Add an entry to an audit log (JSON lines, readable by the current user only), trimming it
+/// now and then (the file is only ever appended to otherwise). Memory sync keeps one too.
+pub(crate) fn audit_append(path: &Path, e: &AuditEntry) {
+    let line = match serde_json::to_string(e) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let mut opts = std::fs::OpenOptions::new();
+    opts.append(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(path) {
+        let _ = writeln!(f, "{line}");
+    }
+    if std::fs::metadata(path).map(|m| m.len() > 1_500_000).unwrap_or(false) {
+        let keep = audit_read(path, AUDIT_KEEP / 2);
+        let text: String = keep.iter().rev().filter_map(|e| serde_json::to_string(e).ok()).map(|l| l + "\n").collect();
+        let _ = write_private(path, text.as_bytes());
+    }
+}
+
+/// An audit log's entries, newest first.
+pub(crate) fn audit_read(path: &Path, n: usize) -> Vec<AuditEntry> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.lines().rev().filter_map(|l| serde_json::from_str(l).ok()).take(n).collect()
 }
 
 /// Cryptographically random bytes from the OS.

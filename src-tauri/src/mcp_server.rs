@@ -9,8 +9,10 @@
 //! Which connections it offers follows the folder (`--project auto`, the default): the project
 //! whose code folder the agent works in, plus the connections every folder gets. `--project <id>`
 //! picks one project, `--project none` only the shared ones. Connections and projects are read
-//! on every call, so changes in the app apply without syncing again. Over MCP a query that may
-//! change data runs only when the connection's project allows it (`mcp_writes`).
+//! on every call, so changes in the app apply without syncing again. Each connection's AI access
+//! (`McpAccess`) decides: off hides it, read-only refuses queries that may change data, full runs
+//! them (the driver still refuses writes on a read-only connection). Every tool call goes into the
+//! MCP activity log (`mcp_audit.rs`).
 use crate::agent_tools::{self, Scope};
 use devcat_harness::approval::Kind;
 use devcat_harness::tools::{Tool, ToolCtx, ToolOutput};
@@ -79,6 +81,7 @@ pub fn main(args: &[String]) -> i32 {
     crate::network::init(dir.clone());
     crate::network::set_passive();
     crate::memory::init(dir.clone());
+    crate::mcp_audit::init(dir.clone());
     crate::state::init(dir);
     // Claude's newest memories reach this session, even with DevCat's window closed
     crate::memory::claude::auto();
@@ -192,7 +195,7 @@ async fn handle(server: &Server, msg: Value) -> Option<Value> {
                 id,
                 json!({
                     "protocolVersion": version,
-                    "capabilities": { "tools": { "listChanged": false } },
+                    "capabilities": { "tools": { "listChanged": false }, "resources": { "listChanged": false } },
                     "serverInfo": { "name": "devcat", "title": "DevCat connections and memory", "version": env!("DEVCAT_VERSION") },
                     "instructions": instructions(server),
                 }),
@@ -203,16 +206,88 @@ async fn handle(server: &Server, msg: Value) -> Option<Value> {
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let input = params.get("arguments").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
-            let out = match server.tools().into_iter().find(|t| t.spec().name == name) {
-                Some(t) => call(t, input).await,
-                None => ToolOutput::err(format!("No DevCat tool called \"{name}\" here (no connection of that kind for this folder?).")),
-            };
+            let out = logged(server, name, name, input).await;
             result(id, json!({ "content": [{ "type": "text", "text": out.content }], "isError": out.is_error }))
         }
-        "resources/list" => result(id, json!({ "resources": [] })),
+        "resources/list" => result(id, json!({ "resources": resources(server) })),
+        "resources/templates/list" => result(id, json!({ "resourceTemplates": [] })),
+        "resources/read" => {
+            let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+            let Some((tool, input)) = resource_call(server, uri) else {
+                // -32002: resource not found
+                return Some(error(id, -32002, &format!("No DevCat resource {uri} here (see resources/list).")));
+            };
+            let out = logged(server, &format!("read {uri}"), tool, input).await;
+            if out.is_error {
+                return Some(error(id, -32603, &out.content));
+            }
+            result(id, json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": out.content }] }))
+        }
         "prompts/list" => result(id, json!({ "prompts": [] })),
         _ => error(id, -32601, &format!("Method not found: {method}")),
     })
+}
+
+/// Run the tool `name` (if this folder has it) and log the call in the MCP activity log as `what`.
+async fn logged(server: &Server, what: &str, name: &str, input: Value) -> ToolOutput {
+    let (started, at) = (std::time::Instant::now(), crate::mcp_audit::now_ms());
+    let tool = server.tools().into_iter().find(|t| t.spec().name == name);
+    let detail = tool.as_ref().and_then(|t| crate::mcp_audit::short(&t.summary(&input)));
+    let out = match tool {
+        Some(t) => call(t, input.clone()).await,
+        None => ToolOutput::err(format!("No DevCat tool called \"{name}\" here (no connection of that kind for this folder?).")),
+    };
+    crate::mcp_audit::log(&crate::mcp_audit::Entry {
+        at,
+        client: server.client.lock().clone(),
+        tool: what.to_string(),
+        connection: input.get("connection").and_then(Value::as_str).and_then(crate::mcp_audit::short),
+        detail,
+        project: agent_tools::view(&server.scope).project.map(|p| p.name),
+        ok: !out.is_error,
+        error: out.is_error.then(|| crate::mcp_audit::short(out.content.lines().next().unwrap_or(""))).flatten(),
+        ms: started.elapsed().as_millis() as u64,
+    });
+    out
+}
+
+/// Context the agent can attach without a tool call: the connections this folder sees, and each
+/// database's schema (read when the agent opens it).
+fn resources(server: &Server) -> Vec<Value> {
+    let v = agent_tools::view(&server.scope);
+    if v.connections.is_empty() {
+        return vec![];
+    }
+    let p = v.project.as_ref().map(|p| p.id.as_str()).unwrap_or("none");
+    let mut out = vec![json!({
+        "uri": format!("devcat://project/{p}/connections"),
+        "name": "connections",
+        "title": match &v.project { Some(p) => format!("DevCat connections · {}", p.name), None => "DevCat connections".into() },
+        "description": "The DevCat connections agents get in this folder: name, kind, database and access",
+        "mimeType": "text/plain",
+    })];
+    for c in v.connections.iter().filter(|c| agent_tools::has_schema(c.kind)) {
+        out.push(json!({
+            "uri": format!("devcat://conn/{}/schema", c.id),
+            "name": format!("{}-schema", c.name),
+            "title": format!("{} schema", c.name),
+            "description": format!("Tables and columns of {} (connects to it when read)", c.name),
+            "mimeType": "text/plain",
+        }));
+    }
+    out
+}
+
+/// The tool and input that read the resource `uri`, if this folder has it.
+fn resource_call(server: &Server, uri: &str) -> Option<(&'static str, Value)> {
+    let rest = uri.strip_prefix("devcat://")?;
+    let v = agent_tools::view(&server.scope);
+    if let Some(p) = rest.strip_prefix("project/").and_then(|r| r.strip_suffix("/connections")) {
+        let here = v.project.as_ref().map(|p| p.id.as_str()).unwrap_or("none");
+        return (p == here && !v.connections.is_empty()).then(|| ("devcat_connections", json!({})));
+    }
+    let id = rest.strip_prefix("conn/")?.strip_suffix("/schema")?;
+    v.connections.iter().any(|c| c.id == id && agent_tools::has_schema(c.kind)).then(|| ("db_schema", json!({ "connection": id })))
 }
 
 async fn call(t: Arc<dyn Tool>, input: Value) -> ToolOutput {
@@ -262,7 +337,7 @@ fn connections(scope: &Scope) -> String {
         s.push_str("\n\nThere are no DevCat connections for this folder yet.");
     } else {
         s.push_str("\n\nConnections:\n");
-        s.push_str(&v.connections.iter().map(agent_tools::describe).collect::<Vec<_>>().join("\n"));
+        s.push_str(&v.connections.iter().map(|c| v.line(c, true)).collect::<Vec<_>>().join("\n"));
     }
     s
 }
@@ -306,6 +381,64 @@ mod tests {
         let save = tools["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "memory_save").unwrap().clone();
         assert_eq!(save["annotations"]["readOnlyHint"], false, "saving isn't read-only");
         assert_eq!(save["annotations"]["destructiveHint"], false);
+    }
+
+    #[tokio::test]
+    async fn each_connections_ai_access_is_enforced_and_every_call_logged() {
+        crate::secrets::memory_only();
+        crate::memory::tests::data();
+        crate::mcp_audit::tests::dir();
+        let data = std::env::temp_dir().join(format!("devcat-mcp-access-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data).unwrap();
+        let db = |id: &str, extra: Value| {
+            let mut c = json!({ "id": id, "name": id, "kind": "sqlite", "filePath": data.join(format!("{id}.db")), "options": { "create": "true" } });
+            c.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            c
+        };
+        let conns = json!([
+            db("access-ro", json!({ "mcpAccess": "read" })),
+            db("access-rw", json!({ "mcpAccess": "full" })),
+            db("access-off", json!({ "mcpAccess": "off" })),
+            db("access-locked", json!({ "mcpAccess": "full", "readOnly": true })),
+        ]);
+        std::fs::write(data.join("connections.json"), conns.to_string()).unwrap();
+        crate::state::init(data);
+        let server = Server::new(Scope { mcp: true, ..Scope::default() }, None);
+        handle(&server, json!({ "id": 0, "method": "initialize", "params": { "clientInfo": { "name": "claude-code" } } })).await.unwrap();
+        let call = |name: &str, args: Value| handle(&server, json!({ "id": 1, "method": "tools/call", "params": { "name": name, "arguments": args } }));
+        let text = |v: &Value| v["result"]["content"][0]["text"].as_str().unwrap_or("").to_string();
+
+        let refused = call("db_query", json!({ "connection": "access-ro", "query": "CREATE TABLE t (x int)" })).await.unwrap();
+        assert_eq!(refused["result"]["isError"], true);
+        assert!(text(&refused).contains("only lets agents read"), "{refused}");
+        let written = call("db_query", json!({ "connection": "access-rw", "query": "CREATE TABLE t (x int); INSERT INTO t VALUES (7)" })).await.unwrap();
+        assert_eq!(written["result"]["isError"], false, "{written}");
+        let read = call("db_query", json!({ "connection": "access-rw", "query": "SELECT x FROM t" })).await.unwrap();
+        assert!(text(&read).contains("7"), "{read}");
+        let hidden = call("db_query", json!({ "connection": "access-off", "query": "SELECT 1" })).await.unwrap();
+        assert!(text(&hidden).contains("No DevCat connection is called"), "{hidden}");
+        let locked = call("db_query", json!({ "connection": "access-locked", "query": "CREATE TABLE t (x int)" })).await.unwrap();
+        assert_eq!(locked["result"]["isError"], true, "a read-only connection stays read-only: {locked}");
+
+        let listed = text(&call("devcat_connections", json!({})).await.unwrap());
+        assert!(listed.contains("access-rw (sqlite) id access-rw (agents may change data)") && listed.contains("access-ro (sqlite) id access-ro (agents read only)"), "{listed}");
+        assert!(!listed.contains("access-off"), "{listed}");
+
+        // resources: the connections, and each database's schema
+        let res = handle(&server, json!({ "id": 2, "method": "resources/list" })).await.unwrap();
+        let uris: Vec<&str> = res["result"]["resources"].as_array().unwrap().iter().filter_map(|r| r["uri"].as_str()).collect();
+        assert!(uris.contains(&"devcat://project/none/connections") && uris.contains(&"devcat://conn/access-rw/schema"), "{uris:?}");
+        assert!(!uris.iter().any(|u| u.contains("access-off")));
+        let schema = handle(&server, json!({ "id": 3, "method": "resources/read", "params": { "uri": "devcat://conn/access-rw/schema" } })).await.unwrap();
+        assert!(schema["result"]["contents"][0]["text"].as_str().unwrap().contains("t(x"), "{schema}");
+        let missing = handle(&server, json!({ "id": 4, "method": "resources/read", "params": { "uri": "devcat://conn/access-off/schema" } })).await.unwrap();
+        assert_eq!(missing["error"]["code"], -32002);
+
+        let log: Vec<_> = crate::mcp_audit::tail(2000).into_iter().filter(|e| e.connection.as_deref().is_some_and(|c| c.starts_with("access-"))).collect();
+        let ro = log.iter().find(|e| e.connection.as_deref() == Some("access-ro")).unwrap();
+        assert_eq!((ro.client.as_str(), ro.tool.as_str(), ro.ok), ("claude-code", "db_query", false));
+        assert!(ro.detail.as_deref().unwrap().contains("CREATE TABLE t") && ro.error.as_deref().unwrap().contains("only lets agents read"), "{ro:?}");
+        assert!(log.iter().any(|e| e.tool == "read devcat://conn/access-rw/schema" && e.ok));
     }
 
     #[test]

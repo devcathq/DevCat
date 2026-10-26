@@ -28,6 +28,7 @@ import { RoomJoinPrompt, RoomsDialog, RoomsPanel } from "../../features/rooms/Ro
 import { startRooms, useRooms } from "../../features/rooms/store";
 import { AppearanceDialog } from "../../features/appearance/AppearanceDialog";
 import { MemoryDialog } from "../../features/memory/MemoryDialog";
+import { MemoryPairPrompt } from "../../features/memory/OtherComputers";
 import { useAppearance, useIsDark } from "../../features/appearance/store";
 import { zoomUi } from "../../features/appearance/fonts";
 import { PairPrompt } from "../../features/mobile/PairPrompt";
@@ -179,6 +180,7 @@ export default function AppShell() {
       <RoomJoinPrompt />
       <AppearanceDialog />
       <MemoryDialog />
+      <MemoryPairPrompt />
       <PairPrompt />
       <QuickOpen />
       <Toaster theme={toastTheme} position="bottom-right" richColors closeButton />

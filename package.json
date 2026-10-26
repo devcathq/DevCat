@@ -1,7 +1,7 @@
 {
   "name": "devcat",
   "private": true,
-  "version": "0.12.0",
+  "version": "0.13.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,8 @@
     "mobile:web": "tsc -p mobile && vite build --config mobile/vite.config.ts --mode web",
     "mobile:hosted": "tsc -p mobile && vite build --config mobile/vite.config.ts --mode hosted",
     "mobile:check-crypto": "node --experimental-strip-types mobile/src/web/crypto.check.ts",
-    "check:tree": "node --experimental-strip-types src/features/connections/tree/rows.check.ts"
+    "check:tree": "node --experimental-strip-types src/features/connections/tree/rows.check.ts",
+    "check:osc52": "node --experimental-strip-types src/lib/osc52.check.ts"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",

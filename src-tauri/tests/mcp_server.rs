@@ -1,6 +1,7 @@
 //! `devcat mcp` end to end: the real program, started the way Claude Code starts it, spoken to
 //! with the DevCat Agent's MCP client. A project's connections show up in its code folder only,
-//! and over MCP data changes only where the project allows them.
+//! and over MCP data changes only where the connection's AI access (or, for connections saved
+//! before it, the project) allows them. Every call lands in the MCP activity log.
 use devcat_harness::mcp::{McpTool, Server, ServerConfig};
 use devcat_harness::tools::{Tool, ToolCtx, ToolOutput};
 use serde_json::{Value, json};
@@ -30,7 +31,7 @@ async fn call(tools: &[McpTool], name: &str, input: Value) -> ToolOutput {
 #[tokio::test]
 async fn serves_the_folders_connections() {
     let (data, repo, elsewhere) = (tmp("data"), tmp("repo"), tmp("elsewhere"));
-    for db in ["shop.db", "notes.db"] {
+    for db in ["shop.db", "notes.db", "scratch.db", "secret.db"] {
         std::fs::write(data.join(db), b"").unwrap();
     }
     let projects = json!([
@@ -39,7 +40,9 @@ async fn serves_the_folders_connections() {
     ]);
     let connections = json!([
         { "id": "c1", "name": "shop-db", "kind": "sqlite", "filePath": data.join("shop.db").to_string_lossy(), "projectId": "shop" },
-        { "id": "c2", "name": "notes", "kind": "sqlite", "filePath": data.join("notes.db").to_string_lossy(), "projectId": "misc" }
+        { "id": "c2", "name": "notes", "kind": "sqlite", "filePath": data.join("notes.db").to_string_lossy(), "projectId": "misc" },
+        { "id": "c3", "name": "scratch", "kind": "sqlite", "filePath": data.join("scratch.db").to_string_lossy(), "projectId": "misc", "mcpAccess": "full" },
+        { "id": "c4", "name": "secret", "kind": "sqlite", "filePath": data.join("secret.db").to_string_lossy(), "mcpAccess": "off" }
     ]);
     std::fs::write(data.join("projects.json"), projects.to_string()).unwrap();
     std::fs::write(data.join("connections.json"), connections.to_string()).unwrap();
@@ -52,6 +55,7 @@ async fn serves_the_folders_connections() {
     assert_eq!(names[memory.len()..], ["mcp__devcat__devcat_connections", "mcp__devcat__db_schema", "mcp__devcat__db_query"]);
     let list = call(&tools, "devcat_connections", json!({})).await;
     assert!(list.content.contains("Project Shop") && list.content.contains("shop-db") && list.content.contains("notes"), "{}", list.content);
+    assert!(!list.content.contains("secret"), "AI access off: no agent sees it: {}", list.content);
 
     let made = call(&tools, "db_query", json!({ "connection": "shop-db", "query": "CREATE TABLE orders (id INTEGER PRIMARY KEY, total REAL); INSERT INTO orders (total) VALUES (9.5), (12);" })).await;
     assert!(!made.is_error, "the project allows writes: {}", made.content);
@@ -61,7 +65,16 @@ async fn serves_the_folders_connections() {
     assert!(schema.content.contains("orders(id INTEGER PK, total REAL)"), "{}", schema.content);
 
     let refused = call(&tools, "db_query", json!({ "connection": "notes", "query": "CREATE TABLE x (a INTEGER)" })).await;
-    assert!(refused.is_error && refused.content.contains("Allow writes from MCP"), "{}", refused.content);
+    assert!(refused.is_error && refused.content.contains("AI / MCP access"), "{}", refused.content);
+    let own = call(&tools, "db_query", json!({ "connection": "scratch", "query": "CREATE TABLE x (a INTEGER)" })).await;
+    assert!(!own.is_error, "the connection's own full access wins over its project: {}", own.content);
+    let off = call(&tools, "db_query", json!({ "connection": "secret", "query": "SELECT 1" })).await;
+    assert!(off.is_error && off.content.contains("No DevCat connection"), "{}", off.content);
+    // the activity log has the refused write, with the statement and the reason
+    let log = std::fs::read_to_string(data.join("mcp-audit.jsonl")).unwrap();
+    let entry: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|e| e["connection"] == "notes" && e["ok"] == false).expect("refused write logged");
+    assert_eq!(entry["tool"], "db_query");
+    assert!(entry["detail"].as_str().unwrap().contains("CREATE TABLE x") && entry["error"].as_str().unwrap().contains("only lets agents read"), "{entry}");
     let reads = call(&tools, "db_query", json!({ "connection": "notes", "query": "SELECT 1 AS one" })).await;
     assert!(!reads.is_error, "reads are fine: {}", reads.content);
 
