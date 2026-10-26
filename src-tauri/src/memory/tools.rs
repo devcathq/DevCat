@@ -306,7 +306,7 @@ mod tests {
     use super::*;
 
     fn ctx() -> ToolCtx {
-        ToolCtx { cwd: std::env::temp_dir() }
+        ToolCtx::at(std::env::temp_dir())
     }
 
     fn tool(tools: &[Arc<dyn Tool>], name: &str) -> Arc<dyn Tool> {

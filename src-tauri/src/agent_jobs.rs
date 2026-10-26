@@ -51,6 +51,9 @@ pub struct Job {
     pub provider_id: String,
     pub prompt: String,
     pub policy: Policy,
+    /// Its commands run in the OS sandbox (macOS, Linux).
+    #[serde(default)]
+    pub sandbox: bool,
     pub schedule: Schedule,
     pub enabled: bool,
     #[serde(default)]
@@ -255,7 +258,7 @@ async fn run(job: Job) {
     let model = crate::ai::agent_config(&job.provider_id).map(|(_, cfg)| cfg.model).unwrap_or_default();
     // as the chat would: the model's window if the catalog knows it, else a common one
     let window = crate::ai::context_window(&model).await.unwrap_or(128_000);
-    let (end, error) = match crate::agent::run_turn(&session_id, &job.prompt, job.policy, Some(window)).await {
+    let (end, error) = match crate::agent::run_turn(&session_id, &job.prompt, job.policy, Some(window), job.sandbox).await {
         Ok(r) => r,
         Err(e) => ("error".into(), Some(e.to_string())),
     };
@@ -398,7 +401,7 @@ mod tests {
 
     #[test]
     fn checks() {
-        let job = |schedule| Job { id: String::new(), name: "Report".into(), cwd: "/p".into(), provider_id: "x".into(), prompt: "Summarize".into(), policy: Policy::Plan, schedule, enabled: true, runs: vec![], next_ms: None };
+        let job = |schedule| Job { id: String::new(), name: "Report".into(), cwd: "/p".into(), provider_id: "x".into(), prompt: "Summarize".into(), policy: Policy::Plan, sandbox: false, schedule, enabled: true, runs: vec![], next_ms: None };
         assert!(check(&job(Schedule::Every { minutes: 60 })).is_ok());
         assert!(check(&job(Schedule::Every { minutes: 2 })).is_err());
         assert!(check(&job(Schedule::Daily { time: "25:00".into(), days: vec![] })).is_err());
@@ -417,7 +420,7 @@ mod tests {
         // the one test that sets the file
         FILE.set(dir.join("agent-jobs.json")).unwrap();
         let f = FILE.get().unwrap();
-        let job = Job { id: "j1".into(), name: "Report".into(), cwd: "/p".into(), provider_id: "x".into(), prompt: "Summarize".into(), policy: Policy::Plan, schedule: Schedule::Every { minutes: 60 }, enabled: true, runs: vec![], next_ms: Some(1) };
+        let job = Job { id: "j1".into(), name: "Report".into(), cwd: "/p".into(), provider_id: "x".into(), prompt: "Summarize".into(), policy: Policy::Plan, sandbox: false, schedule: Schedule::Every { minutes: 60 }, enabled: true, runs: vec![], next_ms: Some(1) };
         // no file yet: no jobs
         assert_eq!(read().unwrap(), vec![]);
         // a stray comma, or a newer DevCat's kind of schedule: an error, and the file stays as it is

@@ -215,7 +215,7 @@ async fn handle(server: &Server, msg: Value) -> Option<Value> {
 }
 
 async fn call(t: Arc<dyn Tool>, input: Value) -> ToolOutput {
-    let ctx = ToolCtx { cwd: std::env::current_dir().unwrap_or_default() };
+    let ctx = ToolCtx::at(std::env::current_dir().unwrap_or_default());
     match tokio::time::timeout(t.timeout(&input), t.run(input, &ctx)).await {
         Ok(out) => ToolOutput { content: devcat_harness::tools::truncate(&out.content), ..out },
         Err(_) => ToolOutput::err(format!("Timed out after {} s.", t.timeout(&Value::Null).as_secs())),
@@ -225,7 +225,7 @@ async fn call(t: Arc<dyn Tool>, input: Value) -> ToolOutput {
 /// A tool as MCP lists it, with hints for the client's approval prompts.
 fn tool_json(t: &dyn Tool) -> Value {
     let spec = t.spec();
-    let ctx = ToolCtx { cwd: PathBuf::new() };
+    let ctx = ToolCtx::at(PathBuf::new());
     // `db_query` with no query: whether it may change data at all
     let kind = t.kind(&json!({}), &ctx);
     json!({

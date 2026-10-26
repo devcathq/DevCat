@@ -511,6 +511,8 @@ export interface AgentJobRun { startedMs: number; sessionId: string | null; end:
 /** A scheduled DevCat Agent job: a prompt that runs on a schedule in a folder (src-tauri/src/agent_jobs.rs). */
 export interface AgentJob {
   id: string; name: string; cwd: string; providerId: string; prompt: string; policy: AgentPolicy; schedule: AgentJobSchedule; enabled: boolean;
+  /** Its commands run in the OS sandbox (macOS, Linux). */
+  sandbox?: boolean;
   /** Newest first. */
   runs: AgentJobRun[];
   nextMs: number | null;

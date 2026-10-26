@@ -252,7 +252,8 @@ of these step by step, with every keyboard shortcut on
   Codex (once you allow them for the folder). Long chats are summarized when the context fills up, and
   long tool output is saved to a file the agent reads in parts. Rename chats from the sidebar; the chat shows an
   estimated cost next to its token meter, and a Trace view of every step with its time and tokens. Scheduled jobs
-  run a prompt in a folder every morning, every hour or whenever you set.
+  run a prompt in a folder every morning, every hour or whenever you set. On macOS and Linux its commands can run in
+  the OS sandbox, writing only in the project.
   **Folders on SSH hosts** too (*Open folder on SSH host…*): the agent and terminals run on that machine, and the
   file tree, previews, edits and git status work over your system `ssh` (hosts from `~/.ssh/config`, keys,
   ssh-agent, ProxyJump; one shared connection per host). Diff and Code Review are local-only for now.

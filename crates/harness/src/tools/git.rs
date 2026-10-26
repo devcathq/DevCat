@@ -59,8 +59,12 @@ impl Tool for Git {
         } else {
             a
         };
-        let mut cmd = tokio::process::Command::new("git");
-        cmd.args(["--no-pager", "-c", "color.ui=false", "-c", "core.quotePath=false"]).args(&a);
+        let args: Vec<String> = ["--no-pager", "-c", "color.ui=false", "-c", "core.quotePath=false"].iter().map(|s| s.to_string()).chain(a).collect();
+        // the sandbox's guard lives until git has started
+        let (mut cmd, _guard) = match crate::sandbox::command("git", &args, &ctx.cwd, ctx.sandbox, false) {
+            Ok(c) => c,
+            Err(e) => return ToolOutput::err(format!("Not run: the sandbox is on and couldn't be used. {e}")),
+        };
         if reading {
             // a missing object isn't fetched from a "promisor" remote: that runs core.sshCommand
             // and the like (git 2.45+; older git refuses in `harmless` instead)
@@ -425,14 +429,14 @@ mod tests {
         assert!(args(&json!({ "args": [] })).is_err());
         assert!(args(&json!({ "args": "status" })).is_err());
         assert_eq!(Git.summary(&json!({ "args": ["commit", "-m", "fix it"] })), "git commit -m \"fix it\"");
-        let ctx = ToolCtx { cwd: std::env::temp_dir() };
+        let ctx = ToolCtx::at(std::env::temp_dir());
         assert_eq!(Git.kind(&json!({ "args": ["-c", "x=y", "status"] }), &ctx), Kind::Exec);
     }
 
     /// The ways around a reading command's rules found in review (git 2.45): each must ask.
     #[test]
     fn options_git_reads_another_way_ask() {
-        let ctx = ToolCtx { cwd: std::env::temp_dir() };
+        let ctx = ToolCtx::at(std::env::temp_dir());
         for a in [
             json!(["grep", "-iOtouch /tmp/x; true", "hello"]),
             json!(["grep", "--open=touch /tmp/x; true", "hello"]),
@@ -455,7 +459,7 @@ mod tests {
     async fn runs_git_in_the_project() {
         let dir = std::env::temp_dir().join(format!("devcat-git-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let ctx = ToolCtx { cwd: dir.clone() };
+        let ctx = ToolCtx::at(dir.clone());
         let outside = Git.run(json!({ "args": ["status"] }), &ctx).await;
         assert!(outside.is_error && outside.content.to_lowercase().contains("not a git repository"), "{outside:?}");
         assert!(!Git.run(json!({ "args": ["init", "-q"] }), &ctx).await.is_error);
@@ -499,7 +503,7 @@ mod tests {
             std::fs::remove_file(dir.join(format!("{p}-ran"))).unwrap();
         }
 
-        let ctx = ToolCtx { cwd: dir.clone() };
+        let ctx = ToolCtx::at(dir.clone());
         for a in [&["status", "--short"][..], &["diff"], &["diff", "--stat"], &["log", "-p", "-1"], &["show", "HEAD"], &["blame", "a.txt"], &["stash", "list"]] {
             let out = Git.run(json!({ "args": a }), &ctx).await;
             assert!(!out.is_error, "{a:?}: {out:?}");
@@ -531,7 +535,7 @@ mod tests {
         assert!(dir.join("ssh-ran").exists(), "plain git didn't fetch: the test sets nothing up");
         std::fs::remove_file(dir.join("ssh-ran")).unwrap();
 
-        let ctx = ToolCtx { cwd: dir.clone() };
+        let ctx = ToolCtx::at(dir.clone());
         let peeled = format!("{missing}^{{commit}}");
         for a in [&["show", missing][..], &["log", missing], &["rev-parse", "--verify", &peeled], &["diff", missing]] {
             // the object isn't there (or, with git before 2.45, the command is refused), and
