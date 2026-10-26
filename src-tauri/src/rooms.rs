@@ -231,12 +231,13 @@ pub struct DocUpdates {
     pub version: String,
 }
 
-/// What the window's copy of the document lacks (`version`: its own, base64url; empty for all).
+/// What the window's copy of the document lacks (`version`: its own, base64url; empty for all,
+/// sent as a snapshot).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn room_doc_updates(room: String, version: String) -> AppResult<DocUpdates> {
     let r = self::room(&room).await?;
     let v = unb64(&version).unwrap_or_default();
-    Ok(DocUpdates { updates: b64(&r.doc().updates_since(&v)), version: b64(&r.doc().version()) })
+    Ok(DocUpdates { updates: b64(&r.doc().catch_up(&v)), version: b64(&r.doc().version()) })
 }
 
 /// Changes typed in the window's copy (Loro update bytes, base64url). `peer`: the window copy's
@@ -303,7 +304,8 @@ pub async fn room_file_delete(room: String, path: String) -> AppResult<()> {
 }
 
 /// Share a file from this computer: text files become editable room documents, others are shared
-/// as they are (images, PDFs, …). `path`: its name in the room (default: the file's name).
+/// as they are (images, PDFs, …), and so are text files too large to edit together
+/// (`MAX_FILE_CHARS`). `path`: its name in the room (default: the file's name).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn room_file_add(room: String, local: String, path: Option<String>) -> AppResult<String> {
     let r = self::room(&room).await?;
@@ -313,11 +315,10 @@ pub async fn room_file_add(room: String, local: String, path: Option<String>) ->
     let bytes = tokio::fs::read(&local).await.map_err(|e| AppError::msg(format!("Couldn't read {}: {e}", local.display())))?;
     let now = devcat_rooms::now_ms();
     match std::str::from_utf8(&bytes) {
-        Ok(text) if bytes.len() <= 4 * 1024 * 1024 && !text.contains('\0') => r.doc().create_file(&name, text, &me, now).map_err(AppError::msg)?,
-        _ => {
-            let mime = mime_of(&name);
-            r.add_blob(&name, &bytes, mime, &me).map_err(AppError::msg)?
-        }
+        Ok(text) if text.contains('\0') => r.add_blob(&name, &bytes, mime_of(&name), &me).map_err(AppError::msg)?,
+        Ok(text) if text.chars().count() <= devcat_rooms::doc::MAX_FILE_CHARS => r.doc().create_file(&name, text, &me, now).map_err(AppError::msg)?,
+        Ok(_) => r.add_blob(&name, &bytes, "text/plain", &me).map_err(AppError::msg)?,
+        Err(_) => r.add_blob(&name, &bytes, mime_of(&name), &me).map_err(AppError::msg)?,
     }
     Ok(name)
 }

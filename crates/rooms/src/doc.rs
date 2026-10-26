@@ -28,8 +28,10 @@ const PEERS: &str = "peers";
 
 /// How long a claim lasts unless renewed.
 pub const CLAIM_TTL_MS: i64 = 5 * 60 * 1000;
-/// Largest text file, in characters.
-pub const MAX_FILE_CHARS: usize = 2_000_000;
+/// Largest text file, in characters. Loro merges concurrent edits around a text in time that grows
+/// with the square of its length (0.3 s at 200,000 characters in the window, 40 s at 2 million),
+/// so larger files are shared as they are instead (`rooms.rs`: `room_file_add`).
+pub const MAX_FILE_CHARS: usize = 200_000;
 /// Longest thread message, in characters.
 pub const MAX_MESSAGE_CHARS: usize = 20_000;
 
@@ -262,6 +264,14 @@ impl RoomDoc {
         self.doc.export(ExportMode::updates(&vv)).unwrap_or_default()
     }
 
+    /// What a copy at `version` lacks, as [`Self::updates_since`], but a snapshot for an empty copy:
+    /// Loro imports a whole history in time that grows with the square of its texts' lengths once
+    /// edits were concurrent (a minute for a 2 MB file), a snapshot in milliseconds.
+    pub fn catch_up(&self, version: &[u8]) -> Vec<u8> {
+        let empty = version.is_empty() || VersionVector::decode(version).map(|v| v.is_empty()).unwrap_or(true);
+        if empty { self.snapshot() } else { self.updates_since(version) }
+    }
+
     /// Merge changes from another copy. Returns whether anything new came in.
     pub fn import(&self, bytes: &[u8]) -> DocResult<bool> {
         let before = self.doc.oplog_vv();
@@ -339,7 +349,7 @@ impl RoomDoc {
             return Err(format!("{path} already exists in the room."));
         }
         if content.chars().count() > MAX_FILE_CHARS {
-            return Err("The file is too large for a room (2 million characters at most).".into());
+            return Err("The file is too large to edit together in a room (200,000 characters at most).".into());
         }
         let meta = FileMeta { kind: FileKind::Text, created_by: by.clone(), created_at: now, blob: None };
         self.doc.get_map(FILES).insert(&path, json(&meta)).map_err(err)?;
@@ -626,7 +636,7 @@ impl RoomDoc {
     fn replace_range(&self, kind: ChangeKind, path: &str, from: usize, old: &str, new: &str, by: &Author, approved: Option<&Author>, suggestion: Option<String>, reverts: Option<String>, now: i64) -> DocResult<ChangeRecord> {
         let t = self.text(path);
         if t.len_unicode() - old.chars().count() + new.chars().count() > MAX_FILE_CHARS {
-            return Err("The file would get too large (2 million characters at most).".into());
+            return Err("The file would get too large (200,000 characters at most).".into());
         }
         apply_minimal(&t, from, old, new)?;
         let (start, last) = self.anchors(&t, from, from + new.chars().count())?;
@@ -966,5 +976,30 @@ mod tests {
         assert_eq!(b.peer_member(a.peer()).as_deref(), Some("arif-id"));
         assert_ne!(a.peer(), b.peer(), "a loaded copy edits as a new peer");
         assert!(!b.import(&a.updates_since(&b.version())).unwrap(), "nothing new");
+    }
+
+    #[test]
+    fn catch_up_sends_an_empty_copy_a_snapshot() {
+        let a = RoomDoc::new();
+        a.create_file("x.md", "x", &who("Arif", false), 1).unwrap();
+        // The window sends its (empty) version encoded, or nothing.
+        for v in [RoomDoc::new().version(), vec![]] {
+            assert_eq!(a.catch_up(&v), a.snapshot());
+            let b = RoomDoc::new();
+            assert!(b.import(&a.catch_up(&v)).unwrap());
+            assert_eq!(b.read("x.md").unwrap(), "x");
+        }
+        let b = RoomDoc::load(&a.snapshot()).unwrap();
+        a.create_file("y.md", "y", &who("Arif", false), 2).unwrap();
+        assert_eq!(a.catch_up(&b.version()), a.updates_since(&b.version()), "a copy with something gets updates");
+        assert!(b.import(&a.catch_up(&b.version())).unwrap());
+        assert_eq!(b.read("y.md").unwrap(), "y");
+    }
+
+    #[test]
+    fn large_text_files_are_refused() {
+        let a = RoomDoc::new();
+        assert!(a.create_file("big.md", &"x".repeat(MAX_FILE_CHARS + 1), &who("Arif", false), 1).is_err());
+        a.create_file("ok.md", &"x".repeat(MAX_FILE_CHARS), &who("Arif", false), 1).unwrap();
     }
 }

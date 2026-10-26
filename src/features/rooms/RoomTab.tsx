@@ -318,6 +318,7 @@ function BlobView({ room, file }: { room: string; file: FileInfo }) {
       <div className="text-center text-[12px] text-muted">
         <div className="font-medium text-fg">{file.path}</div>
         {file.blob && <div>{(file.blob.size / 1024).toFixed(file.blob.size < 10240 ? 1 : 0)} KB · {file.blob.mime} · shared by {label(file.createdBy)}</div>}
+        {file.blob?.mime === "text/plain" && <div className="mt-1">Too large to edit together (200,000 characters at most): save it to read it.</div>}
       </div>
       <Button onClick={() => void saveAs()}><Download className="size-3.5" />Save to this computer</Button>
     </div>
