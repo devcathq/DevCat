@@ -50,6 +50,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   focused project's are hidden, like other projects' connections and notes. A folder is the project's once you use
   it while the project is focused. The AI Workspace's recent folders list the project's own; the others are under
   **Other folders**, and **Remove from this project** takes one out (#77).
+- **Closing or restarting a Claude Code tab lets Claude Code exit on its own** (Ctrl+C, then up to 3 seconds) instead
+  of killing it. Killed while starting, Claude Code counted it as a failed full-screen start, and after two it
+  turned full-screen off on the computer, so its agent list could no longer be clicked. Run `/tui fullscreen` once
+  to turn it back on (#87).
 
 ## 0.12.0 - 2026-10-24
 
