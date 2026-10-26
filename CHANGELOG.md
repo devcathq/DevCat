@@ -12,6 +12,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
+  agent's reply there) opens that file from the server, over the same session, instead of looking for it on
+  this computer.
 - **Focus mode hides other folders' tabs too:** chats, terminals, files and Git tabs of folders that aren't the
   focused project's are hidden, like other projects' connections and notes. A folder is the project's once you use
   it while the project is focused. The AI Workspace's recent folders list the project's own; the others are under
