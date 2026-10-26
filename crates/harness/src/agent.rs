@@ -20,6 +20,14 @@ pub const MAX_STEPS: u32 = 60;
 /// Share of the context window at which the conversation is summarized before the next step.
 pub const COMPACT_AT: f64 = 0.8;
 
+/// Added to the system prompt while the user plans (see [`Policy::Plan`]).
+const PLAN_MODE: &str = "\
+# Plan mode
+The user switched on plan mode: look around first and come back with a plan; don't change anything yet. \
+Reading, searching and read-only git run as usual, web pages and queries ask, and edits and commands are \
+refused until the user starts the plan. When you know enough, answer with the plan: the steps, the files \
+you'd change and how, and anything the user should decide. Keep it short.";
+
 /// The same call (tool and arguments) this many times in a row runs; the next one is refused, so a
 /// model stuck in a loop hears it instead of spending the turn.
 pub const MAX_SAME_CALL: usize = 3;
@@ -142,7 +150,8 @@ impl Agent {
         }
         // Same system prompt and tools as every step, so the provider's cache still applies.
         let specs = self.tools.specs();
-        let req = Request { system: &self.system, messages: &messages, tools: &specs, cache_key: Some(&session.id) };
+        let system = self.system_now();
+        let req = Request { system: &system, messages: &messages, tools: &specs, cache_key: Some(&session.id) };
         let mut ignore = |_| {};
         let reply = tokio::select! {
             r = self.model.step(&req, &mut ignore) => r?,
@@ -189,12 +198,13 @@ impl Agent {
         // the last call and how many times in a row it was made (repeat guard)
         let mut last: Option<(String, Value)> = None;
         let mut same = 0;
+        let system = self.system_now();
         for _ in 0..MAX_STEPS {
             if self.over_limit(session) {
                 self.compact(session, None, cancel, on).await?;
             }
             let messages = session.messages();
-            let req = Request { system: &self.system, messages: &messages, tools: &specs, cache_key: Some(&session.id) };
+            let req = Request { system: &system, messages: &messages, tools: &specs, cache_key: Some(&session.id) };
             let mut forward = |d: Delta| {
                 on(match d {
                     Delta::Text(text) => AgentEvent::Text { text },
@@ -241,6 +251,11 @@ impl Agent {
         Ok(TurnEnd::StepLimit)
     }
 
+    /// The system prompt for this turn: plan mode adds what it means.
+    fn system_now(&self) -> String {
+        if self.policy == Policy::Plan { format!("{}\n\n{PLAN_MODE}", self.system) } else { self.system.clone() }
+    }
+
     /// The tool pipeline for one call.
     #[allow(clippy::too_many_arguments)]
     async fn call(&mut self, session: &mut Session, ctx: &ToolCtx, id: &str, name: &str, input: Value, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<ToolOutput> {
@@ -265,6 +280,10 @@ impl Agent {
                 Some(a) if !a.trim().is_empty() => ToolOutput::ok(format!("The user answered: {}", a.trim())),
                 _ => ToolOutput::err("Nobody can answer questions right now. Decide yourself, and say what you assumed."),
             });
+        }
+        // 0. plan mode: nothing that changes something runs, not even with a yes
+        if self.policy.refuses(kind) {
+            return Ok(ToolOutput::err("Not run: plan mode is on, so nothing is changed or run yet. Look around as much as you need, then answer with your plan; the user starts it."));
         }
         // 1. approval (fail closed)
         if self.policy.needs_approval(kind) && !self.allowed.contains(name) {

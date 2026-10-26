@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, X,
+  ArrowUp, Ban, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
@@ -560,9 +560,25 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
   const price = models.find((m) => m.id === chat.model)?.price ?? null;
   const cost = tokens > 0 ? chatCost(chat.usage, price) : null;
   const policy = POLICIES.find((p) => p.id === chat.policy)!;
-  const PolicyIcon = chat.policy === "bypass" ? ShieldOff : chat.policy === "auto-edit" ? ShieldCheck : Shield;
+  const PolicyIcon = chat.policy === "bypass" ? ShieldOff : chat.policy === "auto-edit" ? ShieldCheck : chat.policy === "plan" ? ClipboardList : Shield;
+  // plan mode, after the agent's answer: start the plan in one click (or keep chatting to change it)
+  const last = chat.items[chat.items.length - 1];
+  const planReady = chat.policy === "plan" && !chat.busy && last?.kind === "end" && last.end === "answered";
+  const startPlan = (p: "ask" | "auto-edit") => {
+    setPolicy(tabId, p);
+    void send(tabId, "Go ahead with the plan.");
+  };
   return (
     <div className="mx-auto w-full max-w-[780px] px-5 pt-2 pb-3">
+      {planReady && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 text-[12.5px]">
+          <ClipboardList className="size-4 shrink-0 text-accent" />
+          <span className="text-fg">Start with this plan?</span>
+          <Button size="sm" variant="primary" onClick={() => startPlan("ask")}>Start, ask first</Button>
+          <Button size="sm" onClick={() => startPlan("auto-edit")}>Start, auto-edit</Button>
+          <span className="text-faint">or keep chatting to change it</span>
+        </div>
+      )}
       <div className="rounded-2xl border border-line bg-panel shadow-[0_6px_24px_rgba(0,0,0,0.25)] transition-[border-color,box-shadow] focus-within:border-accent/60 focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--color-accent)_14%,transparent)]">
         {chat.attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-3 pt-3">
@@ -593,7 +609,7 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
             }}
             className="flex size-7 items-center justify-center rounded-full text-muted hover:bg-hover hover:text-fg"><Paperclip className="size-3.5" /></button>
           <label title={policy.hint} className={clsx("relative flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-[12px] transition-colors",
-            chat.policy === "bypass" ? "border-warn/40 bg-warn/10 text-warn" : "border-line text-muted hover:border-faint hover:text-fg")}>
+            chat.policy === "bypass" ? "border-warn/40 bg-warn/10 text-warn" : chat.policy === "plan" ? "border-accent/40 bg-accent/10 text-accent" : "border-line text-muted hover:border-faint hover:text-fg")}>
             <PolicyIcon className="size-3.5" />
             {policy.label}
             <ChevronDown className="size-3 opacity-60" />

@@ -32,6 +32,7 @@ export interface ChatView {
 export const ZERO: AgentUsage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0 };
 
 export const POLICIES: { id: AgentPolicy; label: string; hint: string }[] = [
+  { id: "plan", label: "Plan", hint: "Look around and propose a plan; nothing is edited or run until you start it" },
   { id: "ask", label: "Ask first", hint: "Ask before every file edit and command" },
   { id: "auto-edit", label: "Auto-edit", hint: "Edit files in the project without asking; ask before commands" },
   { id: "bypass", label: "Full access", hint: "Never ask: edits and commands run right away" },

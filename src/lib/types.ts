@@ -474,7 +474,7 @@ export interface UpdateInfo { version: string; currentVersion: string; date?: st
 export interface KeepAwakeState { on: boolean; until?: number | null }
 
 // ---- DevCat Agent (crates/harness) ----
-export type AgentPolicy = "ask" | "auto-edit" | "bypass";
+export type AgentPolicy = "plan" | "ask" | "auto-edit" | "bypass";
 export type AgentDecision = { decision: "allow" } | { decision: "allow-for-session" } | { decision: "deny"; reason?: string | null };
 export interface AgentUsage { input_tokens: number; output_tokens: number; cache_read_tokens: number }
 export type AgentBlock =

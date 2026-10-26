@@ -34,13 +34,18 @@ DevCat Agent is built into DevCat: no CLI to install. It talks to a model API di
 
 What it asks before doing, in each permission mode (the menu under the chat box):
 
-| Tool | Ask first | Auto-edit | Full access |
-| --- | --- | --- | --- |
-| Read and search files, `git` status / diff / log / show / blame | never | never | never |
-| Edit files in the project | asks | — | — |
-| Commands, `git` commands that change the repository, web pages, files outside the project | asks | asks | — |
-| Queries and cluster reads on your DevCat connections, reading your DevCat notes | asks | — | — |
-| Saving a DevCat note | asks | asks | — |
+| Tool | Plan | Ask first | Auto-edit | Full access |
+| --- | --- | --- | --- | --- |
+| Read and search files, `git` status / diff / log / show / blame | never | never | never | never |
+| Edit files in the project | not run | asks | — | — |
+| Commands, `git` commands that change the repository, files outside the project | not run | asks | asks | — |
+| Web pages | asks | asks | asks | — |
+| Queries and cluster reads on your DevCat connections, reading your DevCat notes | asks | asks | — | — |
+| Saving a DevCat note | not run | asks | asks | — |
+
+**Plan** is for looking before doing: the agent reads and searches, then answers with a plan, and edits and commands
+don't run, not even with a yes. Under the plan, **Start, ask first** or **Start, auto-edit** switches the mode and
+tells the agent to go ahead; or keep chatting to change the plan.
 
 Approvals and the agent's questions also show up on DevCat Mobile. **Always allow … in this chat** stops asking for
 that tool until the chat closes.
