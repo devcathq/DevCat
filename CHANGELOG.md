@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
+  agent's reply there) opens that file from the server, over the same session, instead of looking for it on
+  this computer.
+
 ## 0.12.0 - 2026-10-24
 
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of
