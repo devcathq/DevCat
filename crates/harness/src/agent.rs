@@ -410,6 +410,7 @@ impl Agent {
             let mut results = Vec::new();
             let mut usage = Usage::default();
             let mut took_ms = Vec::new();
+            let mut images = Vec::new();
             for (id, name, input) in calls {
                 if let Some((out, used, took)) = helped.remove(&id) {
                     usage += used;
@@ -432,7 +433,10 @@ impl Agent {
                 took_ms.push(started.elapsed().as_millis() as u64);
                 on(AgentEvent::ToolResult { id: id.clone(), content: out.content.clone(), is_error: out.is_error });
                 results.push(Block::ToolResult { tool_use_id: id, content: out.content, is_error: out.is_error });
+                images.extend(out.images);
             }
+            // Tools' images go after all the results (Anthropic wants the results first).
+            results.extend(images);
             session.append(SessionEvent::ToolResults { results, usage, took_ms }).await?;
             if cancel.is_cancelled() {
                 return Err(Error::Cancelled);
@@ -737,5 +741,5 @@ async fn fit(session: &Session, id: &str, name: &str, out: ToolOutput) -> ToolOu
             file.display()
         ));
     }
-    ToolOutput { content, is_error: out.is_error }
+    ToolOutput { content, ..out }
 }

@@ -7,7 +7,7 @@ mod todo;
 mod web;
 
 use crate::approval::Kind;
-use crate::message::ToolSpec;
+use crate::message::{Block, ToolSpec};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
@@ -116,14 +116,20 @@ impl ToolCtx {
 pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
+    /// Images for the model to see (`Block::Image`), sent after the turn's tool results.
+    pub images: Vec<Block>,
 }
 
 impl ToolOutput {
     pub fn ok(s: impl Into<String>) -> Self {
-        ToolOutput { content: s.into(), is_error: false }
+        ToolOutput { content: s.into(), is_error: false, images: vec![] }
     }
     pub fn err(s: impl Into<String>) -> Self {
-        ToolOutput { content: s.into(), is_error: true }
+        ToolOutput { content: s.into(), is_error: true, images: vec![] }
+    }
+    /// `content`, with an image (base64 `data`) the model sees.
+    pub fn image(content: impl Into<String>, media_type: impl Into<String>, data: String) -> Self {
+        ToolOutput { content: content.into(), is_error: false, images: vec![Block::Image { media_type: media_type.into(), data }] }
     }
 }
 

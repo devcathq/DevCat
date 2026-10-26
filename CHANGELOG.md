@@ -70,6 +70,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Rooms:** sharing a large text file (a 2 MB Markdown file, say) froze the window for a minute, and the
   room then froze again each time it was opened. Rooms with such a file open again, and text files over
   200,000 characters are now shared as read-only files (save them to read them) instead of editable documents.
+- **Room agents see the room's images:** an agent mentioned in a room now looks at shared PNG, JPEG, GIF and WebP
+  images (up to 5 MB) when it reads them, and can read text files shared read-only because of their size.
 
 ## 0.12.0 - 2026-10-24
 

@@ -12,7 +12,7 @@ use devcat_harness::approval::{DenyAll, Kind};
 use devcat_harness::message::ToolSpec;
 use devcat_harness::tools::{Registry, Tool, ToolCtx, ToolOutput};
 use devcat_harness::{Agent, AgentEvent, Block, Cancel, Llm, Model, Policy, Session};
-use devcat_rooms::doc::{FileKind, Message};
+use devcat_rooms::doc::{FileInfo, FileKind, Message};
 use devcat_rooms::{Author, Mentions, Role, Room};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -31,6 +31,9 @@ const FRESH_MS: i64 = 10 * 60 * 1000;
 const MAX_STEPS_NOTE: &str = "Keep it short: a few tool calls, then answer.";
 /// Recent messages given to the agent.
 const THREAD_CONTEXT: usize = 25;
+/// Images the model can see (others are listed but not shown), and the largest it takes.
+const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+const MAX_IMAGE: u64 = 5 * 1024 * 1024;
 
 struct Running {
     cancel: Cancel,
@@ -211,7 +214,7 @@ fn system_prompt(r: &Room, me: &Author, edits: bool) -> String {
         "You are {owner}'s agent ({handle}) in the DevCat room \"{room}\": people on their own computers share documents and discuss them in a thread; each person may have an agent like you.\n\n\
 Members:\n{people}\n\n\
 How to work:\n\
-- Read the documents you talk about (room_read) before commenting or proposing changes; quote exact text.\n\
+- Read the documents you talk about (room_read) before commenting or proposing changes; quote exact text. room_read also shows you the room's images.\n\
 - {change}\n\
 - Claim a section (room_claim) before you change it, so other agents don't rewrite it at the same time. If it's claimed by someone else, wait or suggest instead. Your claims are released when you finish.\n\
 - Never rewrite a whole document: change only the part that needs it.\n\
@@ -242,7 +245,7 @@ fn turn_text(r: &Room, trigger: &Message) -> String {
     let msgs = r.doc().messages();
     let upto = msgs.iter().position(|m| m.id == trigger.id).map(|i| i + 1).unwrap_or(msgs.len());
     let recent: Vec<String> = msgs[..upto].iter().rev().take(THREAD_CONTEXT).rev().map(fmt_message).collect();
-    let files: Vec<String> = r.doc().files().iter().map(|f| format!("- {} ({})", f.path, if f.meta.kind == FileKind::Text { format!("{} chars", f.chars) } else { "binary".into() })).collect();
+    let files: Vec<String> = r.doc().files().iter().map(|f| format!("- {} ({})", f.path, describe(f))).collect();
     format!(
         "Files in the room:\n{}\n\nThe thread so far (oldest first):\n{}\n\nYou were mentioned in the last message, by {}. Answer it.",
         if files.is_empty() { "(none yet)".into() } else { files.join("\n") },
@@ -286,7 +289,20 @@ impl Tool for Files {
         if f.is_empty() {
             return ToolOutput::ok("The room has no files yet.");
         }
-        ToolOutput::ok(f.iter().map(|f| format!("{}  ({}, by {})", f.path, if f.meta.kind == FileKind::Text { format!("{} chars", f.chars) } else { "binary".into() }, f.meta.created_by.label())).collect::<Vec<_>>().join("\n"))
+        ToolOutput::ok(f.iter().map(|f| format!("{}  ({}, by {})", f.path, describe(f), f.meta.created_by.label())).collect::<Vec<_>>().join("\n"))
+    }
+}
+
+/// What a file is, for the agent: an editable text, an image it can look at, or a file it can only name.
+fn describe(f: &FileInfo) -> String {
+    let Some(b) = f.meta.blob.as_ref().filter(|_| f.meta.kind == FileKind::Blob) else { return format!("{} chars", f.chars) };
+    let size = if b.size < 1024 * 1024 { format!("{} KB", b.size.div_ceil(1024)) } else { format!("{:.1} MB", b.size as f64 / (1024.0 * 1024.0)) };
+    if IMAGE_TYPES.contains(&b.mime.as_str()) && b.size <= MAX_IMAGE {
+        format!("image, {size}: room_read shows it to you")
+    } else if b.mime == "text/plain" {
+        format!("text, {size}, too large to edit: room_read shows its start")
+    } else {
+        format!("{}, {size}: you can't open it", b.mime)
     }
 }
 
@@ -294,7 +310,7 @@ struct ReadFile(Arc<Room>);
 #[async_trait]
 impl Tool for ReadFile {
     fn spec(&self) -> ToolSpec {
-        spec("room_read", "Read a text file in the room, exactly as it is now (with open suggestions and claims on it listed after it).", json!({ "path": { "type": "string" } }), &["path"])
+        spec("room_read", "Read a text file in the room, exactly as it is now (with open suggestions and claims on it listed after it), or look at an image in the room.", json!({ "path": { "type": "string" } }), &["path"])
     }
     fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
         Kind::Read
@@ -302,13 +318,20 @@ impl Tool for ReadFile {
     fn summary(&self, i: &Value) -> String {
         i.get("path").and_then(Value::as_str).unwrap_or("?").to_string()
     }
+    fn timeout(&self, _: &Value) -> Duration {
+        // A shared file this DevCat doesn't have yet is fetched from a member (up to 2 minutes).
+        Duration::from_secs(150)
+    }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
         let path = match s(&input, "path") {
             Ok(p) => p,
             Err(e) => return e,
         };
         let d = self.0.doc();
-        let Some(text) = d.read(path) else { return ToolOutput::err(format!("{path} isn't a text file in the room.")) };
+        if let Some(f) = d.files().into_iter().find(|f| f.path == path && f.meta.kind == FileKind::Blob) {
+            return read_blob(&self.0, &f).await;
+        }
+        let Some(text) = d.read(path) else { return ToolOutput::err(format!("{path} isn't a file in the room.")) };
         let mut out = text;
         let sugg: Vec<String> = d.suggestions().into_iter().filter(|x| x.record.path == path && x.record.state == devcat_rooms::doc::SuggestionState::Open).map(|x| format!("- by {}{}: replace {:?} with {:?}", x.record.author.label(), if x.outdated { " (out of date)" } else { "" }, x.record.base, x.record.replacement)).collect();
         let claims: Vec<String> = d.claims(now()).into_iter().filter(|c| c.path == path && c.winning).map(|c| format!("- {} is editing {:?}", c.holder.label(), c.text)).collect();
@@ -319,6 +342,28 @@ impl Tool for ReadFile {
             out.push_str(&format!("\n\n[Claimed parts]\n{}", claims.join("\n")));
         }
         ToolOutput::ok(out)
+    }
+}
+
+/// A shared file: an image the model sees, or the text of a text file too large to edit.
+async fn read_blob(r: &Room, f: &FileInfo) -> ToolOutput {
+    use base64::Engine;
+    let Some(b) = f.meta.blob.as_ref() else { return ToolOutput::err(format!("{} can't be opened.", f.path)) };
+    let image = IMAGE_TYPES.contains(&b.mime.as_str());
+    if !image && b.mime != "text/plain" {
+        return ToolOutput::err(format!("{} is a {} file: you can't open it, only mention it.", f.path, b.mime));
+    }
+    if image && b.size > MAX_IMAGE {
+        return ToolOutput::err(format!("{} is too large an image to look at ({} MB, 5 MB at most).", f.path, b.size.div_ceil(1024 * 1024)));
+    }
+    let bytes = match r.blob(&b.hash).await {
+        Ok(bytes) => bytes,
+        Err(e) => return ToolOutput::err(format!("Couldn't get {}: {e}", f.path)),
+    };
+    if image {
+        ToolOutput::image(format!("{} ({}, shared by {}) is shown below.", f.path, b.mime, f.meta.created_by.label()), b.mime.clone(), base64::engine::general_purpose::STANDARD.encode(bytes))
+    } else {
+        ToolOutput::ok(format!("{} is shared read-only (too large to edit in the room):\n\n{}", f.path, String::from_utf8_lossy(&bytes)))
     }
 }
 
@@ -561,6 +606,57 @@ mod tests {
         let log = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().is_some_and(|x| x == "jsonl")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap();
         assert!(log.contains("There is no tool named `shell`"), "{log}");
         assert!(log.contains("There is no tool named `room_edit`"), "{log}");
+        node.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    /// Answers from a script, keeping the messages of each request.
+    struct Seeing(parking_lot::Mutex<Vec<Vec<Block>>>, parking_lot::Mutex<Vec<Vec<devcat_harness::Message>>>);
+
+    #[async_trait]
+    impl Model for Seeing {
+        fn name(&self) -> String {
+            "seeing".into()
+        }
+        async fn step(&self, req: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
+            self.1.lock().push(req.messages.to_vec());
+            let content = self.0.lock().pop().ok_or_else(|| Error::Provider("asked more steps than scripted".into()))?;
+            Ok(Reply { content, usage: Usage::default(), truncated: false })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn agent_sees_the_rooms_images() {
+        use base64::Engine;
+        let dir = std::env::temp_dir().join(format!("devcat-rooms-agent-img-{}", devcat_rooms::now_ms()));
+        let node = Node::start(Config { dir: dir.join("rooms"), relay: RelayConfig::Off, port: 0, keeper: false, keeper_owners: vec![] }, Arc::new(Quiet)).await.unwrap();
+        let id = node.create("Design", "Arif").unwrap();
+        let r = node.room(&id).unwrap();
+        let me = r.me(false);
+        let png = b"\x89PNG\r\n\x1a\nnot really a picture".to_vec();
+        r.add_blob("flow.png", &png, "image/png", &me).unwrap();
+        r.add_blob("spec.pdf", b"%PDF-1.4", "application/pdf", &me).unwrap();
+        r.add_blob("big.md", "# Big\nlots of text".as_bytes(), "text/plain", &me).unwrap();
+        let ask = r.doc().post(&me, "@arif-agent what does the flow show?", 0, None, devcat_rooms::now_ms()).unwrap();
+        assert!(turn_text(&r, &ask).contains("flow.png (image, 1 KB: room_read shows it to you)"), "{}", turn_text(&r, &ask));
+
+        let script = vec![
+            vec![
+                Block::ToolUse { id: "c1".into(), name: "room_read".into(), input: json!({ "path": "flow.png" }) },
+                Block::ToolUse { id: "c2".into(), name: "room_read".into(), input: json!({ "path": "spec.pdf" }) },
+                Block::ToolUse { id: "c3".into(), name: "room_read".into(), input: json!({ "path": "big.md" }) },
+            ],
+            vec![Block::Text { text: "A login flow.".into() }],
+        ];
+        let model = Arc::new(Seeing(parking_lot::Mutex::new(script.into_iter().rev().collect()), Default::default()));
+        run(&r, &ask, model.clone(), &dir, &Cancel::default()).await.unwrap();
+
+        let seen = model.1.lock();
+        let results = &seen[1].last().unwrap().content;
+        assert!(matches!(&results[0], Block::ToolResult { content, is_error: false, .. } if content.contains("flow.png (image/png")), "{results:?}");
+        assert!(matches!(&results[1], Block::ToolResult { content, is_error: true, .. } if content.contains("application/pdf")), "{results:?}");
+        assert!(matches!(&results[2], Block::ToolResult { content, is_error: false, .. } if content.contains("lots of text")), "{results:?}");
+        assert_eq!(results[3], Block::Image { media_type: "image/png".into(), data: base64::engine::general_purpose::STANDARD.encode(&png) });
+        assert!(r.doc().messages().iter().any(|m| m.author.agent && m.text == "A login flow."));
         node.shutdown().await;
         let _ = std::fs::remove_dir_all(dir);
     }

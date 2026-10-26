@@ -323,7 +323,7 @@ impl Server {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let text = if text.is_empty() { r.get("structuredContent").map(Value::to_string).unwrap_or_else(|| "(no output)".into()) } else { text };
-                ToolOutput { content: text, is_error: r.get("isError").and_then(Value::as_bool).unwrap_or(false) }
+                ToolOutput { content: text, images: vec![], is_error: r.get("isError").and_then(Value::as_bool).unwrap_or(false) }
             }
         }
     }
