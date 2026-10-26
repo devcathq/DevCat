@@ -239,7 +239,7 @@ of these step by step, with every keyboard shortcut on
   by default, or OpenAI Codex, Gemini CLI, GitHub Copilot CLI, Aider, opencode or any custom command
   (args + env vars). Each uses its own login, or an optional API key kept in the OS keychain and passed as
   the provider's env var (e.g. `OPENAI_API_KEY`). With Claude Code you also get **Code Review ⌥⇧⌘3**,
-  launch options and your Claude session list (resume any session); other agents get a Review button that
+  launch options and your Claude session list (resume or rename any session); other agents get a Review button that
   asks them in the terminal.
   **DevCat Agent** (built in, nothing to install) talks to a model API directly: Z.ai GLM, DeepSeek, OpenAI (Chat
   Completions or the Responses API), Anthropic, OpenRouter, Kimi, Ollama, LM Studio or any OpenAI- or

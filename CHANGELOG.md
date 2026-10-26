@@ -57,6 +57,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **A preview tab keeps up with its file:** opened before the file exists (an agent mentions a path, then writes
   it), it shows the file as soon as it's written, instead of staying on "Cannot open …". Images, PDFs and other
   previews that change on disk are shown again a moment later (#88).
+- **Rename a Claude Code session:** right-click it in the sidebar's Sessions list → **Rename…**. It's saved the
+  way Claude Code's `/rename` does, so `claude --resume` shows the same name. Clear the name to go back to
+  Claude's own title (#89).
 
 ## 0.12.0 - 2026-10-24
 

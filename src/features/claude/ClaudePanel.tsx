@@ -388,7 +388,8 @@ function Workspace({ cwd }: { cwd: string }) {
           )}
           {sessionsOpen && isClaude && (
             <div className="min-h-0 flex-1">
-              <SessionsList cwd={cwd} sessions={sessions} error={sessErr} loading={sessLoading} query={query} setQuery={setQuery} now={now} />
+              <SessionsList cwd={cwd} sessions={sessions} error={sessErr} loading={sessLoading} query={query} setQuery={setQuery} now={now}
+                onRenamed={(id, title) => setSessions((l) => l && l.map((x) => (x.id === id ? { ...x, title } : x)))} />
             </div>
           )}
         </div>
