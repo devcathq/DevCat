@@ -12,10 +12,12 @@ import { errMsg } from "../../lib/api";
 import { monaco } from "../../lib/monaco";
 import type { Tab } from "../../tabs/types";
 import { confirmDialog, promptDialog } from "../connections/dialogs";
+import { isFileDrag } from "../files/drop";
 import { fromB64, label, rooms, type Claim, type FileInfo, type RoomBoard, type RoomView, type Suggestion } from "./api";
 import { bind, Replica, utf16 } from "./replica";
 import { PeopleDialog, SettingsDialog, pathText } from "./RoomDialogs";
 import { HistoryPanel, SuggestionsPanel, ThreadPanel } from "./RoomPanels";
+import { shareFiles } from "./share";
 import { startRooms, useRooms } from "./store";
 
 type Panel = "thread" | "suggestions" | "history";
@@ -31,6 +33,8 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
   const [people, setPeople] = useState(false);
   const [settings, setSettings] = useState(false);
   const [reveal, setReveal] = useState<{ path: string; from: number; to: number; at: number } | null>(null);
+  // files dragged over the room (from the system or DevCat's Files tree), to share them
+  const [dragging, setDragging] = useState(false);
   const tick = useRooms((s) => s.ticks[room] ?? 0);
 
   useEffect(() => replica.attach(), [replica]);
@@ -86,9 +90,10 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
     const picked = await openFile({ multiple: false, directory: false });
     if (typeof picked !== "string") return;
     try {
-      const name = await rooms.fileAdd(room, picked);
+      const { name, note } = await rooms.fileAdd(room, picked);
       setFile(name);
-      toast.success(`Shared ${name}`);
+      if (note) toast.info(note, { duration: 10000 });
+      else toast.success(`Shared ${name}`);
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -108,7 +113,23 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
   const here = view.members.filter((m) => !m.me && m.online && m.role !== "keeper");
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col"
+      onDragOver={(e) => { if (canEdit && isFileDrag(e.dataTransfer)) { e.preventDefault(); setDragging(true); } }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false); }}
+      onDrop={(e) => {
+        if (!canEdit || !isFileDrag(e.dataTransfer)) return;
+        e.preventDefault();
+        setDragging(false);
+        void shareFiles(room, e.dataTransfer).then((names) => { if (names.length) setFile(names[0]); });
+      }}>
+      {dragging && (
+        <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/60 bg-app/70">
+          <div className="flex max-w-sm flex-col items-center gap-2 rounded-lg border border-line bg-raised px-6 py-5 text-center text-[13px] text-fg shadow-lg">
+            <Upload className="size-6 text-accent" />Drop files to share them with the room
+            <span className="text-[11px] text-muted">Everyone in it can open them, and agents read them (images too, when a message names them). Drop on the thread to name them in your message as well.</span>
+          </div>
+        </div>
+      )}
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line bg-panel px-3">
         <Users className="size-4 text-accent" />
         <span className="font-semibold">{view.settings.name}</span>
@@ -139,7 +160,7 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
             )}
           </div>
           <div className="min-h-0 flex-1 overflow-auto px-1 pb-2">
-            {files.length === 0 && <div className="px-2 py-3 text-[12px] text-muted">No files yet.{canEdit ? " Make one, or share one from this computer." : ""}</div>}
+            {files.length === 0 && <div className="px-2 py-3 text-[12px] text-muted">No files yet.{canEdit ? " Make one, share one from this computer, or drop files here." : ""}</div>}
             {files.map((f) => {
               const viewers = view.members.filter((m) => !m.me && m.online && m.file === f.path);
               const claimed = board.claims.some((c) => c.path === f.path && c.winning);
@@ -184,7 +205,7 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
             <PanelTab active={panel === "history"} onClick={() => setPanel("history")} icon={<History className="size-3.5" />}>History</PanelTab>
           </div>
           <div className="min-h-0 flex-1">
-            {panel === "thread" && <ThreadPanel room={room} view={view} messages={board.messages} />}
+            {panel === "thread" && <ThreadPanel room={room} view={view} messages={board.messages} canShare={canEdit} files={files.map((f) => f.path)} onOpen={setFile} />}
             {panel === "suggestions" && <SuggestionsPanel room={room} canEdit={canEdit} suggestions={board.suggestions} onShow={show} />}
             {panel === "history" && <HistoryPanel room={room} canEdit={canEdit} history={board.history} />}
           </div>
@@ -282,22 +303,29 @@ function RoomEditor({ room, replica, path, readOnly, claims, suggestions, reveal
   );
 }
 
+/** Text shared as a file (too large to edit together): read here, not edited. */
+const isText = (mime: string) => mime.startsWith("text/") || mime === "application/json";
+
 function BlobView({ room, file }: { room: string; file: FileInfo }) {
   const [src, setSrc] = useState<string | null>(null);
+  const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const image = file.blob?.mime.startsWith("image/") && file.blob.mime !== "image/svg+xml";
+  const textual = !!file.blob && isText(file.blob.mime);
   useEffect(() => {
     setSrc(null);
+    setText(null);
     setError(null);
-    if (!image || !file.blob) return;
+    if ((!image && !textual) || !file.blob) return;
     let alive = true;
     void rooms.blob(room, file.blob.hash).then((b64) => {
       if (!alive) return;
       const bytes = fromB64(b64);
-      setSrc(URL.createObjectURL(new Blob([bytes as BlobPart], { type: file.blob!.mime })));
+      if (textual) setText(new TextDecoder().decode(bytes));
+      else setSrc(URL.createObjectURL(new Blob([bytes as BlobPart], { type: file.blob!.mime })));
     }).catch((e) => alive && setError(errMsg(e)));
     return () => { alive = false; };
-  }, [room, file, image]);
+  }, [room, file, image, textual]);
   useEffect(() => () => { if (src) URL.revokeObjectURL(src); }, [src]);
   const saveAs = async () => {
     if (!file.blob) return;
@@ -310,6 +338,25 @@ function BlobView({ room, file }: { room: string; file: FileInfo }) {
       toast.error(errMsg(e));
     }
   };
+  const size = file.blob ? `${(file.blob.size / 1024).toFixed(file.blob.size < 10240 ? 1 : 0)} KB · ${file.blob.mime} · shared by ${label(file.createdBy)}` : "";
+  if (textual && !error) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3 text-[11.5px] text-muted">
+          <span className="truncate">{size} · too large to edit together: everyone reads it here</span>
+          <Button size="sm" variant="ghost" className="ml-auto" onClick={() => void saveAs()}><Download className="size-3.5" />Save to this computer</Button>
+        </div>
+        <div className="min-h-0 flex-1">
+          {text === null ? (
+            <div className="flex h-full items-center justify-center"><Spinner /></div>
+          ) : (
+            <Editor theme="devcat" path={`room-file://${room}/${file.path}`} defaultLanguage={languageOf(file.path)} value={text}
+              options={{ readOnly: true, domReadOnly: true, minimap: { enabled: false }, fontSize: 13, wordWrap: "on", scrollBeyondLastLine: false, automaticLayout: true }} />
+          )}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-6">
       {image && !src && !error && <Spinner />}
@@ -317,7 +364,7 @@ function BlobView({ room, file }: { room: string; file: FileInfo }) {
       {error && <div className="text-[12px] text-danger">{error}</div>}
       <div className="text-center text-[12px] text-muted">
         <div className="font-medium text-fg">{file.path}</div>
-        {file.blob && <div>{(file.blob.size / 1024).toFixed(file.blob.size < 10240 ? 1 : 0)} KB · {file.blob.mime} · shared by {label(file.createdBy)}</div>}
+        {file.blob && <div>{size}</div>}
       </div>
       <Button onClick={() => void saveAs()}><Download className="size-3.5" />Save to this computer</Button>
     </div>

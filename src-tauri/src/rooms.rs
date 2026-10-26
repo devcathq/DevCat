@@ -302,24 +302,100 @@ pub async fn room_file_delete(room: String, path: String) -> AppResult<()> {
     r.doc().delete_file(&path).map_err(AppError::msg)
 }
 
+/// A file just shared: its name in the room, and what to tell the person (text too large to edit
+/// together went in as a plain file).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFile {
+    pub name: String,
+    pub note: Option<String>,
+}
+
 /// Share a file from this computer: text files become editable room documents, others are shared
-/// as they are (images, PDFs, …). `path`: its name in the room (default: the file's name).
+/// as they are (images, PDFs, …). `path`: its name in the room (default: the file's name, or the
+/// next free `name (2).ext` when the room already has one).
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn room_file_add(room: String, local: String, path: Option<String>) -> AppResult<String> {
+pub async fn room_file_add(room: String, local: String, path: Option<String>) -> AppResult<SharedFile> {
     let r = self::room(&room).await?;
     let me = editor(&r)?;
     let local = PathBuf::from(local);
-    let name = path.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into()));
-    let bytes = tokio::fs::read(&local).await.map_err(|e| AppError::msg(format!("Couldn't read {}: {e}", local.display())))?;
-    let now = devcat_rooms::now_ms();
-    match std::str::from_utf8(&bytes) {
-        Ok(text) if bytes.len() <= 4 * 1024 * 1024 && !text.contains('\0') => r.doc().create_file(&name, text, &me, now).map_err(AppError::msg)?,
-        _ => {
-            let mime = mime_of(&name);
-            r.add_blob(&name, &bytes, mime, &me).map_err(AppError::msg)?
-        }
+    if local.is_dir() {
+        return Err(AppError::msg(format!("{} is a folder: share the files in it.", local.display())));
     }
-    Ok(name)
+    let bytes = tokio::fs::read(&local).await.map_err(|e| AppError::msg(format!("Couldn't read {}: {e}", local.display())))?;
+    let name = match path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => p,
+        None => free_name(&r, &local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into())),
+    };
+    let note = share(&r, &me, &name, &bytes)?;
+    Ok(SharedFile { name, note })
+}
+
+/// Share a file dropped or pasted into the room (the window has its bytes, base64, not a path),
+/// under the next free name like `name (2).ext`.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn room_file_add_bytes(room: String, name: String, data: String) -> AppResult<SharedFile> {
+    use base64::Engine;
+    let r = self::room(&room).await?;
+    let me = editor(&r)?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|e| AppError::msg(format!("Couldn't read the file: {e}")))?;
+    // a name, not a path on someone's computer
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    let name = free_name(&r, if base.is_empty() || base.starts_with('.') { "file" } else { base });
+    let note = share(&r, &me, &name, &bytes)?;
+    Ok(SharedFile { name, note })
+}
+
+/// Text files become documents everyone edits; text too large for that (a long log, a big JSON) is
+/// shared as a plain text file, which people open read-only and agents read in parts. Anything else
+/// is shared as it is. Returns what to tell the person, if anything.
+fn share(r: &Room, me: &Author, name: &str, bytes: &[u8]) -> AppResult<Option<String>> {
+    let Some(text) = std::str::from_utf8(bytes).ok().filter(|t| !t.contains('\0')) else {
+        r.add_blob(name, bytes, mime_of(name), me).map_err(AppError::msg)?;
+        return Ok(None);
+    };
+    if bytes.len() <= MAX_DOC_BYTES && text.chars().count() <= devcat_rooms::doc::MAX_FILE_CHARS {
+        r.doc().create_file(name, text, me, devcat_rooms::now_ms()).map_err(AppError::msg)?;
+        return Ok(None);
+    }
+    r.add_blob(name, bytes, text_mime(name), me).map_err(AppError::msg)?;
+    Ok(Some(format!(
+        "{name} is too large to edit together (2 million characters at most), so it's shared as a text file: everyone can read it, and agents read it in parts."
+    )))
+}
+
+/// The most a shared document holds in bytes (and [`devcat_rooms::doc::MAX_FILE_CHARS`] characters).
+const MAX_DOC_BYTES: usize = 4 * 1024 * 1024;
+
+/// A text file's type, for one shared as a file.
+fn text_mime(name: &str) -> &'static str {
+    match name.rsplit('.').next().map(str::to_lowercase).as_deref() {
+        Some("json") => "application/json",
+        Some("md" | "markdown") => "text/markdown",
+        Some("csv") => "text/csv",
+        _ => "text/plain",
+    }
+}
+
+/// A shared file people and agents can read as text.
+pub fn is_text_mime(mime: &str) -> bool {
+    mime.starts_with("text/") || mime == "application/json"
+}
+
+/// `name`, or `name (2).ext`, `name (3).ext`… when the room already has a file by that name.
+fn free_name(r: &Room, name: &str) -> String {
+    let d = r.doc();
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    let mut candidate = name.to_string();
+    let mut n = 1;
+    while d.exists(&candidate) {
+        n += 1;
+        candidate = format!("{stem} ({n}){ext}");
+    }
+    candidate
 }
 
 fn mime_of(name: &str) -> &'static str {
@@ -388,4 +464,47 @@ pub async fn room_focus(room: String, file: Option<String>, typing: bool) -> App
 pub async fn room_agent_stop(room: String) -> AppResult<()> {
     crate::rooms_agent::stop(&room);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use devcat_rooms::{Change, JoinRequest};
+
+    struct Quiet;
+    #[async_trait]
+    impl Host for Quiet {
+        async fn approve_join(&self, _: JoinRequest) -> Option<Role> {
+            None
+        }
+        fn changed(&self, _: &str, _: Change) {}
+        fn message(&self, _: &str, _: &Message) {}
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shared_file_never_takes_the_name_of_one_already_in_the_room() {
+        let dir = std::env::temp_dir().join(format!("devcat-rooms-share-{}", devcat_rooms::now_ms()));
+        let node = Node::start(Config { dir: dir.join("rooms"), relay: RelayConfig::Off, port: 0, keeper: false, keeper_owners: vec![] }, Arc::new(Quiet)).await.unwrap();
+        let r = node.room(&node.create("Docs", "Arif").unwrap()).unwrap();
+        let me = r.me(false);
+        share(&r, &me, "notes.md", b"# Notes\n").unwrap();
+        share(&r, &me, "shot.png", &[0x89, b'P', b'N', b'G', 0]).unwrap();
+        assert_eq!(free_name(&r, "notes.md"), "notes (2).md");
+        assert_eq!(free_name(&r, "shot.png"), "shot (2).png");
+        assert_eq!(free_name(&r, "other.md"), "other.md");
+        share(&r, &me, "notes (2).md", b"again").unwrap();
+        assert_eq!(free_name(&r, "notes.md"), "notes (3).md");
+        // text became a document, the image a shared file
+        assert_eq!(r.doc().read("notes.md").as_deref(), Some("# Notes\n"));
+        assert!(r.doc().read("shot.png").is_none());
+        // text too large to edit together is shared as a text file, not refused
+        let big = "a log line\n".repeat(devcat_rooms::doc::MAX_FILE_CHARS / 11 + 1);
+        let note = share(&r, &me, "big.log", big.as_bytes()).unwrap();
+        assert!(note.is_some_and(|n| n.contains("shared as a text file")));
+        let f = r.doc().files().into_iter().find(|f| f.path == "big.log").unwrap();
+        assert_eq!(f.meta.blob.as_ref().map(|b| (b.mime.as_str(), b.size as usize)), Some(("text/plain", big.len())));
+        assert_eq!(share(&r, &me, "small.log", b"fits").unwrap(), None);
+        node.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

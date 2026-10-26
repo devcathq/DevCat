@@ -163,7 +163,11 @@ async fn run(r: &Arc<Room>, trigger: &Message, model: Arc<dyn Model>, log_dir: &
     let system = system_prompt(r, &me, edits);
     let mut agent = Agent::new(model, tools, Policy::AutoEdit, Arc::new(DenyAll), system);
     let mut session = Session::create(log_dir, &log_dir.to_string_lossy()).await.map_err(|e| AppError::msg(e.to_string()))?;
-    let text = turn_text(r, trigger);
+    let (images, shown) = images_named(r, trigger).await;
+    let mut text = turn_text(r, trigger);
+    if !shown.is_empty() {
+        text.push_str(&format!("\n\n{}", shown.join("\n")));
+    }
     let mut last_text = String::new();
     let mut on = |e: AgentEvent| {
         if let AgentEvent::Step { content, .. } = e {
@@ -173,7 +177,7 @@ async fn run(r: &Arc<Room>, trigger: &Message, model: Arc<dyn Model>, log_dir: &
             }
         }
     };
-    let res = tokio::time::timeout(Duration::from_secs(15 * 60), agent.turn(&mut session, &text, cancel, &mut on)).await;
+    let res = tokio::time::timeout(Duration::from_secs(15 * 60), agent.turn_with_images(&mut session, &text, images, cancel, &mut on)).await;
     let now = devcat_rooms::now_ms();
     match res {
         Ok(Ok(_)) if !last_text.trim().is_empty() => {
@@ -212,6 +216,7 @@ fn system_prompt(r: &Room, me: &Author, edits: bool) -> String {
 Members:\n{people}\n\n\
 How to work:\n\
 - Read the documents you talk about (room_read) before commenting or proposing changes; quote exact text.\n\
+- Images (PNG, JPEG, GIF, WebP) that the message mentioning you names are attached to it: look at them when asked about them.\n\
 - {change}\n\
 - Claim a section (room_claim) before you change it, so other agents don't rewrite it at the same time. If it's claimed by someone else, wait or suggest instead. Your claims are released when you finish.\n\
 - Never rewrite a whole document: change only the part that needs it.\n\
@@ -242,7 +247,7 @@ fn turn_text(r: &Room, trigger: &Message) -> String {
     let msgs = r.doc().messages();
     let upto = msgs.iter().position(|m| m.id == trigger.id).map(|i| i + 1).unwrap_or(msgs.len());
     let recent: Vec<String> = msgs[..upto].iter().rev().take(THREAD_CONTEXT).rev().map(fmt_message).collect();
-    let files: Vec<String> = r.doc().files().iter().map(|f| format!("- {} ({})", f.path, if f.meta.kind == FileKind::Text { format!("{} chars", f.chars) } else { "binary".into() })).collect();
+    let files: Vec<String> = r.doc().files().iter().map(|f| format!("- {} ({})", f.path, kind_of(f))).collect();
     format!(
         "Files in the room:\n{}\n\nThe thread so far (oldest first):\n{}\n\nYou were mentioned in the last message, by {}. Answer it.",
         if files.is_empty() { "(none yet)".into() } else { files.join("\n") },
@@ -251,8 +256,105 @@ fn turn_text(r: &Room, trigger: &Message) -> String {
     )
 }
 
+/// The most of a file one `room_read` returns (under the harness's own cut, which would point the
+/// agent to a file it has no tool to read).
+const READ_CHARS: usize = 25_000;
+
+/// Lines `offset` (from 1) on of `text`, `limit` of them or as many as fit in [`READ_CHARS`]; a
+/// part that isn't the whole file says which lines it holds and how to read on.
+fn window(text: &str, offset: Option<usize>, limit: Option<usize>) -> String {
+    if offset.is_none() && limit.is_none() && text.len() <= READ_CHARS {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let first = offset.unwrap_or(1).max(1);
+    if first > lines.len() {
+        return format!("[The file has {} lines: there's nothing from line {first}.]", lines.len());
+    }
+    let mut out = String::new();
+    let mut last = first - 1;
+    // a line longer than a whole part (minified JSON): only its start can be read
+    let mut cut = false;
+    for l in lines.iter().skip(first - 1).take(limit.unwrap_or(usize::MAX)) {
+        if out.len() + l.len() > READ_CHARS {
+            if out.is_empty() {
+                let mut end = READ_CHARS;
+                while !l.is_char_boundary(end) {
+                    end -= 1;
+                }
+                out.push_str(&l[..end]);
+                out.push_str("…\n");
+                last += 1;
+                cut = true;
+            }
+            break;
+        }
+        out.push_str(l);
+        last += 1;
+    }
+    if first == 1 && last == lines.len() && !cut {
+        return out;
+    }
+    let cut = if cut { format!(" Line {last} is cut: it's over {READ_CHARS} characters.") } else { String::new() };
+    let more = if last < lines.len() { format!(" Read on with offset {}.", last + 1) } else { String::new() };
+    format!("{out}{}[Lines {first}-{last} of {}.{cut}{more}]", if out.ends_with('\n') { "" } else { "\n" }, lines.len())
+}
+
+/// How the files list describes a file.
+fn kind_of(f: &devcat_rooms::doc::FileInfo) -> String {
+    match &f.meta.blob {
+        _ if f.meta.kind == FileKind::Text => format!("{} chars", f.chars),
+        Some(b) if IMAGE_TYPES.contains(&b.mime.as_str()) => "image: you see it when the message mentioning you names it".into(),
+        Some(b) if crate::rooms::is_text_mime(&b.mime) => format!("text shared as a file, {} KB: read it in parts with room_read", b.size / 1024),
+        Some(b) => format!("binary, {}", b.mime),
+        None => "binary".into(),
+    }
+}
+
 fn fmt_message(m: &Message) -> String {
     format!("[{}] {}: {}", m.id, m.author.label(), m.text)
+}
+
+/// Images models can see, and the most a run shows (each at most [`MAX_IMAGE`] bytes).
+const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+const MAX_IMAGES: usize = 4;
+const MAX_IMAGE: u64 = 5 * 1024 * 1024;
+
+/// The room's images that the message names (`End to End.png`), for the model to see, and a line
+/// for each saying which it sees (or why not).
+async fn images_named(r: &Room, trigger: &Message) -> (Vec<Block>, Vec<String>) {
+    use base64::Engine;
+    let (mut images, mut notes) = (Vec::new(), Vec::new());
+    for f in r.doc().files() {
+        let Some(blob) = f.meta.blob.as_ref().filter(|b| IMAGE_TYPES.contains(&b.mime.as_str())) else { continue };
+        if !names(&trigger.text, &f.path) {
+            continue;
+        }
+        if images.len() == MAX_IMAGES {
+            notes.push(format!("(The image {} isn't attached: at most {MAX_IMAGES} per message.)", f.path));
+        } else if blob.size > MAX_IMAGE {
+            notes.push(format!("(The image {} isn't attached: it's over 5 MB.)", f.path));
+        } else {
+            match r.blob(&blob.hash).await {
+                Ok(bytes) => {
+                    images.push(Block::Image { media_type: blob.mime.clone(), data: base64::engine::general_purpose::STANDARD.encode(bytes) });
+                    notes.push(format!("The image {} is attached to this message.", f.path));
+                }
+                Err(e) => notes.push(format!("(The image {} couldn't be fetched: {e})", f.path)),
+            }
+        }
+    }
+    (images, notes)
+}
+
+/// `text` names the file `path`: it appears as a whole name, not inside a longer one.
+fn names(text: &str, path: &str) -> bool {
+    let part = |c: char| c.is_alphanumeric() || "_-/\\".contains(c);
+    text.match_indices(path).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + path.len()..].chars().next();
+        !before.is_some_and(|c| part(c) || c == '.') && !after.is_some_and(part)
+    })
 }
 
 // --------------------------------------------------------------------- tools
@@ -286,7 +388,7 @@ impl Tool for Files {
         if f.is_empty() {
             return ToolOutput::ok("The room has no files yet.");
         }
-        ToolOutput::ok(f.iter().map(|f| format!("{}  ({}, by {})", f.path, if f.meta.kind == FileKind::Text { format!("{} chars", f.chars) } else { "binary".into() }, f.meta.created_by.label())).collect::<Vec<_>>().join("\n"))
+        ToolOutput::ok(f.iter().map(|f| format!("{}  ({}, by {})", f.path, kind_of(f), f.meta.created_by.label())).collect::<Vec<_>>().join("\n"))
     }
 }
 
@@ -294,7 +396,12 @@ struct ReadFile(Arc<Room>);
 #[async_trait]
 impl Tool for ReadFile {
     fn spec(&self) -> ToolSpec {
-        spec("room_read", "Read a text file in the room, exactly as it is now (with open suggestions and claims on it listed after it).", json!({ "path": { "type": "string" } }), &["path"])
+        spec(
+            "room_read",
+            "Read a text file in the room, exactly as it is now (with open suggestions and claims on it listed after it). A long file comes in parts: give `offset` (the line to start at, from 1) and `limit` (how many lines) for the next one.",
+            json!({ "path": { "type": "string" }, "offset": { "type": "integer" }, "limit": { "type": "integer" } }),
+            &["path"],
+        )
     }
     fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
         Kind::Read
@@ -308,8 +415,20 @@ impl Tool for ReadFile {
             Err(e) => return e,
         };
         let d = self.0.doc();
-        let Some(text) = d.read(path) else { return ToolOutput::err(format!("{path} isn't a text file in the room.")) };
-        let mut out = text;
+        let line = |k: &str| input.get(k).and_then(Value::as_u64).map(|n| n as usize);
+        let Some(text) = d.read(path) else {
+            return match d.files().into_iter().find(|f| f.path == path).and_then(|f| f.meta.blob) {
+                // text too large to edit together, shared as a file
+                Some(b) if crate::rooms::is_text_mime(&b.mime) => match self.0.blob(&b.hash).await {
+                    Ok(bytes) => ToolOutput::ok(window(&String::from_utf8_lossy(&bytes), line("offset"), line("limit"))),
+                    Err(e) => ToolOutput::err(format!("Couldn't fetch {path}: {e}")),
+                },
+                Some(b) if IMAGE_TYPES.contains(&b.mime.as_str()) => ToolOutput::err(format!("{path} is an image: you see the images that the message mentioning you names (they're attached to it). To see this one, ask to be mentioned with its name.")),
+                Some(b) => ToolOutput::err(format!("{path} is a {} file, not text: you can't read it.", b.mime)),
+                None => ToolOutput::err(format!("{path} isn't a text file in the room.")),
+            };
+        };
+        let mut out = window(&text, line("offset"), line("limit"));
         let sugg: Vec<String> = d.suggestions().into_iter().filter(|x| x.record.path == path && x.record.state == devcat_rooms::doc::SuggestionState::Open).map(|x| format!("- by {}{}: replace {:?} with {:?}", x.record.author.label(), if x.outdated { " (out of date)" } else { "" }, x.record.base, x.record.replacement)).collect();
         let claims: Vec<String> = d.claims(now()).into_iter().filter(|c| c.path == path && c.winning).map(|c| format!("- {} is editing {:?}", c.holder.label(), c.text)).collect();
         if !sugg.is_empty() {
@@ -563,5 +682,101 @@ mod tests {
         assert!(log.contains("There is no tool named `room_edit`"), "{log}");
         node.shutdown().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Answers at once, and records the images it was shown.
+    struct Seeing(parking_lot::Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl Model for Seeing {
+        fn name(&self) -> String {
+            "seeing".into()
+        }
+        async fn step(&self, req: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
+            for b in req.messages.iter().flat_map(|m| &m.content) {
+                if let Block::Image { media_type, .. } = b {
+                    self.0.lock().push(media_type.clone());
+                }
+            }
+            Ok(Reply { content: vec![Block::Text { text: "Six steps, from upload to approval.".into() }], usage: Usage::default(), truncated: false })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_agent_sees_the_images_its_mention_names() {
+        let dir = std::env::temp_dir().join(format!("devcat-rooms-agent-img-{}", devcat_rooms::now_ms()));
+        let node = Node::start(Config { dir: dir.join("rooms"), relay: RelayConfig::Off, port: 0, keeper: false, keeper_owners: vec![] }, Arc::new(Quiet)).await.unwrap();
+        let id = node.create("Wireframes", "Arif").unwrap();
+        let r = node.room(&id).unwrap();
+        let me = r.me(false);
+        let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d];
+        r.add_blob("End to End Workflow_final.png", &png, "image/png", &me).unwrap();
+        r.add_blob("old.png", &png, "image/png", &me).unwrap();
+        r.add_blob("spec.pdf", b"%PDF-1.7", "application/pdf", &me).unwrap();
+        let ask = r.doc().post(&me, "@arif-agent please review \"End to End Workflow_final.png\" and spec.pdf", 0, None, devcat_rooms::now_ms()).unwrap();
+        let model = Arc::new(Seeing(Default::default()));
+        run(&r, &ask, model.clone(), &dir, &Cancel::default()).await.unwrap();
+        // the image it names, not the other one, and no PDF (models only see images)
+        assert_eq!(*model.0.lock(), ["image/png"]);
+        let log = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().is_some_and(|x| x == "jsonl")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap();
+        assert!(log.contains("The image End to End Workflow_final.png is attached to this message."), "{log}");
+        assert!(log.contains("old.png (image: you see it when the message mentioning you names it)"), "{log}");
+        assert!(log.contains("spec.pdf (binary, application/pdf)"), "{log}");
+        node.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_agent_reads_big_text_shared_as_a_file_in_parts() {
+        let dir = std::env::temp_dir().join(format!("devcat-rooms-agent-big-{}", devcat_rooms::now_ms()));
+        let node = Node::start(Config { dir: dir.join("rooms"), relay: RelayConfig::Off, port: 0, keeper: false, keeper_owners: vec![] }, Arc::new(Quiet)).await.unwrap();
+        let r = node.room(&node.create("Logs", "Arif").unwrap()).unwrap();
+        let me = r.me(false);
+        let log: String = (1..=100_000).map(|i| format!("{i:06} GET /api/health 200\n")).collect();
+        r.add_blob("server.log", log.as_bytes(), "text/plain", &me).unwrap();
+        let ask = r.doc().post(&me, "@arif-agent what's on line 70000 of server.log?", 0, None, devcat_rooms::now_ms()).unwrap();
+        let script = vec![
+            call("c1", "room_read", json!({ "path": "server.log" })),
+            call("c2", "room_read", json!({ "path": "server.log", "offset": 70000, "limit": 2 })),
+            vec![Block::Text { text: "A health check.".into() }],
+        ];
+        run(&r, &ask, Arc::new(Scripted(parking_lot::Mutex::new(script.into_iter().rev().collect()))), &dir, &Cancel::default()).await.unwrap();
+        let log = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().is_some_and(|x| x == "jsonl")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap();
+        // its list says how to read it; the first part says where to go on; the part asked for comes whole
+        assert!(log.contains("server.log (text shared as a file, 2636 KB: read it in parts with room_read)"), "{log}");
+        assert!(log.contains("of 100000. Read on with offset"), "{log}");
+        assert!(log.contains("070000 GET /api/health 200\\n070001 GET /api/health 200\\n[Lines 70000-70001 of 100000. Read on with offset 70002.]"), "{log}");
+        node.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_long_file_is_read_in_parts() {
+        let short = "a\nb\n";
+        assert_eq!(window(short, None, None), short);
+        assert_eq!(window(short, Some(2), None), "b\n[Lines 2-2 of 2.]");
+        let long: String = (1..=5000).map(|i| format!("line {i:04} of the log\n")).collect();
+        let first = window(&long, None, None);
+        assert!(first.len() < READ_CHARS + 100 && first.starts_with("line 0001"));
+        // every line read ends with a newline, the footer after them doesn't
+        let n = first.matches('\n').count();
+        assert!(first.ends_with(&format!("[Lines 1-{n} of 5000. Read on with offset {}.]", n + 1)), "{}", &first[first.len() - 80..]);
+        assert_eq!(window(&long, Some(4999), Some(10)), "line 4999 of the log\nline 5000 of the log\n[Lines 4999-5000 of 5000.]");
+        assert_eq!(window(&long, Some(6000), None), "[The file has 5000 lines: there's nothing from line 6000.]");
+        // a single line longer than a part: its start
+        let wide = "x".repeat(READ_CHARS * 2);
+        let w = window(&wide, None, None);
+        assert!(w.starts_with(&"x".repeat(100)) && w.ends_with("…\n[Lines 1-1 of 1. Line 1 is cut: it's over 25000 characters.]"), "{}", &w[w.len() - 90..]);
+    }
+
+    #[test]
+    fn a_file_is_named_only_by_its_whole_name() {
+        assert!(names("look at plan.png.", "plan.png"));
+        assert!(names("review \"End to End.png\" please", "End to End.png"));
+        assert!(names("plan.png", "plan.png"));
+        assert!(!names("old-plan.png", "plan.png"));
+        assert!(!names("plan.png2", "plan.png"));
+        assert!(!names("docs/plan.png", "plan.png"));
+        assert!(!names("a.plan.png", "plan.png"));
     }
 }
