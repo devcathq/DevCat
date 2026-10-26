@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  POLICIES, SUGGESTIONS, ZERO, applyAll, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, itemsFromLog, lastContext, str, summarize, toBlocks,
+  POLICIES, SUGGESTIONS, ZERO, allowAllLabel, applyAll, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, itemsFromLog, lastContext, str, summarize, toBlocks,
   type ChatView, type Item, type ToolItem, type ToolStatus,
 } from "../../../src/features/agent/model";
 import type { AgentDecision, AgentLiveEvent, AgentModel, AgentOpened, AgentPolicy } from "../../../src/lib/types";
@@ -461,7 +461,7 @@ function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
       ) : (
         <div className="mt-2.5 flex flex-col gap-2">
           <Btn variant="primary" block onClick={() => ctx.onDecide(item.id, { decision: "allow" })}>Allow</Btn>
-          <Btn block onClick={() => ctx.onDecide(item.id, { decision: "allow-for-session" })}>Always allow {item.name === "shell" ? "commands" : item.name === "web_fetch" ? "fetching pages" : item.name === "db_query" ? "queries" : item.name.startsWith("k8s_") ? "cluster reads" : item.name.startsWith("mcp__") ? "this tool" : "edits"} in this chat</Btn>
+          <Btn block onClick={() => ctx.onDecide(item.id, { decision: "allow-for-session" })}>Always allow {allowAllLabel(item.name)} in this chat</Btn>
           <Btn variant="ghost" block onClick={() => ctx.onDecide(item.id, { decision: "deny" })}>Deny</Btn>
         </div>
       )}

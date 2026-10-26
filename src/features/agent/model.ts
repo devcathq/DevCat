@@ -2,7 +2,7 @@
 // items a chat draws, and how those items read (step rows, folded runs of steps). Shared by the
 // desktop chat (./AgentChat.tsx) and the phone / browser version (mobile/src/screens/agentchat.tsx),
 // so nothing here may import Tauri.
-import { Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, Globe, ListTodo, MessageCircleQuestion, Plug, ScrollText, Search, SquareTerminal, Wrench } from "lucide-react";
+import { Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, Plug, ScrollText, Search, SquareTerminal, Wrench } from "lucide-react";
 import type { AgentApprovalRequest, AgentBlock, AgentContext, AgentLiveEvent, AgentModel, AgentPolicy, AgentQuestion, AgentSessionEvent, AgentUsage } from "../../lib/types";
 
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
@@ -243,6 +243,9 @@ export function rel(path: string, cwd?: string) {
 export type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
 export const todoList = (input: Record<string, unknown> | null): Todo[] => (Array.isArray(input?.todos) ? (input.todos as Todo[]).filter((t) => t && typeof t.content === "string") : []);
 
+/** The `git` tool's arguments. */
+const gitArgs = (input: Record<string, unknown> | null) => (Array.isArray(input?.args) ? input.args.map(String) : []);
+
 /** How a tool step reads: icon, verb, target and changed lines. */
 export function describe(name: string, input: Record<string, unknown> | null, status: ToolStatus, cwd?: string) {
   const done = status === "done" || status === "error" || status === "denied";
@@ -254,6 +257,7 @@ export function describe(name: string, input: Record<string, unknown> | null, st
     case "glob": return { icon: FolderSearch, verb: done ? "Found files" : "Finding files", target: str(i.pattern) };
     case "grep": return { icon: Search, verb: done ? "Searched" : "Searching", target: str(i.pattern) };
     case "shell": return { icon: SquareTerminal, verb: done ? "Ran" : "Running", target: str(i.command) };
+    case "git": return { icon: GitBranch, verb: done ? "Ran" : "Running", target: `git ${gitArgs(i).map((a) => (/^$|\s/.test(a) ? `"${a}"` : a)).join(" ")}` };
     case "ask_user": return { icon: MessageCircleQuestion, verb: done ? "Asked" : "Asking", target: str(i.question) };
     case "web_fetch": return { icon: Globe, verb: done ? "Fetched" : "Fetching", target: str(i.url) };
     case "devcat_connections": return { icon: Database, verb: done ? "Listed connections" : "Listing connections", target: "" };
@@ -315,10 +319,25 @@ export function toBlocks(items: Item[]): Block[] {
   return out;
 }
 
+/** `git` subcommands that only read the repository (the harness decides what asks: tools/git.rs;
+ *  this only sorts them for the summary line). */
+const GIT_READS = new Set(["status", "diff", "log", "show", "blame", "grep", "ls-files", "rev-parse", "describe", "shortlog", "merge-base"]);
+
+/** What "Always allow … in this chat" covers for a tool: the whole tool, for the rest of the chat. */
+export function allowAllLabel(name: string) {
+  if (name === "shell") return "commands";
+  if (name === "git") return "git commands";
+  if (name === "web_fetch") return "fetching pages";
+  if (name === "db_query") return "queries";
+  if (name.startsWith("k8s_")) return "cluster reads";
+  if (name.startsWith("mcp__")) return "this tool";
+  return "edits";
+}
+
 /** "read 6 files · 14 searches · ran 3 commands · 2 failed" for a group of steps. */
 export function summarize(items: Item[]) {
   const reads = new Set<string>(), edits = new Set<string>();
-  let searches = 0, commands = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0;
+  let searches = 0, commands = 0, gitReads = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0;
   for (const it of items) {
     if (it.kind === "answer") thinkingMs += it.thinkingMs ?? 0;
     if (it.kind !== "tool") continue;
@@ -328,6 +347,10 @@ export function summarize(items: Item[]) {
     else if (it.name === "edit" || it.name === "write") edits.add(target);
     else if (it.name === "glob" || it.name === "grep") searches++;
     else if (it.name === "shell") commands++;
+    else if (it.name === "git") {
+      if (GIT_READS.has(gitArgs(it.input)[0])) gitReads++;
+      else commands++;
+    }
     else if (it.name === "web_fetch") fetches++;
     else if (it.name === "db_query" || it.name === "db_schema" || it.name === "k8s_get" || it.name === "k8s_logs") queries++;
     else if (it.name === "devcat_connections") continue;
@@ -338,6 +361,7 @@ export function summarize(items: Item[]) {
     reads.size && `read ${n(reads.size, "file")}`,
     edits.size && `edited ${n(edits.size, "file")}`,
     searches && n(searches, "search", "searches"),
+    gitReads && n(gitReads, "git lookup"),
     commands && `ran ${n(commands, "command")}`,
     fetches && `fetched ${n(fetches, "page")}`,
     queries && n(queries, "query", "queries"),
