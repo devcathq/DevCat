@@ -173,6 +173,8 @@ export const api = {
   agentStop: (sessionId: string) => invoke<void>("agent_stop", { sessionId }),
   agentApprove: (sessionId: string, toolUseId: string, decision: AgentDecision) => invoke<void>("agent_approve", { sessionId, toolUseId, decision }),
   agentClose: (sessionId: string) => invoke<void>("agent_close", { sessionId }),
+  /** Rename a saved DevCat Agent chat. */
+  agentRename: (sessionId: string, title: string) => invoke<void>("agent_rename", { sessionId, title }),
   agentSessions: (cwd: string) => invoke<{ id: string; title: string; updatedMs: number; messages: number }[]>("agent_sessions", { cwd }),
   agentModels: (settings: AgentSettings, providerId: string | null, apiKey: string | null) => invoke<AgentModel[]>("ai_agent_models", { settings, providerId, apiKey }),
   /** Put local files / folders on the OS clipboard (paste attaches them in Slack, copies them in Explorer / Finder). */

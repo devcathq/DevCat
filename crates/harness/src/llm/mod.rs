@@ -109,12 +109,34 @@ impl Llm {
 }
 
 /// A model a provider offers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModelInfo {
     pub id: String,
     /// Context window in tokens, when the provider says (OpenRouter, Anthropic, LM Studio,
     /// vLLM, Kimi, ...). Many (OpenAI, Z.ai, DeepSeek) don't.
     pub context: Option<u64>,
+    /// List price, when the provider says (OpenRouter does).
+    pub price: Option<Price>,
+}
+
+/// What a model costs, in US dollars per million tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+    /// Input read from the prompt cache, when it's priced apart.
+    pub cache_read: Option<f64>,
+}
+
+/// The price in an OpenRouter-style model entry (`pricing`: dollars per token, as strings).
+pub fn price_of(m: &serde_json::Value) -> Option<Price> {
+    let per_mtok = |k: &str| {
+        let v = m.get("pricing")?.get(k)?;
+        let n = v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64())?;
+        (n >= 0.0).then_some(n * 1_000_000.0)
+    };
+    Some(Price { input: per_mtok("prompt")?, output: per_mtok("completion")?, cache_read: per_mtok("input_cache_read") })
 }
 
 /// Models the provider offers (`GET {base}/models`, or `/v1/models` for Anthropic), newest first.
@@ -162,7 +184,7 @@ fn models(v: &serde_json::Value) -> Vec<ModelInfo> {
             let id = m.get("id")?.as_str()?.to_string();
             // OpenAI: unix seconds; Anthropic: RFC 3339. Both sort as text once padded.
             let created = m.get("created").and_then(|c| c.as_u64()).map(|c| format!("{c:020}")).or_else(|| m.get("created_at").and_then(|c| c.as_str()).map(String::from)).unwrap_or_default();
-            Some((created, ModelInfo { id, context: context_of(m) }))
+            Some((created, ModelInfo { id, context: context_of(m), price: price_of(m) }))
         })
         .filter(|(_, m)| !m.id.to_lowercase().contains("embed"))
         .collect();
@@ -232,5 +254,21 @@ mod tests {
         assert!(got.contains(&("lmstudio".into(), Some(32768))));
         assert!(got.contains(&("nested".into(), Some(64000))));
         assert!(got.contains(&("unknown".into(), None)));
+    }
+
+    #[test]
+    fn model_list_reads_openrouter_prices() {
+        let v = serde_json::json!({ "data": [
+            { "id": "z-ai/glm-5.3", "pricing": { "prompt": "0.0000006", "completion": "0.0000022", "input_cache_read": "0.00000011" } },
+            { "id": "free", "pricing": { "prompt": "0", "completion": "0" } },
+            { "id": "half", "pricing": { "prompt": "0.000001" } },
+            { "id": "none" },
+        ] });
+        let price = |id: &str| models(&v).into_iter().find(|m| m.id == id).unwrap().price;
+        let glm = price("z-ai/glm-5.3").unwrap();
+        assert!((glm.input - 0.6).abs() < 1e-9 && (glm.output - 2.2).abs() < 1e-9 && (glm.cache_read.unwrap() - 0.11).abs() < 1e-9, "{glm:?}");
+        assert_eq!(price("free"), Some(Price { input: 0.0, output: 0.0, cache_read: None }));
+        assert_eq!(price("half"), None);
+        assert_eq!(price("none"), None);
     }
 }

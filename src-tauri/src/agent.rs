@@ -287,12 +287,13 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     context.skills = skills(dir, home.as_deref()).into_iter().map(|s| s.name).collect();
     let configured = !devcat_harness::mcp::configured(dir, home.as_deref()).0.is_empty();
     context.mcp_loading = configured;
-    // the user's DevCat connections: databases, Redis, MongoDB, clusters
+    // the user's DevCat connections (databases, Redis, MongoDB, clusters) and notes
     let mut tools = Registry::standard();
     for t in crate::memory::tools::for_scope(&scope, "devcat-agent") {
         tools.add_arc(t);
     }
     crate::agent_tools::add(&mut tools, &scope);
+    crate::agent_notes::add(&mut tools);
     context.connections = crate::agent_tools::names(&scope);
     let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
     let log = Snapshot::of(&agent, &session);
@@ -393,6 +394,42 @@ pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, 
         live,
         seq,
     })
+}
+
+/// Rename a chat: a `title` event at the end of its session file (the last one names the chat).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_rename(session_id: String, title: String) -> AppResult<()> {
+    let title: String = title.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
+    if title.is_empty() {
+        return Err(AppError::msg("The name can't be empty"));
+    }
+    if !valid_id(&session_id) {
+        return Err(AppError::msg("Not a DevCat Agent chat"));
+    }
+    // An open chat writes it through its own session, so the title it reports stays the new one;
+    // during a turn that happens when the turn ends.
+    if let Ok(run) = run_of(&session_id) {
+        crate::rt::spawn(async move {
+            let mut turn = run.turn.lock().await;
+            if turn.1.append(SessionEvent::Title { title: title.clone() }).await.is_ok() {
+                run.log.lock().title = title;
+            }
+            drop(turn);
+            chat_changed(&run.id);
+        });
+        return Ok(());
+    }
+    let path = dir()?.join(format!("{session_id}.jsonl"));
+    if !path.exists() {
+        return Err(AppError::msg("That chat isn't saved yet: send a message first"));
+    }
+    let mut line = serde_json::to_string(&SessionEvent::Title { title }).map_err(|e| AppError::msg(e.to_string()))?;
+    line.push('\n');
+    use tokio::io::AsyncWriteExt;
+    let mut f = tokio::fs::OpenOptions::new().append(true).open(&path).await?;
+    f.write_all(line.as_bytes()).await?;
+    f.flush().await?;
+    Ok(())
 }
 
 fn valid_id(id: &str) -> bool {

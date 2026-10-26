@@ -379,7 +379,8 @@ export interface TrafficSample {
 export type AiKind = "claude" | "codex" | "gemini" | "copilot" | "aider" | "opencode" | "custom" | "agent";
 /** Model API of a DevCat Agent connection. */
 /** A model a DevCat Agent API offers; `context` = its window in tokens, when known. */
-export interface AgentModel { id: string; context: number | null }
+/** A model an agent connection offers; `price` is its list price in US dollars per million tokens. */
+export interface AgentModel { id: string; context: number | null; price?: { input: number; output: number; cacheRead: number | null } | null }
 
 export interface AgentSettings { protocol: "openai-chat" | "anthropic"; baseUrl: string; model: string }
 export interface AiEnvVar { key: string; value: string }

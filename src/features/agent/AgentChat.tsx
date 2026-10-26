@@ -14,7 +14,8 @@ import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { POLICIES, SUGGESTIONS, allowAllLabel, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { POLICIES, SUGGESTIONS, allowAllLabel, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { fmtCost } from "../claude/util";
 import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent } from "./store";
 
 export default function AgentChat({ tabId, cwd, provider, visible, onReview }: { tabId: string; cwd: string; provider: AiProvider; visible: boolean; onReview: () => void }) {
@@ -323,9 +324,7 @@ function Diff({ before, after, max = 200 }: { before: string; after: string; max
 function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
   const req = item.request!;
   const i = item.input ?? {};
-  const title = item.name === "db_query" ? (req.kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`)
-    : req.kind === "query" ? `Read from ${str(i.connection)}?`
-    : req.kind === "exec" ? "Run this command?" : req.kind === "fetch" ? "Fetch this page?" : req.kind === "edit-outside" ? "Edit a file outside the project?" : `${item.name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+  const title = approvalTitle(item.name, req.kind, item.input);
   const deny = () => void answer(tabId, item.id, { decision: "deny" });
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); deny(); }
@@ -335,9 +334,10 @@ function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
       <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-fg"><ShieldAlert className="size-4 text-accent" />{title}</div>
       {item.name === "shell" && <Code>{str(i.command)}</Code>}
       {item.name === "db_query" && <Code>{str(i.query)}</Code>}
+      {item.name === "devcat_note_write" && <Code>{str(i.body)}</Code>}
       {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
-      {!["shell", "edit", "write", "db_query"].includes(item.name) && <Code>{req.summary}</Code>}
+      {!["shell", "edit", "write", "db_query", "devcat_note_write"].includes(item.name) && <Code>{req.summary}</Code>}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <Button autoFocus size="sm" variant="primary" onClick={() => void answer(tabId, item.id, { decision: "allow" })}>Allow <kbd className="ml-1 opacity-60">↵</kbd></Button>
         <Button size="sm" onClick={() => void answer(tabId, item.id, { decision: "allow-for-session" })}>
@@ -557,6 +557,8 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
   };
   const tokens = chat.usage.input_tokens + chat.usage.output_tokens;
   const cacheRate = chat.usage.input_tokens ? Math.round((chat.usage.cache_read_tokens / chat.usage.input_tokens) * 100) : null;
+  const price = models.find((m) => m.id === chat.model)?.price ?? null;
+  const cost = tokens > 0 ? chatCost(chat.usage, price) : null;
   const policy = POLICIES.find((p) => p.id === chat.policy)!;
   const PolicyIcon = chat.policy === "bypass" ? ShieldOff : chat.policy === "auto-edit" ? ShieldCheck : Shield;
   return (
@@ -613,6 +615,9 @@ function Composer({ tabId, visible, provider }: { tabId: string; visible: boolea
           <span className="ml-auto flex items-center gap-2 text-[11px] text-faint">
             <ContextMeter tabId={tabId} models={models} />
             {tokens > 0 && cacheRate !== null && cacheRate > 0 && <span title="Share of this chat's input the provider read from its cache">{cacheRate}% cached</span>}
+            {cost !== null && price && (
+              <span title={`Estimated at ${chat.model}'s list price: $${price.input.toFixed(2)} in, $${price.output.toFixed(2)} out${price.cacheRead !== null ? `, $${price.cacheRead.toFixed(2)} cached` : ""} per million tokens (OpenRouter's catalog when the provider doesn't say)`}>≈{fmtCost(cost)}</span>
+            )}
           </span>
           {chat.busy ? (
             <button onClick={() => stop(tabId)} title="Stop" className="solid flex size-8 items-center justify-center rounded-full bg-fg text-app transition hover:opacity-85"><Square className="size-3 fill-current" /></button>
