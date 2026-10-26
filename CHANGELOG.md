@@ -12,6 +12,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.13.0 - 2026-10-26
+
 - **Sync MCP:** each connection now has its own **AI / MCP access** (Edit connection → Advanced): **Off** hides it
   from every agent, **Read-only** lets agents only read, **Full** lets agents over MCP change data too. New
   connections start read-only, and a read-only connection can never be full. DevCat enforces it, whatever the
