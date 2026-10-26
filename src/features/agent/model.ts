@@ -15,7 +15,9 @@ export type Item =
   | { kind: "tool"; key: string; id: string; name: string; input: Record<string, unknown> | null; status: ToolStatus; output: string; request: AgentApprovalRequest | null; question?: AgentQuestion | null; helper?: HelperStep[] }
   | { kind: "end"; key: string; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; elapsedMs: number | null; tokens: number }
   /** The conversation before it was summarized (automatically, or `/compact`). */
-  | { kind: "compacted"; key: string; state: "running" | "done" | "failed"; summary: string; tokensBefore: number };
+  | { kind: "compacted"; key: string; state: "running" | "done" | "failed"; summary: string; tokensBefore: number }
+  /** A hook's message: its `systemMessage`, a failure, or why a Stop hook sent the agent on. */
+  | { kind: "hook"; key: string; event: string; text: string };
 
 export type ToolItem = Extract<Item, { kind: "tool" }>;
 export type HelperStep = { name: string; input: Record<string, unknown> | null };
@@ -54,7 +56,8 @@ export function itemsFromLog(events: AgentSessionEvent[]): Item[] {
   const items: Item[] = [];
   const tools = new Map<string, ToolItem>();
   for (const e of events) {
-    if (e.event === "user") items.push({ kind: "user", key: key(), ...splitAttachments(e.text) });
+    if (e.event === "user" && e.hook) items.push({ kind: "hook", key: key(), event: e.hook, text: e.text });
+    else if (e.event === "user") items.push({ kind: "user", key: key(), ...splitAttachments(e.text) });
     else if (e.event === "assistant") addBlocks(items, tools, e.content);
     else if (e.event === "tool_results") {
       for (const r of e.results) if (r.type === "tool_result") finishTool(tools.get(r.tool_use_id), r.content, !!r.is_error);
@@ -121,10 +124,13 @@ function addBlocks(items: Item[], tools: Map<string, ToolItem>, content: AgentBl
   }
 }
 
+/** A result saying the call was declined: by the user, or by a PermissionRequest hook in their place. */
+const declined = (content: string) => content.startsWith("The user declined") || content.startsWith("Not run: a PermissionRequest hook declined");
+
 function finishTool(t: ToolItem | undefined, content: string, isError: boolean) {
   if (!t) return;
   t.output = content;
-  t.status = t.status === "denied" || content.startsWith("The user declined") ? "denied" : isError ? "error" : "done";
+  t.status = t.status === "denied" || declined(content) ? "denied" : isError ? "error" : "done";
 }
 
 /** Apply one live event to a chat's items (a new array; items that change are replaced). */
@@ -191,6 +197,9 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
     case "helperStep":
       // a helper's tokens count for the chat, not for its context
       return { usage: plus(c.usage, e.usage) };
+    case "hook":
+      items.push({ kind: "hook", key: key(), event: e.event, text: e.message });
+      return { items };
     case "approval":
       setTool(e.request.toolUseId, () => ({ status: "approval", request: e.request, input: e.request.input }));
       return { items };
@@ -212,7 +221,7 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
         output: e.content,
         request: null,
         question: null,
-        status: t.status === "approval" || e.content.startsWith("The user declined") ? "denied" : e.is_error ? "error" : "done",
+        status: t.status === "approval" || declined(e.content) ? "denied" : e.is_error ? "error" : "done",
       }));
       return { items };
     case "turnEnd": {
@@ -326,8 +335,12 @@ export function fmtDuration(ms: number) {
  *  answer. */
 function isStep(it: Item) {
   if (it.kind === "tool") return it.name !== SUBAGENT && !(it.status === "approval" && it.request) && !(it.status === "question" && it.question);
+  // a hook's note folds in with the steps around it, except a Stop hook sending the agent on
+  if (it.kind === "hook") return !isStopHook(it.event);
   return it.kind === "answer" && !it.text.trim();
 }
+
+export const isStopHook = (event: string) => event === "Stop" || event === "SubagentStop";
 
 export type Block = { kind: "item"; item: Item; n: number } | { kind: "steps"; items: Item[]; last: number };
 
@@ -394,9 +407,10 @@ function noteTitle(body: string) {
 /** "read 6 files · 14 searches · ran 3 commands · 2 failed" for a group of steps. */
 export function summarize(items: Item[]) {
   const reads = new Set<string>(), edits = new Set<string>();
-  let searches = 0, commands = 0, gitReads = 0, noteReads = 0, noteWrites = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0;
+  let searches = 0, commands = 0, gitReads = 0, noteReads = 0, noteWrites = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0, hookNotes = 0;
   for (const it of items) {
     if (it.kind === "answer") thinkingMs += it.thinkingMs ?? 0;
+    if (it.kind === "hook") hookNotes++;
     if (it.kind !== "tool") continue;
     if (it.status === "error") failed++;
     const target = str(it.input?.path) || str(it.input?.pattern);
@@ -427,6 +441,7 @@ export function summarize(items: Item[]) {
     fetches && `fetched ${n(fetches, "page")}`,
     queries && n(queries, "query", "queries"),
     tools && `used ${n(tools, "tool")}`,
+    hookNotes && n(hookNotes, "hook message"),
   ].filter(Boolean) as string[];
   if (!parts.length && thinkingMs) parts.push(`thought for ${fmtDuration(thinkingMs)}`);
   return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools && !queries && !noteWrites };

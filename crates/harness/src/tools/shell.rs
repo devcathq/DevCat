@@ -129,7 +129,7 @@ fn command_for(command: &str) -> tokio::process::Command {
 }
 
 #[cfg(unix)]
-fn libc_setsid() {
+pub(crate) fn libc_setsid() {
     unsafe extern "C" {
         fn setsid() -> i32;
     }

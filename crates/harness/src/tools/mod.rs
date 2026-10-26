@@ -17,6 +17,8 @@ use std::time::Duration;
 pub use fs::{Edit, Glob, Grep, Read, Write};
 pub use git::Git;
 pub use shell::Shell;
+#[cfg(unix)]
+pub(crate) use shell::libc_setsid;
 pub use todo::{TODO_WRITE, TodoWrite};
 pub use web::WebFetch;
 

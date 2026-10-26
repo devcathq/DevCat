@@ -21,6 +21,13 @@ pub enum SessionEvent {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<Block>,
+        /// Context hooks added to it (SessionStart, UserPromptSubmit): the model gets it, the
+        /// chat doesn't show it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        context: Vec<String>,
+        /// Not from the user but from a hook (the event, e.g. "Stop": the agent was told to go on).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hook: Option<String>,
     },
     /// One model step: what the model said (text, thinking, tool calls) and what it cost.
     Assistant { content: Vec<Block>, model: String, usage: Usage },
@@ -44,6 +51,18 @@ pub enum SessionEvent {
 
 fn is_zero(u: &Usage) -> bool {
     *u == Usage::default()
+}
+
+impl SessionEvent {
+    /// A message the user typed.
+    pub fn user(text: impl Into<String>, images: Vec<Block>) -> SessionEvent {
+        SessionEvent::User { text: text.into(), images, context: vec![], hook: None }
+    }
+}
+
+/// Context a hook added to a message, as the model gets it.
+pub fn hook_context(c: &str) -> String {
+    format!("<hook-context>\n{c}\n</hook-context>")
 }
 
 /// The first user message after a compaction: the summary of everything before it.
@@ -155,9 +174,10 @@ impl Session {
                     out.clear();
                     push(&mut out, Role::User, vec![Block::Text { text: summary_message(summary) }]);
                 }
-                SessionEvent::User { text, images } => {
+                SessionEvent::User { text, images, context, .. } => {
                     close_dangling(&mut out);
                     let mut content = vec![Block::Text { text: text.clone() }];
+                    content.extend(context.iter().map(|c| Block::Text { text: hook_context(c) }));
                     content.extend(images.iter().cloned());
                     push(&mut out, Role::User, content);
                 }
@@ -197,7 +217,7 @@ impl Session {
                     tokens = 0;
                     chars = summary.len();
                 }
-                SessionEvent::User { text, images } => chars += text.len() + images.len() * 6_000,
+                SessionEvent::User { text, images, context, .. } => chars += text.len() + context.iter().map(|c| c.len()).sum::<usize>() + images.len() * 6_000,
                 SessionEvent::ToolResults { results, .. } => chars += results.iter().map(block_chars).sum::<usize>(),
                 _ => {}
             }
@@ -214,7 +234,7 @@ impl Session {
             return t;
         }
         let first = self.events.iter().find_map(|e| match e {
-            SessionEvent::User { text, .. } => Some(text.trim()),
+            SessionEvent::User { text, hook: None, .. } => Some(text.trim()),
             _ => None,
         });
         let line = first.unwrap_or("New session").lines().next().unwrap_or_default();
@@ -273,7 +293,7 @@ mod tests {
     async fn round_trip_and_projection() {
         let dir = tmp();
         let mut s = Session::create(&dir, "/proj").await.unwrap();
-        s.append(SessionEvent::User { text: "list files".into(), images: vec![] }).await.unwrap();
+        s.append(SessionEvent::user("list files", vec![])).await.unwrap();
         let call = Block::ToolUse { id: "t1".into(), name: "glob".into(), input: json!({ "pattern": "*" }) };
         s.append(SessionEvent::Assistant { content: vec![call], model: "m".into(), usage: Usage { input_tokens: 10, output_tokens: 2, cache_read_tokens: 0 } }).await.unwrap();
         s.append(SessionEvent::ToolResults { results: vec![Block::ToolResult { tool_use_id: "t1".into(), content: "a.rs".into(), is_error: false }], usage: Usage::default() }).await.unwrap();
@@ -293,7 +313,7 @@ mod tests {
     async fn interrupted_tool_call_gets_an_error_result_and_torn_line_is_ignored() {
         let dir = tmp();
         let mut s = Session::create(&dir, "/proj").await.unwrap();
-        s.append(SessionEvent::User { text: "go".into(), images: vec![] }).await.unwrap();
+        s.append(SessionEvent::user("go", vec![])).await.unwrap();
         let call = Block::ToolUse { id: "t1".into(), name: "bash".into(), input: json!({ "command": "sleep 100" }) };
         s.append(SessionEvent::Assistant { content: vec![call], model: "m".into(), usage: Usage::default() }).await.unwrap();
         // crash in the middle of the next write
@@ -302,7 +322,7 @@ mod tests {
         drop(f);
 
         let mut r = Session::open(s.path()).await.unwrap();
-        r.append(SessionEvent::User { text: "again".into(), images: vec![] }).await.unwrap();
+        r.append(SessionEvent::user("again", vec![])).await.unwrap();
         // the file is clean again: a second resume reads every event
         let r = Session::open(s.path()).await.unwrap();
         assert_eq!(r.events().len(), 4);

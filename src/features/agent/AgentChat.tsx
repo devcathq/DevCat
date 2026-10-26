@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, X,
+  ArrowUp, Ban, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
@@ -16,7 +16,7 @@ import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
 import { POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { fmtCost } from "../claude/util";
-import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, unattach, useAgent } from "./store";
+import { answer, answerQuestion, attach, closeChat, connectionModels, dismissError, openChat, send, setModel, setPolicy, stop, trustHooks, unattach, useAgent } from "./store";
 
 export default function AgentChat({ tabId, cwd, provider, visible, onReview }: { tabId: string; cwd: string; provider: AiProvider; visible: boolean; onReview: () => void }) {
   const chat = useAgent((s) => s.chats[tabId]);
@@ -112,6 +112,7 @@ function ChatBody({ tabId, cwd, visible, onReview, provider }: { tabId: string; 
       )}
       <TodoPanel items={chat.items} busy={chat.busy} />
       <EditedFiles items={chat.items} onReview={onReview} />
+      <HooksReview tabId={tabId} />
       <Composer tabId={tabId} visible={visible} provider={provider} />
     </div>
   );
@@ -188,8 +189,51 @@ const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: I
       return <TurnEnd item={item} />;
     case "compacted":
       return <CompactedRow item={item} cwd={cwd} />;
+    case "hook":
+      return <HookNote item={item} />;
   }
 });
+
+/** A hook's message: what it told the user, that it failed, or why it sent the agent on. */
+function HookNote({ item }: { item: Extract<Item, { kind: "hook" }> }) {
+  return (
+    <div className="flex items-start gap-2 px-1 text-[12px] text-muted">
+      <Webhook className="mt-0.5 size-3.5 shrink-0" />
+      <span className="min-w-0 whitespace-pre-wrap"><span className="text-fg">{item.event} hook</span> · {item.text.replace(/^\w+ hook feedback:\n/, "")}</span>
+    </div>
+  );
+}
+
+/** Hooks in this folder that aren't allowed yet: what they'd run, and the button that allows them. */
+function HooksReview({ tabId }: { tabId: string }) {
+  const chat = useAgent((s) => s.chats[tabId])!;
+  const review = chat.context?.hooksReview;
+  const [hidden, setHidden] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (!review || hidden || !chat.sessionId) return null;
+  const allow = async () => {
+    setBusy(true);
+    await trustHooks(tabId, review.digest);
+    setBusy(false);
+  };
+  return (
+    <div className="mx-auto w-full max-w-[780px] px-5 pb-2">
+      <div className="flex flex-col gap-2 rounded-lg border border-warn/40 bg-warn/5 px-3 py-2.5 text-[12px]">
+        <div className="flex items-start gap-2 text-fg">
+          <Webhook className="mt-0.5 size-3.5 shrink-0 text-warn" />
+          <span>This folder has hooks from Claude Code or Codex ({review.files.join(", ")}). They run these commands on this computer while the agent works, so they're off until you allow them:</span>
+        </div>
+        <pre className="max-h-32 overflow-auto rounded-md border border-line bg-panel px-2.5 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted">{review.commands.join("\n")}</pre>
+        {review.skipped.length > 0 && <div className="text-[11px] text-faint" title={review.skipped.join("\n")}>Not run by DevCat Agent: {review.skipped.length} other hook{review.skipped.length === 1 ? "" : "s"} (hover for which)</div>}
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="primary" loading={busy} onClick={() => void allow()}>Run hooks</Button>
+          <Button size="sm" variant="ghost" onClick={() => setHidden(true)}>Not now</Button>
+          <span className="text-[11px] text-faint">Asked again when a hook or a script it runs changes; a changed script doesn't run until then.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AttachmentChip({ path, onRemove }: { path: string; onRemove?: () => void }) {
   return (
@@ -209,6 +253,7 @@ function ContextLine({ tabId }: { tabId: string }) {
   if (ctx.skills.length) parts.push(<span key="s" title={ctx.skills.join("\n")}>{ctx.skills.length} skill{ctx.skills.length === 1 ? "" : "s"}</span>);
   for (const m of ctx.mcp) parts.push(<span key={`m${m.name}`} className="flex items-center gap-1"><Plug className="size-3" />{m.name} ({m.tools} tool{m.tools === 1 ? "" : "s"})</span>);
   if (ctx.connections?.length) parts.push(<span key="c" title={ctx.connections.join("\n")} className="flex items-center gap-1"><Database className="size-3" />{ctx.connections.length} DevCat connection{ctx.connections.length === 1 ? "" : "s"}</span>);
+  if (ctx.hooks?.length) parts.push(<span key="h" title={ctx.hooks.join("\n")} className="flex items-center gap-1"><Webhook className="size-3" />hooks from {ctx.hooks.length === 1 ? ctx.hooks[0] : `${ctx.hooks.length} files`}</span>);
   if (ctx.mcpLoading) parts.push(<span key="ml" className="flex items-center gap-1"><Spinner className="size-3" />connecting MCP servers…</span>);
   return (
     <div className="flex flex-col items-center gap-1 text-[11.5px] text-faint">
