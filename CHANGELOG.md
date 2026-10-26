@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Tidier window:** the row of icons at the top right is now one **Settings** menu (Appearance, AI memory, Mobile
+  pairing, Tickets, Keep awake, New window); a coffee cup still shows while keep awake is on. **Rooms** moved to
+  the left bar, and saved queries and query history now sit under the connection list (**Queries**) instead of
+  having their own icon.
 - **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
   agent's reply there) opens that file from the server, over the same session, instead of looking for it on
   this computer.
@@ -72,10 +76,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   200,000 characters are now shared as read-only files (save them to read them) instead of editable documents.
 - **Room agents see the room's images:** an agent mentioned in a room now looks at shared PNG, JPEG, GIF and WebP
   images (up to 5 MB) when it reads them, and can read text files shared read-only because of their size.
-- **Tidier window:** the row of icons at the top right is now one **Settings** menu (Appearance, AI memory, Mobile
-  pairing, Tickets, Keep awake, New window); a coffee cup still shows while keep awake is on. **Rooms** moved to
-  the left bar, and saved queries and query history now sit under the connection list (**Queries**) instead of
-  having their own icon.
+- **Rooms:** an image open in a room no longer blinks each time someone in the room types, moves or posts.
 
 ## 0.12.0 - 2026-10-24
 
