@@ -110,6 +110,7 @@ function PhoneName() {
 export function MachineSettings() {
   const m = currentMachine();
   const hostInfo = useLoad(() => host<HostInfo>("host_info"), [m?.id]);
+  const path = useApp((s) => (m ? s.conn[m.id]?.path : null));
   const [addrs, setAddrs] = useState((m?.manualAddrs ?? []).join("\n"));
   if (!m) return <Screen title="Computer"><Empty title="No computer selected" /></Screen>;
   const save = async () => {
@@ -133,6 +134,7 @@ export function MachineSettings() {
         <span className="text-muted">Paired</span><span>{new Date(m.addedAt).toLocaleString()}</span>
         <span className="text-muted">Last seen</span><span>{m.lastSeen ? ago(m.lastSeen) : "—"}</span>
         <span className="text-muted">Access</span><span>{m.access === "readonly" ? "Read-only" : "Full"} (change on the computer)</span>
+        {path && <><span className="text-muted">Connection</span><span>{path.direct ? "Direct" : <>Through the relay <span className="font-mono text-[11.5px]">{(path.relay ?? "").replace(/^https?:\/\//, "").replace(/\/$/, "")}</span></>} · {path.rttMs} ms</span></>}
         <span className="text-muted">Other networks</span><span className="break-all">{!m.relay ? "Off (same network only)" : m.relay === "public" ? "Through public relays" : <>Through <span className="font-mono text-[11.5px]">{m.relay}</span></>}</span>
         <span className="text-muted">Key</span><span className="font-mono text-[11px] break-all">{m.id}</span>
       </div>

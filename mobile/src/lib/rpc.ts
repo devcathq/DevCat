@@ -26,6 +26,8 @@ export interface PhoneInfo {
 }
 
 export type ConnState = "connecting" | "online" | "offline";
+/** How the connection travels right now (the app only; browsers always use the relay). */
+export interface ConnPath { direct: boolean; rttMs: number; relay?: string | null }
 
 export const phone = {
   info: () => invoke<PhoneInfo>("m_info"),
@@ -52,10 +54,12 @@ export function errMsg(e: unknown): string {
 
 type Handler = (payload: any, machineId: string) => void;
 const handlers = new Map<string, Set<Handler>>();
-type ConnHandler = (id: string, state: ConnState, error?: string | null) => void;
+type ConnHandler = (id: string, state: ConnState, error?: string | null, unpaired?: boolean) => void;
 const connHandlers = new Set<ConnHandler>();
 type PairHandler = (p: { stage: "connecting" | "waiting" | "done"; hostName: string }) => void;
 const pairHandlers = new Set<PairHandler>();
+type PathHandler = (id: string, path: ConnPath | null) => void;
+const pathHandlers = new Set<PathHandler>();
 
 let started: Promise<void> | null = null;
 /** Subscribe to the Rust events once. */
@@ -65,8 +69,11 @@ export function startEvents(): Promise<void> {
       listen<{ id: string; event: string; payload: unknown }>("m-event", (e) => {
         handlers.get(e.payload.event)?.forEach((h) => h(e.payload.payload, e.payload.id));
       }),
-      listen<{ id: string; state: ConnState; error?: string | null }>("m-conn", (e) => {
-        connHandlers.forEach((h) => h(e.payload.id, e.payload.state, e.payload.error));
+      listen<{ id: string; state: ConnState; error?: string | null; unpaired?: boolean }>("m-conn", (e) => {
+        connHandlers.forEach((h) => h(e.payload.id, e.payload.state, e.payload.error, e.payload.unpaired));
+      }),
+      listen<{ id: string; path: ConnPath | null }>("m-path", (e) => {
+        pathHandlers.forEach((h) => h(e.payload.id, e.payload.path));
       }),
       listen<{ stage: "connecting" | "waiting" | "done"; hostName: string }>("m-pair", (e) => {
         pairHandlers.forEach((h) => h(e.payload));
@@ -88,6 +95,11 @@ export function onEvent<T = any>(event: string, h: (payload: T, machineId: strin
 export function onConn(h: ConnHandler): () => void {
   connHandlers.add(h);
   return () => { connHandlers.delete(h); };
+}
+
+export function onPath(h: PathHandler): () => void {
+  pathHandlers.add(h);
+  return () => { pathHandlers.delete(h); };
 }
 
 export function onPair(h: PairHandler): () => void {

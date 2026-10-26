@@ -55,6 +55,11 @@ that tool until the chat closes.
   other agents' configs (`.mcp.json`, `~/.claude.json`, Cursor).
 - Long tool output (over 30,000 characters) is saved to a file next to the chat; the agent reads it in parts.
 - The same tool call a 4th time in a row is refused, so a looping model tries something else.
+- A `git` command runs without asking only when it just reads the repository, with that command's usual options
+  written out in full (`--verbose`, not `--verb`). Anything else asks, and so does an option that could make git
+  start a program (`--ext-diff`, `--textconv`, `--output`, `describe --dirty`). Reading commands also don't run
+  the programs a repository's config names (fsmonitor hooks, external diff tools, textconv and clean filters), and
+  don't fetch a missing object from a partial clone's remote.
 - When the context fills up, the conversation is summarized and the chat carries on (or type `/compact`).
 - The agent can search and read your [notes](notes.md), and save one when you ask: the approval shows its text.
 - **Rename** a chat: right-click it in the sidebar's chat list → **Rename…** (<kbd>Enter</kbd> saves,

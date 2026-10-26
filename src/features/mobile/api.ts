@@ -26,6 +26,20 @@ export interface ClientInfo {
   access: Access;
   since: number;
   addr?: string | null;
+  /** How the app's connection travels right now (none for browsers). */
+  path?: ConnPath | null;
+}
+
+export interface ConnPath {
+  direct: boolean;
+  rttMs: number;
+  relay?: string | null;
+}
+
+/** "direct · 35 ms" or "through relay aps1-1 · 140 ms". */
+export function pathLabel(p: ConnPath): string {
+  const where = p.direct ? "direct" : `through relay ${(p.relay ?? "").replace(/^https?:\/\//, "").split(".")[0] || ""}`.trim();
+  return `${where} · ${p.rttMs} ms`;
 }
 
 export interface PairRequest {

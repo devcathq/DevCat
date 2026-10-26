@@ -3,7 +3,7 @@
 //! events from the computer are handed to the app. Connections are opened on demand and
 //! dropped when the network changes; the app reconnects by calling again.
 use crate::store::{Machine, Store, merged_addrs, now_ms};
-use devcat_remote_proto::{ALPN, ClientMsg, DeviceInfo, HostInfo, HostMsg, PairLink, RELAY_PUBLIC, read_frame, write_frame};
+use devcat_remote_proto::{ALPN, ClientMsg, ConnPath, DeviceInfo, HostInfo, HostMsg, PairLink, RELAY_PUBLIC, read_frame, write_frame};
 use iroh::endpoint::{Connection, presets};
 use iroh::{Endpoint, EndpointAddr, RelayMode, RelayUrl, SecretKey};
 use std::collections::BTreeSet;
@@ -18,6 +18,9 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Through a relay (mobile data, another network) connecting takes longer: the relay, then
+/// the handshake, then trying to go direct.
+const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
 /// How long the computer's user has to click Allow.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(150);
 const CALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -89,6 +92,17 @@ async fn resolve(addrs: &[String]) -> Vec<SocketAddr> {
     }
     out.dedup();
     out
+}
+
+/// The path a connection uses right now (the selected one).
+fn conn_path(conn: &Connection) -> Option<ConnPath> {
+    let paths = conn.paths();
+    let p = paths.iter().find(|p| p.is_selected())?;
+    let relay = match p.remote_addr() {
+        iroh::TransportAddr::Relay(url) => Some(url.to_string()),
+        _ => None,
+    };
+    Some(ConnPath { direct: p.is_ip(), rtt_ms: p.rtt().as_millis() as u64, relay })
 }
 
 fn friendly(e: impl std::fmt::Display, name: &str) -> String {
@@ -171,7 +185,8 @@ impl Client {
 
     /// Open a connection (used for both pairing and normal use).
     /// `relay`: the computer's relay ([`RELAY_PUBLIC`]: found through iroh's DNS lookup).
-    async fn open(self: &Arc<Self>, machine_id: &str, name: &str, addrs: &[String], relay: Option<&str>, pair_code: Option<String>) -> Result<Arc<Session>, String> {
+    /// `home`: the relay server it was last seen on, tried straight away.
+    async fn open(self: &Arc<Self>, machine_id: &str, name: &str, addrs: &[String], relay: Option<&str>, home: Option<&str>, pair_code: Option<String>) -> Result<Arc<Session>, String> {
         let ep = self.endpoint(relay).await?;
         let id = machine_id.parse().map_err(|_| "Invalid computer id".to_string())?;
         let sock = resolve(addrs).await;
@@ -182,10 +197,12 @@ impl Client {
         for s in sock {
             addr = addr.with_ip_addr(s);
         }
-        if let Some(url) = relay.filter(|r| *r != RELAY_PUBLIC).and_then(|r| r.parse::<RelayUrl>().ok()) {
+        let urls = [relay.filter(|r| *r != RELAY_PUBLIC), relay.and(home)];
+        for url in urls.into_iter().flatten().filter_map(|r| r.parse::<RelayUrl>().ok()) {
             addr = addr.with_relay_url(url);
         }
-        let conn = tokio::time::timeout(CONNECT_TIMEOUT, ep.connect(addr, ALPN))
+        let wait = if relay.is_some() { RELAY_CONNECT_TIMEOUT } else { CONNECT_TIMEOUT };
+        let conn = tokio::time::timeout(wait, ep.connect(addr, ALPN))
             .await
             .map_err(|_| friendly("timed out", name))?
             .map_err(|e| friendly(e, name))?;
@@ -238,6 +255,17 @@ impl Client {
                 }
             }
         });
+        // relay → direct (and back), as it happens
+        let (me, mid, path_conn) = (self.clone(), machine_id.to_string(), conn.clone());
+        let paths = tokio::spawn(async move {
+            let mut events = path_conn.path_events();
+            loop {
+                (me.sink)("m-path", json!({ "id": mid, "path": conn_path(&path_conn) }));
+                if n0_future::StreamExt::next(&mut events).await.is_none() {
+                    break;
+                }
+            }
+        });
         // reader
         let (me, mid, sess) = (self.clone(), machine_id.to_string(), session.clone());
         tokio::spawn(async move {
@@ -259,6 +287,7 @@ impl Client {
             }
             writer.abort();
             pinger.abort();
+            paths.abort();
             for (_, w) in pending.lock().drain() {
                 let _ = w.send(Err(json!("Disconnected from the computer")));
             }
@@ -289,7 +318,7 @@ impl Client {
         }
         let m = self.store.machine(machine_id).ok_or_else(|| "This computer isn't paired any more".to_string())?;
         self.state(machine_id, "connecting", None);
-        match self.open(&m.id, &m.name, &m.addrs, m.relay.as_deref(), None).await {
+        match self.open(&m.id, &m.name, &m.addrs, m.relay.as_deref(), m.home.as_deref(), None).await {
             Ok(s) => {
                 self.remember(&m, &s);
                 self.sessions.lock().insert(m.id.clone(), s.clone());
@@ -312,6 +341,7 @@ impl Client {
             x.access = s.device.access.clone();
             x.addrs = merged_addrs(&x.manual_addrs, if s.host.addrs.is_empty() { &m.addrs } else { &s.host.addrs });
             x.relay = s.host.relay.clone();
+            x.home = s.host.home.clone().or(x.home.take());
             x.last_seen = Some(now_ms());
         });
     }
@@ -328,7 +358,7 @@ impl Client {
         let manual: Vec<String> = extra_addr.map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).into_iter().collect();
         let addrs = merged_addrs(&manual, &l.addrs);
         (self.sink)("m-pair", json!({ "stage": "connecting", "hostName": l.name }));
-        let s = self.open(&l.id, &l.name, &addrs, l.relay.as_deref(), Some(l.code.clone())).await?;
+        let s = self.open(&l.id, &l.name, &addrs, l.relay.as_deref(), l.home.as_deref(), Some(l.code.clone())).await?;
         let m = Machine {
             id: l.id.clone(),
             name: s.host.name.clone(),
@@ -340,6 +370,7 @@ impl Client {
             last_seen: Some(now_ms()),
             manual_addrs: manual,
             relay: s.host.relay.clone().or(l.relay.clone()),
+            home: s.host.home.clone().or(l.home.clone()),
         };
         self.store.upsert(m.clone())?;
         if let Some(old) = self.sessions.lock().insert(m.id.clone(), s) {

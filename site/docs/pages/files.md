@@ -11,8 +11,16 @@ files are marked with their Git status (modified, added, untracked).
 - The eye button shows or hides files that Git ignores.
 - Use the arrow keys to move, <kbd>Enter</kbd> to open a file or folder.
 
-Right-click a file or folder for: **Open preview**, **Blame**, **File history**, **Copy path**, **Copy relative
-path**, **Mention in chat** (copies `@path` for the agent's prompt) and **Reveal in Finder** (Explorer on Windows).
+Right-click a file or folder for: **Open preview**, **Blame**, **File history**, **Copy**, **Paste**, **Copy path**,
+**Copy relative path**, **Mention in chat** (copies `@path` for the agent's prompt) and **Reveal in Finder** (Explorer on
+Windows).
+
+- **Copy** (<kbd>⌘C</kbd> / <kbd>Ctrl+C</kbd> on a selected row) puts the file or folder itself on the clipboard: paste
+  it in Slack, a mail, or Finder / Explorer.
+- **Paste** (<kbd>⌘V</kbd> / <kbd>Ctrl+V</kbd>) copies files and folders from Finder, Explorer, a Linux file manager or
+  the tree's own Copy into the selected folder (or the folder of the selected file; the top folder when nothing is
+  selected). An image on the clipboard, such as a screenshot, is saved as `pasted.png`. A name that's taken gets
+  "copy" (`a.ts` → `a copy.ts`), so nothing is overwritten. Not available in folders on an SSH host yet.
 
 ## Go to File
 
