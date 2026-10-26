@@ -13,6 +13,8 @@ pub enum ConnectionKind {
     Redis,
     Kubernetes,
     Rabbitmq,
+    /// A Docker engine (containers, images, volumes, networks) through the `docker` CLI.
+    Docker,
     /// A saved SSH login (Xshell-style session): terminal, SFTP, agents on the host. Desktop only.
     Ssh,
 }
@@ -72,6 +74,7 @@ pub struct ConnectionConfig {
     #[serde(default)]
     pub project_id: Option<String>,
     /// Driver specific options. Kubernetes: "context". RabbitMQ: "managementPort", "useTls".
+    /// Docker: "context" (the host, when set, overrides it).
     /// SSH: "keyPath", "jump", "startDir", "startup".
     #[serde(default)]
     pub options: HashMap<String, String>,
@@ -80,7 +83,7 @@ pub struct ConnectionConfig {
 }
 
 /// A user-defined project used to group connections in the sidebar.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
@@ -92,6 +95,14 @@ pub struct Project {
     /// Sort position in the sidebar (ascending).
     #[serde(default)]
     pub order: i64,
+    /// Code folders the project's connections belong to. With folders, agents (DevCat Agent and
+    /// the `devcat mcp` server) see the project's connections only when working in one of them;
+    /// without, its connections are everyone's, like connections in no project.
+    #[serde(default)]
+    pub folders: Vec<String>,
+    /// Agents over MCP may change data on the project's connections (else they only read).
+    #[serde(default)]
+    pub mcp_writes: bool,
 }
 
 /// A sidebar bookmark: one node of a connection's object tree.

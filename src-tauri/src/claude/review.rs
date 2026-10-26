@@ -193,6 +193,7 @@ pub async fn claude_review(window: crate::events::Owner, cwd: String, scope: Str
         prompt_tool: false,
         extra_args: review_args(),
         close_after_result: true,
+        ..Default::default()
     };
     let run_id = start_with_prompt(crate::events::sink(), &cwd, spec, &build_prompt(&target)).await?;
     super::runner::set_owner(&run_id, window.label());
@@ -233,6 +234,7 @@ mod tests {
             prompt_tool: false,
             extra_args: extra,
             close_after_result: true,
+            ..Default::default()
         };
         let (sink, mut rx) = channel_sink();
         let id = start_with_prompt(sink, cwd, spec, &build_prompt(&target)).await.unwrap();

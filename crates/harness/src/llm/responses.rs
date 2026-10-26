@@ -41,7 +41,9 @@ pub(super) fn body(cfg: &LlmConfig, req: &Request<'_>) -> Value {
         b["prompt_cache_key"] = Value::String(key.to_string());
     }
     if !req.tools.is_empty() {
-        b["tools"] = req.tools.iter().map(|t| json!({ "type": "function", "name": t.name, "description": t.description, "parameters": t.input_schema })).collect();
+        // functions are strict by default here (unlike Chat Completions): every property required
+        // and no others allowed, which our schemas with optional properties, and MCP's, aren't
+        b["tools"] = req.tools.iter().map(|t| json!({ "type": "function", "name": t.name, "description": t.description, "parameters": t.input_schema, "strict": false })).collect();
     }
     b
 }
@@ -72,7 +74,7 @@ fn wire_items(m: &Message) -> Vec<Value> {
                 })
                 .collect();
             if !images.is_empty() {
-                let mut parts = vec![json!({ "type": "input_text", "text": text })];
+                let mut parts: Vec<Value> = if text.is_empty() { Vec::new() } else { vec![json!({ "type": "input_text", "text": text })] };
                 parts.extend(images);
                 out.push(json!({ "role": "user", "content": parts }));
             } else if !text.is_empty() {
@@ -156,11 +158,13 @@ impl Parser {
                     c.args.push_str(s("/delta"));
                 }
             }
-            // the finished item is the authority on the arguments (and the ids)
+            // the finished item is the authority on the arguments (and the ids), when it has them
             "response.output_item.done" if s("/item/type") == "function_call" => {
                 let id = s("/item/id");
                 if let Some(c) = self.calls.iter_mut().find(|c| c.item_id == id) {
-                    c.args = s("/item/arguments").to_string();
+                    if !s("/item/arguments").is_empty() {
+                        c.args = s("/item/arguments").to_string();
+                    }
                     if !s("/item/call_id").is_empty() {
                         c.call_id = s("/item/call_id").to_string();
                     }
@@ -171,8 +175,11 @@ impl Parser {
                     let n = |p: &str| u.pointer(p).and_then(Value::as_u64).unwrap_or(0);
                     self.usage = Usage { input_tokens: n("/input_tokens"), output_tokens: n("/output_tokens"), cache_read_tokens: n("/input_tokens_details/cached_tokens") };
                 }
-                if s("/response/incomplete_details/reason") == "max_output_tokens" {
-                    self.truncated = true;
+                match s("/response/incomplete_details/reason") {
+                    "" => {}
+                    "max_output_tokens" => self.truncated = true,
+                    // content_filter and the like: say so, rather than end as if it had answered
+                    reason => return Err(Error::Provider(format!("The model stopped before finishing its answer ({reason})."))),
                 }
             }
             "response.failed" => {
@@ -258,6 +265,21 @@ mod tests {
         assert!(failed.to_string().contains("boom"));
         let error = run(&[json!({ "type": "error", "code": "rate_limit_exceeded", "message": "slow down" })]).err().unwrap();
         assert!(error.to_string().contains("slow down"));
+        let filtered = run(&[json!({ "type": "response.incomplete", "response": { "incomplete_details": { "reason": "content_filter" } } })]).err().unwrap();
+        assert!(filtered.to_string().contains("content_filter"), "{filtered}");
+        let (done, _) = run(&[json!({ "type": "response.completed", "response": { "incomplete_details": null, "usage": { "input_tokens": 1, "output_tokens": 1 } } })]).unwrap();
+        assert!(!done.truncated);
+    }
+
+    #[test]
+    fn a_finished_call_without_arguments_keeps_the_streamed_ones() {
+        let (r, _) = run(&[
+            json!({ "type": "response.output_item.added", "item": { "type": "function_call", "id": "fc_1", "call_id": "call_A", "name": "glob", "arguments": "" } }),
+            json!({ "type": "response.function_call_arguments.delta", "item_id": "fc_1", "delta": "{\"pattern\":\"*.rs\"}" }),
+            json!({ "type": "response.output_item.done", "item": { "type": "function_call", "id": "fc_1", "call_id": "call_A", "name": "glob" } }),
+        ])
+        .unwrap();
+        assert_eq!(r.content, vec![Block::ToolUse { id: "call_A".into(), name: "glob".into(), input: json!({ "pattern": "*.rs" }) }]);
     }
 
     #[test]
@@ -279,7 +301,11 @@ mod tests {
             { "type": "function_call_output", "call_id": "c1", "output": "Error: no such file" },
             { "role": "user", "content": [{ "type": "input_text", "text": "and this?" }, { "type": "input_image", "image_url": "data:image/png;base64,AAAA" }] },
         ]));
-        assert_eq!(b["tools"], json!([{ "type": "function", "name": "read", "description": "Read", "parameters": { "type": "object" } }]));
+        assert_eq!(b["tools"], json!([{ "type": "function", "name": "read", "description": "Read", "parameters": { "type": "object" }, "strict": false }]));
+        // only an image: no empty text part
+        let image = [Message { role: Role::User, content: vec![Block::Image { media_type: "image/png".into(), data: "AAAA".into() }] }];
+        let only = body(&cfg("gpt-5", "https://api.openai.com/v1"), &Request { system: "sys", messages: &image, tools: &[], cache_key: None });
+        assert_eq!(only["input"], json!([{ "role": "user", "content": [{ "type": "input_image", "image_url": "data:image/png;base64,AAAA" }] }]));
         assert_eq!(b["reasoning"], json!({ "summary": "auto" }));
         assert_eq!(b["prompt_cache_key"], "s1");
         let plain = body(&cfg("gpt-4.1", "https://gateway.example/v1"), &Request { system: "sys", messages: &msgs[..1], tools: &[], cache_key: Some("s1") });
