@@ -1,7 +1,8 @@
 // Memory: one memory every coding agent shares (Claude Code, Codex, Gemini, Cursor, the DevCat
 // Agent), served by `devcat mcp` (see src-tauri/src/memory). Two views: "Sync from Claude" copies
 // Claude Code's own memory in and puts DevCat's MCP server in every agent ("Sync Claude memory to
-// all agents"); "Memories" lists, edits and forgets what the agents saved. Desktop only.
+// all agents"); "Memories" lists, edits and forgets what the agents saved; "Other computers" shares
+// it with the user's other computers (OtherComputers.tsx). Desktop only.
 import clsx from "clsx";
 import { Brain, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -11,13 +12,16 @@ import { Badge, Button, Checkbox, Dialog, ErrorBox, Field, Input, Select, Spinne
 import { api, errMsg } from "../../lib/api";
 import type { ClaudeImportItem, ClaudeImportPlan, Memory, MemoryKind, MemoryPlace, PlaceMemories } from "../../lib/types";
 import { Segmented } from "../connections/dialog/formBits";
+import { OtherComputers, startMemoryPeers, useMemoryChanged } from "./OtherComputers";
 
 const useOpen = create<{ open: boolean; view: View }>(() => ({ open: false, view: "claude" }));
-type View = "claude" | "memories";
+type View = "claude" | "memories" | "computers";
 
 export const openMemory = (view: View = "claude") => useOpen.setState({ open: true, view });
 
 export function MemoryButton() {
+  // pairing requests from other computers show in any window
+  useEffect(() => startMemoryPeers(), []);
   return (
     <button onClick={() => openMemory()} title="Memory: one memory for all your coding agents" className="flex h-6 items-center rounded px-1.5 text-muted hover:bg-hover hover:text-fg">
       <Brain className="size-3.5" />
@@ -65,8 +69,8 @@ function MemoryView({ onClose }: { onClose: () => void }) {
           DevCat's MCP server, and each new session starts with a short brief of it. Switch models mid-task and the next one knows what
           the last one learned, with no other software to install.
         </p>
-        <div><Segmented<View> value={view} onChange={setView} options={[{ value: "claude", label: "Sync from Claude" }, { value: "memories", label: "Memories" }]} /></div>
-        {view === "claude" ? <ClaudeSync onClose={onClose} onDone={() => setView("memories")} /> : <Memories />}
+        <div><Segmented<View> value={view} onChange={setView} options={[{ value: "claude", label: "Sync from Claude" }, { value: "memories", label: "Memories" }, { value: "computers", label: "Other computers" }]} /></div>
+        {view === "claude" ? <ClaudeSync onClose={onClose} onDone={() => setView("memories")} /> : view === "memories" ? <Memories /> : <OtherComputers />}
       </div>
     </Dialog>
   );
@@ -218,7 +222,9 @@ function Memories() {
   const load = useCallback(() => {
     api.memoryList().then(setPlaces, (e) => setError(errMsg(e)));
   }, []);
-  useEffect(load, [load]);
+  // reload when memories arrive from another computer
+  const arrived = useMemoryChanged();
+  useEffect(load, [load, arrived]);
 
   const forget = async (m: Memory) => {
     try {

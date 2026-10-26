@@ -83,6 +83,11 @@ fn host_name(s: &RemoteSettings) -> String {
     s.host_name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(computer_name)
 }
 
+/// This computer's name as DevCat shows it (the name set in DevCat → Mobile, else the computer's).
+pub fn this_computer() -> String {
+    host_name(&settings())
+}
+
 /// Is this interface a VPN / virtual one (its address isn't reachable from the Wi-Fi)?
 fn virtual_iface(name: &str) -> bool {
     ["utun", "tun", "tap", "wg", "ppp", "ipsec", "docker", "br-", "veth", "vmnet", "vboxnet", "bridge", "awdl", "llw", "anpi", "gif", "stf"]

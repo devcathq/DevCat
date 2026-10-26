@@ -14,10 +14,12 @@
 //!   into place, and saving a name again updates that memory.
 //! - Secrets are scrubbed on save, and a memory's body is capped. Memory is background for the
 //!   agent, never instructions: the brief says so.
+//! - The user's other computers can share it (`sync/`: paired peer to peer over iroh, no server).
 //!
 //! Desktop only, like Sync MCP: the phone dispatcher doesn't offer it (AGENTS.md).
 pub mod claude;
 pub mod rules;
+pub mod sync;
 pub mod tools;
 
 use crate::agent_tools::Scope;
@@ -45,7 +47,7 @@ pub fn init(data_dir: PathBuf) {
     let _ = DATA_DIR.set(data_dir);
 }
 
-fn root() -> AppResult<PathBuf> {
+pub(crate) fn root() -> AppResult<PathBuf> {
     DATA_DIR.get().map(|d| d.join("memory")).ok_or_else(|| AppError::msg("DevCat's memory isn't ready yet"))
 }
 
@@ -65,15 +67,19 @@ pub enum Place {
 
 impl Place {
     fn dir(&self) -> AppResult<PathBuf> {
-        let root = root()?;
-        Ok(match self {
-            Place::Global => root.join("global"),
-            Place::Project(id) => root.join("projects").join(safe(id)),
+        Ok(root()?.join(self.rel_dir()))
+    }
+
+    /// Its folder under the memory folder (`global`, `projects/<id>`, `folders/<name>-<hash>`).
+    pub(crate) fn rel_dir(&self) -> String {
+        match self {
+            Place::Global => "global".into(),
+            Place::Project(id) => format!("projects/{}", safe(id)),
             Place::Folder(path) => {
                 let base = Path::new(path).file_name().map(|n| safe(&n.to_string_lossy())).filter(|n| !n.is_empty()).unwrap_or_else(|| "folder".into());
-                root.join("folders").join(format!("{base}-{}", &hash(path.as_bytes())[..8]))
+                format!("folders/{base}-{}", &hash(path.as_bytes())[..8])
             }
-        })
+        }
     }
 
     /// How the app shows it.
@@ -107,7 +113,7 @@ pub fn place_for(scope: &Scope) -> Option<Place> {
     scope.folder.as_deref().map(|f| place_for_folder(f, &projects))
 }
 
-fn projects() -> Vec<Project> {
+pub(crate) fn projects() -> Vec<Project> {
     St::try_get().and_then(|st| st.projects.list().ok()).unwrap_or_default()
 }
 
@@ -488,7 +494,7 @@ pub fn scrub(text: &str) -> String {
     out
 }
 
-fn cap(s: &str, max: usize) -> String {
+pub(crate) fn cap(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
