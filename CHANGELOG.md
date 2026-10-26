@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Rename a Claude Code session:** right-click it in the sidebar's Sessions list → **Rename…**. It's saved the
+  way Claude Code's `/rename` does, so `claude --resume` shows the same name. Clear the name to go back to
+  Claude's own title (#89).
+
 ## 0.12.0 - 2026-10-24
 
 - **Tickets:** take only tickets assigned to you (or to nobody yet). A board can point at a folder of

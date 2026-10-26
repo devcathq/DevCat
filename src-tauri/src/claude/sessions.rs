@@ -136,6 +136,7 @@ struct Line {
     #[serde(default)]
     is_meta: bool,
     git_branch: Option<String>,
+    custom_title: Option<String>,
     ai_title: Option<String>,
     last_prompt: Option<String>,
     summary: Option<String>,
@@ -204,7 +205,7 @@ fn clip(s: &str) -> String {
 pub(super) fn parse_meta(path: &Path) -> Option<SessionMeta> {
     let id = path.file_stem()?.to_string_lossy().into_owned();
     let (mut first_ts, mut last_ts) = (None::<String>, None::<String>);
-    let (mut ai_title, mut summary, mut last_prompt_line) = (None, None, None);
+    let (mut custom_title, mut ai_title, mut summary, mut last_prompt_line) = (None::<String>, None, None, None);
     let (mut first_prompt, mut last_prompt) = (None::<String>, None::<String>);
     let (mut count, mut branch, mut cost) = (0usize, None, None);
     for raw in read_lines(path).ok()? {
@@ -231,6 +232,8 @@ pub(super) fn parse_meta(path: &Path) -> Option<SessionMeta> {
                     }
                 }
             }
+            // a name given with /rename (or in DevCat); an empty one goes back to Claude's own title
+            Some("custom-title") => custom_title = l.custom_title.map(|t| t.trim().to_string()).or(custom_title),
             Some("ai-title") => ai_title = l.ai_title.filter(|t| !t.trim().is_empty()).or(ai_title),
             Some("summary") => summary = l.summary.filter(|t| !t.trim().is_empty()).or(summary),
             Some("last-prompt") => last_prompt_line = l.last_prompt.filter(|t| !t.trim().is_empty()).or(last_prompt_line),
@@ -244,7 +247,9 @@ pub(super) fn parse_meta(path: &Path) -> Option<SessionMeta> {
     let md = path.metadata().ok();
     let created = first_ts.or_else(|| md.as_ref().and_then(|m| m.created().ok()).map(rfc3339));
     let updated = last_ts.or_else(|| md.as_ref().and_then(|m| m.modified().ok()).map(rfc3339));
-    let title = ai_title
+    let title = custom_title
+        .filter(|t| !t.is_empty())
+        .or(ai_title)
         .or(summary)
         .or_else(|| first_prompt.clone())
         .map(|t| clip(&t))
@@ -368,6 +373,56 @@ pub async fn claude_transcript(cwd: String, session_id: String) -> AppResult<Vec
     .await?
 }
 
+/// Name a session as Claude Code's `/rename` does: a `custom-title` line at the end of its
+/// transcript (the last one wins, and a running Claude Code takes it from there) plus the
+/// `<session id>/custom-title.json` beside it that `claude --resume` reads. An empty name goes back
+/// to Claude's own title. Returns the title the list shows now.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn claude_rename(cwd: String, session_id: String, title: String) -> AppResult<String> {
+    if !valid_session_id(&session_id) {
+        return Err(AppError::msg(format!("Invalid session id: {session_id}")));
+    }
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    blocking(move || {
+        let path = find_session_file(&projects_root(), &cwd, &session_id)
+            .ok_or_else(|| AppError::msg(format!("Session {session_id} not found")))?;
+        rename_in(&path, &session_id, &title)?;
+        Ok(parse_meta(&path).map(|m| m.title).unwrap_or(title))
+    })
+    .await?
+}
+
+fn rename_in(path: &Path, session_id: &str, title: &str) -> AppResult<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut f = std::fs::OpenOptions::new().read(true).append(true).open(path)?;
+    // a last line cut short (Claude Code stopped mid-write) must not swallow this one
+    let len = f.metadata()?.len();
+    let mut last = [b'\n'];
+    if len > 0 {
+        f.seek(SeekFrom::Start(len - 1))?;
+        f.read_exact(&mut last)?;
+    }
+    let entry = serde_json::json!({ "type": "custom-title", "customTitle": title, "sessionId": session_id });
+    let line = format!("{}{entry}\n", if last[0] == b'\n' { "" } else { "\n" });
+    f.write_all(line.as_bytes())?;
+
+    let dir = path.with_file_name(session_id);
+    let sidecar = dir.join("custom-title.json");
+    if title.is_empty() {
+        return match std::fs::remove_file(&sidecar) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        };
+    }
+    std::fs::create_dir_all(&dir)?;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o.open(&sidecar)?.write_all(serde_json::json!({ "customTitle": title }).to_string().as_bytes())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +503,18 @@ mod tests {
         assert_eq!(m2.title, "Login bug fix");
         assert_eq!(m2.last_prompt.as_deref(), Some("latest"));
         assert_eq!(m2.cost_usd, None);
+
+        // a name (Claude Code's /rename, or DevCat's) beats the ai-title; an empty one undoes it
+        std::fs::OpenOptions::new().append(true).open(&f2).unwrap().write_all(b"{\"type\":\"user\",\"cut sh").unwrap();
+        rename_in(&f2, "s2", "Checkout \"staging\"").unwrap();
+        assert_eq!(parse_meta(&f2).unwrap().title, "Checkout \"staging\"");
+        let tail = std::fs::read_to_string(&f2).unwrap();
+        assert!(tail.ends_with("\n{\"type\":\"custom-title\",\"customTitle\":\"Checkout \\\"staging\\\"\",\"sessionId\":\"s2\"}\n"), "{tail}");
+        let sidecar = root.join(encode_cwd(cwd)).join("s2").join("custom-title.json");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "{\"customTitle\":\"Checkout \\\"staging\\\"\"}");
+        rename_in(&f2, "s2", "").unwrap();
+        assert_eq!(parse_meta(&f2).unwrap().title, "Login bug fix");
+        assert!(!sidecar.exists());
 
         // only non-message lines → skipped
         let f3 = root.join(encode_cwd(cwd)).join("s3.jsonl");
