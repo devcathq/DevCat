@@ -20,7 +20,7 @@ export type TabSpec =
   | { type: "network"; profileId: string; kind?: "ssh" | "openvpn" | "wireguard" | "k8s"; importPath?: string }
   /** AI workspace for a folder: Chat / Diff / Code Review. providerId = AI connection the chat runs
    *  (absent = Claude Code); sessionId resumes a past Claude session. */
-  | { type: "claude"; cwd: string; sessionId?: string | null; view?: "chat" | "diff" | "review"; providerId?: string | null }
+  | { type: "claude"; cwd: string; sessionId?: string | null; view?: "chat" | "diff" | "review" | "trace"; providerId?: string | null }
   /** Preview of a file (code, markdown, pdf, image, spreadsheet, …). blame = show git blame instead. */
   | { type: "file"; path: string; root?: string | null; blame?: boolean }
   /** Git repository: history graph / working-tree changes / branches / stashes.

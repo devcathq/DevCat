@@ -31,7 +31,7 @@ Docker engines, RabbitMQ brokers and VPN / SSH tunnels in the same window, group
 
 | Area | Supported |
 | --- | --- |
-| AI | AI Workspace (terminal, diff, code review) running your installed coding agent: Claude Code (default), OpenAI Codex, Gemini CLI, GitHub Copilot, Aider, opencode or a custom CLI |
+| AI | AI Workspace (terminal, diff, code review) running your installed coding agent: Claude Code (default), OpenAI Codex, Gemini CLI, GitHub Copilot, Aider, opencode or a custom CLI; or the built-in DevCat Agent with any OpenAI- or Anthropic-compatible model |
 | Tickets | Jira, Trello and Linear: the agent fixes tickets from a column on their own branches, comments on them and moves them on (e.g. to Testing); results to Slack |
 | Git | Nested repo discovery, commit graph, blame, branches, tags, stashes, fetch/pull/push |
 | SQL databases | PostgreSQL, MySQL / MariaDB, SQLite, SQL Server |
@@ -241,6 +241,21 @@ of these step by step, with every keyboard shortcut on
   the provider's env var (e.g. `OPENAI_API_KEY`). With Claude Code you also get **Code Review ⌥⇧⌘3**,
   launch options and your Claude session list (resume any session); other agents get a Review button that
   asks them in the terminal.
+  **DevCat Agent** (built in, nothing to install) talks to a model API directly: Z.ai GLM, DeepSeek, OpenAI (Chat
+  Completions or the Responses API), Anthropic, OpenRouter, Kimi, Ollama, LM Studio or any OpenAI- or
+  Anthropic-compatible endpoint. Its chat folds
+  the agent's steps into one line and asks before edits and commands (**Ask first**, **Auto-edit** or **Full
+  access**), or only looks around and proposes a plan first (**Plan**); answer its approvals and questions on
+  DevCat Mobile too. It follows `AGENTS.md` / `CLAUDE.md`, uses
+  the MCP servers from your other agents' configs, and has tools for files, commands, `git` (reading runs without
+  asking), web pages, a todo list, your DevCat connections (SQL, MongoDB, Redis, Kubernetes; read-only stays
+  read-only) and your DevCat notes (search, read, save). For research it asks helpers that run side by side, each
+  with a fresh context and only looking, never changing anything. It runs the hooks you wrote for Claude Code or
+  Codex (once you allow them for the folder). Long chats are summarized when the context fills up, and
+  long tool output is saved to a file the agent reads in parts. Rename chats from the sidebar; the chat shows an
+  estimated cost next to its token meter, and a Trace view of every step with its time and tokens. Scheduled jobs
+  run a prompt in a folder every morning, every hour or whenever you set. On macOS and Linux its commands can run in
+  the OS sandbox, writing only in the project.
   **Folders on SSH hosts** too (*Open folder on SSH host…*): the agent and terminals run on that machine, and the
   file tree, previews, edits and git status work over your system `ssh` (hosts from `~/.ssh/config`, keys,
   ssh-agent, ProxyJump; one shared connection per host). Diff and Code Review are local-only for now.

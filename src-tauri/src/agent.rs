@@ -40,8 +40,10 @@ struct Run {
     provider_name: String,
     /// Where the chat was opened: "desktop" or "phone:<name>".
     origin: String,
-    /// Who opened it: "desktop" or the phone's device id (only they end it).
+    /// Who opened it: "desktop", the phone's device id (only they end it), or [`SCHEDULE`].
     owner: String,
+    /// A scheduled job's chat is open in a tab: a later run doesn't close it.
+    viewed: AtomicBool,
     /// The session as of the last finished turn (a running turn holds `turn`).
     log: Mutex<Snapshot>,
     /// When it last started or finished working (ms).
@@ -71,6 +73,24 @@ pub struct AgentContext {
     pub mcp_loading: bool,
     /// DevCat connections the agent can use (names).
     pub connections: Vec<String>,
+    /// Hook files that run in this chat ("~/.claude/settings.json (2)").
+    pub hooks: Vec<String>,
+    /// Hooks the user hasn't allowed for this folder yet (or that changed since): they don't run
+    /// until the user allows them on the computer.
+    pub hooks_review: Option<HooksReview>,
+}
+
+/// Hooks waiting for the user's OK: what they'd run.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksReview {
+    pub files: Vec<String>,
+    /// "PreToolUse (Bash): ./check.sh"
+    pub commands: Vec<String>,
+    /// What wouldn't run anyway (other events and hook types).
+    pub skipped: Vec<String>,
+    /// The hooks as shown: allowing them sends it back, so what's allowed is what the user saw.
+    pub digest: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -125,6 +145,7 @@ impl Approver for UiApprover {
         self.pending.lock().insert(req.tool_use_id.clone(), tx);
         self.send(json!({ "type": "approval", "request": req }));
         chat_changed(&self.session_id);
+        crate::agent_jobs::waiting(&self.session_id, &req.summary);
         match rx.await {
             Ok(d) => (d, "user".into()),
             // the tab was closed or the turn stopped: fail closed
@@ -137,6 +158,7 @@ impl Approver for UiApprover {
         self.questions.lock().insert(q.tool_use_id.clone(), tx);
         self.send(json!({ "type": "question", "question": q }));
         chat_changed(&self.session_id);
+        crate::agent_jobs::waiting(&self.session_id, &q.question);
         rx.await.ok()
     }
 }
@@ -262,6 +284,106 @@ fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// Hooks run commands on this computer, so they run only in folders where the user allowed the
+/// hooks as they are now: `<data>/agent-hooks.json` maps a folder to the digest of its hooks.
+/// Chats whose commands run in the sandbox, in `<data>/agent-sandbox.json`: the setting comes
+/// from the computer, and a chat continued later (from a phone, after a restart) keeps it.
+fn sandbox_file() -> AppResult<PathBuf> {
+    Ok(dir()?.parent().unwrap_or(dir()?).join("agent-sandbox.json"))
+}
+
+fn sandbox_saved(session_id: &str) -> bool {
+    let Ok(text) = sandbox_file().and_then(|f| std::fs::read_to_string(f).map_err(Into::into)) else { return false };
+    serde_json::from_str::<Value>(&text).ok().and_then(|v| v["on"].as_array().map(|a| a.iter().any(|s| s.as_str() == Some(session_id)))).unwrap_or(false)
+}
+
+fn sandbox_save(session_id: &str, on: bool) -> AppResult<()> {
+    if sandbox_saved(session_id) == on {
+        return Ok(());
+    }
+    let file = sandbox_file()?;
+    let mut ids: Vec<String> = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v["on"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())).unwrap_or_default();
+    ids.retain(|s| s != session_id);
+    if on {
+        ids.push(session_id.to_string());
+    }
+    std::fs::write(&file, serde_json::to_string_pretty(&json!({ "on": ids })).unwrap_or_default())?;
+    Ok(())
+}
+
+fn hooks_file() -> AppResult<PathBuf> {
+    Ok(dir()?.parent().unwrap_or(dir()?).join("agent-hooks.json"))
+}
+
+fn folder_key(cwd: &str) -> String {
+    let p = cwd.trim_end_matches(['/', '\\']).replace('\\', "/");
+    if cfg!(windows) { p.to_lowercase() } else { p }
+}
+
+fn hooks_trusted(cwd: &str, digest: &str) -> bool {
+    let Ok(text) = hooks_file().and_then(|f| std::fs::read_to_string(f).map_err(Into::into)) else { return false };
+    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+    !digest.is_empty() && v["trusted"][folder_key(cwd)].as_str() == Some(digest)
+}
+
+fn trust_hooks(cwd: &str, digest: &str) -> AppResult<()> {
+    let file = hooks_file()?;
+    let mut v: Value = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({}));
+    if !v["trusted"].is_object() {
+        v["trusted"] = json!({});
+    }
+    v["trusted"][folder_key(cwd)] = json!(digest);
+    std::fs::write(&file, serde_json::to_string_pretty(&v).unwrap_or_default())?;
+    Ok(())
+}
+
+/// The hooks for `cwd`: (the ones that run, what the chat shows).
+fn hooks_for(cwd: &str) -> (devcat_harness::hooks::Hooks, Vec<String>, Option<HooksReview>) {
+    let found = devcat_harness::hooks::load(std::path::Path::new(cwd), home_dir().as_deref());
+    if found.hooks.is_empty() {
+        return Default::default();
+    }
+    let files = found.files.iter().map(|(f, n)| format!("{f} ({n})")).collect();
+    if hooks_trusted(cwd, &found.digest) {
+        (found.hooks, files, None)
+    } else {
+        (Default::default(), vec![], Some(HooksReview { files, commands: found.commands, skipped: found.skipped, digest: found.digest }))
+    }
+}
+
+/// Allow the hooks of a chat's folder as the chat showed them (`digest`, from its review). If they
+/// changed since (an edit, a `git pull`), nothing is allowed: the chats show them as they are now,
+/// to look at again. Every open chat in that folder runs them from its next step on.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_trust_hooks(session_id: String, digest: String) -> AppResult<()> {
+    let run = run_of(&session_id)?;
+    let found = devcat_harness::hooks::load(std::path::Path::new(&run.cwd), home_dir().as_deref());
+    let same = !found.digest.is_empty() && found.digest == digest;
+    if same {
+        trust_hooks(&run.cwd, &found.digest)?;
+    }
+    let key = folder_key(&run.cwd);
+    let runs: Vec<Arc<Run>> = RUNS.lock().values().filter(|r| folder_key(&r.cwd) == key).cloned().collect();
+    for run in runs {
+        let (hooks, files, review) = hooks_for(&run.cwd);
+        let ctx = {
+            let mut c = run.context.lock();
+            c.hooks = files;
+            c.hooks_review = review;
+            c.clone()
+        };
+        emit(&run.id, json!({ "type": "context", "context": ctx }));
+        // between turns: a running turn keeps what it started with
+        crate::rt::spawn(async move {
+            run.turn.lock().await.0.hooks = Arc::new(hooks);
+        });
+    }
+    if !same {
+        return Err(AppError::msg("The hooks changed since this chat showed them, so they weren't allowed. Here they are as they are now: look at them again."));
+    }
+    Ok(())
+}
+
 /// MCP servers get this long to start; the chat works without them meanwhile.
 const MCP_START: std::time::Duration = std::time::Duration::from_secs(25);
 
@@ -287,14 +409,19 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     context.skills = skills(dir, home.as_deref()).into_iter().map(|s| s.name).collect();
     let configured = !devcat_harness::mcp::configured(dir, home.as_deref()).0.is_empty();
     context.mcp_loading = configured;
-    // the user's DevCat connections: databases, Redis, MongoDB, clusters
+    // the user's DevCat connections (databases, Redis, MongoDB, clusters) and notes
     let mut tools = Registry::standard();
     for t in crate::memory::tools::for_scope(&scope, "devcat-agent") {
         tools.add_arc(t);
     }
     crate::agent_tools::add(&mut tools, &scope);
+    crate::agent_notes::add(&mut tools);
     context.connections = crate::agent_tools::names(&scope);
-    let agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
+    let (hooks, hook_files, review) = hooks_for(cwd);
+    (context.hooks, context.hooks_review) = (hook_files, review);
+    let mut agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
+    agent.hooks = Arc::new(hooks);
+    agent.sandbox = sandbox_saved(&session.id);
     let log = Snapshot::of(&agent, &session);
     let run = Arc::new(Run {
         id,
@@ -303,6 +430,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         provider_name: provider.name,
         origin: origin.to_string(),
         owner: owner.to_string(),
+        viewed: AtomicBool::new(false),
         log: Mutex::new(log),
         since: AtomicU64::new(now_ms()),
         cfg,
@@ -351,6 +479,9 @@ pub async fn agent_open(cwd: String, provider_id: String, session_id: Option<Str
     open(cwd, provider_id, session_id, "desktop", "desktop").await
 }
 
+/// The owner of a scheduled job's chat: the run goes on when a tab showing it closes.
+pub const SCHEDULE: &str = "schedule";
+
 /// `agent_open` for the window or a phone (`origin`: "desktop" / "phone:<name>", `owner`:
 /// "desktop" / the phone's device id; both kept from whoever opened the chat first).
 pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, origin: &str, owner: &str) -> AppResult<AgentOpened> {
@@ -364,6 +495,9 @@ pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, 
         _ => build(&cwd, &provider_id, Session::create(dir()?, &cwd).await.map_err(|e| AppError::msg(e.to_string()))?, origin, owner).await?,
     };
     RUNS.lock().insert(run.id.clone(), run.clone());
+    if origin == "desktop" && run.owner == SCHEDULE {
+        run.viewed.store(true, Ordering::SeqCst);
+    }
     // While a turn runs: the session as it was when the turn started, and the turn's events so
     // far. A turn ends (log updated, `live` cleared, `turnEnd` sent, not busy) all under `live`,
     // so holding it here, `log` and `live` never both hold the same turn. (Locks: `live`, then
@@ -393,6 +527,92 @@ pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, 
         live,
         seq,
     })
+}
+
+/// A chat's log for the Trace view: each line as written (with `ms`, when it was written), and the
+/// logs of the helpers it started, by file name (`<session>.agents/<call>.jsonl`).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTrace {
+    pub events: Vec<Value>,
+    pub helpers: HashMap<String, Vec<Value>>,
+    /// The session file.
+    pub path: String,
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_trace(session_id: String) -> AppResult<AgentTrace> {
+    if !valid_id(&session_id) {
+        return Err(AppError::msg("Not a DevCat Agent chat"));
+    }
+    let path = dir()?.join(format!("{session_id}.jsonl"));
+    if !path.exists() {
+        return Err(AppError::msg("This chat isn't saved yet: send a message first"));
+    }
+    let events = trace_lines(&path).await?;
+    let mut helpers = HashMap::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(path.with_extension("agents")).await {
+        while let Ok(Some(e)) = rd.next_entry().await {
+            let p = e.path();
+            if let (Some(name), Some("jsonl")) = (p.file_stem().and_then(|s| s.to_str()), p.extension().and_then(|x| x.to_str())) {
+                helpers.insert(name.to_string(), trace_lines(&p).await.unwrap_or_default());
+            }
+        }
+    }
+    Ok(AgentTrace { events, helpers, path: path.to_string_lossy().into_owned() })
+}
+
+/// A session file's lines, without the attached images' data (their size stays).
+async fn trace_lines(path: &std::path::Path) -> AppResult<Vec<Value>> {
+    let text = tokio::fs::read_to_string(path).await?;
+    Ok(text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|mut v| {
+            for image in v.get_mut("images").and_then(Value::as_array_mut).into_iter().flatten() {
+                if let Some(data) = image.get_mut("data") {
+                    *data = json!(format!("[{} characters of base64]", data.as_str().map_or(0, str::len)));
+                }
+            }
+            v
+        })
+        .collect())
+}
+
+/// Rename a chat: a `title` event at the end of its session file (the last one names the chat).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_rename(session_id: String, title: String) -> AppResult<()> {
+    let title: String = title.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
+    if title.is_empty() {
+        return Err(AppError::msg("The name can't be empty"));
+    }
+    if !valid_id(&session_id) {
+        return Err(AppError::msg("Not a DevCat Agent chat"));
+    }
+    // An open chat writes it through its own session, so the title it reports stays the new one;
+    // during a turn that happens when the turn ends.
+    if let Ok(run) = run_of(&session_id) {
+        crate::rt::spawn(async move {
+            let mut turn = run.turn.lock().await;
+            if turn.1.append(SessionEvent::Title { title: title.clone() }).await.is_ok() {
+                run.log.lock().title = title;
+            }
+            drop(turn);
+            chat_changed(&run.id);
+        });
+        return Ok(());
+    }
+    let path = dir()?.join(format!("{session_id}.jsonl"));
+    if !path.exists() {
+        return Err(AppError::msg("That chat isn't saved yet: send a message first"));
+    }
+    let mut line = serde_json::to_string(&SessionEvent::Title { title }).map_err(|e| AppError::msg(e.to_string()))?;
+    line.push('\n');
+    use tokio::io::AsyncWriteExt;
+    let mut f = tokio::fs::OpenOptions::new().append(true).open(&path).await?;
+    f.write_all(line.as_bytes()).await?;
+    f.flush().await?;
+    Ok(())
 }
 
 fn valid_id(id: &str) -> bool {
@@ -496,11 +716,43 @@ pub async fn agent_answer(session_id: String, tool_use_id: String, answer: Strin
 /// `model` switches the chat's model from this message on (None = keep it). `attachments` are
 /// file paths: images are shown to the model, every file is listed with its path.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>) -> AppResult<()> {
-    let run = run_of(&session_id)?;
-    let attachments = attachments.unwrap_or_default();
+/// `sandbox` turns the OS sandbox for its commands on or off from this message on (None = as it was).
+pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>, sandbox: Option<bool>) -> AppResult<()> {
+    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window, sandbox).map(|_| ())
+}
+
+/// Whether this computer can run the agent's commands in the OS sandbox (and why not).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxInfo {
+    pub available: bool,
+    pub reason: Option<String>,
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_sandbox() -> AppResult<SandboxInfo> {
+    let r = devcat_harness::sandbox::available();
+    Ok(SandboxInfo { available: r.is_ok(), reason: r.err() })
+}
+
+/// Send a message the way the chat does, and wait for the turn to end: (how it ended, the error).
+/// For scheduled jobs (agent_jobs.rs).
+pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_window: Option<u64>, sandbox: bool) -> AppResult<(String, Option<String>)> {
+    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window, Some(sandbox))?;
+    let (end, error) = done.await.map_err(|e| AppError::msg(e.to_string()))?;
+    Ok((end.as_str().unwrap_or("error").to_string(), error))
+}
+
+/// Start a turn in the background; the handle gives how it ended.
+fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>, sandbox: Option<bool>) -> AppResult<tokio::task::JoinHandle<(Value, Option<String>)>> {
+    let run = run_of(session_id)?;
     if text.trim().is_empty() && attachments.is_empty() {
         return Err(AppError::msg("Type a message first"));
+    }
+    if sandbox == Some(true)
+        && let Err(why) = devcat_harness::sandbox::available()
+    {
+        return Err(AppError::msg(format!("The sandbox isn't available here: {why}")));
     }
     if run.busy.swap(true, Ordering::SeqCst) {
         return Err(AppError::msg("The agent is still working. Stop it or wait for it to finish."));
@@ -508,7 +760,7 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
     let cancel = Cancel::default();
     *run.cancel.lock() = cancel.clone();
     run.since.store(now_ms(), Ordering::SeqCst);
-    tokio::spawn(async move {
+    Ok(tokio::spawn(async move {
         let started = std::time::Instant::now();
         let ap = run.approver.clone();
         ap.send(json!({ "type": "turnStart", "text": text, "attachments": attachments }));
@@ -521,6 +773,10 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
             agent.model = Arc::new(Llm::new(devcat_harness::LlmConfig { model: m, ..run.cfg.clone() }));
         }
         agent.context_window = context_window.filter(|&w| w > 0);
+        if let Some(s) = sandbox {
+            agent.sandbox = s;
+            let _ = sandbox_save(&run.id, s);
+        }
         let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
         // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
         let compact = text.trim().strip_prefix("/compact").filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
@@ -546,8 +802,8 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
             run.busy.store(false, Ordering::SeqCst);
         }
         chat_changed(&run.id);
-    });
-    Ok(())
+        (end, error)
+    }))
 }
 
 /// Stop the running turn (pending approvals count as a no).
@@ -570,13 +826,28 @@ pub async fn agent_approve(session_id: String, tool_use_id: String, decision: De
 }
 
 /// A chat's tab closed: forget it and stop a running turn, unless a phone started it (that
-/// phone ends it).
+/// phone ends it). A scheduled job's run goes on; a finished one is let go.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_close(session_id: String) -> AppResult<()> {
-    if owner(&session_id).is_some_and(|o| o != "desktop") {
-        return Ok(());
+    match owner(&session_id).as_deref() {
+        Some(SCHEDULE) => {
+            if let Some(run) = RUNS.lock().get(&session_id) {
+                run.viewed.store(false, Ordering::SeqCst);
+            }
+            close_if_idle(&session_id);
+            Ok(())
+        }
+        Some(o) if o != "desktop" => Ok(()),
+        _ => close(&session_id),
     }
-    close(&session_id)
+}
+
+/// End a chat unless it's working or open in a tab (a job's earlier run: its log stays on disk).
+pub fn close_if_idle(session_id: &str) {
+    let idle = RUNS.lock().get(session_id).is_some_and(|r| !r.busy.load(Ordering::SeqCst) && !r.viewed.load(Ordering::SeqCst));
+    if idle {
+        let _ = close(session_id);
+    }
 }
 
 /// End a chat: forget it; a running turn is stopped.
@@ -628,7 +899,8 @@ pub async fn agent_sessions(cwd: String) -> AppResult<Vec<AgentSessionInfo>> {
         let (mut first, mut title, mut messages) = (None::<String>, None::<String>, 0);
         for v in lines {
             match v["event"].as_str() {
-                Some("user") => {
+                // messages from hooks (a Stop hook sending the agent on) aren't the user's
+                Some("user") if v["hook"].is_null() => {
                     messages += 1;
                     if first.is_none() {
                         let t = v["text"].as_str().unwrap_or_default();

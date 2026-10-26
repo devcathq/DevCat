@@ -202,15 +202,24 @@ pub async fn ai_agent_models(settings: AgentSettings, provider_id: Option<String
     let key = api_key.filter(|k| !k.trim().is_empty()).map(|k| k.trim().to_string()).or_else(|| provider_id.and_then(|id| store().ok()?.api_key(&id)));
     let cfg = devcat_harness::LlmConfig { protocol: settings.protocol, base_url: settings.base_url.trim().to_string(), api_key: key, model: String::new(), max_tokens: 0 };
     let mut models = devcat_harness::llm::list_models(&cfg).await.map_err(|e| AppError::msg(e.to_string()))?;
-    // Many providers (Z.ai, OpenAI, DeepSeek) don't say how much context a model takes: look the
-    // name up in OpenRouter's public catalog.
-    if models.iter().any(|m| m.context.is_none()) {
-        let catalog = context_catalog().await;
-        for m in models.iter_mut().filter(|m| m.context.is_none()) {
-            m.context = catalog.get(&model_key(&m.id)).copied();
+    // Many providers (Z.ai, OpenAI, DeepSeek) don't say how much context a model takes or what it
+    // costs: look the name up in OpenRouter's public catalog (its list price: an estimate).
+    if models.iter().any(|m| m.context.is_none() || m.price.is_none()) {
+        let catalog = catalog().await;
+        for m in models.iter_mut() {
+            if let Some((context, price)) = catalog.get(&model_key(&m.id)) {
+                m.context = m.context.or(*context);
+                m.price = m.price.or(*price);
+            }
         }
     }
     Ok(models)
+}
+
+/// A model's context window from OpenRouter's catalog, when it lists the model (scheduled jobs
+/// run without the window, which otherwise passes it from the model picker).
+pub async fn context_window(model: &str) -> Option<u64> {
+    catalog().await.get(&model_key(model)).and_then(|(context, _)| *context)
 }
 
 /// `vendor/Model-Name:variant` -> `model-name`, to match a provider's model id to the catalog's.
@@ -219,23 +228,25 @@ fn model_key(id: &str) -> String {
     id.split(':').next().unwrap_or(id).to_lowercase()
 }
 
-/// Context windows by model name, from OpenRouter's public model list (no key, nothing sent).
-/// Asked once per run; empty when offline.
-async fn context_catalog() -> &'static std::collections::HashMap<String, u64> {
-    static CATALOG: tokio::sync::OnceCell<std::collections::HashMap<String, u64>> = tokio::sync::OnceCell::const_new();
+type Catalog = std::collections::HashMap<String, (Option<u64>, Option<devcat_harness::llm::Price>)>;
+
+/// Context windows and list prices by model name, from OpenRouter's public model list (no key,
+/// nothing sent). Asked once per run; empty when offline.
+async fn catalog() -> &'static Catalog {
+    static CATALOG: tokio::sync::OnceCell<Catalog> = tokio::sync::OnceCell::const_new();
     CATALOG
         .get_or_init(|| async {
-            let mut map = std::collections::HashMap::new();
+            let mut map = Catalog::new();
             let Ok(http) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(8)).build() else { return map };
             let Ok(resp) = http.get("https://openrouter.ai/api/v1/models").send().await else { return map };
             let Ok(v) = resp.json::<serde_json::Value>().await else { return map };
             for m in v["data"].as_array().into_iter().flatten() {
-                let (Some(id), Some(ctx)) = (m["id"].as_str(), m["context_length"].as_u64()) else { continue };
+                let Some(id) = m["id"].as_str() else { continue };
                 if id.starts_with('~') {
                     continue; // aliases like ~z-ai/glm-latest
                 }
                 // The first listing of a name wins (the vendor's own, before resellers' variants).
-                map.entry(model_key(id)).or_insert(ctx);
+                map.entry(model_key(id)).or_insert((m["context_length"].as_u64(), devcat_harness::llm::price_of(m)));
             }
             map
         })
