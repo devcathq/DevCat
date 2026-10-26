@@ -12,6 +12,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
+  agent's reply there) opens that file from the server, over the same session, instead of looking for it on
+  this computer.
 - **Closing or restarting a Claude Code tab lets Claude Code exit on its own** (Ctrl+C, then up to 3 seconds) instead
   of killing it. Killed while starting, Claude Code counted it as a failed full-screen start, and after two it
   turned full-screen off on the computer, so its agent list could no longer be clicked. Run `/tui fullscreen` once
