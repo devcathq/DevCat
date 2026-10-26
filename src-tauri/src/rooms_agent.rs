@@ -300,7 +300,7 @@ fn describe(f: &FileInfo) -> String {
     if IMAGE_TYPES.contains(&b.mime.as_str()) && b.size <= MAX_IMAGE {
         format!("image, {size}: room_read shows it to you")
     } else if b.mime == "text/plain" {
-        format!("text, {size}, too large to edit: room_read shows its start")
+        format!("text, {size}, too large to edit: read it in parts with room_read")
     } else {
         format!("{}, {size}: you can't open it", b.mime)
     }
@@ -310,7 +310,12 @@ struct ReadFile(Arc<Room>);
 #[async_trait]
 impl Tool for ReadFile {
     fn spec(&self) -> ToolSpec {
-        spec("room_read", "Read a text file in the room, exactly as it is now (with open suggestions and claims on it listed after it), or look at an image in the room.", json!({ "path": { "type": "string" } }), &["path"])
+        spec(
+            "room_read",
+            "Read a text file in the room, exactly as it is now (with open suggestions and claims on it listed after it), or look at an image in the room. A long file comes in parts: give `offset` (the line to start at, from 1) and `limit` (how many lines) for the next one.",
+            json!({ "path": { "type": "string" }, "offset": { "type": "integer" }, "limit": { "type": "integer" } }),
+            &["path"],
+        )
     }
     fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
         Kind::Read
@@ -328,11 +333,13 @@ impl Tool for ReadFile {
             Err(e) => return e,
         };
         let d = self.0.doc();
+        let line = |k: &str| input.get(k).and_then(Value::as_u64).map(|n| n as usize);
+        let part = (line("offset"), line("limit"));
         if let Some(f) = d.files().into_iter().find(|f| f.path == path && f.meta.kind == FileKind::Blob) {
-            return read_blob(&self.0, &f).await;
+            return read_blob(&self.0, &f, part).await;
         }
         let Some(text) = d.read(path) else { return ToolOutput::err(format!("{path} isn't a file in the room.")) };
-        let mut out = text;
+        let mut out = window(&text, part.0, part.1);
         let sugg: Vec<String> = d.suggestions().into_iter().filter(|x| x.record.path == path && x.record.state == devcat_rooms::doc::SuggestionState::Open).map(|x| format!("- by {}{}: replace {:?} with {:?}", x.record.author.label(), if x.outdated { " (out of date)" } else { "" }, x.record.base, x.record.replacement)).collect();
         let claims: Vec<String> = d.claims(now()).into_iter().filter(|c| c.path == path && c.winning).map(|c| format!("- {} is editing {:?}", c.holder.label(), c.text)).collect();
         if !sugg.is_empty() {
@@ -345,8 +352,9 @@ impl Tool for ReadFile {
     }
 }
 
-/// A shared file: an image the model sees, or the text of a text file too large to edit.
-async fn read_blob(r: &Room, f: &FileInfo) -> ToolOutput {
+/// A shared file: an image the model sees, or (`part`: offset, limit) the text of a text file too
+/// large to edit.
+async fn read_blob(r: &Room, f: &FileInfo, part: (Option<usize>, Option<usize>)) -> ToolOutput {
     use base64::Engine;
     let Some(b) = f.meta.blob.as_ref() else { return ToolOutput::err(format!("{} can't be opened.", f.path)) };
     let image = IMAGE_TYPES.contains(&b.mime.as_str());
@@ -363,8 +371,52 @@ async fn read_blob(r: &Room, f: &FileInfo) -> ToolOutput {
     if image {
         ToolOutput::image(format!("{} ({}, shared by {}) is shown below.", f.path, b.mime, f.meta.created_by.label()), b.mime.clone(), base64::engine::general_purpose::STANDARD.encode(bytes))
     } else {
-        ToolOutput::ok(format!("{} is shared read-only (too large to edit in the room):\n\n{}", f.path, String::from_utf8_lossy(&bytes)))
+        ToolOutput::ok(format!("{} is shared read-only (too large to edit in the room):\n\n{}", f.path, window(&String::from_utf8_lossy(&bytes), part.0, part.1)))
     }
+}
+
+/// The most of a file one `room_read` returns: under the harness's own cut, which keeps only the
+/// start and end and points to a `read` tool room agents don't have.
+const READ_CHARS: usize = 25_000;
+
+/// Lines `offset` (from 1) on of `text`, `limit` of them or as many as fit in [`READ_CHARS`]; a
+/// part that isn't the whole file says which lines it holds and how to read on.
+fn window(text: &str, offset: Option<usize>, limit: Option<usize>) -> String {
+    if offset.is_none() && limit.is_none() && text.len() <= READ_CHARS {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let first = offset.unwrap_or(1).max(1);
+    if first > lines.len() {
+        return format!("[The file has {} lines: there's nothing from line {first}.]", lines.len());
+    }
+    let mut out = String::new();
+    let mut last = first - 1;
+    // a line longer than a whole part (minified JSON): only its start can be read
+    let mut cut = false;
+    for l in lines.iter().skip(first - 1).take(limit.unwrap_or(usize::MAX)) {
+        if out.len() + l.len() > READ_CHARS {
+            if out.is_empty() {
+                let mut end = READ_CHARS;
+                while !l.is_char_boundary(end) {
+                    end -= 1;
+                }
+                out.push_str(&l[..end]);
+                out.push_str("…\n");
+                last += 1;
+                cut = true;
+            }
+            break;
+        }
+        out.push_str(l);
+        last += 1;
+    }
+    if first == 1 && last == lines.len() && !cut {
+        return out;
+    }
+    let cut = if cut { format!(" Line {last} is cut: it's over {READ_CHARS} characters.") } else { String::new() };
+    let more = if last < lines.len() { format!(" Read on with offset {}.", last + 1) } else { String::new() };
+    format!("{out}{}[Lines {first}-{last} of {}.{cut}{more}]", if out.ends_with('\n') { "" } else { "\n" }, lines.len())
 }
 
 struct Search(Arc<Room>);
@@ -622,6 +674,54 @@ mod tests {
             let content = self.0.lock().pop().ok_or_else(|| Error::Provider("asked more steps than scripted".into()))?;
             Ok(Reply { content, usage: Usage::default(), truncated: false })
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_agent_reads_long_files_in_parts() {
+        let dir = std::env::temp_dir().join(format!("devcat-rooms-agent-big-{}", devcat_rooms::now_ms()));
+        let node = Node::start(Config { dir: dir.join("rooms"), relay: RelayConfig::Off, port: 0, keeper: false, keeper_owners: vec![] }, Arc::new(Quiet)).await.unwrap();
+        let r = node.room(&node.create("Logs", "Arif").unwrap()).unwrap();
+        let me = r.me(false);
+        let log: String = (1..=100_000).map(|i| format!("{i:06} GET /api/health 200\n")).collect();
+        r.add_blob("server.log", log.as_bytes(), "text/plain", &me).unwrap();
+        let doc: String = (1..=5_000).map(|i| format!("Step {i:04}: check the totals.\n")).collect();
+        r.doc().create_file("plan.md", &doc, &me, 1).unwrap();
+        let ask = r.doc().post(&me, "@arif-agent what's on line 70000 of server.log?", 0, None, devcat_rooms::now_ms()).unwrap();
+        let script = vec![
+            call("c1", "room_read", json!({ "path": "server.log" })),
+            call("c2", "room_read", json!({ "path": "server.log", "offset": 70000, "limit": 2 })),
+            call("c3", "room_read", json!({ "path": "plan.md", "offset": 4999 })),
+            vec![Block::Text { text: "A health check.".into() }],
+        ];
+        run(&r, &ask, Arc::new(Scripted(parking_lot::Mutex::new(script.into_iter().rev().collect()))), &dir, &Cancel::default()).await.unwrap();
+        let log = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().is_some_and(|x| x == "jsonl")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap();
+        // its list says how to read it; the first part says where to go on; the part asked for comes whole
+        assert!(log.contains("server.log (text, 2.6 MB, too large to edit: read it in parts with room_read)"), "{log}");
+        assert!(log.contains("of 100000. Read on with offset"), "{log}");
+        assert!(log.contains("070000 GET /api/health 200\\n070001 GET /api/health 200\\n[Lines 70000-70001 of 100000. Read on with offset 70002.]"), "{log}");
+        // a document too: the end of it, not cut
+        assert!(log.contains("Step 4999: check the totals.\\nStep 5000: check the totals.\\n[Lines 4999-5000 of 5000.]"), "{log}");
+        node.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_long_file_is_read_in_parts() {
+        let short = "a\nb\n";
+        assert_eq!(window(short, None, None), short);
+        assert_eq!(window(short, Some(2), None), "b\n[Lines 2-2 of 2.]");
+        let long: String = (1..=5000).map(|i| format!("line {i:04} of the log\n")).collect();
+        let first = window(&long, None, None);
+        assert!(first.len() < READ_CHARS + 100 && first.starts_with("line 0001"));
+        // every line read ends with a newline, the footer after them doesn't
+        let n = first.matches('\n').count();
+        assert!(first.ends_with(&format!("[Lines 1-{n} of 5000. Read on with offset {}.]", n + 1)), "{}", &first[first.len() - 80..]);
+        assert_eq!(window(&long, Some(4999), Some(10)), "line 4999 of the log\nline 5000 of the log\n[Lines 4999-5000 of 5000.]");
+        assert_eq!(window(&long, Some(6000), None), "[The file has 5000 lines: there's nothing from line 6000.]");
+        // a single line longer than a part: its start
+        let wide = "x".repeat(READ_CHARS * 2);
+        let w = window(&wide, None, None);
+        assert!(w.starts_with(&"x".repeat(100)) && w.ends_with("…\n[Lines 1-1 of 1. Line 1 is cut: it's over 25000 characters.]"), "{}", &w[w.len() - 90..]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

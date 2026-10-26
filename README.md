@@ -265,6 +265,10 @@ of these step by step, with every keyboard shortcut on
   Each connection's **AI / MCP access** is off, read-only (the default for new connections) or full, enforced by
   DevCat; a read-only connection is never full. Every call goes into **MCP activity**. See
   [the docs](https://devcathq.github.io/DevCat/home/docs/sync-mcp.html).
+- **Rooms** (two people in the left bar): share documents with other people, peer to peer and end-to-end
+  encrypted, no account or server. Drag files onto a room to share them; edit text together, talk in the
+  thread, and mention anyone's DevCat Agent to bring it in: it reads the files (and looks at the room's
+  images) and suggests changes that people accept or reject.
 - **Appearance** (⚙️ Settings in the title bar): dark, light or system mode, 8 dark and 3 light themes (editors and terminals
   follow), and **window glass** on macOS and Windows: the desktop shows through the sidebar and work area, blurred,
   with separate opacity for each.

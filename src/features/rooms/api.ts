@@ -31,6 +31,8 @@ export interface RoomView {
 
 export interface Author { member: string; name: string; agent: boolean }
 export interface FileInfo { path: string; kind: "text" | "blob"; createdBy: Author; createdAt: number; blob?: { hash: string; size: number; mime: string }; chars: number }
+/** A file just shared: its name in the room, and what to tell the person (big text went in as a plain file). */
+export interface SharedFile { name: string; note: string | null }
 export interface Message { id: string; author: Author; text: string; at: number; depth: number; replyTo?: string }
 export interface Suggestion {
   id: string; path: string; author: Author; at: number; note?: string;
@@ -70,7 +72,9 @@ export const rooms = {
   fileNew: (room: string, path: string, content?: string) => invoke<void>("room_file_new", { room, path, content: content ?? null }),
   fileDelete: (room: string, path: string) => invoke<void>("room_file_delete", { room, path }),
   /** Share a file from this computer; returns its name in the room. */
-  fileAdd: (room: string, local: string, path?: string) => invoke<string>("room_file_add", { room, local, path: path ?? null }),
+  fileAdd: (room: string, local: string, path?: string) => invoke<SharedFile>("room_file_add", { room, local, path: path ?? null }),
+  /** Share a dropped or pasted file (`data`: its bytes, base64). */
+  fileAddBytes: (room: string, name: string, data: string) => invoke<SharedFile>("room_file_add_bytes", { room, name, data }),
   blob: (room: string, hash: string) => invoke<string>("room_blob", { room, hash }),
   blobSave: (room: string, hash: string, dest: string) => invoke<void>("room_blob_save", { room, hash, dest }),
   memberRemove: (room: string, member: string) => invoke<void>("room_member_remove", { room, member }),

@@ -6,7 +6,8 @@ import { DRAG_PATHS } from "./format";
 /** The drag carries files we can take. */
 export const isFileDrag = (dt: DataTransfer | null) => !!dt && [...dt.types].some((t) => t === "Files" || t === DRAG_PATHS);
 
-function toBase64(f: File): Promise<string> {
+/** A file's bytes, base64 (what the backend commands take). */
+export function toBase64(f: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ""));

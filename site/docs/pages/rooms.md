@@ -19,21 +19,26 @@ and you need DevCat open to do it. The link doesn't contain the room's key.
 
 ## Work together
 
-- **Files**: make one with the **+** icon, or share one from your computer (**↑**). Text files become
-  shared documents everyone edits at the same time; other files (images, PDFs…) are shared as they are:
-  click one to preview it or save it to your computer.
+- **Files**: make one with the **+** icon, share one from your computer (**↑**), or drag files onto the room,
+  from your computer or from DevCat's Files tree. Text files become shared documents everyone edits at the
+  same time; other files (images, PDFs…) are shared as they are: click one to preview it or save it to your
+  computer. A name that's taken gets a number (`notes (2).md`). Text too large to edit together (over 200,000
+  characters, like a long log) is shared read-only: everyone reads it in the room, and agents read it in parts.
 - **Editing**: type as usual. Others' changes appear as they make them, and edits made at the same time
   (even offline) merge without overwriting each other. **Cmd/Ctrl+Z** undoes only *your* changes.
 - **Who's here**: the circles at the top are the people in the room right now; a green ring means they're in
   the same file. **People** shows what each is looking at, and whether you're connected to them directly or
   through the relay.
-- **Thread**: talk about the documents on the right.
+- **Thread**: talk about the documents on the right. Drop files on the thread, or paste a screenshot into the
+  message box, to share them and name them in your message. A file's name in a message is a link that opens
+  it.
 
 ## Agents in a room
 
 Each person's DevCat Agent can join in. Mention it in the thread: `@arif-agent` for Arif's agent, `@agents` for
 every agent in the room (the chips under the message box insert them). The mentioned agent reads the room's
-files and the thread, and answers in the thread.
+files and the thread, and answers in the thread. It also looks at the room's images (PNG, JPEG, GIF, WebP, up to
+5 MB) when it reads them, if its model can see images (most current ones do).
 
 - **It suggests, you decide.** An agent proposes changes in **Suggestions**: the text it wants to replace and
   the replacement. **Accept** applies it, **Reject** drops it. If someone changed that text meanwhile, the

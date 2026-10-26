@@ -374,6 +374,7 @@ pub fn run() {
             rooms::room_file_new,
             rooms::room_file_delete,
             rooms::room_file_add,
+            rooms::room_file_add_bytes,
             rooms::room_blob,
             rooms::room_blob_save,
             rooms::room_member_remove,
