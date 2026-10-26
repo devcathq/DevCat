@@ -211,6 +211,8 @@ export const api = {
   fsCopyFiles: (paths: string[]) => invoke<void>("fs_copy_files", { paths }),
   /** Put text on the OS clipboard (when the webview refuses a copy no click or key started). */
   clipboardWriteText: (text: string) => invoke<void>("clipboard_write_text", { text }),
+  /** The OS clipboard's text ("" when none), read by the app so the webview asks no permission. */
+  clipboardReadText: () => invoke<string>("clipboard_read_text"),
   /** Paste the files / folders (or else the image) on the OS clipboard into `dir`, a folder of the workspace `root`; returns the new paths. */
   fsPaste: (dir: string, root: string) => invoke<string[]>("fs_paste", { dir, root }),
   gitStatus: (cwd: string) => invoke<GitStatus>("git_status", { cwd }),

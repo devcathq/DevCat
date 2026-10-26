@@ -12,6 +12,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Terminal:** right-clicking a terminal opens DevCat's own menu: **Copy** (the selection), **Paste**, **Select all**
+  and **Clear**. The webview's menu could never copy a terminal selection, so its Copy was always greyed out. When
+  a program like Claude Code or tmux has the mouse, the menu says how to select in the terminal instead
+  (Shift+drag, ⌥+drag on macOS).
+- **SSH sessions on Windows:** the tab no longer reads `C:\Windows\System32\OpenSSH\ssh.EXE`; it shows the
+  session's name until the host sets a title (a shell's prompt, Claude Code's task).
+
 ## 0.13.0 - 2026-10-26
 
 - **Sync MCP:** each connection now has its own **AI / MCP access** (Edit connection → Advanced): **Off** hides it

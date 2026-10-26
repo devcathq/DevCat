@@ -330,6 +330,7 @@ pub fn run() {
             claude::open_external::fs_open_external,
             claude::clipboard::fs_copy_files,
             claude::clipboard::clipboard_write_text,
+            claude::clipboard::clipboard_read_text,
             claude::clipboard::fs_paste,
             claude::git::git_status,
             claude::git::git_file_versions,

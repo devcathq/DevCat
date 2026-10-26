@@ -13,11 +13,12 @@ export default function TerminalTab({ tab }: { tab: TerminalTabT }) {
   const [pty, setPty] = useState<string | null>(null);
   // The tab shows the title the program sets (a shell's user@host:dir, Claude Code's task), like
   // a terminal app's tab; back to the session's name when there's none. Windows' console starts a
-  // program's title as its own path (a Docker shell's docker.exe): that's no name either.
+  // program's title as its own path (an SSH session's ssh.exe, a Docker shell's docker.exe), and
+  // keeps it while nothing sets one (tmux doesn't, by default): that's no name either.
   const name = useRef(tab.title).current;
   const onTitle = (t: string) => {
     const own = !!tab.program && t.trim().toLowerCase().startsWith(tab.program.toLowerCase());
-    useTabs.getState().update(tab.id, { title: (!own && t.trim()) || name });
+    useTabs.getState().update(tab.id, { title: (!own && !isProgramPath(t.trim()) && t.trim()) || name });
   };
   return (
     <div className="flex h-full flex-col bg-app">
@@ -27,4 +28,10 @@ export default function TerminalTab({ tab }: { tab: TerminalTabT }) {
       <QuickBar ptyId={pty} cwd={tab.cwd} />
     </div>
   );
+}
+
+/** A Windows console's default title: the program's path (`C:\Windows\System32\OpenSSH\ssh.EXE`),
+ *  maybe after "Administrator: ". */
+function isProgramPath(title: string): boolean {
+  return /^(?:[^:\\]+: )?[A-Za-z]:\\[^:]*\.(?:exe|com|bat|cmd)$/i.test(title);
 }

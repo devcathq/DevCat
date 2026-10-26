@@ -17,7 +17,8 @@ import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/font
 import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
 import { loadUnicode } from "../../lib/xtermUnicode";
-import { copyOnSelect, IS_MAC, IS_WIN, programCopy, terminalEditKey } from "../../lib/terminalKeys";
+import { clipboardText, copyOnSelect, copyText, EDIT_KEYS, IS_MAC, IS_WIN, programCopy, terminalEditKey } from "../../lib/terminalKeys";
+import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
 import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
 import { isRemote, remoteHost } from "../../lib/remotePath";
 import { toast } from "sonner";
@@ -147,6 +148,14 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     const offCopy = copyOnSelect(term, hostEl);
     // Claude Code copies its own selections with OSC 52 (it has the mouse, so xterm selects nothing).
     const offOsc52 = programCopy(term);
+    // Right-click: DevCat's Copy / Paste menu. The webview's own menu can't copy xterm's selection
+    // (it isn't a page selection), so its Copy was always greyed out.
+    const onMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      menu.show(e, terminalMenu(term));
+    };
+    hostEl.addEventListener("contextmenu", onMenu, true);
 
     // File paths (src/foo.ts:12) → file preview tab (.html renders there); ⌘/Ctrl+click → the default app.
     const links = term.registerLinkProvider({
@@ -214,6 +223,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       hostEl.removeEventListener("paste", onPaste, true);
       offCopy();
       offOsc52();
+      hostEl.removeEventListener("contextmenu", onMenu, true);
       hostEl.removeEventListener("mousedown", onPress, true);
       links.dispose();
       input.dispose();
@@ -299,6 +309,29 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     });
   }, [visible]);
 
+  const menu = useContextMenu();
+  const terminalMenu = (term: Terminal): MenuItem[] => {
+    const sel = term.getSelection();
+    // A full-screen program (Claude Code, tmux, vim) gets the mouse, so a plain drag selects in the program,
+    // which copies with OSC 52 itself; Shift (⌥ on macOS) + drag selects in the terminal instead.
+    const programMouse = term.modes.mouseTrackingMode !== "none";
+    return [
+      { label: "Copy", shortcut: EDIT_KEYS.copy, disabled: !sel, onClick: () => { copyText(sel); term.focus(); } },
+      { label: "Paste", shortcut: EDIT_KEYS.paste, disabled: !ptyRef.current, onClick: () => void pasteFromMenu(term) },
+      ...(!sel && programMouse ? [{ label: `${IS_MAC ? "⌥" : "Shift"}+drag selects text here`, disabled: true, onClick: () => {} }] : []),
+      "separator",
+      { label: "Select all", shortcut: EDIT_KEYS.selectAll, onClick: () => { term.selectAll(); term.focus(); } },
+      { label: "Clear", shortcut: EDIT_KEYS.clear, onClick: () => { term.clear(); term.focus(); } },
+    ];
+  };
+  /** Paste from the menu: the clipboard's text, or on an SSH host an image-only clipboard, copied there. */
+  const pasteFromMenu = async (term: Terminal) => {
+    term.focus();
+    const text = await clipboardText();
+    if (text) term.paste(text);
+    else if (isRemote(cb.current.cwd)) await pasteRemoteImage(null, null);
+  };
+
   /** Copy an image to the SSH host and type its path; without one, send `fallback` (the key as
    *  typed). `img` null = the OS clipboard's image. */
   const pasteRemoteImage = async (img: { data: string; name: string } | null, fallback: string | null) => {
@@ -349,6 +382,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropping(false); }}
       onDrop={(e) => void onDrop(e)}>
       <div ref={host} className="h-full w-full" />
+      {menu.element}
       {dropping && (
         <div className="pointer-events-none absolute inset-2 flex items-center justify-center rounded-lg border-2 border-dashed border-accent/60 bg-app/70 text-[13px] text-fg">
           {isRemote(cwd) ? `Drop to copy the files to ${remoteHost(cwd)} and type their paths` : "Drop to type the file's path into the terminal"}
