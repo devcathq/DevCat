@@ -1,0 +1,60 @@
+# Merging a release PR (branch `release/vX.Y.Z`) publishes the release: this tags the merge
+# commit `vX.Y.Z` and starts the build workflow on that tag, which builds the installers and
+# publishes the GitHub release (notes from CHANGELOG.md, latest.json for the in-app updater).
+#
+# The tag is pushed with this workflow's token, and pushes made with it don't start other
+# workflows, so build.yml is started explicitly (workflow_dispatch on the tag).
+name: release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [master]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Check the version
+        id: version
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          want="${BRANCH#release/v}"
+          for f in package.json src-tauri/tauri.conf.json mobile/src-tauri/tauri.conf.json; do
+            have=$(node -p "require('./$f').version")
+            if [ "$have" != "$want" ]; then
+              echo "::error file=$f::version is $have, but the release branch says $want"
+              exit 1
+            fi
+          done
+          if git rev-parse -q --verify "refs/tags/v$want" >/dev/null; then
+            echo "::error::tag v$want already exists"
+            exit 1
+          fi
+          echo "tag=v$want" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the merge commit
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git tag "$TAG" "${{ github.event.pull_request.merge_commit_sha }}"
+          git push origin "refs/tags/$TAG"
+
+      - name: Build and publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          echo "Started the build for $TAG: https://github.com/$GITHUB_REPOSITORY/actions/workflows/build.yml" >> "$GITHUB_STEP_SUMMARY"

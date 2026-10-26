@@ -3,7 +3,6 @@
 // The PTY lives as long as the component (tabs stay mounted) and restarts when `startKey` changes.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FitAddon } from "@xterm/addon-fit";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ILink } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -17,6 +16,7 @@ import { glassOn, onPaletteChange, palette } from "../appearance/store";
 import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
 import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
+import { loadUnicode } from "../../lib/xtermUnicode";
 import { copyOnSelect, IS_MAC, IS_WIN, terminalEditKey } from "../../lib/terminalKeys";
 import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
 import { isRemote, remoteHost } from "../../lib/remotePath";
@@ -102,9 +102,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     host.current!.addEventListener("mousedown", onPress, true);
     const isClick = (e: MouseEvent) => !term.hasSelection() && Math.abs(e.clientX - press.x) < 4 && Math.abs(e.clientY - press.y) < 4;
     term.loadAddon(new WebLinksAddon((e, uri) => { if (isClick(e)) void openUrl(uri).catch(() => {}); }));
-    const uni = new Unicode11Addon();
-    term.loadAddon(uni);
-    term.unicode.activeVersion = "11";
+    loadUnicode(term);
     term.open(host.current!);
     enableGpu(term);
     termRef.current = { term, fit };

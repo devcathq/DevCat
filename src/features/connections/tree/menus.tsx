@@ -1,6 +1,6 @@
 // Context menu builders for every tree row type.
 import {
-  AppWindow, ArrowDown, ArrowDownUp, ArrowLeftRight, Bot, Crosshair, LogOut, ArrowUp, Check, Code, Copy, CopyPlus, Eraser, ExternalLink, FilePlus, Folder, FolderInput,
+  AppWindow, ArrowDown, Cable, FolderCode, ArrowDownUp, ArrowLeftRight, Bot, Crosshair, LogOut, ArrowUp, Check, Code, Copy, CopyPlus, Eraser, ExternalLink, FilePlus, Folder, FolderInput,
   FolderMinus, FolderPlus, GitCompare, Network, Palette, Pencil, PencilRuler, Play, Plug, Plus, RefreshCw, SquareTerminal,
   Star, StarOff, Table2, Trash2, Unplug,
 } from "lucide-react";
@@ -8,6 +8,8 @@ import type { Project } from "../../../lib/types";
 import { openBookmark, opensInTab, revealBookmark } from "../bookmarks/actions";
 import { findBookmark, useBookmarks } from "../bookmarks/store";
 import { COLOR_PRESETS } from "../dialog/sections";
+import { openMcpSync } from "../mcp/McpSyncDialog";
+import { openProjectAgents } from "../mcp/ProjectAgentsDialog";
 import {
   createProject, deleteProject, focusProject, moveConnections, moveProject, moveToNewProject, newConnectionIn, openProjectInNewWindow, renameProject,
   setProjectColor,
@@ -80,6 +82,12 @@ function projectMenu(row: Extract<Row, { type: "project" }>): MenuItem[] {
         onClick: () => void setProjectColor(p, c.value),
       })),
     },
+    {
+      label: p.folders?.length ? `Code folders & MCP… (${p.folders.length})` : "Code folders & MCP…",
+      icon: ic(FolderCode),
+      onClick: () => openProjectAgents(p),
+    },
+    { label: "Sync MCP…", icon: ic(Cable), onClick: openMcpSync },
     { label: "Move up", icon: ic(ArrowUp), disabled: idx <= 0, onClick: () => void moveProject(p, -1) },
     { label: "Move down", icon: ic(ArrowDown), disabled: idx < 0 || idx >= projects.length - 1, onClick: () => void moveProject(p, 1) },
     "separator",
@@ -110,7 +118,7 @@ function connectionMenu(conn: ConnectionConfig): MenuItem[] {
     ];
   }
   if (isInfra(conn)) {
-    return [{ label: "Open", icon: ic(ExternalLink), onClick: () => openInfra(conn.id, conn.kind === "kubernetes" ? "k8s" : "rabbitmq") }, "separator", ...edit];
+    return [{ label: "Open", icon: ic(ExternalLink), onClick: () => openInfra(conn.id, conn.kind === "kubernetes" ? "k8s" : conn.kind === "docker" ? "docker" : "rabbitmq") }, "separator", ...edit];
   }
   const isOpen = useConnections.getState().open.has(conn.id);
   return [
@@ -276,6 +284,7 @@ export function backgroundMenu(): MenuItem[] {
     ...(focused ? [{ label: "Exit focus mode", icon: ic(LogOut), onClick: () => useConnections.getState().setFocus(null) } as MenuItem, "separator" as const] : []),
     { label: "New connection…", icon: ic(Plus), onClick: () => useUi.getState().openConnectionDialog(null) },
     { label: "New project…", icon: ic(FolderPlus), onClick: () => void createProject() },
+    { label: "Sync MCP…", icon: ic(Cable), onClick: openMcpSync },
     "separator",
     { label: "Refresh all", icon: ic(RefreshCw), onClick: () => void refreshAll() },
     { label: "Collapse all", onClick: () => useTree.getState().collapseAll() },
