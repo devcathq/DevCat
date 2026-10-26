@@ -29,6 +29,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **DevCat Agent plan mode:** pick **Plan** in the permission menu and the agent only looks around and answers
   with a plan; edits and commands don't run. **Start, ask first** or **Start, auto-edit** under the plan carries
   it out (#56).
+- **DevCat Agent and the OpenAI Responses API:** a new API style and an **OpenAI (Responses API)** preset, for
+  OpenAI's newer models, including the ones only offered there such as `gpt-5-codex` (#57).
 
 ## 0.12.0 - 2026-10-24
 
