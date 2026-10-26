@@ -285,19 +285,23 @@ function RoomEditor({ room, replica, path, readOnly, claims, suggestions, reveal
 function BlobView({ room, file }: { room: string; file: FileInfo }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const image = file.blob?.mime.startsWith("image/") && file.blob.mime !== "image/svg+xml";
+  const hash = file.blob?.hash;
+  const mime = file.blob?.mime ?? "";
+  const image = mime.startsWith("image/") && mime !== "image/svg+xml";
+  // By content, not by `file`: that object is new on every refresh of the room (anyone's typing or
+  // presence), and fetching the image again each time made it blink.
   useEffect(() => {
     setSrc(null);
     setError(null);
-    if (!image || !file.blob) return;
+    if (!image || !hash) return;
     let alive = true;
-    void rooms.blob(room, file.blob.hash).then((b64) => {
+    void rooms.blob(room, hash).then((b64) => {
       if (!alive) return;
       const bytes = fromB64(b64);
-      setSrc(URL.createObjectURL(new Blob([bytes as BlobPart], { type: file.blob!.mime })));
+      setSrc(URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime })));
     }).catch((e) => alive && setError(errMsg(e)));
     return () => { alive = false; };
-  }, [room, file, image]);
+  }, [room, hash, mime, image]);
   useEffect(() => () => { if (src) URL.revokeObjectURL(src); }, [src]);
   const saveAs = async () => {
     if (!file.blob) return;
