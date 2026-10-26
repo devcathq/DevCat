@@ -132,6 +132,14 @@ fn context() -> tauri::Context {
 #[cfg(feature = "gui")]
 pub fn run() {
     use tauri::Manager;
+    // A kubeconfig's login helper (aws, gke-gcloud-auth-plugin, kubelogin) started by the window
+    // flashes a console window, unless kube is told to hide it. Its prompts have no console to
+    // reach in the app anyway.
+    #[cfg(windows)]
+    // SAFETY: first thing in the process, before any other thread.
+    unsafe {
+        std::env::set_var("KUBE_RS_UNSTABLE_CREATE_NO_WINDOW", "1");
+    }
     init_process();
 
     tauri::Builder::default()
