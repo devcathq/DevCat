@@ -12,6 +12,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **SSH sessions on Windows:** no more console window flashing up for a moment when pasting an image, opening a
+  folder on an SSH session, starting a port forward or opening a terminal on a session with a saved password.
+
 ## 0.13.0 - 2026-10-26
 
 - **Sync MCP:** each connection now has its own **AI / MCP access** (Edit connection → Advanced): **Off** hides it

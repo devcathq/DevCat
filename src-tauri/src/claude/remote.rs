@@ -372,7 +372,17 @@ impl LoginPrompt {
         let cached = RESOLVED.lock().get(&args).filter(|(at, _)| at.elapsed() < Duration::from_secs(60)).map(|(_, d)| d.clone());
         let resolved = cached.unwrap_or_else(|| {
             let mut d = Vec::new();
-            if let Ok(out) = std::process::Command::new("ssh").args(&args).stdin(Stdio::null()).stderr(Stdio::null()).output() {
+            let mut cmd = std::process::Command::new("ssh");
+            cmd.args(&args).stdin(Stdio::null()).stderr(Stdio::null());
+            // A console program started by a GUI app opens a console window: it flashed on screen
+            // for every SSH command of a session with a saved password (pasting an image, opening
+            // a folder, a port forward, a terminal).
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+            if let Ok(out) = cmd.output() {
                 let text = String::from_utf8_lossy(&out.stdout);
                 let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()));
                 if let Some(user) = get("user ") {
