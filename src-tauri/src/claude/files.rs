@@ -653,6 +653,24 @@ pub async fn fs_preview(path: String) -> AppResult<FilePreview> {
     crate::rt::spawn_blocking(move || preview_sync(&path)).await.map_err(|e| AppError::msg(e.to_string()))?
 }
 
+/// A cheap change stamp of a local file (modification time and size), None when it isn't there.
+/// An open file tab polls it, to show a file that appears or changes while it's open (an agent
+/// saying where it writes an image, then writing it).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn fs_stamp(path: String) -> AppResult<Option<String>> {
+    if super::remote::Target::parse(&path).is_some() {
+        return Err(AppError::msg("No change stamp for a file on an SSH host"));
+    }
+    match fs::metadata(&path) {
+        Ok(m) => {
+            let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+            Ok(Some(format!("{mtime}:{}", m.len())))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(AppError::msg(format!("Cannot open {path}: {e}"))),
+    }
+}
+
 // ---------- fs_write_text ----------
 
 /// Error prefix the frontend matches to offer Overwrite / Reload.

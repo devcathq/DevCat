@@ -290,6 +290,7 @@ pub fn run() {
             claude::ssh_forward::ssh_forward_stop,
             claude::ssh_forward::ssh_forward_list,
             claude::files::fs_preview,
+            claude::files::fs_stamp,
             claude::files::fs_write_text,
             claude::open_external::fs_open_external,
             claude::clipboard::fs_copy_files,
