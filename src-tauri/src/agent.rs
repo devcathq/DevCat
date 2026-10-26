@@ -40,8 +40,10 @@ struct Run {
     provider_name: String,
     /// Where the chat was opened: "desktop" or "phone:<name>".
     origin: String,
-    /// Who opened it: "desktop" or the phone's device id (only they end it).
+    /// Who opened it: "desktop", the phone's device id (only they end it), or [`SCHEDULE`].
     owner: String,
+    /// A scheduled job's chat is open in a tab: a later run doesn't close it.
+    viewed: AtomicBool,
     /// The session as of the last finished turn (a running turn holds `turn`).
     log: Mutex<Snapshot>,
     /// When it last started or finished working (ms).
@@ -143,6 +145,7 @@ impl Approver for UiApprover {
         self.pending.lock().insert(req.tool_use_id.clone(), tx);
         self.send(json!({ "type": "approval", "request": req }));
         chat_changed(&self.session_id);
+        crate::agent_jobs::waiting(&self.session_id, &req.summary);
         match rx.await {
             Ok(d) => (d, "user".into()),
             // the tab was closed or the turn stopped: fail closed
@@ -155,6 +158,7 @@ impl Approver for UiApprover {
         self.questions.lock().insert(q.tool_use_id.clone(), tx);
         self.send(json!({ "type": "question", "question": q }));
         chat_changed(&self.session_id);
+        crate::agent_jobs::waiting(&self.session_id, &q.question);
         rx.await.ok()
     }
 }
@@ -400,6 +404,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         provider_name: provider.name,
         origin: origin.to_string(),
         owner: owner.to_string(),
+        viewed: AtomicBool::new(false),
         log: Mutex::new(log),
         since: AtomicU64::new(now_ms()),
         cfg,
@@ -448,6 +453,9 @@ pub async fn agent_open(cwd: String, provider_id: String, session_id: Option<Str
     open(cwd, provider_id, session_id, "desktop", "desktop").await
 }
 
+/// The owner of a scheduled job's chat: the run goes on when a tab showing it closes.
+pub const SCHEDULE: &str = "schedule";
+
 /// `agent_open` for the window or a phone (`origin`: "desktop" / "phone:<name>", `owner`:
 /// "desktop" / the phone's device id; both kept from whoever opened the chat first).
 pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, origin: &str, owner: &str) -> AppResult<AgentOpened> {
@@ -461,6 +469,9 @@ pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, 
         _ => build(&cwd, &provider_id, Session::create(dir()?, &cwd).await.map_err(|e| AppError::msg(e.to_string()))?, origin, owner).await?,
     };
     RUNS.lock().insert(run.id.clone(), run.clone());
+    if origin == "desktop" && run.owner == SCHEDULE {
+        run.viewed.store(true, Ordering::SeqCst);
+    }
     // While a turn runs: the session as it was when the turn started, and the turn's events so
     // far. A turn ends (log updated, `live` cleared, `turnEnd` sent, not busy) all under `live`,
     // so holding it here, `log` and `live` never both hold the same turn. (Locks: `live`, then
@@ -680,8 +691,20 @@ pub async fn agent_answer(session_id: String, tool_use_id: String, answer: Strin
 /// file paths: images are shown to the model, every file is listed with its path.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>) -> AppResult<()> {
-    let run = run_of(&session_id)?;
-    let attachments = attachments.unwrap_or_default();
+    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window).map(|_| ())
+}
+
+/// Send a message the way the chat does, and wait for the turn to end: (how it ended, the error).
+/// For scheduled jobs (agent_jobs.rs).
+pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_window: Option<u64>) -> AppResult<(String, Option<String>)> {
+    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window)?;
+    let (end, error) = done.await.map_err(|e| AppError::msg(e.to_string()))?;
+    Ok((end.as_str().unwrap_or("error").to_string(), error))
+}
+
+/// Start a turn in the background; the handle gives how it ended.
+fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>) -> AppResult<tokio::task::JoinHandle<(Value, Option<String>)>> {
+    let run = run_of(session_id)?;
     if text.trim().is_empty() && attachments.is_empty() {
         return Err(AppError::msg("Type a message first"));
     }
@@ -691,7 +714,7 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
     let cancel = Cancel::default();
     *run.cancel.lock() = cancel.clone();
     run.since.store(now_ms(), Ordering::SeqCst);
-    tokio::spawn(async move {
+    Ok(tokio::spawn(async move {
         let started = std::time::Instant::now();
         let ap = run.approver.clone();
         ap.send(json!({ "type": "turnStart", "text": text, "attachments": attachments }));
@@ -729,8 +752,8 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
             run.busy.store(false, Ordering::SeqCst);
         }
         chat_changed(&run.id);
-    });
-    Ok(())
+        (end, error)
+    }))
 }
 
 /// Stop the running turn (pending approvals count as a no).
@@ -753,13 +776,28 @@ pub async fn agent_approve(session_id: String, tool_use_id: String, decision: De
 }
 
 /// A chat's tab closed: forget it and stop a running turn, unless a phone started it (that
-/// phone ends it).
+/// phone ends it). A scheduled job's run goes on; a finished one is let go.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_close(session_id: String) -> AppResult<()> {
-    if owner(&session_id).is_some_and(|o| o != "desktop") {
-        return Ok(());
+    match owner(&session_id).as_deref() {
+        Some(SCHEDULE) => {
+            if let Some(run) = RUNS.lock().get(&session_id) {
+                run.viewed.store(false, Ordering::SeqCst);
+            }
+            close_if_idle(&session_id);
+            Ok(())
+        }
+        Some(o) if o != "desktop" => Ok(()),
+        _ => close(&session_id),
     }
-    close(&session_id)
+}
+
+/// End a chat unless it's working or open in a tab (a job's earlier run: its log stays on disk).
+pub fn close_if_idle(session_id: &str) {
+    let idle = RUNS.lock().get(session_id).is_some_and(|r| !r.busy.load(Ordering::SeqCst) && !r.viewed.load(Ordering::SeqCst));
+    if idle {
+        let _ = close(session_id);
+    }
 }
 
 /// End a chat: forget it; a running turn is stopped.

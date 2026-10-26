@@ -238,6 +238,7 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             match crate::agent::owner(&id) {
                 Some(o) if o == client.device.id => {}
                 Some(o) if o == "desktop" => return Err(json!("This chat is open on the computer; close its tab there.")),
+                Some(o) if o == crate::agent::SCHEDULE => return Err(json!("This is a scheduled job's chat; it closes by itself.")),
                 Some(_) => return Err(json!("Another phone started this chat; it can end it there.")),
                 None => {}
             }
