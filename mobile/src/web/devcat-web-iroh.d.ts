@@ -4,7 +4,7 @@ declare module "devcat-web-iroh" {
   export class Node {
     static create(secretHex: string, relay: string): Promise<Node>;
     id(): string;
-    open(hostId: string, relay: string): Promise<Pipe>;
+    open(hostId: string, relay: string, home?: string | null): Promise<Pipe>;
     close(): Promise<void>;
   }
   export class Pipe {

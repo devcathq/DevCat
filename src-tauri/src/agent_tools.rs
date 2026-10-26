@@ -1,14 +1,22 @@
 //! DevCat Agent tools over the user's DevCat connections: list them, read a database schema, run
 //! a query (SQL, MongoDB shell, Redis commands) and read Kubernetes objects and pod logs. They use
 //! the same drivers as the app, so a connection marked read-only stays read-only for the agent.
+//! The same tools are served over MCP by `devcat mcp` (see `mcp_server.rs`) for Claude Code,
+//! Codex, Cursor and Gemini.
+//!
+//! Which connections an agent sees depends on the folder it works in ([`Scope`]): a project with
+//! code folders keeps its connections to those folders; connections in no project, or in a
+//! project without folders, are everyone's. SSH sessions are never offered (see AGENTS.md).
 use crate::db::{ExecOptions, QueryResult, TableRef};
-use crate::models::{ConnectionConfig, ConnectionKind};
+use crate::models::{ConnectionConfig, ConnectionKind, Project};
 use crate::state::St;
 use async_trait::async_trait;
 use devcat_harness::approval::Kind;
 use devcat_harness::message::ToolSpec;
 use devcat_harness::tools::{Registry, Tool, ToolCtx, ToolOutput};
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Rows a query returns unless the model asks for more; and the most it may ask for.
@@ -17,34 +25,113 @@ const MAX_ROWS: usize = 1000;
 /// Longest cell shown; longer values keep their start.
 const MAX_CELL: usize = 300;
 
-/// The connection tools, when the user has any connections.
-pub fn add(tools: &mut Registry) {
-    let conns = connections();
-    if conns.is_empty() {
-        return;
+/// Whose connections the tools work with. Resolved on every call, so connections and projects
+/// changed in the app apply right away.
+#[derive(Debug, Clone, Default)]
+pub struct Scope {
+    /// This project (an id), whatever the folder.
+    pub project: Option<String>,
+    /// Else the project whose code folder holds this one.
+    pub folder: Option<PathBuf>,
+    /// Served over MCP: changing data needs the project's "Allow writes from MCP" (the DevCat
+    /// Agent asks the user instead).
+    pub mcp: bool,
+}
+
+impl Scope {
+    pub fn folder(dir: &Path) -> Scope {
+        Scope { folder: Some(dir.to_path_buf()), ..Scope::default() }
     }
-    tools.add(Connections);
+
+    /// The project the agent works in, if any.
+    pub fn current(&self, projects: &[Project]) -> Option<Project> {
+        if let Some(id) = &self.project {
+            return projects.iter().find(|p| &p.id == id).cloned();
+        }
+        crate::projects::for_folder(projects, self.folder.as_deref()?).cloned()
+    }
+}
+
+/// What a scope sees right now.
+pub struct View {
+    pub project: Option<Project>,
+    pub connections: Vec<ConnectionConfig>,
+    projects: Vec<Project>,
+}
+
+impl View {
+    fn project_of(&self, c: &ConnectionConfig) -> Option<&Project> {
+        self.projects.iter().find(|p| Some(&p.id) == c.project_id.as_ref())
+    }
+}
+
+pub fn view(scope: &Scope) -> View {
+    let Some(st) = St::try_get() else { return View { project: None, connections: vec![], projects: vec![] } };
+    let projects = st.projects.list().unwrap_or_default();
+    let project = scope.current(&projects);
+    let connections = st.store.load_all().unwrap_or_default().into_iter().filter(|c| visible(c, &projects, project.as_ref())).collect();
+    View { project, connections, projects }
+}
+
+/// Whether an agent working in `current` sees `c`.
+pub fn visible(c: &ConnectionConfig, projects: &[Project], current: Option<&Project>) -> bool {
+    if c.kind == ConnectionKind::Ssh {
+        return false;
+    }
+    let Some(pid) = c.project_id.as_deref() else { return true };
+    match projects.iter().find(|p| p.id == pid) {
+        Some(p) if !p.folders.is_empty() => current.is_some_and(|cur| cur.id == pid),
+        _ => true,
+    }
+}
+
+/// The connection tools, when the scope has any connections.
+pub fn add(tools: &mut Registry, scope: &Scope) {
+    for t in for_scope(scope) {
+        tools.add_arc(t);
+    }
+}
+
+/// The tools for the connections `scope` sees (none without connections).
+pub fn for_scope(scope: &Scope) -> Vec<Arc<dyn Tool>> {
+    let conns = view(scope).connections;
+    let s = Arc::new(scope.clone());
+    let mut out: Vec<Arc<dyn Tool>> = Vec::new();
+    if conns.is_empty() {
+        return out;
+    }
+    out.push(Arc::new(Connections(s.clone())));
     if conns.iter().any(|c| is_db(c.kind)) {
-        tools.add(DbSchema);
-        tools.add(DbQuery);
+        out.push(Arc::new(DbSchema(s.clone())));
+        out.push(Arc::new(DbQuery(s.clone())));
     }
     if conns.iter().any(|c| c.kind == ConnectionKind::Kubernetes) {
-        tools.add(K8sGet);
-        tools.add(K8sLogs);
+        out.push(Arc::new(K8sGet(s.clone())));
+        out.push(Arc::new(K8sLogs(s)));
     }
+    out
 }
 
-/// Names of the user's connections (for the chat's "Using" line).
-pub fn names() -> Vec<String> {
-    connections().into_iter().map(|c| c.name).collect()
+/// Names of the connections `scope` sees (for the chat's "Using" line).
+pub fn names(scope: &Scope) -> Vec<String> {
+    view(scope).connections.into_iter().map(|c| c.name).collect()
 }
 
-fn connections() -> Vec<ConnectionConfig> {
-    St::try_get().and_then(|s| s.store.load_all().ok()).unwrap_or_default()
+/// One line per connection: name, kind, default database, read-only, id.
+pub fn describe(c: &ConnectionConfig) -> String {
+    let mut l = format!("- {} ({}", c.name, kind_name(c.kind));
+    if let Some(db) = c.database.as_deref().filter(|d| !d.is_empty()) {
+        l.push_str(&format!(", database {db}"));
+    }
+    if c.read_only {
+        l.push_str(", read-only");
+    }
+    l.push_str(&format!(") id {}", c.id));
+    l
 }
 
 fn is_db(k: ConnectionKind) -> bool {
-    !matches!(k, ConnectionKind::Kubernetes | ConnectionKind::Rabbitmq | ConnectionKind::Ssh)
+    !matches!(k, ConnectionKind::Kubernetes | ConnectionKind::Rabbitmq | ConnectionKind::Docker | ConnectionKind::Ssh)
 }
 
 fn kind_name(k: ConnectionKind) -> &'static str {
@@ -57,16 +144,17 @@ fn kind_name(k: ConnectionKind) -> &'static str {
         ConnectionKind::Redis => "redis",
         ConnectionKind::Kubernetes => "kubernetes",
         ConnectionKind::Rabbitmq => "rabbitmq",
+        ConnectionKind::Docker => "docker",
         ConnectionKind::Ssh => "ssh",
     }
 }
 
-/// The connection the model means: by id, else by name (any case).
-fn find(input: &Value) -> Result<ConnectionConfig, ToolOutput> {
+/// The connection the model means: by id, else by name (any case), among those `scope` sees.
+fn find(scope: &Scope, input: &Value) -> Result<ConnectionConfig, ToolOutput> {
     let Some(want) = input.get("connection").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
         return Err(ToolOutput::err("Missing `connection`: the name or id of a DevCat connection (see `devcat_connections`)."));
     };
-    let all = connections();
+    let all = view(scope).connections;
     if let Some(c) = all.iter().find(|c| c.id == want) {
         return Ok(c.clone());
     }
@@ -84,7 +172,7 @@ fn conn_summary(input: &Value) -> String {
 
 // ---------- devcat_connections
 
-struct Connections;
+struct Connections(Arc<Scope>);
 
 #[async_trait]
 impl Tool for Connections {
@@ -102,31 +190,21 @@ impl Tool for Connections {
         String::new()
     }
     async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
-        let all = connections();
-        if all.is_empty() {
-            return ToolOutput::ok("The user has no DevCat connections.");
+        let v = view(&self.0);
+        if v.connections.is_empty() {
+            return ToolOutput::ok("The user has no DevCat connections for this folder.");
         }
-        let lines: Vec<String> = all
-            .iter()
-            .map(|c| {
-                let mut l = format!("- {} ({}", c.name, kind_name(c.kind));
-                if let Some(db) = c.database.as_deref().filter(|d| !d.is_empty()) {
-                    l.push_str(&format!(", database {db}"));
-                }
-                if c.read_only {
-                    l.push_str(", read-only");
-                }
-                l.push_str(&format!(") id {}", c.id));
-                l
-            })
-            .collect();
+        let mut lines: Vec<String> = v.connections.iter().map(describe).collect();
+        if let Some(p) = &v.project {
+            lines.insert(0, format!("Project {} (its connections, then the ones every folder gets):", p.name));
+        }
         ToolOutput::ok(lines.join("\n"))
     }
 }
 
 // ---------- db_schema
 
-struct DbSchema;
+struct DbSchema(Arc<Scope>);
 
 #[async_trait]
 impl Tool for DbSchema {
@@ -157,7 +235,7 @@ impl Tool for DbSchema {
         Duration::from_secs(90)
     }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
-        let c = match find(&input) {
+        let c = match find(&self.0, &input) {
             Ok(c) => c,
             Err(e) => return e,
         };
@@ -168,7 +246,7 @@ impl Tool for DbSchema {
         let (database, schema) = (arg("database").or(c.database.clone().filter(|d| !d.is_empty())), arg("schema"));
         let driver = match St::get().driver(&c.id).await {
             Ok(d) => d,
-            Err(e) => return ToolOutput::err(format!("Couldn't connect to {}: {e}", c.name)),
+            Err(e) => return ToolOutput::err(connect_error(&self.0, &c, &e.to_string())),
         };
         if let Some(name) = arg("table") {
             return match driver.table_structure(&TableRef { database, schema, name: name.clone() }).await {
@@ -226,6 +304,16 @@ impl Tool for DbSchema {
     }
 }
 
+/// A failed connect; over MCP, a connection behind a VPN / tunnel needs it connected in DevCat
+/// (the MCP server doesn't start networks: the app owns them).
+fn connect_error(scope: &Scope, c: &ConnectionConfig, e: &str) -> String {
+    let mut msg = format!("Couldn't connect to {}: {e}", c.name);
+    if scope.mcp && c.options.get("networkId").is_some_and(|n| !n.trim().is_empty()) {
+        msg.push_str(" (This connection goes through a VPN or tunnel profile: the user connects it in DevCat's Network panel first.)");
+    }
+    msg
+}
+
 fn qualified(r: &TableRef) -> String {
     match &r.schema {
         Some(s) if !s.is_empty() => format!("{s}.{}", r.name),
@@ -235,7 +323,7 @@ fn qualified(r: &TableRef) -> String {
 
 // ---------- db_query
 
-struct DbQuery;
+struct DbQuery(Arc<Scope>);
 
 #[async_trait]
 impl Tool for DbQuery {
@@ -257,9 +345,8 @@ impl Tool for DbQuery {
     }
     fn kind(&self, input: &Value, _: &ToolCtx) -> Kind {
         let query = input.get("query").and_then(Value::as_str).unwrap_or("");
-        match find(input) {
-            // the driver refuses writes on a read-only connection; reads are a query
-            Ok(c) if c.read_only || crate::remote::readonly::allowed(Some(c.kind), query) => Kind::Query,
+        match find(&self.0, input) {
+            Ok(c) if reads_only(&c, query) => Kind::Query,
             _ => Kind::Exec,
         }
     }
@@ -271,7 +358,7 @@ impl Tool for DbQuery {
         Duration::from_secs(120)
     }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
-        let c = match find(&input) {
+        let c = match find(&self.0, &input) {
             Ok(c) => c,
             Err(e) => return e,
         };
@@ -282,11 +369,17 @@ impl Tool for DbQuery {
         if query.is_empty() {
             return ToolOutput::err("Missing `query`.");
         }
+        if self.0.mcp && !reads_only(&c, query) && !view(&self.0).project_of(&c).is_some_and(|p| p.mcp_writes) {
+            return ToolOutput::err(format!(
+                "DevCat only lets agents read {} over MCP, and this query may change data. To allow changes, the user turns on \"Allow writes from MCP\" on the connection's project in DevCat (connections in no project are read-only over MCP).",
+                c.name
+            ));
+        }
         let max_rows = input.get("max_rows").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, MAX_ROWS)).unwrap_or(DEFAULT_ROWS);
         let database = input.get("database").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
         let driver = match St::get().driver(&c.id).await {
             Ok(d) => d,
-            Err(e) => return ToolOutput::err(format!("Couldn't connect to {}: {e}", c.name)),
+            Err(e) => return ToolOutput::err(connect_error(&self.0, &c, &e.to_string())),
         };
         let opts = ExecOptions { database, schema: None, max_rows: Some(max_rows) };
         match driver.execute(query, &opts).await {
@@ -299,6 +392,12 @@ impl Tool for DbQuery {
             Err(e) => ToolOutput::err(e.to_string()),
         }
     }
+}
+
+/// Whether the query only reads. The driver refuses writes on a read-only connection, so there
+/// every query is a read.
+fn reads_only(c: &ConnectionConfig, query: &str) -> bool {
+    c.read_only || crate::remote::readonly::allowed(Some(c.kind), query)
 }
 
 /// One statement's result as text: a header line and rows separated by ` | `.
@@ -331,15 +430,15 @@ fn cell(v: &Value) -> String {
 
 // ---------- Kubernetes
 
-fn k8s_conn(input: &Value) -> Result<ConnectionConfig, ToolOutput> {
-    let c = find(input)?;
+fn k8s_conn(scope: &Scope, input: &Value) -> Result<ConnectionConfig, ToolOutput> {
+    let c = find(scope, input)?;
     if c.kind != ConnectionKind::Kubernetes {
         return Err(ToolOutput::err(format!("{} is a {} connection, not a Kubernetes cluster.", c.name, kind_name(c.kind))));
     }
     Ok(c)
 }
 
-struct K8sGet;
+struct K8sGet(Arc<Scope>);
 
 #[async_trait]
 impl Tool for K8sGet {
@@ -369,7 +468,7 @@ impl Tool for K8sGet {
         format!("{}: {} {}{}", conn_summary(input), s("kind"), s("name"), if ns.is_empty() { String::new() } else { format!(" -n {ns}") }).trim_end().to_string()
     }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
-        let c = match k8s_conn(&input) {
+        let c = match k8s_conn(&self.0, &input) {
             Ok(c) => c,
             Err(e) => return e,
         };
@@ -447,7 +546,7 @@ fn redact_secret(v: &mut Value) {
     }
 }
 
-struct K8sLogs;
+struct K8sLogs(Arc<Scope>);
 
 #[async_trait]
 impl Tool for K8sLogs {
@@ -479,7 +578,7 @@ impl Tool for K8sLogs {
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
         use k8s_openapi::api::core::v1::Pod;
         use kube::api::{Api, LogParams};
-        let c = match k8s_conn(&input) {
+        let c = match k8s_conn(&self.0, &input) {
             Ok(c) => c,
             Err(e) => return e,
         };
@@ -487,7 +586,7 @@ impl Tool for K8sLogs {
         let (Some(ns), Some(pod)) = (s("namespace"), s("pod")) else { return ToolOutput::err("Missing `namespace` or `pod`.") };
         let conn = match crate::infra::k8s::conn(&St::get(), &c.id).await {
             Ok(x) => x,
-            Err(e) => return ToolOutput::err(format!("Couldn't connect to {}: {e}", c.name)),
+            Err(e) => return ToolOutput::err(connect_error(&self.0, &c, &e.to_string())),
         };
         let lp = LogParams {
             container: s("container"),
@@ -506,6 +605,26 @@ impl Tool for K8sLogs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projects_with_folders_keep_their_connections_to_them() {
+        let conn = |id: &str, kind: &str, project: Option<&str>| -> ConnectionConfig {
+            serde_json::from_value(json!({ "id": id, "name": id, "kind": kind, "projectId": project })).unwrap()
+        };
+        let projects = vec![
+            Project { id: "shop".into(), name: "Shop".into(), folders: vec!["/src/shop".into()], ..Default::default() },
+            Project { id: "misc".into(), name: "Misc".into(), ..Default::default() },
+        ];
+        let all = [conn("shop-db", "postgres", Some("shop")), conn("misc-db", "mysql", Some("misc")), conn("cache", "redis", None), conn("box", "ssh", None), conn("lost", "sqlite", Some("gone"))];
+        let seen = |current: Option<&Project>| all.iter().filter(|c| visible(c, &projects, current)).map(|c| c.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(seen(Some(&projects[0])), ["shop-db", "misc-db", "cache", "lost"], "in the shop folder: its own and the shared ones");
+        assert_eq!(seen(None), ["misc-db", "cache", "lost"], "elsewhere: a project without folders is shared; SSH never");
+        assert_eq!(seen(Some(&projects[1])), ["misc-db", "cache", "lost"]);
+        let scope = Scope::folder(Path::new("/src/shop/api"));
+        assert_eq!(scope.current(&projects).map(|p| p.id), Some("shop".into()));
+        assert_eq!(Scope::folder(Path::new("/src/shopping")).current(&projects).map(|p| p.id), None, "a folder, not a name prefix");
+        assert_eq!(Scope { project: Some("misc".into()), ..Scope::default() }.current(&projects).map(|p| p.id), Some("misc".into()));
+    }
 
     #[test]
     fn query_results_read_as_a_table() {

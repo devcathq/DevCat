@@ -17,6 +17,7 @@ Every shortcut in one place. On Windows and Linux, ⌘ is Ctrl and ⌥ is Alt.
 | Chat view | <kbd>⌥⇧⌘1</kbd> | <kbd>Ctrl+Alt+Shift+1</kbd> |
 | Diff view | <kbd>⌥⇧⌘2</kbd> | <kbd>Ctrl+Alt+Shift+2</kbd> |
 | Code Review view (Claude Code) | <kbd>⌥⇧⌘3</kbd> | <kbd>Ctrl+Alt+Shift+3</kbd> |
+| Copy / paste files in the file tree | <kbd>⌘C</kbd> <kbd>⌘V</kbd> | <kbd>Ctrl+C</kbd> <kbd>Ctrl+V</kbd> |
 | New terminal in the same folder | <kbd>⌥⇧⌘T</kbd> | <kbd>Ctrl+Alt+Shift+T</kbd> |
 | Commit (in the Diff view's message box) | <kbd>⌘↵</kbd> | <kbd>Ctrl+Enter</kbd> |
 | Save a file in the editor | <kbd>⌘S</kbd> | <kbd>Ctrl+S</kbd> |
@@ -25,8 +26,9 @@ Every shortcut in one place. On Windows and Linux, ⌘ is Ctrl and ⌥ is Alt.
 
 | Action | macOS | Windows, Linux |
 | --- | --- | --- |
-| Copy the selection | <kbd>⌘C</kbd> | <kbd>Ctrl+Shift+C</kbd> |
-| Paste | <kbd>⌘V</kbd> | <kbd>Ctrl+Shift+V</kbd> |
+| Copy the selection | <kbd>⌘C</kbd> | <kbd>Ctrl+Shift+C</kbd>; on Windows also <kbd>Ctrl+C</kbd> (with nothing selected it interrupts, as always) |
+| Paste | <kbd>⌘V</kbd> | <kbd>Ctrl+Shift+V</kbd>; on Windows also <kbd>Ctrl+V</kbd> |
+| Open a file path in DevCat / in its default app | click / <kbd>⌘</kbd>-click | click / <kbd>Ctrl</kbd>-click |
 | Clear | <kbd>⌘K</kbd> | <kbd>Ctrl+Shift+K</kbd> |
 | Select all | <kbd>⌘A</kbd> | <kbd>Ctrl+Shift+A</kbd> |
 | Bigger, smaller, default font size (also in a Kubernetes pod shell) | <kbd>⌘=</kbd> <kbd>⌘-</kbd> <kbd>⌘0</kbd> | <kbd>Ctrl+=</kbd> <kbd>Ctrl+-</kbd> <kbd>Ctrl+0</kbd> |

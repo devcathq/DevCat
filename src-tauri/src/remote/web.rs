@@ -230,7 +230,7 @@ async fn session(host: Arc<Host>, ws: Ws, peer: String) {
         }
     };
     let closer = Box::new(move |_: &str| stop.notify_one()) as Box<dyn Fn(&str) + Send + Sync>;
-    host.session(device, Some(peer), Box::new(rx), Box::new(tx), closer).await;
+    host.session(device, Some(peer), Box::new(rx), Box::new(tx), closer, None).await;
 }
 
 fn host_info_name(host: &Host) -> String {

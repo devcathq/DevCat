@@ -25,6 +25,7 @@ export function toggleConnection(conn: ConnectionConfig) {
 export function activateConnection(conn: ConnectionConfig) {
   if (conn.kind === "kubernetes") openInfra(conn.id, "k8s");
   else if (conn.kind === "rabbitmq") openInfra(conn.id, "rabbitmq");
+  else if (conn.kind === "docker") openInfra(conn.id, "docker");
   else if (conn.kind === "ssh") openSshTerminal(conn);
   else toggleConnection(conn);
 }

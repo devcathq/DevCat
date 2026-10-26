@@ -31,6 +31,47 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
     }
     match cmd {
         "remote_qr" => out(c!(crate::remote::remote_qr, "text")),
+        // rooms (several bridges with their own DEVBRIDGE_DATA are several DevCats)
+        "rooms_info" => out(c!(crate::rooms::rooms_info, "start")),
+        "room_create" => out(c!(crate::rooms::room_create, "name", "myName")),
+        "room_invite" => out(c!(crate::rooms::room_invite, "room", "role")),
+        "room_join" => out(c!(crate::rooms::room_join, "link", "myName")),
+        "room_join_answer" => out(c!(crate::rooms::room_join_answer, "requestId", "role")),
+        "room_forget" => out(c!(crate::rooms::room_forget, "room")),
+        "room_view" => out(c!(crate::rooms::room_view, "room")),
+        "room_board" => out(c!(crate::rooms::room_board, "room")),
+        "room_doc_updates" => out(c!(crate::rooms::room_doc_updates, "room", "version")),
+        "room_doc_import" => out(c!(crate::rooms::room_doc_import, "room", "updates", "peer")),
+        "room_post" => out(c!(crate::rooms::room_post, "room", "text")),
+        "room_suggest" => {
+            let (room, path, find, replacement, note) = (arg(args, "room")?, arg(args, "path")?, arg(args, "find")?, arg(args, "replacement")?, arg(args, "note")?);
+            out(crate::rooms::room_suggest(room, path, find, replacement, note).await)
+        }
+        "room_decide" => out(c!(crate::rooms::room_decide, "room", "id", "accept", "reason")),
+        "room_revert" => out(c!(crate::rooms::room_revert, "room", "change")),
+        "room_file_new" => out(c!(crate::rooms::room_file_new, "room", "path", "content")),
+        "room_file_delete" => out(c!(crate::rooms::room_file_delete, "room", "path")),
+        "room_file_add" => out(c!(crate::rooms::room_file_add, "room", "local", "path")),
+        "room_blob" => out(c!(crate::rooms::room_blob, "room", "hash")),
+        "room_blob_save" => out(c!(crate::rooms::room_blob_save, "room", "hash", "dest")),
+        "room_member_remove" => out(c!(crate::rooms::room_member_remove, "room", "member")),
+        "room_member_role" => out(c!(crate::rooms::room_member_role, "room", "member", "role")),
+        "room_settings" => out(c!(crate::rooms::room_settings, "room", "name", "agentEdits")),
+        "room_prefs" => out(c!(crate::rooms::room_prefs, "room", "prefs")),
+        "room_keeper_add" => out(c!(crate::rooms::room_keeper_add, "room", "keeper", "name")),
+        "room_focus" => out(c!(crate::rooms::room_focus, "room", "file", "typing")),
+        "room_agent_stop" => out(c!(crate::rooms::room_agent_stop, "room")),
+        // tickets (boards in the throwaway folder, tokens in memory)
+        "tickets_boards" => out(c!(crate::tickets::tickets_boards)),
+        "tickets_board_save" => out(c!(crate::tickets::tickets_board_save, "board")),
+        "tickets_board_delete" => out(c!(crate::tickets::tickets_board_delete, "id")),
+        "tickets_columns" => out(c!(crate::tickets::tickets_columns, "board")),
+        "tickets_list" => out(c!(crate::tickets::tickets_list, "boardId", "column")),
+        "tickets_fix" => out(c!(crate::tickets::tickets_fix, "boardId", "ticketIds")),
+        "tickets_stop" => out(c!(crate::tickets::tickets_stop, "boardId")),
+        "tickets_jobs" => out(c!(crate::tickets::tickets_jobs)),
+        "tickets_history" => out(c!(crate::tickets::tickets_history, "boardId")),
+        "tickets_webhook_test" => out(c!(crate::tickets::tickets_webhook_test, "board")),
         "git_repos" => out(c!(gx::git_repos, "root", "maxDepth")),
         "git_log" => out(c!(gx::git_log, "cwd", "query")),
         "git_show" => out(c!(gx::git_show, "cwd", "sha")),
@@ -102,7 +143,16 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "note_save" => out(arg(args, "note").and_then(|n| Ok(crate::notes::save_checked(&bridge_stores().0, &bridge_stores().1, n)))?),
         "note_delete" => out(arg::<String>(args, "id").map(|id| bridge_stores().0.delete(&id))?),
         "list_projects" => out(bridge_stores().1.list()),
-        "save_project" => out(arg(args, "project").map(|p| bridge_stores().1.save(p))?),
+        // the app's command (same throwaway folder): it also keeps synced MCP configs right
+        "save_project" => out(crate::commands::projects::save_project(crate::state::St::get(), arg(args, "project")?).await),
+        "mcp_sync_preview" => out(c!(crate::mcp_sync::mcp_sync_preview)),
+        "mcp_sync_apply" => out(c!(crate::mcp_sync::mcp_sync_apply, "replace")),
+        "mcp_sync_dismiss" => out(c!(crate::mcp_sync::mcp_sync_dismiss)),
+        "memory_list" => out(c!(crate::memory::memory_list)),
+        "memory_save" => out(c!(crate::memory::memory_save, "memory")),
+        "memory_delete" => out(c!(crate::memory::memory_delete, "place", "name")),
+        "memory_claude_preview" => out(c!(crate::memory::claude::memory_claude_preview)),
+        "memory_sync_all" => out(c!(crate::memory::claude::memory_sync_all, "choices", "auto", "rules")),
         "list_bookmarks" => out(bridge_bookmarks().list()),
         "add_bookmark" => out(arg(args, "bookmark").map(|b| bridge_bookmarks().add(b))?),
         "remove_bookmark" => out(arg::<String>(args, "id").map(|id| bridge_bookmarks().remove(&id))?),
@@ -156,9 +206,23 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
     crate::secrets::memory_only();
     let d = std::env::temp_dir().join(format!("devcat-bridge-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&d);
-    crate::state::init(d);
+    crate::state::init(d.clone());
+    // Sync MCP edits agents' configs in a pretend home folder (DEVBRIDGE_MCP_HOME, else one with
+    // an empty ~/.claude.json and ~/.codex), never the real ones.
+    crate::mcp_sync::init(d.clone());
+    crate::memory::init(d.clone());
+    let home = std::env::var_os("DEVBRIDGE_MCP_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let h = d.join("home");
+        let _ = std::fs::create_dir_all(h.join(".codex"));
+        let _ = std::fs::write(h.join(".claude.json"), "{}");
+        h
+    });
+    crate::mcp_sync::set_home(home);
+    crate::tickets::init(d.clone());
+    // Rooms keep their identity and documents here (DEVBRIDGE_DATA: keep them across runs).
+    crate::rooms::init(std::env::var_os("DEVBRIDGE_DATA").map(std::path::PathBuf::from).unwrap_or(d));
     crate::events::add_tap(|event, payload| {
-        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward") {
+        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward" | "rooms-changed" | "room-join-request" | "room-join-resolved" | "room-agent" | "tickets-job" | "tickets-changed") {
             let mut q = EVENTS.lock();
             if q.len() < 20_000 {
                 q.push(json!({ "event": event, "payload": payload }));

@@ -7,10 +7,13 @@ pub async fn list_projects(state: St) -> AppResult<Vec<Project>> {
     state.projects.list()
 }
 
-/// Create (empty `id`) or rename / recolor a project.
+/// Create (empty `id`) or change a project (name, color, code folders, MCP writes).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn save_project(state: St, project: Project) -> AppResult<Project> {
-    state.projects.save(project)
+    let p = state.projects.save(project)?;
+    // its code folders may have changed: agents' MCP configs follow
+    tokio::task::spawn_blocking(crate::mcp_sync::auto);
+    Ok(p)
 }
 
 /// Delete a project. Its connections are moved out of the project, or deleted
@@ -43,7 +46,9 @@ pub async fn delete_project(state: St, id: String, delete_connections: Option<bo
         })?;
     }
     state.notes.unassign_project(&id)?;
-    state.projects.delete(&id)
+    state.projects.delete(&id)?;
+    tokio::task::spawn_blocking(crate::mcp_sync::auto);
+    Ok(())
 }
 
 /// Move connections into a project (`project_id = None` removes them from any project).
