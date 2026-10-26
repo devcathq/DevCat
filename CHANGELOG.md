@@ -72,6 +72,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   200,000 characters are now shared as read-only files (save them to read them) instead of editable documents.
 - **Room agents see the room's images:** an agent mentioned in a room now looks at shared PNG, JPEG, GIF and WebP
   images (up to 5 MB) when it reads them, and can read text files shared read-only because of their size.
+- **Rooms:** an image open in a room no longer blinks each time someone in the room types, moves or posts.
 
 ## 0.12.0 - 2026-10-24
 
