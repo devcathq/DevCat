@@ -1,18 +1,21 @@
 //! The agent loop. One user message is a *turn*: the model takes steps, each step may ask for
 //! tool calls, the calls go through the pipeline (approval → timeout → truncation → event) and
 //! their results go back to the model, until it answers without a tool call.
-use crate::approval::{ApprovalRequest, Approver, Decision, Policy, Question};
+use crate::approval::{ApprovalRequest, Approver, Decision, DenyAll, Kind, Policy, Question};
 use crate::llm::{Delta, Llm, Reply, Request};
-use crate::message::{Block, ToolSpec, Usage};
+use crate::message::{Block, Role, ToolSpec, Usage};
 use crate::session::{Session, SessionEvent};
-use crate::tools::{ASK_USER, MAX_OUTPUT, Registry, ToolCtx, ToolOutput, truncate};
+use crate::tools::{ASK_USER, MAX_OUTPUT, Registry, SUBAGENT, TODO_WRITE, ToolCtx, ToolOutput, truncate};
 use crate::{Error, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
+use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 /// Steps per turn before the agent stops and asks the user to continue.
 pub const MAX_STEPS: u32 = 60;
@@ -24,13 +27,28 @@ pub const COMPACT_AT: f64 = 0.8;
 const PLAN_MODE: &str = "\
 # Plan mode
 The user switched on plan mode: look around first and come back with a plan; don't change anything yet. \
-Reading, searching and read-only git run as usual, web pages and queries ask, and edits and commands are \
+Reading, searching, read-only git and helpers run as usual, web pages and queries ask, and edits and commands are \
 refused until the user starts the plan. When you know enough, answer with the plan: the steps, the files \
 you'd change and how, and anything the user should decide. Keep it short.";
 
 /// The same call (tool and arguments) this many times in a row runs; the next one is refused, so a
 /// model stuck in a loop hears it instead of spending the turn.
 pub const MAX_SAME_CALL: usize = 3;
+
+/// Helpers (`subagent` calls of one step) that run at the same time; more wait for a free slot.
+pub const MAX_HELPERS: usize = 4;
+
+/// Tools a helper doesn't get: the ones that change something, talk to the user or start helpers.
+const HELPER_HIDDEN: &[&str] = &["write", "edit", "shell", TODO_WRITE, ASK_USER, SUBAGENT];
+
+/// Added to a helper's system prompt.
+const HELPER: &str = "\
+# You're a helper
+Another agent gave you the task in the user message. Your final answer goes back to that agent, not to the user, \
+and it can't ask you anything afterwards. You can read and search the project and use the other tools that don't \
+change anything; you can't edit files, run commands or ask the user, whatever the instructions above say about that. \
+Work through the task, then answer with what the other agent needs: the facts, with file paths and line numbers, and \
+short code excerpts only where they matter. If you couldn't find something, say so and say where you looked.";
 
 const COMPACT_PROMPT: &str = "\
 The conversation is about to be cut to free the context window, and this summary will replace it. \
@@ -79,6 +97,10 @@ pub enum AgentEvent {
     /// A tool call is about to run (after approval, if it needed one).
     ToolCall { id: String, name: String, summary: String, input: Value },
     ToolResult { id: String, content: String, is_error: bool },
+    /// The helper started by `subagent` call `id` made a tool call.
+    HelperTool { id: String, name: String, input: Value },
+    /// The helper started by `subagent` call `id` finished a step; its tokens count for the chat.
+    HelperStep { id: String, usage: Usage },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -124,11 +146,13 @@ pub struct Agent {
     pub context_window: Option<u64>,
     /// Tools the user allowed for the rest of the session.
     allowed: HashSet<String>,
+    /// A helper started by `subagent`: it only looks, never asks, and starts no helpers itself.
+    helper: bool,
 }
 
 impl Agent {
     pub fn new(model: Arc<dyn Model>, tools: Registry, policy: Policy, approver: Arc<dyn Approver>, system: String) -> Agent {
-        Agent { model, tools, policy, approver, system, context_window: None, allowed: HashSet::new() }
+        Agent { model, tools, policy, approver, system, context_window: None, allowed: HashSet::new(), helper: false }
     }
 
     /// Summarize the conversation so far and continue from the summary (`/compact`). `focus` says
@@ -226,14 +250,31 @@ impl Agent {
             if calls.is_empty() {
                 return Ok(TurnEnd::Answered);
             }
-            let mut results = Vec::new();
-            for (id, name, input) in calls {
+            // the repeat guard, decided before anything runs
+            let mut repeated = HashSet::new();
+            for (id, name, input) in &calls {
                 let key = (name.clone(), input.clone());
                 same = if last.as_ref() == Some(&key) { same + 1 } else { 1 };
                 last = Some(key);
+                if same > MAX_SAME_CALL {
+                    repeated.insert(id.clone());
+                }
+            }
+            // Helpers first, all at once: they only look, so they can't get in the way of the
+            // other calls. Each result is reported as soon as it's in.
+            let jobs: Vec<(String, Value)> = calls.iter().filter(|(id, name, _)| name == SUBAGENT && !self.helper && !repeated.contains(id)).map(|(id, _, input)| (id.clone(), input.clone())).collect();
+            let mut helped = if cancel.is_cancelled() { HashMap::new() } else { self.helpers(session, jobs, cancel, on).await };
+            let mut results = Vec::new();
+            let mut usage = Usage::default();
+            for (id, name, input) in calls {
+                if let Some((out, used)) = helped.remove(&id) {
+                    usage += used;
+                    results.push(Block::ToolResult { tool_use_id: id, content: out.content, is_error: out.is_error });
+                    continue;
+                }
                 let out = if cancel.is_cancelled() {
                     ToolOutput::err("Not run: stopped by the user.")
-                } else if same > MAX_SAME_CALL {
+                } else if repeated.contains(&id) {
                     ToolOutput::err(format!(
                         "Not run: you already made this exact `{name}` call {MAX_SAME_CALL} times in a row. Doing it again won't help: try something different, or tell the user what's in the way."
                     ))
@@ -243,7 +284,7 @@ impl Agent {
                 on(AgentEvent::ToolResult { id: id.clone(), content: out.content.clone(), is_error: out.is_error });
                 results.push(Block::ToolResult { tool_use_id: id, content: out.content, is_error: out.is_error });
             }
-            session.append(SessionEvent::ToolResults { results }).await?;
+            session.append(SessionEvent::ToolResults { results, usage }).await?;
             if cancel.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -254,6 +295,95 @@ impl Agent {
     /// The system prompt for this turn: plan mode adds what it means.
     fn system_now(&self) -> String {
         if self.policy == Policy::Plan { format!("{}\n\n{PLAN_MODE}", self.system) } else { self.system.clone() }
+    }
+
+    /// Run `subagent` calls (id, input), up to [`MAX_HELPERS`] at a time, each in its own session
+    /// in `<session>.agents/`. Returns each result with the tokens its helper used.
+    async fn helpers(&self, session: &Session, jobs: Vec<(String, Value)>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> HashMap<String, (ToolOutput, Usage)> {
+        let mut done = HashMap::new();
+        if jobs.is_empty() {
+            return done;
+        }
+        let dir = session.path().with_extension("agents");
+        // the helpers' events come through a channel: `on` can only be called from here
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runs: Vec<_> = jobs
+            .into_iter()
+            .map(|(id, input)| {
+                let (tx, dir) = (tx.clone(), &dir);
+                async move {
+                    let (out, usage) = self.helper(dir, &session.cwd, &id, &input, cancel, tx).await;
+                    (id, out, usage)
+                }
+            })
+            .collect();
+        drop(tx);
+        let mut runs = futures::stream::iter(runs).buffer_unordered(MAX_HELPERS);
+        loop {
+            tokio::select! {
+                Some(e) = rx.recv() => on(e),
+                next = runs.next() => {
+                    let Some((id, out, usage)) = next else { break };
+                    while let Ok(e) = rx.try_recv() {
+                        on(e);
+                    }
+                    let out = fit(session, &id, SUBAGENT, out).await;
+                    on(AgentEvent::ToolResult { id: id.clone(), content: out.content.clone(), is_error: out.is_error });
+                    done.insert(id, (out, usage));
+                }
+            }
+        }
+        done
+    }
+
+    /// One helper: a new agent with this one's model and the tools that only look, answering
+    /// `input.prompt` in a new session in `dir`. Boxed, because a turn runs helpers and a helper
+    /// runs a turn.
+    fn helper<'a>(&'a self, dir: &'a Path, cwd: &'a str, id: &'a str, input: &'a Value, cancel: &'a Cancel, tx: mpsc::UnboundedSender<AgentEvent>) -> BoxFuture<'a, (ToolOutput, Usage)> {
+        Box::pin(async move {
+            let prompt = input.get("prompt").and_then(Value::as_str).unwrap_or("").trim();
+            if prompt.is_empty() {
+                return (ToolOutput::err("Missing `prompt`: say what the helper should find out."), Usage::default());
+            }
+            let summary = self.tools.get(SUBAGENT).map(|t| t.summary(input)).unwrap_or_default();
+            let _ = tx.send(AgentEvent::ToolCall { id: id.to_string(), name: SUBAGENT.to_string(), summary, input: input.clone() });
+            let mut session = match Session::create_named(dir, id, cwd).await {
+                Ok(s) => s,
+                Err(e) => return (ToolOutput::err(format!("The helper couldn't start: {e}")), Usage::default()),
+            };
+            let mut helper = Agent {
+                model: self.model.clone(),
+                tools: self.tools.without(HELPER_HIDDEN),
+                // plan mode's prompt is about the user's plan; a helper's limits are its own
+                policy: if self.policy == Policy::Plan { Policy::Ask } else { self.policy },
+                approver: Arc::new(DenyAll),
+                system: format!("{}\n\n{HELPER}", self.system),
+                context_window: self.context_window,
+                allowed: self.allowed.clone(),
+                helper: true,
+            };
+            let mut forward = |e: AgentEvent| {
+                let e = match e {
+                    AgentEvent::ToolCall { name, input, .. } => AgentEvent::HelperTool { id: id.to_string(), name, input },
+                    AgentEvent::Step { usage, .. } | AgentEvent::Compacted { usage, .. } => AgentEvent::HelperStep { id: id.to_string(), usage },
+                    _ => return,
+                };
+                let _ = tx.send(e);
+            };
+            let res = helper.turn(&mut session, prompt, cancel, &mut forward).await;
+            let answer = session.messages().last().filter(|m| m.role == Role::Assistant).map(|m| m.text().trim().to_string()).unwrap_or_default();
+            let out = match res {
+                Ok(TurnEnd::Answered) if !answer.is_empty() => ToolOutput::ok(answer),
+                Ok(TurnEnd::Answered) => ToolOutput::err("The helper finished without an answer."),
+                Ok(TurnEnd::StepLimit) => ToolOutput::err(format!(
+                    "The helper stopped after {MAX_STEPS} steps without an answer.{}",
+                    if answer.is_empty() { String::new() } else { format!(" What it had so far:\n\n{answer}") }
+                )),
+                Err(Error::Cancelled) => ToolOutput::err("Stopped by the user."),
+                Err(e) => ToolOutput::err(format!("The helper stopped: {e}")),
+            };
+            (out, session.usage())
+        })
     }
 
     /// The tool pipeline for one call.
@@ -281,12 +411,18 @@ impl Agent {
                 _ => ToolOutput::err("Nobody can answer questions right now. Decide yourself, and say what you assumed."),
             });
         }
-        // 0. plan mode: nothing that changes something runs, not even with a yes
+        // 0. helpers and plan mode: nothing that changes something runs, not even with a yes
+        if self.helper && matches!(kind, Kind::Edit | Kind::EditOutside | Kind::Exec) {
+            return Ok(ToolOutput::err("Not run: a helper only looks; it doesn't change files or run commands. If this needs doing, say so in your answer."));
+        }
         if self.policy.refuses(kind) {
             return Ok(ToolOutput::err("Not run: plan mode is on, so nothing is changed or run yet. Look around as much as you need, then answer with your plan; the user starts it."));
         }
-        // 1. approval (fail closed)
+        // 1. approval (fail closed); a helper can't ask
         if self.policy.needs_approval(kind) && !self.allowed.contains(name) {
+            if self.helper {
+                return Ok(ToolOutput::err("Not run: this needs the user's OK, and a helper can't ask. If you need it, say so in your answer."));
+            }
             let req = ApprovalRequest { tool_use_id: id.to_string(), tool: name.to_string(), kind, summary: summary.clone(), input: input.clone() };
             let (decision, by) = tokio::select! {
                 d = self.approver.decide(&req) => d,

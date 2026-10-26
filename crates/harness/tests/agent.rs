@@ -6,8 +6,10 @@ use devcat_harness::message::ToolSpec;
 use devcat_harness::tools::{Registry, Tool, ToolCtx, ToolOutput};
 use devcat_harness::{Agent, AgentEvent, Approver, Block, Cancel, Decision, Error, Model, Policy, Role, Session, SessionEvent, TurnEnd, Usage};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Answers each step from a script and records what it was sent.
 struct Scripted {
@@ -376,5 +378,186 @@ async fn long_output_is_cut_for_the_model_and_kept_whole_in_a_file() {
     // read's own output is cut but not saved again: its file is there to page through
     assert!(results[1].contains("characters, about") && !results[1].contains("is saved in"));
     assert!(!session.path().with_extension("out").join("r1.txt").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Answers from one script per conversation, picked by its first user message (the user's task or a
+/// helper's prompt), so helpers running at the same time each get their own. Records each request's
+/// first message, system prompt and tool names. With a `gate`, helpers' first steps wait for each
+/// other there.
+struct Router {
+    scripts: Mutex<HashMap<String, Vec<Vec<Block>>>>,
+    seen: Mutex<Vec<(String, String, Vec<String>)>>,
+    gate: Option<tokio::sync::Barrier>,
+}
+
+impl Router {
+    fn new(scripts: Vec<(&str, Vec<Vec<Block>>)>, gate: Option<usize>) -> Arc<Router> {
+        let scripts = scripts.into_iter().map(|(k, s)| (k.to_string(), s.into_iter().rev().collect())).collect();
+        Arc::new(Router { scripts: Mutex::new(scripts), seen: Mutex::default(), gate: gate.map(tokio::sync::Barrier::new) })
+    }
+
+    /// The requests of the conversation that started with `first`: (system prompt, tool names).
+    fn requests(&self, first: &str) -> Vec<(String, Vec<String>)> {
+        self.seen.lock().unwrap().iter().filter(|s| s.0 == first).map(|s| (s.1.clone(), s.2.clone())).collect()
+    }
+}
+
+#[async_trait]
+impl Model for Router {
+    fn name(&self) -> String {
+        "router".into()
+    }
+    async fn step(&self, req: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
+        let first = req.messages[0].text();
+        self.seen.lock().unwrap().push((first.clone(), req.system.to_string(), req.tools.iter().map(|t| t.name.clone()).collect()));
+        if let Some(gate) = &self.gate
+            && req.system.contains("# You're a helper")
+            && req.messages.len() == 1
+        {
+            gate.wait().await;
+        }
+        let content = self.scripts.lock().unwrap().get_mut(&first).and_then(|s| s.pop()).unwrap_or_else(|| panic!("no step left for {first:?}"));
+        Ok(Reply { content, usage: Usage { input_tokens: 100, output_tokens: 10, cache_read_tokens: 0 }, truncated: false })
+    }
+}
+
+fn helper_call(id: &str, description: &str, prompt: &str) -> Block {
+    tool(id, "subagent", json!({ "description": description, "prompt": prompt }))
+}
+
+#[tokio::test]
+async fn helpers_run_at_the_same_time_only_look_and_count_for_the_chat() {
+    let (dir, mut session) = project().await;
+    let model = Router::new(
+        vec![
+            ("find the version and the tests", vec![
+                vec![text("Asking two helpers."), helper_call("h1", "Find the version", "Where is the version set?"), helper_call("h2", "Find the tests", "Are there tests?")],
+                vec![text("The version is 1, and there are no tests.")],
+            ]),
+            ("Where is the version set?", vec![vec![tool("h1r", "read", json!({ "path": "notes.txt" }))], vec![text("In notes.txt: version = 1.")]]),
+            ("Are there tests?", vec![
+                // a tool a helper doesn't have, and a command
+                vec![tool("h2w", "write", json!({ "path": "x.txt", "content": "x" })), tool("h2c", "git", json!({ "args": ["commit", "-m", "x"] }))],
+                vec![tool("h2g", "glob", json!({ "pattern": "**/*test*" }))],
+                vec![text("No tests.")],
+            ]),
+        ],
+        // each helper's first step waits for the other's: one after the other, this would hang
+        Some(2),
+    );
+    let approver = Arc::new(Answer(Decision::Allow, Mutex::default()));
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Ask, approver.clone(), "base prompt".into());
+    let mut events = Vec::new();
+    let (cancel, mut on) = (Cancel::default(), |e| events.push(e));
+    let turn = agent.turn(&mut session, "find the version and the tests", &cancel, &mut on);
+    let end = tokio::time::timeout(Duration::from_secs(10), turn).await.expect("the helpers ran one after the other").unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+
+    let results: Vec<(String, String, bool)> = events.iter().filter_map(|e| match e {
+        AgentEvent::ToolResult { id, content, is_error } => Some((id.clone(), content.clone(), *is_error)),
+        _ => None,
+    }).collect();
+    assert_eq!(results.len(), 2, "one result per helper: {results:?}");
+    assert!(results.contains(&("h1".into(), "In notes.txt: version = 1.".into(), false)));
+    assert!(results.contains(&("h2".into(), "No tests.".into(), false)));
+    // what the helpers did shows on their cards, and their tokens count
+    let did: Vec<(String, String)> = events.iter().filter_map(|e| match e {
+        AgentEvent::HelperTool { id, name, .. } => Some((id.clone(), name.clone())),
+        _ => None,
+    }).collect();
+    assert_eq!(did.len(), 2);
+    assert!(did.contains(&("h1".into(), "read".into())) && did.contains(&("h2".into(), "glob".into())));
+    assert_eq!(events.iter().filter(|e| matches!(e, AgentEvent::HelperStep { .. })).count(), 5);
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolCall { id, name, summary, .. } if id == "h1" && name == "subagent" && summary == "Find the version")));
+
+    // nothing was written or asked
+    assert!(!dir.join("proj/x.txt").exists());
+    assert!(approver.1.lock().unwrap().is_empty());
+    let h2 = Session::open(&session.path().with_extension("agents").join("h2.jsonl")).await.unwrap();
+    let refused: Vec<String> = h2.events().iter().filter_map(|e| match e {
+        SessionEvent::ToolResults { results, .. } => Some(results.clone()),
+        _ => None,
+    }).flatten().filter_map(|b| match b {
+        Block::ToolResult { content, is_error: true, .. } => Some(content),
+        _ => None,
+    }).collect();
+    assert_eq!(refused.len(), 2);
+    assert!(refused[0].contains("no tool named `write`") && refused[1].contains("a helper only looks"), "{refused:?}");
+
+    // helpers get the user's rules and their own section, and only the tools that look
+    for (system, tools) in model.requests("Are there tests?") {
+        assert!(system.starts_with("base prompt") && system.contains("# You're a helper"));
+        for hidden in ["write", "edit", "shell", "todo_write", "ask_user", "subagent"] {
+            assert!(!tools.contains(&hidden.to_string()), "a helper has {hidden}");
+        }
+        assert!(["read", "glob", "grep", "git", "web_fetch"].iter().all(|t| tools.contains(&t.to_string())));
+    }
+    let (main_system, main_tools) = model.requests("find the version and the tests").remove(0);
+    assert!(!main_system.contains("# You're a helper") && main_tools.contains(&"subagent".to_string()));
+
+    // the chat's tokens include the helpers' (2 + 2 + 3 steps), also after a resume; the
+    // conversation has their answers in call order
+    assert_eq!(session.usage().input_tokens, 700);
+    let resumed = Session::open(session.path()).await.unwrap();
+    assert_eq!(resumed.usage().input_tokens, 700);
+    let m = resumed.messages();
+    assert!(matches!(&m[2].content[..], [Block::ToolResult { tool_use_id: a, .. }, Block::ToolResult { tool_use_id: b, .. }] if a == "h1" && b == "h2"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_helper_never_asks_and_runs_in_plan_mode() {
+    let (dir, mut session) = project().await;
+    let model = Router::new(
+        vec![
+            ("plan the docs update", vec![vec![helper_call("h1", "Read the docs", "What do the docs at https://example.invalid/docs say?")], vec![text("Plan: …")]]),
+            ("What do the docs at https://example.invalid/docs say?", vec![vec![tool("f1", "web_fetch", json!({ "url": "https://example.invalid/docs" }))], vec![text("I couldn't read them.")]]),
+        ],
+        None,
+    );
+    let approver = Arc::new(Answer(Decision::Allow, Mutex::default()));
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Plan, approver.clone(), "base prompt".into());
+    agent.turn(&mut session, "plan the docs update", &Cancel::default(), &mut |_| {}).await.unwrap();
+    // in plan mode a fetch asks; a helper can't, so it's refused and nobody was asked
+    assert!(approver.1.lock().unwrap().is_empty());
+    let h1 = Session::open(&session.path().with_extension("agents").join("h1.jsonl")).await.unwrap();
+    assert!(h1.messages()[2].content.iter().any(|b| matches!(b, Block::ToolResult { content, is_error: true, .. } if content.contains("a helper can't ask"))));
+    // the helper's prompt has no plan-mode section (it's about the user's plan)
+    assert!(model.requests("What do the docs at https://example.invalid/docs say?").iter().all(|(s, _)| !s.contains("# Plan mode")));
+    assert!(model.requests("plan the docs update").iter().all(|(s, _)| s.contains("# Plan mode")));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn stopping_stops_the_helpers_too() {
+    let (dir, mut session) = project().await;
+    let model = Router::new(
+        vec![("look around", vec![vec![helper_call("h1", "One", "first question"), helper_call("h2", "Two", "second question")]])],
+        // three never meet: the helpers wait until they're stopped
+        Some(3),
+    );
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    let cancel = Cancel::default();
+    let stop = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        stop.cancel();
+    });
+    let mut results = Vec::new();
+    let res = agent
+        .turn(&mut session, "look around", &cancel, &mut |e| {
+            if let AgentEvent::ToolResult { id, content, .. } = e {
+                results.push((id, content));
+            }
+        })
+        .await;
+    assert!(matches!(res, Err(Error::Cancelled)));
+    results.sort();
+    assert_eq!(results, [("h1".to_string(), "Stopped by the user.".to_string()), ("h2".to_string(), "Stopped by the user.".to_string())]);
+    // the turn is recorded as stopped, with both results
+    let resumed = Session::open(session.path()).await.unwrap();
+    assert!(matches!(resumed.events().last(), Some(SessionEvent::Interrupted { .. })));
+    assert_eq!(resumed.messages()[2].content.len(), 2);
     let _ = std::fs::remove_dir_all(dir);
 }

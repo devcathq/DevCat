@@ -24,8 +24,13 @@ pub enum SessionEvent {
     },
     /// One model step: what the model said (text, thinking, tool calls) and what it cost.
     Assistant { content: Vec<Block>, model: String, usage: Usage },
-    /// Results of the tool calls of the previous step, in call order.
-    ToolResults { results: Vec<Block> },
+    /// Results of the tool calls of the previous step, in call order, and the tokens the calls
+    /// used themselves (helpers started with `subagent`; their own sessions have the details).
+    ToolResults {
+        results: Vec<Block>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        usage: Usage,
+    },
     /// A decision on a tool call that needed approval (kept for the audit trail).
     Approval { tool_use_id: String, tool: String, allowed: bool, by: String },
     /// The turn ended without a final answer (provider error, stopped, step limit).
@@ -35,6 +40,10 @@ pub enum SessionEvent {
     /// The conversation so far was summarized to free the context window: from here on the model
     /// gets `summary` instead of the events before it (they stay in the log).
     Compacted { summary: String, model: String, usage: Usage, tokens_before: u64 },
+}
+
+fn is_zero(u: &Usage) -> bool {
+    *u == Usage::default()
 }
 
 /// The first user message after a compaction: the summary of everything before it.
@@ -52,8 +61,17 @@ pub struct Session {
 impl Session {
     /// Start a new session file `<dir>/<id>.jsonl`.
     pub async fn create(dir: &Path, cwd: &str) -> Result<Session> {
+        Session::create_named(dir, &uuid::Uuid::new_v4().to_string(), cwd).await
+    }
+
+    /// [`Session::create`] with a chosen id (a helper's session is named after the call that
+    /// started it). A name that's taken gets a suffix.
+    pub async fn create_named(dir: &Path, id: &str, cwd: &str) -> Result<Session> {
         tokio::fs::create_dir_all(dir).await?;
-        let id = uuid::Uuid::new_v4().to_string();
+        let mut id = file_safe(id);
+        if dir.join(format!("{id}.jsonl")).exists() {
+            id = format!("{id}-{}", uuid::Uuid::new_v4());
+        }
         let mut s = Session { id: id.clone(), cwd: cwd.to_string(), path: dir.join(format!("{id}.jsonl")), events: vec![] };
         let created_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         s.append(SessionEvent::Meta { format: FORMAT, id, cwd: cwd.to_string(), created_ms }).await?;
@@ -107,8 +125,7 @@ impl Session {
     pub async fn save_output(&self, tool_use_id: &str, text: &str) -> Result<PathBuf> {
         let dir = self.path.with_extension("out");
         tokio::fs::create_dir_all(&dir).await?;
-        let name: String = tool_use_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
-        let file = dir.join(format!("{name}.txt"));
+        let file = dir.join(format!("{}.txt", file_safe(tool_use_id)));
         tokio::fs::write(&file, text).await?;
         Ok(file)
     }
@@ -145,7 +162,7 @@ impl Session {
                     push(&mut out, Role::User, content);
                 }
                 SessionEvent::Assistant { content, .. } => push(&mut out, Role::Assistant, content.clone()),
-                SessionEvent::ToolResults { results } => push(&mut out, Role::User, results.clone()),
+                SessionEvent::ToolResults { results, .. } => push(&mut out, Role::User, results.clone()),
                 _ => {}
             }
         }
@@ -157,7 +174,7 @@ impl Session {
     pub fn usage(&self) -> Usage {
         let mut u = Usage::default();
         for e in &self.events {
-            if let SessionEvent::Assistant { usage, .. } | SessionEvent::Compacted { usage, .. } = e {
+            if let SessionEvent::Assistant { usage, .. } | SessionEvent::Compacted { usage, .. } | SessionEvent::ToolResults { usage, .. } = e {
                 u += *usage;
             }
         }
@@ -181,7 +198,7 @@ impl Session {
                     chars = summary.len();
                 }
                 SessionEvent::User { text, images } => chars += text.len() + images.len() * 6_000,
-                SessionEvent::ToolResults { results } => chars += results.iter().map(block_chars).sum::<usize>(),
+                SessionEvent::ToolResults { results, .. } => chars += results.iter().map(block_chars).sum::<usize>(),
                 _ => {}
             }
         }
@@ -203,6 +220,11 @@ impl Session {
         let line = first.unwrap_or("New session").lines().next().unwrap_or_default();
         if line.chars().count() > 60 { format!("{}…", line.chars().take(60).collect::<String>()) } else { line.to_string() }
     }
+}
+
+/// `id` as part of a file name.
+fn file_safe(id: &str) -> String {
+    id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
 /// Merge into the previous message when the role repeats (providers want alternating roles).
@@ -254,7 +276,7 @@ mod tests {
         s.append(SessionEvent::User { text: "list files".into(), images: vec![] }).await.unwrap();
         let call = Block::ToolUse { id: "t1".into(), name: "glob".into(), input: json!({ "pattern": "*" }) };
         s.append(SessionEvent::Assistant { content: vec![call], model: "m".into(), usage: Usage { input_tokens: 10, output_tokens: 2, cache_read_tokens: 0 } }).await.unwrap();
-        s.append(SessionEvent::ToolResults { results: vec![Block::ToolResult { tool_use_id: "t1".into(), content: "a.rs".into(), is_error: false }] }).await.unwrap();
+        s.append(SessionEvent::ToolResults { results: vec![Block::ToolResult { tool_use_id: "t1".into(), content: "a.rs".into(), is_error: false }], usage: Usage::default() }).await.unwrap();
         s.append(SessionEvent::Assistant { content: vec![Block::Text { text: "One file.".into() }], model: "m".into(), usage: Usage { input_tokens: 20, output_tokens: 3, cache_read_tokens: 0 } }).await.unwrap();
 
         let r = Session::open(s.path()).await.unwrap();

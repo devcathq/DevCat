@@ -488,7 +488,8 @@ export type AgentSessionEvent =
   | { event: "meta"; id: string; cwd: string; created_ms: number }
   | { event: "user"; text: string; images?: AgentBlock[] }
   | { event: "assistant"; content: AgentBlock[]; model: string; usage: AgentUsage }
-  | { event: "tool_results"; results: AgentBlock[] }
+  /** `usage`: tokens the calls used themselves (helpers started with `subagent`). */
+  | { event: "tool_results"; results: AgentBlock[]; usage?: AgentUsage }
   | { event: "approval"; tool_use_id: string; tool: string; allowed: boolean; by: string }
   | { event: "interrupted"; reason: string }
   | { event: "title"; title: string }
@@ -515,4 +516,7 @@ export type AgentLiveEvent =
   | { type: "approval"; request: AgentApprovalRequest }
   | { type: "toolCall"; id: string; name: string; summary: string; input: Record<string, unknown> }
   | { type: "toolResult"; id: string; content: string; is_error: boolean }
+  /** The helper started by `subagent` call `id` made a tool call / finished a step. */
+  | { type: "helperTool"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "helperStep"; id: string; usage: AgentUsage }
   | { type: "turnEnd"; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; usage: AgentUsage; title: string; elapsedMs: number };
