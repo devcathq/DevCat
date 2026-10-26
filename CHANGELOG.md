@@ -46,6 +46,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **DevCat Agent sandbox** (macOS and Linux): **Sandbox** under the chat box runs the agent's commands in the
   operating system's sandbox, where they can write only in the project (and, on macOS, not in its `.git`). Commands
   still ask: the sandbox limits writes, not reading or the network (#67).
+- **Focus mode hides other folders' tabs too:** chats, terminals, files and Git tabs of folders that aren't the
+  focused project's are hidden, like other projects' connections and notes. A folder is the project's once you use
+  it while the project is focused. The AI Workspace's recent folders list the project's own; the others are under
+  **Other folders**, and **Remove from this project** takes one out (#77).
 
 ## 0.12.0 - 2026-10-24
 

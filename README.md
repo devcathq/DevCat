@@ -159,7 +159,9 @@ Below is the short list. The [docs](https://devcat.ai.id/docs/) explain how to u
 of these step by step, with every keyboard shortcut on
 [one page](https://devcat.ai.id/docs/shortcuts.html).
 
-- **Projects**: group connections into projects and focus on one project at a time.
+- **Projects**: group connections into projects and focus on one project at a time. In focus, tabs of other
+  projects are hidden: their connections and notes, and chats, terminals, files and Git tabs of folders you haven't
+  used with this project.
 - **Hide the sidebar**: click the active icon in the left bar, the toggle at its bottom, or press ⌘B (Ctrl+B).
 - **Notes**: Markdown notes with Edit / Preview, saved as you type. Each note belongs to a project (shown only
   while that project is focused) or to General (shown everywhere); pin, search and move them between projects.
