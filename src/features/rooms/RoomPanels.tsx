@@ -1,12 +1,14 @@
 // The room tab's side panels: the thread (with agent mentions), suggestions waiting for people, and
 // the history of applied changes (each can be reverted while its text is untouched).
 import clsx from "clsx";
-import { AtSign, Bot, Check, CornerDownRight, Loader2, RotateCcw, Send, Square, X } from "lucide-react";
+import { AtSign, Bot, Check, CornerDownRight, Loader2, Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Badge, Button, Textarea } from "../../components/ui";
 import { errMsg } from "../../lib/api";
+import { isFileDrag } from "../files/drop";
 import { label, rooms, type HistoryItem, type Message, type RoomView, type Suggestion } from "./api";
+import { shareFiles } from "./share";
 import { useRooms } from "./store";
 
 const time = (ms: number) => {
@@ -15,18 +17,45 @@ const time = (ms: number) => {
   return today ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 };
 
-/** Message text with @handles picked out. */
-function Rich({ text, handles }: { text: string; handles: string[] }) {
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// a character that would make a name part of a longer one (as the room agent reads names)
+const namePart = /[\p{L}\p{N}_\\/-]/u;
+
+/** Message text with @handles picked out, and the room's files it names as links to them. */
+function Rich({ text, handles, files, onOpen }: { text: string; handles: string[]; files: string[]; onOpen: (path: string) => void }) {
   const parts = useMemo(() => {
     const known = new Set([...handles.map((h) => h.toLowerCase()), "@agents"]);
-    return text.split(/(@[\w-]+)/g).map((p, i) => (known.has(p.toLowerCase()) ? <span key={i} className="rounded bg-accent/15 px-0.5 font-medium text-accent">{p}</span> : <span key={i}>{p}</span>));
-  }, [text, handles]);
+    // longest first, so "plan v2.md" wins over "plan"
+    const names = [...files].filter((f) => f.length > 2).sort((a, b) => b.length - a.length).map(escapeRe);
+    const re = new RegExp(`@[\\w-]+${names.length ? `|${names.join("|")}` : ""}`, "g");
+    const out: ReactNode[] = [];
+    let at = 0;
+    for (const m of text.matchAll(re)) {
+      const [word, i] = [m[0], m.index ?? 0];
+      const handle = word.startsWith("@") && known.has(word.toLowerCase());
+      const before = text[i - 1] ?? "";
+      const after = text[i + word.length] ?? "";
+      const file = !word.startsWith("@") && !namePart.test(before) && before !== "." && !namePart.test(after);
+      if (!handle && !file) continue;
+      if (i > at) out.push(text.slice(at, i));
+      out.push(handle
+        ? <span key={i} className="rounded bg-accent/15 px-0.5 font-medium text-accent">{word}</span>
+        : <button key={i} onClick={() => onOpen(word)} title="Open it in the room" className="inline rounded bg-hover px-0.5 font-medium text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid"><Paperclip className="mr-0.5 inline size-3" />{word}</button>);
+      at = i + word.length;
+    }
+    if (at < text.length) out.push(text.slice(at));
+    return out;
+  }, [text, handles, files, onOpen]);
   return <div className="text-[13px] break-words whitespace-pre-wrap">{parts}</div>;
 }
 
-export function ThreadPanel({ room, view, messages }: { room: string; view: RoomView; messages: Message[] }) {
+/** `files`: the room's files, linked where a message names them (`onOpen` opens one). `canShare`:
+ *  files dropped or pasted here are shared with the room and named in the message being written. */
+export function ThreadPanel({ room, view, messages, files, onOpen, canShare }: { room: string; view: RoomView; messages: Message[]; files: string[]; onOpen: (path: string) => void; canShare: boolean }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const running = useRooms((s) => s.agents[room]) ?? view.agentRunning;
   const agentError = useRooms((s) => s.agentErrors[room]);
   const end = useRef<HTMLDivElement>(null);
@@ -47,9 +76,36 @@ export function ThreadPanel({ room, view, messages }: { room: string; view: Room
     }
   };
   const mention = (h: string) => setText((t) => `${t}${t && !t.endsWith(" ") ? " " : ""}${h} `);
+  // share, then name them in the message, so people (and a mentioned agent) know which files it means
+  const attach = async (from: DataTransfer | File[]) => {
+    setSharing(true);
+    try {
+      const names = await shareFiles(room, from);
+      if (names.length) setText((t) => `${t}${t && !/\s$/.test(t) ? " " : ""}${names.join(", ")} `);
+    } finally {
+      setSharing(false);
+    }
+  };
   const myHandle = view.handles[view.me];
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col"
+      onDragOver={(e) => { if (canShare && isFileDrag(e.dataTransfer)) { e.preventDefault(); e.stopPropagation(); setDragging(true); } }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false); }}
+      onDrop={(e) => {
+        if (!canShare || !isFileDrag(e.dataTransfer)) return;
+        // here, not in the room around it: shared and named in the message
+        e.preventDefault();
+        e.stopPropagation();
+        setDragging(false);
+        void attach(e.dataTransfer);
+      }}>
+      {dragging && (
+        <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-lg border-2 border-dashed border-accent/60 bg-app/70 px-4">
+          <div className="flex flex-col items-center gap-1.5 rounded-lg border border-line bg-raised px-4 py-3 text-center text-[13px] text-fg shadow-lg">
+            <Paperclip className="size-5 text-accent" />Drop to share with the room and name it in your message
+          </div>
+        </div>
+      )}
       <div className="min-h-0 flex-1 space-y-2 overflow-auto p-3">
         {messages.length === 0 && <div className="py-8 text-center text-[12px] text-muted">Nothing said yet. Mention an agent to bring it in, e.g. <span className="font-mono">{myHandle ?? "@you-agent"}</span>.</div>}
         {messages.map((m) => {
@@ -68,7 +124,7 @@ export function ThreadPanel({ room, view, messages }: { room: string; view: Room
                   <span className="truncate">{label(reply.author)}: {reply.text}</span>
                 </div>
               )}
-              <Rich text={m.text} handles={handles} />
+              <Rich text={m.text} handles={handles} files={files} onOpen={onOpen} />
             </div>
           );
         })}
@@ -96,10 +152,17 @@ export function ThreadPanel({ room, view, messages }: { room: string; view: Room
             disabled={view.summary.removed}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }}
+            onPaste={(e) => {
+              // a pasted screenshot or file is shared, like a dropped one
+              const pasted = [...e.clipboardData.files];
+              if (!canShare || !pasted.length) return;
+              e.preventDefault();
+              void attach(pasted);
+            }}
             placeholder={view.summary.removed ? "You're no longer in this room." : "Write to the room (Enter sends, Shift+Enter new line)"}
             className="min-h-0 flex-1 resize-none text-[13px]"
           />
-          <Button variant="primary" loading={sending} disabled={!text.trim()} onClick={() => void send()} title="Send"><Send className="size-3.5" /></Button>
+          <Button variant="primary" loading={sending || sharing} disabled={!text.trim() || sharing} onClick={() => void send()} title="Send"><Send className="size-3.5" /></Button>
         </div>
       </div>
     </div>

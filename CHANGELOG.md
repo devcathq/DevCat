@@ -77,6 +77,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Room agents see the room's images:** an agent mentioned in a room now looks at shared PNG, JPEG, GIF and WebP
   images (up to 5 MB) when it reads them, and can read text files shared read-only because of their size.
 - **Rooms:** an image open in a room no longer blinks each time someone in the room types, moves or posts.
+- **Rooms: drop files to share them.** Drag files onto a room, from your computer or DevCat's Files tree, and
+  everyone in it can open them. Dropped on the thread, or pasted into its message box (a screenshot), they're
+  also named in your message, and a file's name in a message opens it. A name that's taken gets a number
+  (`notes (2).md`) instead of failing (#92).
+- **Rooms: read large text files in the room.** A text file shared read-only because of its size now opens in the
+  room, read-only, instead of only offering to save it. Agents read long room files in parts, where before they
+  got only a file's start and end (#92).
 
 ## 0.12.0 - 2026-10-24
 
