@@ -12,6 +12,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
+  agent's reply there) opens that file from the server, over the same session, instead of looking for it on
+  this computer.
 - **DevCat Agent: a `git` tool.** Commands that only read the repository (status, diff, log, show, blame, …)
   run without asking; commit, checkout, push and anything else that changes it asks first, like a shell
   command (#53).
