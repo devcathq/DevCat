@@ -126,7 +126,7 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
         <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/60 bg-app/70">
           <div className="flex max-w-sm flex-col items-center gap-2 rounded-lg border border-line bg-raised px-6 py-5 text-center text-[13px] text-fg shadow-lg">
             <Upload className="size-6 text-accent" />Drop files to share them with the room
-            <span className="text-[11px] text-muted">Everyone in it can open them, and agents read them (images too, when a message names them). Drop on the thread to name them in your message as well.</span>
+            <span className="text-[11px] text-muted">Everyone in it can open them, and agents read them. Drop on the thread to name them in your message as well.</span>
           </div>
         </div>
       )}
@@ -303,29 +303,31 @@ function RoomEditor({ room, replica, path, readOnly, claims, suggestions, reveal
   );
 }
 
-/** Text shared as a file (too large to edit together): read here, not edited. */
-const isText = (mime: string) => mime.startsWith("text/") || mime === "application/json";
-
 function BlobView({ room, file }: { room: string; file: FileInfo }) {
   const [src, setSrc] = useState<string | null>(null);
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const image = file.blob?.mime.startsWith("image/") && file.blob.mime !== "image/svg+xml";
-  const textual = !!file.blob && isText(file.blob.mime);
+  const hash = file.blob?.hash;
+  const mime = file.blob?.mime ?? "";
+  const image = mime.startsWith("image/") && mime !== "image/svg+xml";
+  // text too large to edit together (rooms.rs `share`): read here, not edited
+  const textual = mime === "text/plain";
+  // By content, not by `file`: that object is new on every refresh of the room (anyone's typing or
+  // presence), and fetching the image again each time made it blink.
   useEffect(() => {
     setSrc(null);
     setText(null);
     setError(null);
-    if ((!image && !textual) || !file.blob) return;
+    if ((!image && !textual) || !hash) return;
     let alive = true;
-    void rooms.blob(room, file.blob.hash).then((b64) => {
+    void rooms.blob(room, hash).then((b64) => {
       if (!alive) return;
       const bytes = fromB64(b64);
       if (textual) setText(new TextDecoder().decode(bytes));
-      else setSrc(URL.createObjectURL(new Blob([bytes as BlobPart], { type: file.blob!.mime })));
+      else setSrc(URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime })));
     }).catch((e) => alive && setError(errMsg(e)));
     return () => { alive = false; };
-  }, [room, file, image, textual]);
+  }, [room, hash, mime, image, textual]);
   useEffect(() => () => { if (src) URL.revokeObjectURL(src); }, [src]);
   const saveAs = async () => {
     if (!file.blob) return;
@@ -343,7 +345,7 @@ function BlobView({ room, file }: { room: string; file: FileInfo }) {
     return (
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3 text-[11.5px] text-muted">
-          <span className="truncate">{size} · too large to edit together: everyone reads it here</span>
+          <span className="truncate">{size} · too large to edit together (200,000 characters at most): everyone reads it here</span>
           <Button size="sm" variant="ghost" className="ml-auto" onClick={() => void saveAs()}><Download className="size-3.5" />Save to this computer</Button>
         </div>
         <div className="min-h-0 flex-1">
@@ -365,6 +367,7 @@ function BlobView({ room, file }: { room: string; file: FileInfo }) {
       <div className="text-center text-[12px] text-muted">
         <div className="font-medium text-fg">{file.path}</div>
         {file.blob && <div>{size}</div>}
+        {textual && <div className="mt-1">Too large to edit together (200,000 characters at most): save it to read it.</div>}
       </div>
       <Button onClick={() => void saveAs()}><Download className="size-3.5" />Save to this computer</Button>
     </div>

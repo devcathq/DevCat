@@ -12,13 +12,6 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-- **Rooms: drop files to share them.** Drag files onto a room, from your computer or DevCat's Files tree, and
-  everyone in it can open them. Dropped on the thread, or pasted into its message box (a screenshot), they're
-  also named in your message, and a file's name in a message opens it. An agent you mention now sees the images
-  your message names, instead of answering that it can't read them (#92).
-- **Rooms: big text files.** A text file too large to edit together (over 2 million characters, like a 2 MB log)
-  is shared as a text file everyone reads in the room, instead of failing with "too large". Agents read long
-  files in parts, where before they only got a file's start and end (#92).
 - **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
   agent's reply there) opens that file from the server, over the same session, instead of looking for it on
   this computer.
@@ -74,6 +67,19 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **↑ / ↓ in the DevCat Agent chat box** go through what you sent in that folder, as in Claude Code (#69).
 - **The "files changed" bar in a DevCat Agent chat** lists only files git still sees changed, so it goes away when
   you commit or revert them, also from another tool (#69).
+- **Rooms:** sharing a large text file (a 2 MB Markdown file, say) froze the window for a minute, and the
+  room then froze again each time it was opened. Rooms with such a file open again, and text files over
+  200,000 characters are now shared as read-only files (save them to read them) instead of editable documents.
+- **Room agents see the room's images:** an agent mentioned in a room now looks at shared PNG, JPEG, GIF and WebP
+  images (up to 5 MB) when it reads them, and can read text files shared read-only because of their size.
+- **Rooms:** an image open in a room no longer blinks each time someone in the room types, moves or posts.
+- **Rooms: drop files to share them.** Drag files onto a room, from your computer or DevCat's Files tree, and
+  everyone in it can open them. Dropped on the thread, or pasted into its message box (a screenshot), they're
+  also named in your message, and a file's name in a message opens it. A name that's taken gets a number
+  (`notes (2).md`) instead of failing (#92).
+- **Rooms: read large text files in the room.** A text file shared read-only because of its size now opens in the
+  room, read-only, instead of only offering to save it. Agents read long room files in parts, where before they
+  got only a file's start and end (#92).
 
 ## 0.12.0 - 2026-10-24
 

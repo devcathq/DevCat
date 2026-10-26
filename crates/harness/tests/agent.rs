@@ -870,3 +870,39 @@ async fn a_message_sent_while_it_works_goes_past_the_prompt_hooks_too() {
     assert_eq!(users, [("what's the version?", vec!["branch: main".to_string()]), ("also check the README", vec!["branch: main".to_string()])]);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A tool that shows the model a picture.
+struct Picture;
+
+#[async_trait]
+impl Tool for Picture {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "picture".into(), description: "Show a picture.".into(), input_schema: json!({ "type": "object" }) }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, _: &Value) -> String {
+        "picture".into()
+    }
+    async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::image("cat.png (shown below)", "image/png", "AAAA".into())
+    }
+}
+
+#[tokio::test]
+async fn a_tools_image_goes_to_the_model_after_the_tool_results() {
+    let (dir, mut session) = project().await;
+    let model = Scripted::new(vec![vec![tool("p", "picture", json!({})), tool("r", "read", json!({ "path": "notes.txt" }))], vec![text("A cat.")]]);
+    let mut tools = Registry::standard();
+    tools.add(Picture);
+    let mut agent = Agent::new(model, tools, Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.turn(&mut session, "what's in the picture?", &Cancel::default(), &mut |_| {}).await.unwrap();
+    let msgs = session.messages();
+    let results = &msgs[2];
+    assert_eq!(results.role, Role::User);
+    assert!(matches!(&results.content[0], Block::ToolResult { tool_use_id, content, .. } if tool_use_id == "p" && content.contains("cat.png")));
+    assert!(matches!(&results.content[1], Block::ToolResult { tool_use_id, .. } if tool_use_id == "r"));
+    assert_eq!(results.content[2], Block::Image { media_type: "image/png".into(), data: "AAAA".into() });
+    let _ = std::fs::remove_dir_all(dir);
+}

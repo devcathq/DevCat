@@ -66,6 +66,8 @@ fn wire_message(m: &Message) -> Vec<Value> {
                 })
                 .collect();
             if !images.is_empty() {
+                // Tool messages carry only text: images from tools follow them in a user message.
+                let text = if text.is_empty() { "The images from the tool results above.".to_string() } else { text };
                 let mut parts = vec![json!({ "type": "text", "text": text })];
                 parts.extend(images);
                 out.push(json!({ "role": "user", "content": parts }));
@@ -309,5 +311,19 @@ mod tests {
         assert_eq!(b["messages"][1]["tool_calls"][0]["function"]["arguments"], "{\"path\":\"a\"}");
         assert_eq!(b["messages"][2], json!({ "role": "tool", "tool_call_id": "c1", "content": "Error: no such file" }));
         assert!(b.get("tools").is_none());
+    }
+
+    #[test]
+    fn a_tools_image_follows_the_tool_messages() {
+        let msgs = [
+            Message { role: Role::Assistant, content: vec![Block::ToolUse { id: "c1".into(), name: "read".into(), input: json!({ "path": "a.png" }) }] },
+            Message { role: Role::User, content: vec![Block::ToolResult { tool_use_id: "c1".into(), content: "a.png".into(), is_error: false }, Block::Image { media_type: "image/png".into(), data: "AAAA".into() }] },
+        ];
+        let cfg = LlmConfig { protocol: super::super::Protocol::OpenaiChat, base_url: "x".into(), api_key: None, model: "m".into(), max_tokens: 100 };
+        let b = body(&cfg, &Request { system: "sys", messages: &msgs, tools: &[], cache_key: None });
+        assert_eq!(b["messages"][2], json!({ "role": "tool", "tool_call_id": "c1", "content": "a.png" }));
+        assert_eq!(b["messages"][3]["role"], "user");
+        assert_eq!(b["messages"][3]["content"][1]["image_url"]["url"], "data:image/png;base64,AAAA");
+        assert!(!b["messages"][3]["content"][0]["text"].as_str().unwrap().is_empty());
     }
 }

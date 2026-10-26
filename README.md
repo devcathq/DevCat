@@ -261,8 +261,8 @@ of these step by step, with every keyboard shortcut on
   ssh-agent, ProxyJump; one shared connection per host). Diff and Code Review are local-only for now.
 - **Rooms** (two people in the title bar): share documents with other people, peer to peer and end-to-end
   encrypted, no account or server. Drag files onto a room to share them; edit text together, talk in the
-  thread, and mention anyone's DevCat Agent to bring it in: it reads the files (and sees images a message
-  names) and suggests changes that people accept or reject.
+  thread, and mention anyone's DevCat Agent to bring it in: it reads the files (and looks at the room's
+  images) and suggests changes that people accept or reject.
 - **Appearance** (🎨 in the title bar): dark, light or system mode, 8 dark and 3 light themes (editors and terminals
   follow), and **window glass** on macOS and Windows: the desktop shows through the sidebar and work area, blurred,
   with separate opacity for each.

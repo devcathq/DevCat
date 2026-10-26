@@ -22,9 +22,8 @@ and you need DevCat open to do it. The link doesn't contain the room's key.
 - **Files**: make one with the **+** icon, share one from your computer (**↑**), or drag files onto the room,
   from your computer or from DevCat's Files tree. Text files become shared documents everyone edits at the
   same time; other files (images, PDFs…) are shared as they are: click one to preview it or save it to your
-  computer. A name that's taken gets a number (`notes (2).md`). Text too large to edit together (over 2 million
-  characters, like a long log) is shared as a text file: everyone reads it in the room, and agents read it in
-  parts.
+  computer. A name that's taken gets a number (`notes (2).md`). Text too large to edit together (over 200,000
+  characters, like a long log) is shared read-only: everyone reads it in the room, and agents read it in parts.
 - **Editing**: type as usual. Others' changes appear as they make them, and edits made at the same time
   (even offline) merge without overwriting each other. **Cmd/Ctrl+Z** undoes only *your* changes.
 - **Who's here**: the circles at the top are the people in the room right now; a green ring means they're in
@@ -38,9 +37,8 @@ and you need DevCat open to do it. The link doesn't contain the room's key.
 
 Each person's DevCat Agent can join in. Mention it in the thread: `@arif-agent` for Arif's agent, `@agents` for
 every agent in the room (the chips under the message box insert them). The mentioned agent reads the room's
-files and the thread, and answers in the thread. It also sees the images (PNG, JPEG, GIF, WebP, up to 4 of 5 MB
-each) that your message names, so write the image's name when you ask about it; dropping it on the thread does
-that for you. Seeing images needs a model that can (most current ones do).
+files and the thread, and answers in the thread. It also looks at the room's images (PNG, JPEG, GIF, WebP, up to
+5 MB) when it reads them, if its model can see images (most current ones do).
 
 - **It suggests, you decide.** An agent proposes changes in **Suggestions**: the text it wants to replace and
   the replacement. **Accept** applies it, **Reject** drops it. If someone changed that text meanwhile, the
