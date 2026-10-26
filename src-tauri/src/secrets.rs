@@ -1,5 +1,6 @@
-//! OS keychain access (service "dev.devcat.app") with an in-memory cache for the life of the
-//! process. Only found values are cached; a missing entry is looked up again next time.
+//! OS keychain access (service `APP_ID`: "dev.devcat.app", or "dev.devcat.app.dev" for dev builds,
+//! unless they run on the installed DevCat's data: `follow_data_dir`) with an in-memory cache for the life of the process. Only found values are cached; a missing entry
+//! is looked up again next time.
 //!
 //! macOS asks the user before an app reads a keychain item whose access list doesn't trust it,
 //! and for an app without an Apple team ID that trust is tied to the exact build, so every update
@@ -10,15 +11,42 @@
 use crate::error::AppResult;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::path::Path;
+use std::sync::{LazyLock, OnceLock};
 
-const SERVICE: &str = "dev.devcat.app";
+static SERVICE: OnceLock<&'static str> = OnceLock::new();
 #[cfg(target_os = "macos")]
 const VAULT: &str = "vault";
 
 static CACHE: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// Secrets live in memory only (tests, and the dev-only browser bridge with its throwaway data).
 static MEMORY_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(test));
+
+/// Use the keychain entries that go with `dir`: a dev build on the installed DevCat's data folder
+/// (`pnpm tauri dev --prod-data`, or `devcat mcp --data-dir` an agent got from it) uses that DevCat's.
+pub fn follow_data_dir(dir: &Path) {
+    let prod = cfg!(debug_assertions) && dir.file_name().is_some_and(|n| n == crate::PROD_ID);
+    let _ = SERVICE.set(if prod { crate::PROD_ID } else { crate::APP_ID });
+}
+
+fn service() -> &'static str {
+    SERVICE.get().copied().unwrap_or(crate::APP_ID)
+}
+
+/// Copy all of `from`'s secrets to `to` (another keychain service), replacing `to`'s; the number
+/// copied. macOS only: there they're one item (the vault); elsewhere each secret is its own item,
+/// which the keychain can't list.
+#[cfg(target_os = "macos")]
+pub fn copy_service(from: &str, to: &str) -> AppResult<usize> {
+    let json = match keyring::Entry::new(from, VAULT)?.get_password() {
+        Ok(j) => j,
+        Err(keyring::Error::NoEntry) => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let map: HashMap<String, String> = serde_json::from_str(&json)?;
+    keyring::Entry::new(to, VAULT)?.set_password(&json)?;
+    Ok(map.values().filter(|v| !v.is_empty()).count())
+}
 
 /// Never touch the OS keychain in this process (dev bridge).
 pub fn memory_only() {
@@ -30,7 +58,7 @@ fn in_memory() -> bool {
 }
 
 fn item(key: &str) -> Option<String> {
-    keyring::Entry::new(SERVICE, key).ok()?.get_password().ok()
+    keyring::Entry::new(service(), key).ok()?.get_password().ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -47,7 +75,7 @@ mod vault {
     }
 
     pub(super) fn save(map: &HashMap<String, String>) -> AppResult<()> {
-        keyring::Entry::new(SERVICE, VAULT)?.set_password(&serde_json::to_string(map)?)?;
+        keyring::Entry::new(service(), VAULT)?.set_password(&serde_json::to_string(map)?)?;
         Ok(())
     }
 
@@ -105,7 +133,7 @@ pub fn set(key: &str, value: &str) -> AppResult<()> {
     #[cfg(target_os = "macos")]
     vault::set(key, Some(value))?;
     #[cfg(not(target_os = "macos"))]
-    keyring::Entry::new(SERVICE, key)?.set_password(value)?;
+    keyring::Entry::new(service(), key)?.set_password(value)?;
     CACHE.lock().insert(key.to_string(), value.to_string());
     Ok(())
 }
@@ -122,7 +150,7 @@ pub fn delete(key: &str) {
         let _ = vault::set(key, None);
     }
     #[cfg(not(target_os = "macos"))]
-    if let Ok(e) = keyring::Entry::new(SERVICE, key) {
+    if let Ok(e) = keyring::Entry::new(service(), key) {
         let _ = e.delete_credential();
     }
 }

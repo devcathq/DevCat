@@ -191,7 +191,9 @@ pub fn apply(replace: &[String]) -> AppResult<Plan> {
 /// After project folders change, or at startup (DevCat may have moved): keep the configs right,
 /// once the user has synced. Look-alikes are only replaced from the dialog.
 pub fn auto() {
-    if !load_state().enabled {
+    // Dev builds: never by themselves. On the installed DevCat's data (or a copy) they'd point every
+    // agent's DevCat entry at target/debug/devcat; syncing from the dialog still does.
+    if cfg!(debug_assertions) || !load_state().enabled {
         return;
     }
     let _g = LOCK.lock();

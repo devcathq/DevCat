@@ -269,7 +269,9 @@ function ProjectBar() {
 
   // Native window title follows the focused project.
   useEffect(() => {
-    getCurrentWindow().setTitle(focus ? `DevCat — ${focus.name}` : "DevCat").catch(() => {});
+    // dev builds run next to an installed DevCat as "DevCat Dev" (APP_ID in src-tauri/src/lib.rs)
+    const app = import.meta.env.DEV ? "DevCat Dev" : "DevCat";
+    getCurrentWindow().setTitle(focus ? `${app} — ${focus.name}` : app).catch(() => {});
   }, [focus]);
 
   const count = focus ? connections.filter((c) => c.projectId === focus.id).length : 0;

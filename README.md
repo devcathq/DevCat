@@ -281,6 +281,19 @@ pnpm install
 pnpm tauri dev          # run the app with hot reload
 ```
 
+Dev builds run as **DevCat Dev** (identifier `dev.devcat.app.dev`, a green DEV band on the icon), so they run
+next to an installed DevCat with their own data folder and keychain entries, and don't share its connections or
+settings. The DEV icons in `src-tauri/icons/dev/` come from `assets/icon-dev.svg` (`scripts/dev-icons.sh`).
+
+```bash
+pnpm dev:copy-data         # copy your installed DevCat's data and saved passwords into DevCat Dev, once
+pnpm tauri dev --prod-data # run on the installed DevCat's data itself (quit the installed DevCat first)
+```
+
+The copy leaves out rooms and phone pairing, and turns off VPN auto-connect and ticket watching, so both apps can
+run at once. `--prod-data` refuses to start while the installed DevCat runs: two DevCats on the same data undo
+each other's changes. On macOS, reading the installed DevCat's passwords asks once per dev rebuild.
+
 UI testing in a normal browser (dev only): the Git and file commands are served over HTTP by a
 debug-only bridge, and the other Tauri APIs are stubbed.
 
