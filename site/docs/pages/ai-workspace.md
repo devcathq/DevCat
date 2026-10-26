@@ -23,6 +23,11 @@ with your own login, in a real terminal like iTerm2 or Windows Terminal. Everyth
 The **Sessions** list in the sidebar shows your earlier Claude Code conversations for the open folder, newest
 first. Click one to resume it in a tab. **Refresh sessions** reloads the list.
 
+To **rename** a session, right-click it → **Rename…**, type the name and press <kbd>Enter</kbd> (<kbd>Esc</kbd>
+cancels). DevCat saves it the way Claude Code's `/rename` does, so `claude --resume` shows the new name too,
+and a Claude Code that has the session open keeps it instead of writing its old name back. Clear the name to go
+back to the title Claude gave it.
+
 ## Launch options (Claude Code)
 
 The toolbar above the chat has two menus:

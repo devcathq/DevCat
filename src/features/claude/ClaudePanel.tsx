@@ -2,7 +2,7 @@
 // The AI connection new chats use is picked in the sidebar header (ProviderPicker).
 import clsx from "clsx";
 import {
-  ChevronDown, ChevronRight, Copy, FolderGit2, FolderOpen, FolderSearch, GitBranch, History, Plus, RefreshCw, Sparkles, Terminal, X, Server, SquareTerminal,
+  ChevronDown, ChevronRight, Copy, FolderGit2, FolderOpen, FolderSearch, GitBranch, History, MessageSquare, Pencil, Plus, RefreshCw, Sparkles, Terminal, X, Server, SquareTerminal,
 } from "lucide-react";
 import { AiTerminalIcon } from "../../components/ui/AppIcons";
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
@@ -16,13 +16,16 @@ import { basename, copyText, relTime, revealPath, REVEAL_LABEL } from "../files/
 import { openGitRepo } from "../git/open";
 import { openClaudeWorkspace } from "./open";
 import { useSelectedProvider } from "./providers";
-import { useAgent } from "../agent/store";
+import { renameChat, useAgent } from "../agent/store";
+import { AgentJobs } from "../agent/Jobs";
 import FileTree, { type FileTreeHandle } from "./sidebar/FileTree";
 import { SessionsList } from "./sidebar/SessionsList";
 import { pickFolder, useWorkspace } from "./sidebar/workspace";
 import { RemoteFolderDialog, openRemoteFolderDialog } from "./sidebar/RemoteFolderDialog";
 import { openTerminal } from "../terminal/open";
 import { displayPath, isRemote, remoteParts } from "../../lib/remotePath";
+import { useConnections } from "../../store/connections";
+import { folderKey, inProjectFolder, useFolderProjects } from "../../store/folderProjects";
 
 const REFRESH_MS = 15_000;
 const INSTALL_CMD = "curl -fsSL https://claude.ai/install.sh | bash";
@@ -129,9 +132,15 @@ function WorkspaceHeader() {
         : []),
     ];
     const others = recent.filter((r) => r !== cwd);
+    // in focus, the project's folders; the others (picking one makes it the project's) under a submenu
+    const focus = useConnections.getState().focusProjectId;
+    const mine = focus ? others.filter((r) => inProjectFolder(r, focus)) : others;
+    const elsewhere = others.filter((r) => !mine.includes(r));
+    const folderItem = (r: string): MenuItem => ({ label: tildify(r), icon: isRemote(r) ? <Server className="size-3.5" /> : <FolderOpen className="size-3.5" />, onClick: () => setCwd(r) });
     if (others.length) {
       items.push("separator");
-      for (const r of others) items.push({ label: tildify(r), icon: isRemote(r) ? <Server className="size-3.5" /> : <FolderOpen className="size-3.5" />, onClick: () => setCwd(r) });
+      items.push(...mine.map(folderItem));
+      if (elsewhere.length) items.push({ label: "Other folders", icon: <FolderOpen className="size-3.5" />, submenu: elsewhere.map(folderItem) });
       items.push({ label: "Clear recent folders", icon: <X className="size-3.5" />, onClick: () => others.forEach(forgetRecent) });
     }
     if (cwd) {
@@ -142,6 +151,11 @@ function WorkspaceHeader() {
         ...(isRemote(cwd) ? [] : [{ label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(cwd) } as MenuItem]),
         { label: "Close folder", icon: <X className="size-3.5" />, onClick: () => setCwd(null) },
       );
+      // the folder stops being the focused project's: its tabs hide, and it's closed here
+      const fp = useFolderProjects.getState();
+      if (focus && fp.folders[folderKey(cwd)]?.includes(focus)) {
+        items.push({ label: "Remove from this project", icon: <X className="size-3.5" />, onClick: () => { fp.remove(cwd, focus); setCwd(null); } });
+      }
     }
     menu.show(at, items);
   };
@@ -239,17 +253,54 @@ function AgentSessions({ cwd, providerId, now }: { cwd: string; providerId: stri
     return () => { live = false; };
   }, [cwd, tick, busy]);
   useEffect(() => { const t = setInterval(() => setTick((n) => n + 1), 30_000); return () => clearInterval(t); }, []);
+  // right-click → Rename…: the name turns into a field (Enter / click away saves, Esc cancels)
+  const menu = useContextMenu();
+  const [editing, setEditing] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  const rename = async (id: string, value: string, old: string) => {
+    setEditing(null);
+    const name = value.trim();
+    if (cancelled.current || !name || name === old) return;
+    try {
+      await renameChat(id, name);
+      setList((l) => l && l.map((x) => (x.id === id ? { ...x, title: name.split(/\s+/).join(" ") } : x)));
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
   if (!list) return <div className="flex justify-center py-4"><Spinner className="size-4" /></div>;
   if (!list.length) return <div className="px-3 py-2 text-[12px] text-faint">No DevCat Agent chats in this folder yet. Start one with New chat.</div>;
+  const open = (s: { id: string; title: string }) => openClaudeWorkspace(cwd, { providerId, sessionId: s.id, title: s.title });
   return (
     <div className="h-full overflow-y-auto pb-2">
-      {list.map((s) => (
+      {list.map((s) => editing === s.id ? (
+        <div key={s.id} className="px-2 py-1">
+          <input
+            autoFocus
+            defaultValue={s.title}
+            aria-label="Chat name"
+            spellCheck={false}
+            onFocus={(e) => e.currentTarget.select()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              else if (e.key === "Escape") { cancelled.current = true; e.currentTarget.blur(); }
+            }}
+            onBlur={(e) => void rename(s.id, e.currentTarget.value, s.title)}
+            className="h-6.5 w-full rounded border border-accent bg-app px-1.5 text-[13px] text-fg focus:outline-none"
+          />
+        </div>
+      ) : (
         <button key={s.id} className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left hover:bg-hover"
-          onClick={() => openClaudeWorkspace(cwd, { providerId, sessionId: s.id, title: s.title })}>
+          onClick={() => open(s)}
+          onContextMenu={(e) => menu.show(e, [
+            { label: "Open", icon: <MessageSquare className="size-3.5" />, onClick: () => open(s) },
+            { label: "Rename…", icon: <Pencil className="size-3.5" />, onClick: () => { cancelled.current = false; setEditing(s.id); } },
+          ])}>
           <span className="w-full truncate text-[13px] text-fg">{s.title}</span>
           <span className="text-[11px] text-faint">{relTime(new Date(s.updatedMs).toISOString(), now)} · {s.messages} message{s.messages === 1 ? "" : "s"}</span>
         </button>
       ))}
+      {menu.element}
     </div>
   );
 }
@@ -330,13 +381,15 @@ function Workspace({ cwd }: { cwd: string }) {
               <RefreshCw className={clsx("size-3.5", sessLoading && "animate-spin")} />
             </IconButton>
           </SectionHeader>
+          {sessionsOpen && isAgent && <AgentJobs cwd={cwd} providerId={selected.id} />}
           {sessionsOpen && isAgent && <div className="min-h-0 flex-1"><AgentSessions cwd={cwd} providerId={selected.id} now={now} /></div>}
           {sessionsOpen && !isClaude && !isAgent && (
             <div className="px-3 py-2 text-[12px] text-faint">Sessions are available for Claude Code and DevCat Agent. Pick one in the header above to browse and resume them.</div>
           )}
           {sessionsOpen && isClaude && (
             <div className="min-h-0 flex-1">
-              <SessionsList cwd={cwd} sessions={sessions} error={sessErr} loading={sessLoading} query={query} setQuery={setQuery} now={now} />
+              <SessionsList cwd={cwd} sessions={sessions} error={sessErr} loading={sessLoading} query={query} setQuery={setQuery} now={now}
+                onRenamed={(id, title) => setSessions((l) => l && l.map((x) => (x.id === id ? { ...x, title } : x)))} />
             </div>
           )}
         </div>

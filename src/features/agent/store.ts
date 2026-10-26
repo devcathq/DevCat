@@ -5,6 +5,8 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, errMsg } from "../../lib/api";
 import { useProviders } from "../claude/providers";
+import { chatTabTitle } from "../claude/open";
+import { useTabs } from "../../store/tabs";
 import type { AiProvider, AgentModel, AgentDecision, AgentLiveEvent, AgentPolicy } from "../../lib/types";
 import { ZERO, applyAll, contextWindow, itemsFromLog, lastContext, type ChatView } from "./model";
 
@@ -20,9 +22,29 @@ export interface Chat extends ChatView {
   policy: AgentPolicy;
   /** Files attached to the message being written (paths). */
   attachments: string[];
+  /** Run its commands in the OS sandbox (where there is one: see `useSandbox`). */
+  sandbox: boolean;
 }
 
 const KEY_POLICY = "devcat.agent.policy";
+const KEY_SANDBOX = "devcat.agent.sandbox";
+
+const savedSandbox = () => {
+  try {
+    return localStorage.getItem(KEY_SANDBOX) === "1";
+  } catch {
+    return false;
+  }
+};
+
+/** Whether this computer has the OS sandbox (asked once). */
+export const useSandbox = create<{ available: boolean | null; reason: string | null }>(() => ({ available: null, reason: null }));
+let sandboxAsked = false;
+export function loadSandbox() {
+  if (sandboxAsked) return;
+  sandboxAsked = true;
+  api.agentSandbox().then((s) => useSandbox.setState(s), (e) => useSandbox.setState({ available: false, reason: errMsg(e) }));
+}
 
 function savedPolicy(): AgentPolicy {
   try {
@@ -33,7 +55,7 @@ function savedPolicy(): AgentPolicy {
   }
 }
 
-const emptyChat = (): Chat => ({ sessionId: null, providerId: "", title: "", model: "", providerName: "", busy: false, opening: true, error: null, items: [], usage: ZERO, policy: savedPolicy(), context: null, attachments: [], contextTokens: 0 });
+const emptyChat = (): Chat => ({ sessionId: null, providerId: "", title: "", model: "", providerName: "", busy: false, opening: true, error: null, items: [], usage: ZERO, policy: savedPolicy(), context: null, attachments: [], contextTokens: 0, sandbox: savedSandbox() });
 
 export const useAgent = create<{ chats: Record<string, Chat> }>(() => ({ chats: {} }));
 
@@ -135,7 +157,18 @@ export async function send(tabId: string, text: string): Promise<boolean> {
     // the window decides when the conversation gets summarized
     const provider = useProviders.getState().providers.find((p) => p.id === c.providerId);
     const models = provider ? await connectionModels(provider) : [];
-    await api.agentSend(c.sessionId, text.trim(), c.policy, c.model || null, c.attachments, contextWindow(c.model, models).tokens);
+    // where there's no sandbox, a saved "on" doesn't stop the chat
+    const sandbox = c.sandbox && useSandbox.getState().available === true;
+    const sendIt = () => api.agentSend(c.sessionId!, text.trim(), c.policy, c.model || null, c.attachments, contextWindow(c.model, models).tokens, sandbox);
+    try {
+      await sendIt();
+    } catch (e) {
+      // ended elsewhere (a phone, or a scheduled job's next run): open it again and send
+      const tab = useTabs.getState().tabs.find((t) => t.id === tabId);
+      if (!errMsg(e).startsWith("This chat is closed") || !tab || tab.type !== "claude") throw e;
+      if (!(await openChat(tabId, tab.cwd, c.providerId, c.sessionId))) throw e;
+      await sendIt();
+    }
     patch(tabId, () => ({ attachments: [] }));
     return true;
   } catch (e) {
@@ -155,6 +188,11 @@ export async function answer(tabId: string, toolUseId: string, decision: AgentDe
   // show it at once; the backend confirms with toolCall / toolResult
   patch(tabId, (x) => ({ items: x.items.map((i) => (i.kind === "tool" && i.id === toolUseId ? { ...i, request: null, status: decision.decision === "deny" ? "denied" : "running" } : i)) }));
   await api.agentApprove(c.sessionId, toolUseId, decision).catch((e) => patch(tabId, () => ({ error: errMsg(e) })));
+}
+
+export function setSandbox(tabId: string, sandbox: boolean) {
+  try { localStorage.setItem(KEY_SANDBOX, sandbox ? "1" : "0"); } catch { /* private mode */ }
+  patch(tabId, () => ({ sandbox }));
 }
 
 export function setPolicy(tabId: string, policy: AgentPolicy) {
@@ -225,4 +263,29 @@ export function dismissError(tabId: string) {
 /** The chat box took the unsent messages back. */
 export function clearDraft(tabId: string) {
   patch(tabId, () => ({ draft: null }));
+}
+
+/** Allow the hooks of a chat's folder as the chat shows them (`digest`); the chat's context updates
+ *  when they're on, or with the hooks as they are now when they changed meanwhile. */
+export async function trustHooks(tabId: string, digest: string) {
+  const c = useAgent.getState().chats[tabId];
+  if (!c?.sessionId) return;
+  try {
+    await api.agentTrustHooks(c.sessionId, digest);
+  } catch (e) {
+    patch(tabId, () => ({ error: errMsg(e) }));
+  }
+}
+
+/** Rename a saved chat; its open tab and chat take the new name. */
+export async function renameChat(sessionId: string, title: string) {
+  await api.agentRename(sessionId, title);
+  const name = title.trim().split(/\s+/).join(" ");
+  const chats = useAgent.getState().chats;
+  const tabs = useTabs.getState();
+  for (const t of tabs.tabs) {
+    if (t.type !== "claude" || (t.sessionId !== sessionId && chats[t.id]?.sessionId !== sessionId)) continue;
+    tabs.update(t.id, { title: chatTabTitle(t.cwd, name) } as never);
+    if (chats[t.id]) patch(t.id, () => ({ title: name }));
+  }
 }

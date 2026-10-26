@@ -2,7 +2,7 @@
 // items a chat draws, and how those items read (step rows, folded runs of steps). Shared by the
 // desktop chat (./AgentChat.tsx) and the phone / browser version (mobile/src/screens/agentchat.tsx),
 // so nothing here may import Tauri.
-import { Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, Globe, ListTodo, MessageCircleQuestion, Plug, ScrollText, Search, SquareTerminal, Wrench } from "lucide-react";
+import { Bot, Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, NotebookPen, Plug, ScrollText, Search, SquareTerminal, StickyNote, Wrench } from "lucide-react";
 import type { AgentApprovalRequest, AgentBlock, AgentContext, AgentLiveEvent, AgentModel, AgentPolicy, AgentQuestion, AgentSessionEvent, AgentUsage } from "../../lib/types";
 
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
@@ -11,12 +11,20 @@ export type Item =
   /** `queued`: sent while the agent worked, not read yet. */
   | { kind: "user"; key: string; text: string; attachments: string[]; queued?: boolean }
   | { kind: "answer"; key: string; text: string; thinking: string; streaming: boolean; thinkingMs: number | null; thinkingStart: number | null }
-  | { kind: "tool"; key: string; id: string; name: string; input: Record<string, unknown> | null; status: ToolStatus; output: string; request: AgentApprovalRequest | null; question?: AgentQuestion | null }
+  /** `helper`: for a `subagent` call, the tool calls its helper made (live only; they're in the
+   *  helper's own session). */
+  | { kind: "tool"; key: string; id: string; name: string; input: Record<string, unknown> | null; status: ToolStatus; output: string; request: AgentApprovalRequest | null; question?: AgentQuestion | null; helper?: HelperStep[] }
   | { kind: "end"; key: string; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; elapsedMs: number | null; tokens: number }
   /** The conversation before it was summarized (automatically, or `/compact`). */
-  | { kind: "compacted"; key: string; state: "running" | "done" | "failed"; summary: string; tokensBefore: number };
+  | { kind: "compacted"; key: string; state: "running" | "done" | "failed"; summary: string; tokensBefore: number }
+  /** A hook's message: its `systemMessage`, a failure, or why a Stop hook sent the agent on. */
+  | { kind: "hook"; key: string; event: string; text: string };
 
 export type ToolItem = Extract<Item, { kind: "tool" }>;
+export type HelperStep = { name: string; input: Record<string, unknown> | null };
+
+/** The tool that hands a question to a helper (the harness runs it: crates/harness/src/agent.rs). */
+export const SUBAGENT = "subagent";
 
 /** What the live events change in a chat. */
 export interface ChatView {
@@ -35,6 +43,7 @@ export interface ChatView {
 export const ZERO: AgentUsage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0 };
 
 export const POLICIES: { id: AgentPolicy; label: string; hint: string }[] = [
+  { id: "plan", label: "Plan", hint: "Look around and propose a plan; nothing is edited or run until you start it" },
   { id: "ask", label: "Ask first", hint: "Ask before every file edit and command" },
   { id: "auto-edit", label: "Auto-edit", hint: "Edit files in the project without asking; ask before commands" },
   { id: "bypass", label: "Full access", hint: "Never ask: edits and commands run right away" },
@@ -50,7 +59,8 @@ export function itemsFromLog(events: AgentSessionEvent[]): Item[] {
   const items: Item[] = [];
   const tools = new Map<string, ToolItem>();
   for (const e of events) {
-    if (e.event === "user") items.push({ kind: "user", key: key(), ...splitAttachments(e.text) });
+    if (e.event === "user" && e.hook) items.push({ kind: "hook", key: key(), event: e.hook, text: e.text });
+    else if (e.event === "user") items.push({ kind: "user", key: key(), ...splitAttachments(e.text) });
     else if (e.event === "assistant") addBlocks(items, tools, e.content);
     else if (e.event === "tool_results") {
       for (const r of e.results) if (r.type === "tool_result") finishTool(tools.get(r.tool_use_id), r.content, !!r.is_error);
@@ -117,10 +127,13 @@ function addBlocks(items: Item[], tools: Map<string, ToolItem>, content: AgentBl
   }
 }
 
+/** A result saying the call was declined: by the user, or by a PermissionRequest hook in their place. */
+const declined = (content: string) => content.startsWith("The user declined") || content.startsWith("Not run: a PermissionRequest hook declined");
+
 function finishTool(t: ToolItem | undefined, content: string, isError: boolean) {
   if (!t) return;
   t.output = content;
-  t.status = t.status === "denied" || content.startsWith("The user declined") ? "denied" : isError ? "error" : "done";
+  t.status = t.status === "denied" || declined(content) ? "denied" : isError ? "error" : "done";
 }
 
 /** Apply one live event to a chat's items (a new array; items that change are replaced). */
@@ -141,9 +154,10 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
       items.push({ kind: "user", key: key(), text: e.text, attachments: e.attachments ?? [], queued: true });
       return { items };
     case "userMessage": {
-      // the oldest one waiting is the one it read
+      // the oldest one waiting is the one it read (or a hook refused: it goes, the hook's note says why)
       const i = items.findIndex((x) => x.kind === "user" && x.queued);
-      if (i >= 0) items[i] = { ...(items[i] as Extract<Item, { kind: "user" }>), queued: false };
+      if (i >= 0 && e.blocked) items.splice(i, 1);
+      else if (i >= 0) items[i] = { ...(items[i] as Extract<Item, { kind: "user" }>), queued: false };
       return { items };
     }
     case "context":
@@ -188,9 +202,17 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
         if (toolIdx(b.id) >= 0) setTool(b.id, () => ({ input: b.input, name: b.name }));
         else items.push({ kind: "tool", key: key(), id: b.id, name: b.name, input: b.input, status: "pending", output: "", request: null });
       }
-      const usage = { input_tokens: c.usage.input_tokens + e.usage.input_tokens, output_tokens: c.usage.output_tokens + e.usage.output_tokens, cache_read_tokens: c.usage.cache_read_tokens + e.usage.cache_read_tokens };
-      return { items, usage, contextTokens: e.usage.input_tokens + e.usage.output_tokens || c.contextTokens };
+      return { items, usage: plus(c.usage, e.usage), contextTokens: e.usage.input_tokens + e.usage.output_tokens || c.contextTokens };
     }
+    case "helperTool":
+      setTool(e.id, (t) => ({ helper: [...(t.helper ?? []), { name: e.name, input: e.input }] }));
+      return { items };
+    case "helperStep":
+      // a helper's tokens count for the chat, not for its context
+      return { usage: plus(c.usage, e.usage) };
+    case "hook":
+      items.push({ kind: "hook", key: key(), event: e.event, text: e.message });
+      return { items };
     case "approval":
       setTool(e.request.toolUseId, () => ({ status: "approval", request: e.request, input: e.request.input }));
       return { items };
@@ -205,15 +227,14 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
       const done = { kind: "compacted" as const, key: i >= 0 ? items[i].key : key(), state: "done" as const, summary: e.summary, tokensBefore: e.tokens_before };
       if (i >= 0) items[i] = done;
       else items.push(done);
-      const usage = { input_tokens: c.usage.input_tokens + e.usage.input_tokens, output_tokens: c.usage.output_tokens + e.usage.output_tokens, cache_read_tokens: c.usage.cache_read_tokens + e.usage.cache_read_tokens };
-      return { items, usage, contextTokens: Math.round(e.summary.length / 4) };
+      return { items, usage: plus(c.usage, e.usage), contextTokens: Math.round(e.summary.length / 4) };
     }
     case "toolResult":
       setTool(e.id, (t) => ({
         output: e.content,
         request: null,
         question: null,
-        status: t.status === "approval" || e.content.startsWith("The user declined") ? "denied" : e.is_error ? "error" : "done",
+        status: t.status === "approval" || declined(e.content) ? "denied" : e.is_error ? "error" : "done",
       }));
       return { items };
     case "turnEnd": {
@@ -229,6 +250,8 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
     }
   }
 }
+
+const plus = (a: AgentUsage, b: AgentUsage): AgentUsage => ({ input_tokens: a.input_tokens + b.input_tokens, output_tokens: a.output_tokens + b.output_tokens, cache_read_tokens: a.cache_read_tokens + b.cache_read_tokens });
 
 /** Apply several events in order. */
 export function applyAll<C extends ChatView>(c: C, events: AgentLiveEvent[]): C {
@@ -257,6 +280,9 @@ export function rel(path: string, cwd?: string) {
 export type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
 export const todoList = (input: Record<string, unknown> | null): Todo[] => (Array.isArray(input?.todos) ? (input.todos as Todo[]).filter((t) => t && typeof t.content === "string") : []);
 
+/** The `git` tool's arguments. */
+const gitArgs = (input: Record<string, unknown> | null) => (Array.isArray(input?.args) ? input.args.map(String) : []);
+
 /** How a tool step reads: icon, verb, target and changed lines. */
 export function describe(name: string, input: Record<string, unknown> | null, status: ToolStatus, cwd?: string) {
   const done = status === "done" || status === "error" || status === "denied";
@@ -268,13 +294,19 @@ export function describe(name: string, input: Record<string, unknown> | null, st
     case "glob": return { icon: FolderSearch, verb: done ? "Found files" : "Finding files", target: str(i.pattern) };
     case "grep": return { icon: Search, verb: done ? "Searched" : "Searching", target: str(i.pattern) };
     case "shell": return { icon: SquareTerminal, verb: done ? "Ran" : "Running", target: str(i.command) };
+    case "git": return { icon: GitBranch, verb: done ? "Ran" : "Running", target: `git ${gitArgs(i).map((a) => (/^$|\s/.test(a) ? `"${a}"` : a)).join(" ")}` };
     case "ask_user": return { icon: MessageCircleQuestion, verb: done ? "Asked" : "Asking", target: str(i.question) };
+    case SUBAGENT: return { icon: Bot, verb: done ? "Asked a helper" : "Asking a helper", target: str(i.description) || str(i.prompt).split("\n")[0] };
     case "web_fetch": return { icon: Globe, verb: done ? "Fetched" : "Fetching", target: str(i.url) };
     case "devcat_connections": return { icon: Database, verb: done ? "Listed connections" : "Listing connections", target: "" };
     case "db_schema": return { icon: Database, verb: done ? "Read the schema of" : "Reading the schema of", target: [str(i.connection), str(i.table)].filter(Boolean).join(" · ") };
     case "db_query": return { icon: Database, verb: done ? "Queried" : "Querying", target: `${str(i.connection)}: ${str(i.query).replace(/\s+/g, " ")}` };
     case "k8s_get": return { icon: Boxes, verb: done ? "Got" : "Getting", target: `${str(i.connection)}: ${[str(i.kind), str(i.name)].filter(Boolean).join(" ")}${i.namespace ? ` -n ${str(i.namespace)}` : ""}` };
     case "k8s_logs": return { icon: ScrollText, verb: done ? "Read logs of" : "Reading logs of", target: `${str(i.connection)}: ${str(i.namespace)}/${str(i.pod)}` };
+    case "devcat_notes": return i.id
+      ? { icon: StickyNote, verb: done ? "Read a note" : "Reading a note", target: str(i.id) }
+      : { icon: StickyNote, verb: done ? "Searched notes" : "Searching notes", target: [str(i.query), str(i.project)].filter(Boolean).join(" · ") };
+    case "devcat_note_write": return { icon: NotebookPen, verb: done ? (i.id ? "Updated a note" : "Saved a note") : "Saving a note", target: noteTitle(str(i.body)) };
     case "todo_write": {
       const todos = todoList(i);
       return { icon: ListTodo, verb: "Updated the plan", target: todos.length ? `${todos.filter((t) => t.status === "completed").length}/${todos.length} done` : "" };
@@ -288,6 +320,22 @@ export function describe(name: string, input: Record<string, unknown> | null, st
   }
 }
 
+/** What a helper is doing, under its card: "4 steps · Reading src/lib/api.ts". */
+export function helperProgress(steps: HelperStep[], cwd?: string) {
+  const last = steps[steps.length - 1];
+  if (!last) return "";
+  const d = describe(last.name, last.input, "running", cwd);
+  return `${steps.length} ${steps.length === 1 ? "step" : "steps"} · ${d.verb} ${d.target}`.trim();
+}
+
+/** What a chat's tokens cost at a model's list price (US dollars); null without a price. Cached
+ *  input is part of `input_tokens`, at the cache price when there is one. */
+export function chatCost(u: AgentUsage, price: AgentModel["price"]): number | null {
+  if (!price) return null;
+  const cached = Math.min(u.cache_read_tokens, u.input_tokens);
+  return ((u.input_tokens - cached) * price.input + cached * (price.cacheRead ?? price.input) + u.output_tokens * price.output) / 1_000_000;
+}
+
 export function fmtTokens(n: number) {
   return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
@@ -297,12 +345,17 @@ export function fmtDuration(ms: number) {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
-/** A step the conversation folds away: a tool call that needs nothing from the user, or reasoning
- *  that came without an answer. */
+/** A step the conversation folds away: a tool call that needs nothing from the user (helpers stay
+ *  in view: they run side by side, and their answers matter), or reasoning that came without an
+ *  answer. */
 function isStep(it: Item) {
-  if (it.kind === "tool") return !(it.status === "approval" && it.request) && !(it.status === "question" && it.question);
+  if (it.kind === "tool") return it.name !== SUBAGENT && !(it.status === "approval" && it.request) && !(it.status === "question" && it.question);
+  // a hook's note folds in with the steps around it, except a Stop hook sending the agent on
+  if (it.kind === "hook") return !isStopHook(it.event);
   return it.kind === "answer" && !it.text.trim();
 }
+
+export const isStopHook = (event: string) => event === "Stop" || event === "SubagentStop";
 
 export type Block = { kind: "item"; item: Item; n: number } | { kind: "steps"; items: Item[]; last: number };
 
@@ -329,12 +382,50 @@ export function toBlocks(items: Item[]): Block[] {
   return out;
 }
 
+/** `git` subcommands that only read the repository (the harness decides what asks: tools/git.rs;
+ *  this only sorts them for the summary line). */
+const GIT_READS = new Set(["status", "diff", "log", "show", "blame", "grep", "ls-files", "rev-parse", "describe", "shortlog", "merge-base"]);
+
+/** What "Always allow … in this chat" covers for a tool: the whole tool, for the rest of the chat. */
+export function allowAllLabel(name: string) {
+  if (name === "shell") return "commands";
+  if (name === "git") return "git commands";
+  if (name === "devcat_notes") return "reading notes";
+  if (name === "devcat_note_write") return "saving notes";
+  if (name === "web_fetch") return "fetching pages";
+  if (name === "db_query") return "queries";
+  if (name.startsWith("k8s_")) return "cluster reads";
+  if (name.startsWith("mcp__")) return "this tool";
+  return "edits";
+}
+
+/** The question on an approval card: what the call is about to do. */
+export function approvalTitle(name: string, kind: AgentApprovalRequest["kind"], input: Record<string, unknown> | null) {
+  const i = input ?? {};
+  if (name === "db_query") return kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`;
+  if (name === "devcat_notes") return "Read your DevCat notes?";
+  if (name === "devcat_note_write") return i.id ? "Change a DevCat note?" : "Save a new DevCat note?";
+  if (kind === "query") return `Read from ${str(i.connection)}?`;
+  if (kind === "exec") return "Run this command?";
+  if (kind === "fetch") return "Fetch this page?";
+  if (kind === "edit-outside") return "Edit a file outside the project?";
+  return `${name === "write" ? "Write" : "Edit"} ${basename(str(i.path))}?`;
+}
+
+/** A note's title: its first non-empty line without Markdown markers. The same as `noteTitle` in
+ *  features/notes/store.ts, which this file can't import (it uses Tauri; this one is shared with the phone). */
+function noteTitle(body: string) {
+  const line = body.split("\n").map((l) => l.replace(/^\s*(#{1,6}\s+|[-*+]\s+(\[[ xX]\]\s+)?|>\s*)/, "").trim()).find(Boolean);
+  return line ? line.slice(0, 120) : "Untitled note";
+}
+
 /** "read 6 files · 14 searches · ran 3 commands · 2 failed" for a group of steps. */
 export function summarize(items: Item[]) {
   const reads = new Set<string>(), edits = new Set<string>();
-  let searches = 0, commands = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0;
+  let searches = 0, commands = 0, gitReads = 0, noteReads = 0, noteWrites = 0, tools = 0, fetches = 0, queries = 0, failed = 0, thinkingMs = 0, hookNotes = 0;
   for (const it of items) {
     if (it.kind === "answer") thinkingMs += it.thinkingMs ?? 0;
+    if (it.kind === "hook") hookNotes++;
     if (it.kind !== "tool") continue;
     if (it.status === "error") failed++;
     const target = str(it.input?.path) || str(it.input?.pattern);
@@ -342,8 +433,14 @@ export function summarize(items: Item[]) {
     else if (it.name === "edit" || it.name === "write") edits.add(target);
     else if (it.name === "glob" || it.name === "grep") searches++;
     else if (it.name === "shell") commands++;
+    else if (it.name === "git") {
+      if (GIT_READS.has(gitArgs(it.input)[0])) gitReads++;
+      else commands++;
+    }
     else if (it.name === "web_fetch") fetches++;
     else if (it.name === "db_query" || it.name === "db_schema" || it.name === "k8s_get" || it.name === "k8s_logs") queries++;
+    else if (it.name === "devcat_notes") noteReads++;
+    else if (it.name === "devcat_note_write") noteWrites++;
     else if (it.name === "devcat_connections") continue;
     else if (it.name !== "todo_write") tools++;
   }
@@ -352,13 +449,17 @@ export function summarize(items: Item[]) {
     reads.size && `read ${n(reads.size, "file")}`,
     edits.size && `edited ${n(edits.size, "file")}`,
     searches && n(searches, "search", "searches"),
+    gitReads && n(gitReads, "git lookup"),
+    noteReads && n(noteReads, "note lookup"),
+    noteWrites && `saved ${n(noteWrites, "note")}`,
     commands && `ran ${n(commands, "command")}`,
     fetches && `fetched ${n(fetches, "page")}`,
     queries && n(queries, "query", "queries"),
     tools && `used ${n(tools, "tool")}`,
+    hookNotes && n(hookNotes, "hook message"),
   ].filter(Boolean) as string[];
   if (!parts.length && thinkingMs) parts.push(`thought for ${fmtDuration(thinkingMs)}`);
-  return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools && !queries };
+  return { text: parts.join(" · "), failed, explored: !edits.size && !commands && !tools && !queries && !noteWrites };
 }
 
 /** Files a chat changed, with lines added / removed. */

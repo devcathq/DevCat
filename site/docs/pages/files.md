@@ -47,6 +47,11 @@ Click a file to open it in a preview tab. DevCat shows:
 The toolbar has **Copy path**, **Open with default app** and **Reveal in Finder**. For safety, *Open with
 default app* refuses scripts and programs.
 
+A preview keeps up with the file while you look at it. If the file isn't there yet (an agent named it before
+writing it), the tab shows it as soon as it's written. Images, PDFs, spreadsheets and documents that change on disk
+are shown again a moment later. A text file you might be editing is read again when you come back to the window, or
+with **Refresh**.
+
 ## Blame and history
 
 - **Blame** shows who last changed each line and when, with an age heatmap. Click a line's commit to open it in

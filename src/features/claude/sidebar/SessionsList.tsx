@@ -1,15 +1,17 @@
 // Past Claude Code sessions for the workspace folder (from ~/.claude/projects), newest first.
 import { homeDir, join } from "@tauri-apps/api/path";
 import clsx from "clsx";
-import { AlertTriangle, Copy, FileText, GitBranch, MessageSquare, SquareArrowOutUpRight, X } from "lucide-react";
-import { memo, useMemo, type KeyboardEvent, type MouseEvent } from "react";
+import { AlertTriangle, Copy, FileText, GitBranch, MessageSquare, Pencil, SquareArrowOutUpRight, X } from "lucide-react";
+import { memo, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { toast } from "sonner";
 import { Spinner } from "../../../components/ui";
+import { api } from "../../../lib/api";
 import type { SessionMeta } from "../../../lib/types";
 import { useTabs } from "../../../store/tabs";
 import { useContextMenu, type MenuItem } from "../../connections/ContextMenu";
 import { copyText, relTime, revealPath } from "../../files/format";
-import { claudeTabKey, openClaudeWorkspace } from "../open";
+import { chatTabTitle, claudeTabKey, openClaudeWorkspace } from "../open";
+import { useClaude } from "../store";
 
 /** ~/.claude/projects/<cwd with every non-alphanumeric char replaced by "-">/<id>.jsonl */
 async function transcriptPath(cwd: string, id: string): Promise<string> {
@@ -21,7 +23,7 @@ function fmtCost(c?: number | null): string | null {
   return c < 0.01 ? "<$0.01" : `$${c.toFixed(c < 10 ? 2 : 0)}`;
 }
 
-export function SessionsList({ cwd, sessions, error, loading, query, setQuery, now }: {
+export function SessionsList({ cwd, sessions, error, loading, query, setQuery, now, onRenamed }: {
   cwd: string;
   sessions: SessionMeta[] | null;
   error: string | null;
@@ -29,9 +31,30 @@ export function SessionsList({ cwd, sessions, error, loading, query, setQuery, n
   query: string;
   setQuery: (q: string) => void;
   now: number;
+  onRenamed: (id: string, title: string) => void;
 }) {
   const menu = useContextMenu();
   const activeId = useTabs((s) => s.activeId);
+  // Rename…: the name turns into a field (Enter / click away saves, Esc cancels, empty = Claude's own title)
+  const [editing, setEditing] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  const rename = async (s: SessionMeta, value: string) => {
+    setEditing(null);
+    const name = value.trim().split(/\s+/).join(" ");
+    if (cancelled.current || name === s.title) return;
+    try {
+      const title = await api.claudeRename(cwd, s.id, name);
+      onRenamed(s.id, title);
+      // its open tab takes the new name too (a new chat learns its session once it has one)
+      const tabs = useTabs.getState();
+      const running = useClaude.getState().tabs;
+      for (const t of tabs.tabs) {
+        if (t.type === "claude" && (t.sessionId === s.id || running[t.id]?.sessionId === s.id)) tabs.update(t.id, { title: chatTabTitle(t.cwd, title) } as never);
+      }
+    } catch (e) {
+      toast.error(`Couldn't rename the session: ${String(e)}`);
+    }
+  };
 
   const filtered = useMemo(() => {
     const list = [...(sessions ?? [])].sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
@@ -47,6 +70,7 @@ export function SessionsList({ cwd, sessions, error, loading, query, setQuery, n
   const showMenu = (e: MouseEvent, s: SessionMeta) => {
     const items: MenuItem[] = [
       { label: "Open", icon: <SquareArrowOutUpRight className="size-3.5" />, onClick: () => open(s) },
+      { label: "Rename…", icon: <Pencil className="size-3.5" />, onClick: () => { cancelled.current = false; setEditing(s.id); } },
       "separator",
       { label: "Copy session id", icon: <Copy className="size-3.5" />, onClick: () => void copyText(s.id) },
       { label: "Copy resume command", icon: <Copy className="size-3.5" />, onClick: () => void copyText(`claude --resume ${s.id}`) },
@@ -96,7 +120,25 @@ export function SessionsList({ cwd, sessions, error, loading, query, setQuery, n
         ) : filtered.length === 0 ? (
           <div className="px-3 py-1.5 text-[12px] text-faint italic">{query ? "No matching session" : "No sessions yet in this folder"}</div>
         ) : (
-          filtered.map((s) => (
+          filtered.map((s) => editing === s.id ? (
+            <div key={s.id} className="mx-1 px-1 py-1">
+              <input
+                autoFocus
+                defaultValue={s.title}
+                aria-label="Session name"
+                placeholder="Claude's own title"
+                spellCheck={false}
+                onFocus={(e) => e.currentTarget.select()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  else if (e.key === "Escape") { cancelled.current = true; e.currentTarget.blur(); }
+                }}
+                onBlur={(e) => void rename(s, e.currentTarget.value)}
+                className="h-6.5 w-full rounded border border-accent bg-app px-1.5 text-[13px] text-fg placeholder:text-faint focus:outline-none"
+              />
+            </div>
+          ) : (
             <SessionRow key={s.id} s={s} now={now} active={activeId === claudeTabKey(cwd, s.id)} onOpen={open} onMenu={showMenu} />
           ))
         )}

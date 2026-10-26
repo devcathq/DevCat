@@ -120,3 +120,42 @@ async fn anthropic_streams_and_reports_errors() {
     assert_eq!(seen[0].body["system"][0]["cache_control"]["type"], "ephemeral");
     assert_eq!(seen[0].body["tools"][0]["input_schema"]["type"], "object");
 }
+
+#[tokio::test]
+async fn openai_responses_streams_a_tool_call_after_a_retry() {
+    let stream = sse(&[
+        json!({ "type": "response.created", "response": { "id": "resp_1", "status": "in_progress" } }),
+        json!({ "type": "response.output_text.delta", "item_id": "msg_1", "delta": "Reading " }),
+        json!({ "type": "response.output_text.delta", "item_id": "msg_1", "delta": "the file." }),
+        json!({ "type": "response.output_item.added", "item": { "type": "function_call", "id": "fc_1", "call_id": "call_7", "name": "read", "arguments": "" } }),
+        json!({ "type": "response.function_call_arguments.delta", "item_id": "fc_1", "delta": "{\"path\":" }),
+        json!({ "type": "response.function_call_arguments.delta", "item_id": "fc_1", "delta": "\"a.txt\"}" }),
+        json!({ "type": "response.output_item.done", "item": { "type": "function_call", "id": "fc_1", "call_id": "call_7", "name": "read", "arguments": "{\"path\":\"a.txt\"}" } }),
+        json!({ "type": "response.completed", "response": { "status": "completed", "usage": { "input_tokens": 42, "output_tokens": 7, "input_tokens_details": { "cached_tokens": 30 } } } }),
+    ]);
+    let (base, seen) = server(vec![(429, r#"{"error":{"message":"rate limited"}}"#.into()), (200, stream)]).await;
+    let llm = Llm::new(LlmConfig { protocol: Protocol::OpenaiResponses, base_url: format!("{base}/v1"), api_key: Some("sk-test".into()), model: "gpt-5-codex".into(), max_tokens: 1000 });
+    let msgs = [Message::user_text("what's in a.txt?")];
+    let mut text = String::new();
+    let reply = llm
+        .step(&Request { system: "be brief", messages: &msgs, tools: &tools(), cache_key: None }, &mut |d| {
+            if let Delta::Text(t) = d {
+                text.push_str(&t);
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(text, "Reading the file.");
+    assert_eq!(reply.content.last(), Some(&Block::ToolUse { id: "call_7".into(), name: "read".into(), input: json!({ "path": "a.txt" }) }));
+    assert_eq!((reply.usage.input_tokens, reply.usage.cache_read_tokens), (42, 30));
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    let s = &seen[1];
+    assert_eq!(s.path, "/v1/responses");
+    assert!(s.headers.contains("authorization: bearer sk-test"));
+    assert_eq!(s.body["instructions"], "be brief");
+    assert_eq!(s.body["input"][0], json!({ "role": "user", "content": "what's in a.txt?" }));
+    assert_eq!(s.body["tools"][0]["name"], "read");
+    assert_eq!((s.body["stream"].clone(), s.body["store"].clone()), (json!(true), json!(false)));
+}

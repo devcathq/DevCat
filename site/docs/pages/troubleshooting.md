@@ -20,6 +20,14 @@ DevCat runs the agent CLI you installed. Install it with the command DevCat show
 in, then click **Check again**. If you installed it with a version manager (nvm, asdf…), make sure it works in a new
 terminal window.
 
+## Claude Code's agent list or other parts can't be clicked
+
+Clicking (the agents at the bottom, scrolling its own way) works in Claude Code's full-screen mode, its "flicker-free"
+renderer (`/tui fullscreen`). When a full-screen start ends too early twice, for example closed while it was still
+loading, Claude Code turns full-screen off on that computer, in every terminal, and runs in its plain mode, where the
+mouse does nothing. Run `/tui fullscreen` once in Claude Code to turn it back on. DevCat now lets Claude Code exit on
+its own (with Ctrl+C) when you close or restart its tab, so this shouldn't happen again.
+
 ## Fetch, pull or push fails
 
 DevCat never asks for Git passwords. Set up an SSH key with `ssh-agent`, or a Git credential helper, so `git push`

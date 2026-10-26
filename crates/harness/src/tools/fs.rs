@@ -395,7 +395,7 @@ mod tests {
         std::fs::write(dir.join("src/main.rs"), "fn main() {\r\n    println!(\"hi\");\r\n}\r\n").unwrap();
         std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
         std::fs::write(dir.join("target/junk.rs"), "fn main() {}\n").unwrap();
-        (dir.clone(), ToolCtx { cwd: dir })
+        (dir.clone(), ToolCtx::at(dir))
     }
 
     #[tokio::test]
