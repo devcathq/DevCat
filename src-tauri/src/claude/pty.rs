@@ -57,6 +57,8 @@ struct Pty {
     scrollback: Mutex<Vec<u8>>,
     /// Input has been written (by the user, a quick command, a phone…): see `AutoPass`.
     typed: std::sync::atomic::AtomicBool,
+    /// The program has exited (set by the exit watcher).
+    exited: Arc<std::sync::atomic::AtomicBool>,
 }
 
 static PTYS: Lazy<Mutex<HashMap<String, Arc<Pty>>>> = Lazy::new(Default::default);
@@ -290,7 +292,9 @@ pub(crate) async fn open(
         info: Mutex::new(info),
         scrollback: Mutex::new(Vec::new()),
         typed: std::sync::atomic::AtomicBool::new(false),
+        exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
+    let exited = pty.exited.clone();
     PTYS.lock().insert(id.clone(), pty.clone());
 
     // reader → batcher → pty-output
@@ -343,6 +347,7 @@ pub(crate) async fn open(
     let pid = id.clone();
     std::thread::spawn(move || {
         let code = child.wait().map(|s| s.exit_code()).ok();
+        exited.store(true, std::sync::atomic::Ordering::SeqCst);
         // Flush remaining output first (bounded: background jobs may keep the tty open).
         let deadline = Instant::now() + Duration::from_millis(500);
         while !batcher.is_finished() && Instant::now() < deadline {
@@ -427,29 +432,76 @@ fn kill(pty: &Pty) {
     pty.writer.lock().take();
 }
 
-/// Kill the program and drop the terminal (`pty-exit` still follows).
+/// How long Claude Code gets to exit on its own before it's killed.
+const CLAUDE_EXIT: Duration = Duration::from_secs(3);
+
+/// Ask Claude Code to exit, as a user would: Ctrl+C clears the prompt or stops a turn, and pressed
+/// again, exits. (Killed instead, its own exit never runs: a full-screen start killed early counts
+/// as a crashed one, and after two Claude Code turns full-screen off on this machine, and with it
+/// the mouse: its agent list can't be clicked any more.)
+fn ask_to_exit(pty: &Pty) {
+    for _ in 0..3 {
+        if pty.exited.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        if let Some(w) = pty.writer.lock().as_mut() {
+            let _ = w.write_all(b"\x03").and_then(|_| w.flush());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Wait until every one of `ptys` has exited, or `until`.
+fn wait_exits(ptys: &[Arc<Pty>], until: Instant) {
+    while Instant::now() < until && !ptys.iter().all(|p| p.exited.load(std::sync::atomic::Ordering::SeqCst)) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// End a terminal's program: Claude Code is asked to exit first (in the background: the tab
+/// closes at once), anything else is killed.
+fn end(pty: Arc<Pty>) {
+    if !pty.info.lock().agent {
+        return kill(&pty);
+    }
+    std::thread::spawn(move || {
+        ask_to_exit(&pty);
+        wait_exits(std::slice::from_ref(&pty), Instant::now() + CLAUDE_EXIT);
+        kill(&pty);
+    });
+}
+
+/// Close the terminal: its program ends (`pty-exit` still follows).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn pty_close(id: String) -> AppResult<()> {
-    if let Some(p) = PTYS.lock().remove(&id) {
-        kill(&p);
+    let p = PTYS.lock().remove(&id);
+    if let Some(p) = p {
+        end(p);
     }
     Ok(())
 }
 
-/// Kill every terminal opened by a window (it was closed).
+/// End every terminal opened by a window (it was closed).
 pub fn close_owned_by(label: &str) {
     let mut ptys = PTYS.lock();
     let ids: Vec<String> = ptys.iter().filter(|(_, p)| p.owner.lock().as_deref() == Some(label)).map(|(id, _)| id.clone()).collect();
     let owned: Vec<Arc<Pty>> = ids.iter().filter_map(|id| ptys.remove(id)).collect();
     drop(ptys);
     for p in owned {
-        kill(&p);
+        end(p);
     }
 }
 
-/// Kill every terminal (app exit).
+/// End every terminal (app exit): the Claude Code ones are asked to exit, all together, and get
+/// the same time to before everything is killed.
 pub fn shutdown_all() {
     let all: Vec<Arc<Pty>> = PTYS.lock().drain().map(|(_, p)| p).collect();
+    let claude: Vec<Arc<Pty>> = all.iter().filter(|p| p.info.lock().agent).cloned().collect();
+    let asks: Vec<_> = claude.iter().cloned().map(|p| std::thread::spawn(move || ask_to_exit(&p))).collect();
+    for a in asks {
+        let _ = a.join();
+    }
+    wait_exits(&claude, Instant::now() + CLAUDE_EXIT);
     for p in all {
         kill(&p);
     }

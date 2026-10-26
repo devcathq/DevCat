@@ -2,7 +2,7 @@
 // their own api files under src/features/<feature>/api.ts.
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  AgentDecision, AgentModel, AgentOpened, AgentPolicy, AgentSettings,
+  AgentDecision, AgentJob, AgentModel, AgentOpened, AgentPolicy, AgentSettings, AgentTrace,
   KeepAwakeState,
   UpdateInfo,
   GitRepo, GitLogQuery, GitCommit, GitCommitDetail, GitBlame, GitRefs, GitStash, CommitAction, RemoteOpts,
@@ -167,14 +167,31 @@ export const api = {
   fontsList: () => invoke<{ name: string; mono: boolean }[]>("fonts_list"),
   // DevCat Agent (crates/harness): chats report through the `agent-event` event.
   agentOpen: (cwd: string, providerId: string, sessionId: string | null) => invoke<AgentOpened>("agent_open", { cwd, providerId, sessionId }),
-  agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[], contextWindow: number | null) =>
-    invoke<void>("agent_send", { sessionId, text, policy, model, attachments, contextWindow }),
+  /** `sandbox`: run its commands in the OS sandbox from this message on (null = as the chat was). */
+  agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[], contextWindow: number | null, sandbox: boolean | null = null) =>
+    invoke<void>("agent_send", { sessionId, text, policy, model, attachments, contextWindow, sandbox }),
+  /** Whether this computer can run the agent's commands in the OS sandbox (macOS, Linux). */
+  agentSandbox: () => invoke<{ available: boolean; reason: string | null }>("agent_sandbox"),
   agentAnswer: (sessionId: string, toolUseId: string, answer: string) => invoke<void>("agent_answer", { sessionId, toolUseId, answer }),
   /** Save a dropped / pasted file (base64) for the chat; returns its path. */
   agentAttach: (sessionId: string, name: string, data: string) => invoke<string>("agent_attach", { sessionId, name, data }),
   agentStop: (sessionId: string) => invoke<void>("agent_stop", { sessionId }),
   agentApprove: (sessionId: string, toolUseId: string, decision: AgentDecision) => invoke<void>("agent_approve", { sessionId, toolUseId, decision }),
   agentClose: (sessionId: string) => invoke<void>("agent_close", { sessionId }),
+  /** Rename a saved DevCat Agent chat. */
+  agentRename: (sessionId: string, title: string) => invoke<void>("agent_rename", { sessionId, title }),
+  /** Allow the hooks of a chat's folder as they are now (they run commands on this computer). */
+  /** `digest`: the review the user saw; nothing is allowed if the hooks changed since. */
+  agentTrustHooks: (sessionId: string, digest: string) => invoke<void>("agent_trust_hooks", { sessionId, digest }),
+  /** A chat's log and its helpers' logs, for the Trace view. */
+  agentTrace: (sessionId: string) => invoke<AgentTrace>("agent_trace", { sessionId }),
+  /** Scheduled DevCat Agent jobs (those of `cwd` when given). */
+  agentJobs: (cwd: string | null) => invoke<AgentJob[]>("agent_jobs", { cwd }),
+  /** Add a job (empty id) or change one; returns it with its id and next run. */
+  agentJobSave: (job: AgentJob) => invoke<AgentJob>("agent_job_save", { job }),
+  agentJobDelete: (id: string) => invoke<void>("agent_job_delete", { id }),
+  /** Run a job now (its schedule stays). */
+  agentJobRun: (id: string) => invoke<void>("agent_job_run", { id }),
   agentSessions: (cwd: string) => invoke<{ id: string; title: string; updatedMs: number; messages: number }[]>("agent_sessions", { cwd }),
   agentModels: (settings: AgentSettings, providerId: string | null, apiKey: string | null) => invoke<AgentModel[]>("ai_agent_models", { settings, providerId, apiKey }),
   /** Put local files / folders on the OS clipboard (paste attaches them in Slack, copies them in Explorer / Finder). */

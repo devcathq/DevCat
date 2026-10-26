@@ -34,6 +34,7 @@ import { TerminalPane } from "./TerminalPane";
 import { basename, modelOptions, PERMISSION_MODES } from "./util";
 import { isRemote } from "../../lib/remotePath";
 import AgentChat from "../agent/AgentChat";
+import TraceView from "../agent/TraceView";
 import { closeChat, send as sendToChat, useAgent } from "../agent/store";
 import { openTerminal } from "../terminal/open";
 import { QuickBar } from "../terminal/QuickBar";
@@ -46,6 +47,8 @@ const VIEWS: Array<{ id: ClaudeView; label: string; key: string }> = [
   { id: "chat", label: "Chat", key: "1" },
   { id: "diff", label: "Diff", key: "2" },
   { id: "review", label: "Code Review", key: "3" },
+  // DevCat Agent chats (they have no Code Review)
+  { id: "trace", label: "Trace", key: "3" },
 ];
 
 function BranchChip({ tabId, onClick }: { tabId: string; onClick: () => void }) {
@@ -242,7 +245,7 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
   }, [tabId, active]);
   // Diff and Code Review use git on this computer: not for folders on SSH hosts (yet).
   const remote = isRemote(tab.cwd);
-  const views = useMemo(() => VIEWS.filter((v) => !(remote && (v.id === "diff" || v.id === "review")) && (isClaude || v.id !== "review")), [isClaude, remote]);
+  const views = useMemo(() => VIEWS.filter((v) => !(remote && (v.id === "diff" || v.id === "review")) && (isClaude || v.id !== "review") && (isAgent || v.id !== "trace")), [isClaude, isAgent, remote]);
   const wanted: ClaudeView = tab.view ?? "chat";
   const view: ClaudeView = views.some((v) => v.id === wanted) ? wanted : "chat";
   const info = useClaude((s) => s.info);
@@ -397,6 +400,7 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
           )}
         </div>
         {view === "diff" && <div className="absolute inset-0 bg-app"><DiffView tabId={tabId} cwd={tab.cwd} active={active} onReview={reviewNow} agent={agent} /></div>}
+        {isAgent && view === "trace" && <div className="absolute inset-0 bg-app"><TraceView tabId={tabId} cwd={tab.cwd} active={active} /></div>}
         {isClaude && (
           <div className={clsx("absolute inset-0 bg-app", view !== "review" && "hidden")}>
             <ReviewView tabId={tabId} cwd={tab.cwd} onFix={(f) => void fixFinding(f)} onShowDiff={() => setView("diff")} />

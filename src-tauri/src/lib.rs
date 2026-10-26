@@ -2,6 +2,8 @@
 #![cfg_attr(not(feature = "gui"), allow(dead_code, unused_imports))]
 
 mod agent;
+mod agent_jobs;
+mod agent_notes;
 mod agent_tools;
 mod ai;
 mod bookmarks;
@@ -121,7 +123,9 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("no app data dir");
             events::set_app(app.handle().clone());
-            init_backend(dir);
+            init_backend(dir.clone());
+            // scheduled DevCat Agent jobs run in the app (where they're managed), not in `devcat serve`
+            agent_jobs::init(dir);
             // agents' MCP configs point at this program: right again if DevCat moved
             std::thread::spawn(mcp_sync::auto);
             // Claude's memories changed while DevCat was closed: copy them (when kept in sync)
@@ -367,6 +371,14 @@ pub fn run() {
             agent::agent_answer,
             agent::agent_attach,
             agent::agent_sessions,
+            agent::agent_rename,
+            agent::agent_trust_hooks,
+            agent::agent_trace,
+            agent::agent_sandbox,
+            agent_jobs::agent_jobs,
+            agent_jobs::agent_job_save,
+            agent_jobs::agent_job_delete,
+            agent_jobs::agent_job_run,
             ai::ai_providers_list,
             ai::ai_agent_models,
             ai::ai_provider_save,

@@ -50,6 +50,7 @@ export const AGENT_PRESETS: { label: string; settings: AgentSettings; keyHint: s
   { label: "Z.ai GLM (OpenAI-style)", settings: { protocol: "openai-chat", baseUrl: "https://api.z.ai/api/coding/paas/v4", model: "glm-5.3-flash" }, keyHint: "Your Z.ai API key. The Anthropic-style preset caches more." },
   { label: "DeepSeek", settings: { protocol: "openai-chat", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" }, keyHint: "From platform.deepseek.com." },
   { label: "OpenAI", settings: { protocol: "openai-chat", baseUrl: "https://api.openai.com/v1", model: "gpt-5" }, keyHint: "From platform.openai.com." },
+  { label: "OpenAI (Responses API)", settings: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1", model: "gpt-5-codex" }, keyHint: "From platform.openai.com. Also for the models only on the Responses API, such as gpt-5-codex." },
   { label: "Anthropic", settings: { protocol: "anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-5-5" }, keyHint: "From console.anthropic.com." },
   { label: "OpenRouter", settings: { protocol: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-chat" }, keyHint: "From openrouter.ai/keys." },
   { label: "Kimi (Moonshot)", settings: { protocol: "openai-chat", baseUrl: "https://api.moonshot.ai/v1", model: "kimi-k2-turbo-preview" }, keyHint: "From platform.moonshot.ai." },
