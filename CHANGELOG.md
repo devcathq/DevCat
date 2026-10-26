@@ -14,7 +14,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 - **AI connections:** saving a DevCat Agent connection no longer fails with "Invalid API key variable name" when
   another type was picked first and its "Passed as" field filled in. A Claude Code, Codex or Gemini connection
-  set up the same way now passes its key in its own variable, not the other type's hidden one (#PR).
+  set up the same way now passes its key in its own variable, not the other type's hidden one (#98).
 - **Tidier window:** the row of icons at the top right is now one **Settings** menu (Appearance, AI memory, Mobile
   pairing, Tickets, Keep awake, New window); a coffee cup still shows while keep awake is on. **Rooms** moved to
   the left bar, and saved queries and query history now sit under the connection list (**Queries**) instead of
