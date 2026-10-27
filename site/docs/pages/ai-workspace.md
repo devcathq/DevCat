@@ -35,7 +35,9 @@ The toolbar above the chat has two menus:
 - **Model**: the model Claude starts with. You can still switch with `/model` during the session.
 - **Permission mode**: for example *Default mode* or *Bypass permissions*.
 
-Changing either restarts Claude with the new options and resumes the same session.
+After changing either, click **Restart claude**: Claude starts again with the new options and resumes this
+tab's conversation. A chat you haven't written in yet starts fresh; it never picks up another tab's
+conversation in the same folder.
 
 ## Views in a chat tab
 

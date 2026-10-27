@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **New chat stays new:** changing the model or permission mode of a new Claude Code chat and pressing **Restart
+  claude** no longer opens another tab's conversation in the same folder. A chat with no message yet starts
+  fresh again; one you've written in picks up where it was.
+
 ## 0.13.0 - 2026-10-26
 
 - **Sync MCP:** each connection now has its own **AI / MCP access** (Edit connection → Advanced): **Off** hides it
