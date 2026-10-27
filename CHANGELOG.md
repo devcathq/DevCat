@@ -12,6 +12,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.15.0 - 2026-10-27
+
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like
   `exports/Akun Simulasi Internal 26 Okt 2026.xlsx`, shown as code by Claude Code or in quotes by a tool, opens
   on a click like any other path (Ctrl/⌘-click: in its default app), once DevCat has checked the file is there (#105).
