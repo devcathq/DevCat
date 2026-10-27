@@ -44,6 +44,12 @@ Click a file to open it in a preview tab. DevCat shows:
 - **Spreadsheets** (Excel, CSV) as a table.
 - **Word documents** as formatted text.
 
+To find something in a spreadsheet or CSV, press <kbd>⌘F</kbd> (<kbd>Ctrl+F</kbd>), or click **Find** at the
+bottom right. The search covers every row, not only the ones on screen, ignoring case. Every matching cell is
+highlighted, and the bar counts the matches (**3 of 17**). <kbd>Enter</kbd> goes to the next match and
+<kbd>Shift+Enter</kbd> to the previous one, in the order the table is sorted. <kbd>Esc</kbd> closes the bar and
+leaves the last match selected.
+
 The toolbar has **Copy path**, **Open with default app** and **Reveal in Finder**. For safety, *Open with
 default app* refuses scripts and programs.
 
