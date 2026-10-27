@@ -303,31 +303,41 @@ impl Tracker {
     // ------------------------------------------------------------ attachments
 
     /// An attachment's bytes, at most `MAX_ATTACHMENT`. The token only goes to the tracker's own
-    /// hosts: Jira's site (Cloud then redirects to its media host, which carries its own token),
-    /// trello.com, uploads.linear.app.
+    /// hosts: Jira's site, trello.com, uploads.linear.app. A failed request is tried once more.
     pub async fn download(&self, a: &Attachment) -> AppResult<Vec<u8>> {
-        let url = reqwest::Url::parse(&a.url).map_err(|_| AppError::msg(format!("{}: not a link DevCat can download", a.name)))?;
+        let mut url = reqwest::Url::parse(&a.url).map_err(|_| AppError::msg(format!("{}: not a link DevCat can download", a.name)))?;
         let host = url.host_str().unwrap_or_default().to_string();
-        let rb = match self.board.kind {
+        if self.board.kind == TrackerKind::Jira {
+            url = jira_content_url(url);
+        }
+        let request = || match self.board.kind {
             TrackerKind::Jira if a.url.starts_with(self.board.site.trim().trim_end_matches('/')) => {
-                let rb = self.http.get(url);
-                if self.board.user.trim().is_empty() { rb.bearer_auth(&self.token) } else { rb.basic_auth(self.board.user.trim(), Some(&self.token)) }
+                let rb = self.http.get(url.clone());
+                Some(if self.board.user.trim().is_empty() { rb.bearer_auth(&self.token) } else { rb.basic_auth(self.board.user.trim(), Some(&self.token)) })
             }
-            TrackerKind::Trello if host == "trello.com" || host.ends_with(".trello.com") => self
-                .http
-                .get(url)
-                .header("Authorization", format!("OAuth oauth_consumer_key=\"{}\", oauth_token=\"{}\"", self.board.user.trim(), self.token)),
-            TrackerKind::Linear if host == "uploads.linear.app" => self.http.get(url).header("Authorization", &self.token),
-            _ => return Err(AppError::msg(format!("{}: not stored on the tracker", a.name))),
+            TrackerKind::Trello if host == "trello.com" || host.ends_with(".trello.com") => Some(
+                self.http
+                    .get(url.clone())
+                    .header("Authorization", format!("OAuth oauth_consumer_key=\"{}\", oauth_token=\"{}\"", self.board.user.trim(), self.token)),
+            ),
+            TrackerKind::Linear if host == "uploads.linear.app" => Some(self.http.get(url.clone()).header("Authorization", &self.token)),
+            _ => None,
         };
-        let r = rb.send().await?;
+        let Some(rb) = request() else { return Err(AppError::msg(format!("{}: not stored on the tracker", a.name))) };
+        let r = match rb.send().await {
+            Ok(r) => r,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                request().expect("built above").send().await.map_err(|e| AppError::msg(format!("{}: {}", a.name, crate::error::chain(&e))))?
+            }
+        };
         if !r.status().is_success() {
             return Err(AppError::msg(format!("{}: HTTP {}", a.name, r.status())));
         }
         if r.content_length().is_some_and(|n| n > MAX_ATTACHMENT) {
             return Err(AppError::msg(format!("{}: larger than 5 MB", a.name)));
         }
-        let bytes = r.bytes().await?;
+        let bytes = r.bytes().await.map_err(|e| AppError::msg(format!("{}: {}", a.name, crate::error::chain(&e))))?;
         if bytes.len() as u64 > MAX_ATTACHMENT {
             return Err(AppError::msg(format!("{}: larger than 5 MB", a.name)));
         }
@@ -415,6 +425,16 @@ fn linear_ticket(i: &Value) -> Ticket {
     }
 }
 
+/// Jira Cloud's attachment link (`/rest/api/2/attachment/content/<id>`) redirects to Atlassian's
+/// media host; with `redirect=false` the site sends the file itself, so the download only needs
+/// the host the API calls already reach. Data Center links (`/secure/attachment/…`) stay as they are.
+pub fn jira_content_url(mut url: reqwest::Url) -> reqwest::Url {
+    if url.path().contains("/attachment/content/") && !url.query_pairs().any(|(k, _)| k == "redirect") {
+        url.query_pairs_mut().append_pair("redirect", "false");
+    }
+    url
+}
+
 /// Images in a Linear description (`![name](https://uploads.linear.app/…)`): its uploads.
 pub fn linear_images(markdown: &str) -> Vec<Attachment> {
     static RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"!\[([^\]]*)\]\((https://uploads\.linear\.app/[^)\s]+)\)").unwrap());
@@ -469,6 +489,10 @@ mod tests {
         assert_eq!(image_type(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
         assert_eq!(image_type(b"RIFF\0\0\0\0WEBPVP8"), Some("image/webp"));
         assert_eq!(image_type(b"%PDF-1.7"), None);
+        let u = |s: &str| jira_content_url(reqwest::Url::parse(s).unwrap()).to_string();
+        assert_eq!(u("https://a.atlassian.net/rest/api/2/attachment/content/12213"), "https://a.atlassian.net/rest/api/2/attachment/content/12213?redirect=false");
+        assert_eq!(u("https://a.atlassian.net/rest/api/2/attachment/content/1?redirect=true"), "https://a.atlassian.net/rest/api/2/attachment/content/1?redirect=true");
+        assert_eq!(u("https://jira.acme.com/secure/attachment/10001/shot.png"), "https://jira.acme.com/secure/attachment/10001/shot.png");
     }
 
     #[test]

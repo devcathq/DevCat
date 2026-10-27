@@ -1,16 +1,17 @@
-// Tickets: connected boards on the left; for the selected one, the tickets in a column (pick some
-// and let the agent fix them), what the agent is doing now, and what it did.
+// Tickets: the board picked in the sidebar: the tickets in a column (pick some and let the agent
+// fix them), what the agent is doing now, and what it did.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
-import { Bot, Eye, ExternalLink, GitBranch, ListTodo, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
+import { Bot, Brain, Eye, ExternalLink, GitBranch, ListTodo, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge, Button, Empty, ErrorBox, IconButton, Select, Spinner, Toolbar } from "../../components/ui";
 import { errMsg } from "../../lib/api";
+import { useConnections } from "../../store/connections";
 import { confirmDialog } from "../connections/dialogs";
 import { ASSIGNED, TRACKERS, tickets, type Board, type JobView, type Outcome, type RunRecord, type Ticket } from "./api";
 import { BoardDialog } from "./BoardDialog";
-import { startTickets, useTickets } from "./store";
+import { boardProject, openTickets, startTickets, useTickets } from "./store";
 
 const OUTCOME: Record<Outcome, { label: string; tone: "ok" | "warn" | "danger" | "default" }> = {
   fixed: { label: "fixed", tone: "ok" },
@@ -25,8 +26,7 @@ const when = (ms: number) => new Date(ms).toLocaleString(undefined, { dateStyle:
 export default function TicketsTab() {
   const boards = useTickets((s) => s.boards);
   const jobs = useTickets((s) => s.jobs);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [editing, setEditing] = useState<Board | "new" | null>(null);
+  const selected = useTickets((s) => s.selected);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,56 +34,42 @@ export default function TicketsTab() {
     void useTickets.getState().refresh().catch((e) => setError(errMsg(e)));
   }, []);
   useEffect(() => {
-    if (!selected || !boards.some((b) => b.id === selected)) setSelected(boards[0]?.id ?? null);
+    if (!selected || !boards.some((b) => b.id === selected)) useTickets.getState().select(boards[0]?.id ?? null);
   }, [boards, selected]);
   const board = boards.find((b) => b.id === selected) ?? null;
 
   return (
-    <div className="flex h-full min-h-0">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-line bg-panel">
-        <div className="flex h-9 items-center justify-between border-b border-line px-3">
-          <span className="text-xs font-semibold tracking-wide text-muted uppercase">Boards</span>
-          <IconButton title="Connect a board" onClick={() => setEditing("new")}><Plus className="size-4" /></IconButton>
-        </div>
-        <div className="min-h-0 flex-1 space-y-0.5 overflow-auto p-1.5">
-          {boards.map((b) => (
-            <button
-              key={b.id}
-              onClick={() => setSelected(b.id)}
-              className={clsx("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left", b.id === selected ? "bg-hover text-fg" : "text-muted hover:bg-hover/60")}
-            >
-              <ListTodo className="size-4 shrink-0 text-accent" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px]">{b.name}</span>
-                <span className="block truncate text-[11px] text-faint">{TRACKERS[b.kind]} · {b.pickFrom?.name ?? "?"} → {b.doneTo?.name ?? "?"}</span>
-              </span>
-              {jobs[b.id] ? <Spinner className="size-3.5 text-accent" /> : b.watch && <Eye className="size-3.5 text-ok" aria-label="Watching" />}
-            </button>
-          ))}
-        </div>
-      </aside>
-      <main className="flex min-w-0 flex-1 flex-col">
-        {error && <ErrorBox error={error} />}
-        {board ? (
-          <BoardView key={board.id} board={board} job={jobs[board.id] ?? null} onEdit={() => setEditing(board)} />
-        ) : (
-          <Empty icon={<ListTodo className="size-8" />} title="Let the agent work through your tickets">
-            <p className="mb-3">
-              Connect a Jira project, Trello board or Linear team. The agent takes tickets from a column (say, To Do), fixes each one on its own branch,
-              comments on the ticket and moves it on (say, to Testing). Results can go to Slack too.
-            </p>
-            <Button variant="primary" onClick={() => setEditing("new")}><Plus className="size-3.5" />Connect a board</Button>
-          </Empty>
-        )}
-      </main>
-      {editing && (
-        <BoardDialog
-          board={editing === "new" ? null : editing}
-          onClose={() => setEditing(null)}
-          onSaved={(b) => { setEditing(null); setSelected(b.id); void useTickets.getState().refresh(); }}
-        />
+    <div className="flex h-full min-h-0 flex-col">
+      {error && <ErrorBox error={error} />}
+      {board ? (
+        <BoardView key={board.id} board={board} job={jobs[board.id] ?? null} onEdit={() => useTickets.getState().edit(board)} />
+      ) : (
+        <Empty icon={<ListTodo className="size-8" />} title="Let the agent work through your tickets">
+          <p className="mb-3">
+            Connect a Jira project, Trello board or Linear team. The agent takes tickets from a column (say, To Do), fixes each one on its own branch,
+            comments on the ticket and moves it on (say, to Testing). Results can go to Slack too.
+          </p>
+          <Button variant="primary" onClick={() => useTickets.getState().edit("new")}><Plus className="size-3.5" />Connect a board</Button>
+        </Empty>
       )}
     </div>
+  );
+}
+
+/** The board settings dialog, wherever it was opened from (sidebar or tab). Mounted once by AppShell. */
+export function TicketsDialog() {
+  const editing = useTickets((s) => s.editing);
+  if (!editing) return null;
+  return (
+    <BoardDialog
+      board={editing === "new" ? null : editing}
+      onClose={() => useTickets.getState().edit(null)}
+      onSaved={(b) => {
+        useTickets.getState().edit(null);
+        openTickets(b.id);
+        void useTickets.getState().refresh();
+      }}
+    />
   );
 }
 
@@ -150,6 +136,8 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
 
   const toggle = (id: string) => setPicked((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const ready = !!board.repo && !!board.doneTo;
+  const projects = useConnections((s) => s.projects);
+  const { project, detected } = boardProject(board, projects);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -158,6 +146,15 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
         <Badge>{TRACKERS[board.kind]}</Badge>
         <span className="truncate text-[12px] text-muted">
           {board.pickFrom?.name ?? "?"}{board.working ? ` → ${board.working.name}` : ""} → {board.doneTo?.name ?? "?"}
+        </span>
+        <span
+          className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
+          title={project
+            ? `The agent uses the shared memory and connections of the project ${project.name}${detected ? " (its code folder holds the repository)" : ""}, like a chat there`
+            : "The agent uses the repository's shared memory (set a project in the board settings for its memory and connections)"}
+        >
+          <Brain className="size-3" style={project?.color ? { color: project.color } : undefined} />
+          {project ? project.name : "repository memory"}{detected && project ? " (detected)" : ""}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <Button size="sm" variant={board.watch ? "primary" : "default"} onClick={() => void toggleWatch()} disabled={!ready || !board.pickFrom} title={`Check ${board.pickFrom?.name ?? "the column"} every ${board.intervalMin} min and work on new tickets`}>

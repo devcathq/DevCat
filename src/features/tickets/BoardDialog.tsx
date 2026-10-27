@@ -1,6 +1,6 @@
 // Connect a board (Jira project, Trello board, Linear team) and say what the agent does with it:
 // which column it takes tickets from, where they go while it works, when fixed and when it needs a
-// person; the repository and AI connection it works with; and an optional Slack webhook.
+// person; the project, repository and AI connection it works with; and an optional Slack webhook.
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
@@ -10,7 +10,9 @@ import { toast } from "sonner";
 import { Button, Checkbox, Dialog, ErrorBox, Field, Input, Select, Textarea } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { AiProvider } from "../../lib/types";
+import { useConnections } from "../../store/connections";
 import { ASSIGNED, TRACKERS, newBoard, tickets, type Board, type Column, type TrackerKind } from "./api";
+import { projectForFolder } from "./store";
 
 const TOKEN_HELP: Record<TrackerKind, { url: string; text: string }> = {
   jira: { url: "https://id.atlassian.com/manage-profile/security/api-tokens", text: "Create an API token" },
@@ -29,6 +31,13 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
   const [error, setError] = useState<string | null>(null);
   const isNew = !board;
   const set = (p: Partial<Board>) => setB((x) => ({ ...x, ...p }));
+  const projects = useConnections((s) => s.projects);
+  const detected = projectForFolder(projects, b.repo);
+  // Picking a project with code folders fills in the repository when it's empty.
+  const pickProject = (id: string) => {
+    const p = projects.find((x) => x.id === id);
+    set({ projectId: id || null, ...(p && !b.repo.trim() && p.folders?.length ? { repo: p.folders[0] } : {}) });
+  };
 
   useEffect(() => {
     void api.aiProvidersList().then((l) => setProviders(l.filter((p) => p.kind === "claude" || p.kind === "agent"))).catch(() => {});
@@ -165,6 +174,13 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
 
         <section className="space-y-3 border-t border-line pt-4">
           <div className="text-xs font-semibold tracking-wide text-muted uppercase">Agent</div>
+          <Field label="Project" hint="The agent gets this project's shared memory and connections, the same ones a chat in it uses.">
+            <Select value={b.projectId ?? ""} onChange={(e) => pickProject(e.target.value)}>
+              <option value="">{detected ? `From the repository: ${detected.name}` : "From the repository (no project holds it: its own memory)"}</option>
+              {b.projectId && !projects.some((p) => p.id === b.projectId) && <option value={b.projectId}>(deleted project)</option>}
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.folders?.length ? "" : " (no code folders)"}</option>)}
+            </Select>
+          </Field>
           <Field label="Repository" hint="A git repository, or a folder of them (the agent changes the ones the ticket needs). Each gets a new branch, devcat/<ticket>; a repository with uncommitted changes is left alone.">
             <div className="flex gap-2">
               <Input value={b.repo} onChange={(e) => set({ repo: e.target.value })} placeholder="/path/to/repo or /path/to/folder-of-repos" />

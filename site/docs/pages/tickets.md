@@ -7,7 +7,8 @@ branch, DevCat commits the work, comments on the ticket with what changed and ho
 
 ## Connect a board
 
-Open **Settings** (the gear at the top right) → **Tickets**, then **Connect a board**.
+Click **Tickets** in the left bar (the checklist icon), then **Connect a board** (or **+** at the top of the
+list). The list shows each board and what the agent is doing on it; click one to see its tickets.
 
 | Tracker | What you enter | Token |
 | --- | --- | --- |
@@ -32,6 +33,13 @@ to the column you chose, the move is skipped and the reason shows in the history
 
 ## The agent
 
+- **Project**: the DevCat project the board works for. The agent gets that project's shared memory (what
+  your agents learned there, the same memory your chats use) and its connections, like a chat in the
+  project. Leave it on **From the repository** to use the project whose code folder holds the repository
+  (shown next to the option), or the repository's own memory when no project holds it. Picking a project
+  with code folders fills in the **Repository** when it's empty. In focus mode the Tickets list shows the
+  focused project's boards (and those in no project). The agent can change data on a connection only when
+  its **AI / MCP access** is **Full**, as for agents over MCP: it works on text from the tracker, unattended.
 - **Repository**: the git repository the agent works in, or a folder of repositories (say, a front end and its
   API next to each other). A single repository must have no uncommitted changes when a ticket starts, so the
   agent's work never mixes with yours. In a folder, each repository gets the ticket's branch and the agent

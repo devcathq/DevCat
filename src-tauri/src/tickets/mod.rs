@@ -143,6 +143,10 @@ pub struct Board {
     /// of them; each gets the ticket's branch).
     #[serde(default)]
     pub repo: String,
+    /// The DevCat project the board works for (None: the one whose code folder holds `repo`, if
+    /// any). The agent gets its memory and connections, like a chat in that project.
+    #[serde(default)]
+    pub project_id: Option<String>,
     /// AI connection that does the work (Claude Code or DevCat Agent).
     #[serde(default)]
     pub provider_id: String,

@@ -32,6 +32,8 @@ export interface Board {
   hasWebhook?: boolean;
   /** A git repository, or a folder of them. */
   repo: string;
+  /** DevCat project whose memory and connections the agent gets (null: the one `repo` is in). */
+  projectId?: string | null;
   providerId: string;
   model?: string | null;
   pickFrom?: Column | null;
@@ -68,7 +70,7 @@ export const ASSIGNED: Record<Assigned, string> = { anyone: "Anyone", me: "Me", 
 export const TRACKERS: Record<TrackerKind, string> = { jira: "Jira", trello: "Trello", linear: "Linear" };
 
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
-  id: "", name: "", kind, site: "", user: "", project: "", repo: "", providerId: "claude", model: null,
+  id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
   pickFrom: null, working: null, doneTo: null, failedTo: null, label: "", assigned: "anyone",
   comment: true, push: false, allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
 });
