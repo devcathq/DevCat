@@ -134,7 +134,7 @@ impl Rmq {
         if let Some(b) = body {
             rb = rb.json(b);
         }
-        let resp = rb.send().await.map_err(|e| AppError::msg(format!("Request to {url} failed: {}", err_chain(&e))))?;
+        let resp = rb.send().await.map_err(|e| AppError::msg(format!("Request to {url} failed: {}", crate::error::chain(&e))))?;
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
@@ -163,20 +163,6 @@ impl Rmq {
     pub async fn delete(&self, path: &str, query: &[(&str, String)]) -> AppResult<Value> {
         self.send(Method::DELETE, path, query, None, &[]).await
     }
-}
-
-fn err_chain(e: &dyn std::error::Error) -> String {
-    let mut s = e.to_string();
-    let mut src = e.source();
-    while let Some(c) = src {
-        let m = c.to_string();
-        if !s.contains(&m) {
-            s.push_str(": ");
-            s.push_str(&m);
-        }
-        src = c.source();
-    }
-    s
 }
 
 fn api_error(status: StatusCode, body: &str) -> AppError {

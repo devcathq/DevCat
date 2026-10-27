@@ -12,6 +12,19 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Tickets in the left bar:** Tickets has its own view in the left bar instead of an entry in the Settings menu. It
+  lists your boards and what the agent is doing on each (a dot on the icon while it works); click one to see its
+  tickets. In focus mode only the focused project's boards are listed.
+- **Tickets: the project's memory.** A board belongs to a DevCat project (chosen, or the one whose code folder holds
+  its repository), and the agent working on its tickets, Claude Code or DevCat Agent, gets that project's shared
+  memory and connections, the same ones a chat there uses.
+- **Tickets: prompts.** A board's **Default prompt** (formerly *Instructions for every ticket*) goes with every
+  ticket; **With a prompt…** (or the speech bubble on a ticket) fixes the tickets you pick with a prompt of your own
+  instead, that time only. The history shows the prompt used.
+- **Tickets: Jira screenshots.** Images attached to Jira tickets often didn't reach the agent ("error sending
+  request"): DevCat now downloads them from the Jira site itself instead of Atlassian's media server, tries again
+  once, and the history says why when an attachment still can't be read.
+
 ## 0.13.0 - 2026-10-26
 
 - **Sync MCP:** each connection now has its own **AI / MCP access** (Edit connection → Advanced): **Off** hides it

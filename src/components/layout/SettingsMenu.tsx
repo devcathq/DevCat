@@ -1,14 +1,13 @@
-// Title bar: one Settings menu (appearance, AI memory, phone pairing, tickets, keep awake, new window)
-// instead of a row of icons. A dot on the gear shows what needs a look; keep awake shows its own chip while on.
+// Title bar: one Settings menu (appearance, AI memory, phone pairing, keep awake, new window) instead
+// of a row of icons. A dot on the gear shows what needs a look; keep awake shows its own chip while on.
+// Tickets have their own view in the left bar.
 import clsx from "clsx";
-import { AppWindow, ArrowUpCircle, Brain, Coffee, ListTodo, Palette, Settings, Smartphone } from "lucide-react";
-import { useEffect } from "react";
+import { AppWindow, ArrowUpCircle, Brain, Coffee, Palette, Settings, Smartphone } from "lucide-react";
 import { openAppearance } from "../../features/appearance/AppearanceDialog";
 import { useContextMenu, type MenuItem } from "../../features/connections/ContextMenu";
 import { KeepAwakeButton, useKeepAwake } from "../../features/keepawake/KeepAwakeButton";
 import { openMemory } from "../../features/memory/MemoryDialog";
 import { useMobile } from "../../features/mobile/store";
-import { openTickets, startTickets, useTickets } from "../../features/tickets/store";
 import { useUpdate } from "../../features/update/store";
 import { NEW_WINDOW_SHORTCUT, openNewWindow } from "../../lib/windows";
 import { useConnections } from "../../store/connections";
@@ -16,15 +15,9 @@ import { useConnections } from "../../store/connections";
 export function SettingsMenu() {
   const menu = useContextMenu();
   const keepAwake = useKeepAwake();
-  const ticketsWorking = useTickets((s) => Object.keys(s.jobs).length > 0);
   const mobile = useMobile((s) => s.status);
   const phoneOn = !!(mobile?.settings.enabled && mobile.running);
   const pairing = (mobile?.pending.length ?? 0) > 0;
-  useEffect(() => {
-    startTickets();
-    void useTickets.getState().refresh().catch(() => {});
-  }, []);
-
   const open = (e: React.MouseEvent) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const items: MenuItem[] = [
@@ -37,12 +30,6 @@ export function SettingsMenu() {
         onClick: () => useMobile.getState().show(),
       },
       "separator",
-      {
-        label: "Tickets",
-        icon: <ListTodo className={clsx("size-3.5", ticketsWorking && "text-accent")} />,
-        shortcut: ticketsWorking ? "working" : undefined,
-        onClick: openTickets,
-      },
       { label: keepAwake.on ? `Keep awake (on${keepAwake.left ? `, ${keepAwake.left} left` : ""})` : "Keep awake", icon: <Coffee className={clsx("size-3.5", keepAwake.on && "text-accent")} />, submenu: keepAwake.items },
       "separator",
       { label: "New window", icon: <AppWindow className="size-3.5" />, shortcut: NEW_WINDOW_SHORTCUT, onClick: () => void openNewWindow(useConnections.getState().focusProjectId) },
@@ -52,13 +39,13 @@ export function SettingsMenu() {
     menu.show({ clientX: r.right, clientY: r.bottom + 2 }, items);
   };
 
-  const dot = pairing ? "bg-warn" : ticketsWorking ? "bg-accent animate-pulse" : null;
+  const dot = pairing ? "bg-warn" : null;
   return (
     <>
       <KeepAwakeButton keepAwake={keepAwake} />
       <button
         onClick={open}
-        title={pairing ? "Settings: a phone wants to pair" : ticketsWorking ? "Settings: the agent is working on a ticket" : "Settings"}
+        title={pairing ? "Settings: a phone wants to pair" : "Settings"}
         aria-label="Settings"
         className="relative flex h-6 items-center rounded px-1.5 text-muted hover:bg-hover hover:text-fg"
       >

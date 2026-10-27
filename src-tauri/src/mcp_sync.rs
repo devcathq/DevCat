@@ -131,9 +131,7 @@ impl Env {
     fn current() -> AppResult<Env> {
         let st = St::try_get().ok_or_else(|| AppError::msg("DevCat isn't ready yet"))?;
         let home = HOME.get().cloned().or_else(dirs::home_dir).ok_or_else(|| AppError::msg("Can't find your home folder"))?;
-        let exe = std::env::current_exe()?;
-        let exe = std::fs::canonicalize(&exe).unwrap_or(exe).to_string_lossy().to_string();
-        let data_dir = DATA_DIR.get().filter(|d| Some(d.as_path()) != crate::cli::default_data_dir().as_deref()).map(|d| d.to_string_lossy().to_string());
+        let (exe, data_dir) = program()?;
         Ok(Env { home, exe, data_dir, projects: st.projects.list()?, connections: st.store.load_all()? })
     }
 
@@ -160,6 +158,29 @@ impl Env {
             Err(_) => p.to_string_lossy().to_string(),
         }
     }
+}
+
+/// The `devcat` program the agents start, and its `--data-dir` when not the app's default.
+fn program() -> AppResult<(String, Option<String>)> {
+    let exe = std::env::current_exe()?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe).to_string_lossy().to_string();
+    let data_dir = DATA_DIR.get().filter(|d| Some(d.as_path()) != crate::cli::default_data_dir().as_deref()).map(|d| d.to_string_lossy().to_string());
+    Ok((exe, data_dir))
+}
+
+/// `--mcp-config` for one Claude Code run DevCat starts itself (a ticket): `devcat mcp` for
+/// `folder`, in `project` when given (else the project whose code folder holds it).
+pub fn run_config(project: Option<&str>, folder: &Path) -> AppResult<Value> {
+    let (exe, data_dir) = program()?;
+    let mut args = vec!["mcp".to_string()];
+    if let Some(id) = project {
+        args.extend(["--project".to_string(), id.to_string()]);
+    }
+    args.extend(["--folder".to_string(), folder.to_string_lossy().to_string()]);
+    if let Some(d) = data_dir {
+        args.extend(["--data-dir".to_string(), d]);
+    }
+    Ok(json!({ "mcpServers": { NAME: { "type": "stdio", "command": exe, "args": args, "env": {} } } }))
 }
 
 const EVERY_FOLDER: &str = "Every folder";

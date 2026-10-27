@@ -22,6 +22,9 @@ pub struct Job {
     pub timeout: Duration,
     /// Images sent with the prompt: (media type, base64).
     pub images: Vec<(String, String)>,
+    /// `--mcp-config`: DevCat's MCP server (shared memory, connections), whose tools the run may
+    /// use without asking (see `mcp_sync::run_config`).
+    pub mcp: Option<Value>,
 }
 
 pub struct Outcome {
@@ -38,6 +41,12 @@ pub async fn run(job: Job, activity: Arc<dyn Fn(String) + Send + Sync>, cancelle
     if !job.allow_commands {
         // acceptEdits without a prompt tool: anything else that would ask is refused.
         extra.extend(["--disallowedTools".into(), "Bash".into()]);
+    }
+    if let Some(m) = &job.mcp {
+        extra.extend(["--mcp-config".into(), m.to_string()]);
+        if !job.allow_commands {
+            extra.extend(["--allowedTools".into(), format!("mcp__{}", crate::mcp_sync::NAME)]);
+        }
     }
     if let Some(s) = &job.schema {
         extra.extend(["--json-schema".into(), s.to_string()]);
