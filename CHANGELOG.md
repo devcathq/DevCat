@@ -12,9 +12,30 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **File names with spaces are clickable in terminals and Claude Code tabs:** a path like
+  `exports/Akun Simulasi Internal 26 Okt 2026.xlsx`, shown as code by Claude Code or in quotes by a tool, opens
+  on a click like any other path (Ctrl/⌘-click: in its default app), once DevCat has checked the file is there (#105).
+- **AI connections:** saving a DevCat Agent connection no longer fails with "Invalid API key variable name" when
+  another type was picked first and its "Passed as" field filled in. A Claude Code, Codex or Gemini connection
+  set up the same way now passes its key in its own variable, not the other type's hidden one (#98).
 - **New chat stays new:** changing the model or permission mode of a new Claude Code chat and pressing **Restart
   claude** no longer opens another tab's conversation in the same folder. A chat with no message yet starts
   fresh again; one you've written in picks up where it was (#101).
+
+## 0.14.0 - 2026-10-27
+
+- **Tickets in the left bar:** Tickets has its own view in the left bar instead of an entry in the Settings menu. It
+  lists your boards and what the agent is doing on each (a dot on the icon while it works); click one to see its
+  tickets. In focus mode only the focused project's boards are listed.
+- **Tickets: the project's memory.** A board belongs to a DevCat project (chosen, or the one whose code folder holds
+  its repository), and the agent working on its tickets, Claude Code or DevCat Agent, gets that project's shared
+  memory and connections, the same ones a chat there uses.
+- **Tickets: prompts.** A board's **Default prompt** (formerly *Instructions for every ticket*) goes with every
+  ticket; **With a prompt…** (or the speech bubble on a ticket) fixes the tickets you pick with a prompt of your own
+  instead, that time only. The history shows the prompt used.
+- **Tickets: Jira screenshots.** Images attached to Jira tickets often didn't reach the agent ("error sending
+  request"): DevCat now downloads them from the Jira site itself instead of Atlassian's media server, tries again
+  once, and the history says why when an attachment still can't be read.
 
 ## 0.13.0 - 2026-10-26
 

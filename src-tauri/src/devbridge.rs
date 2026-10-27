@@ -67,7 +67,7 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "tickets_board_delete" => out(c!(crate::tickets::tickets_board_delete, "id")),
         "tickets_columns" => out(c!(crate::tickets::tickets_columns, "board")),
         "tickets_list" => out(c!(crate::tickets::tickets_list, "boardId", "column")),
-        "tickets_fix" => out(c!(crate::tickets::tickets_fix, "boardId", "ticketIds")),
+        "tickets_fix" => out(c!(crate::tickets::tickets_fix, "boardId", "ticketIds", "prompt")),
         "tickets_stop" => out(c!(crate::tickets::tickets_stop, "boardId")),
         "tickets_jobs" => out(c!(crate::tickets::tickets_jobs)),
         "tickets_history" => out(c!(crate::tickets::tickets_history, "boardId")),
