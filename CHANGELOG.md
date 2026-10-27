@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **File names with spaces are clickable in terminals and Claude Code tabs:** a path like
+  `exports/Akun Simulasi Internal 26 Okt 2026.xlsx`, shown as code by Claude Code or in quotes by a tool, opens
+  on a click like any other path (Ctrl/⌘-click: in its default app), once DevCat has checked the file is there (#105).
+
 ## 0.14.0 - 2026-10-27
 
 - **Tickets in the left bar:** Tickets has its own view in the left bar instead of an entry in the Settings menu. It
