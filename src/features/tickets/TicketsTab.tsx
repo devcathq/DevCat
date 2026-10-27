@@ -2,10 +2,10 @@
 // fix them), what the agent is doing now, and what it did.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
-import { Bot, Brain, Eye, ExternalLink, GitBranch, ListTodo, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
+import { Bot, Brain, Eye, ExternalLink, GitBranch, ListTodo, MessageSquareText, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Badge, Button, Empty, ErrorBox, IconButton, Select, Spinner, Toolbar } from "../../components/ui";
+import { Badge, Button, Dialog, Empty, ErrorBox, IconButton, Select, Spinner, Textarea, Toolbar } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { useConnections } from "../../store/connections";
 import { confirmDialog } from "../connections/dialogs";
@@ -111,9 +111,11 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
     return m;
   }, [history]);
 
-  const fix = async (ids: string[]) => {
+  // Tickets to fix with a prompt of their own (the dialog is open).
+  const [asking, setAsking] = useState<Ticket[] | null>(null);
+  const fix = async (ids: string[], prompt?: string | null) => {
     try {
-      await tickets.fix(board.id, ids);
+      await tickets.fix(board.id, ids, prompt);
       toast.success(ids.length === 1 ? "The agent is on it" : `Queued ${ids.length} tickets`);
       setPicked(new Set());
     } catch (e) {
@@ -179,7 +181,10 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
             <IconButton title="Refresh" onClick={() => void load()}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
             {board.assigned !== "anyone" && <Badge tone="info">assigned: {ASSIGNED[board.assigned].toLowerCase()}</Badge>}
             {board.label && <Badge tone="info">label: {board.label}</Badge>}
-            <Button size="sm" variant="primary" className="ml-auto" disabled={!ready || picked.size === 0} onClick={() => void fix([...picked])}>
+            <Button size="sm" className="ml-auto" disabled={!ready || picked.size === 0} onClick={() => setAsking((list ?? []).filter((t) => picked.has(t.id)))} title="Write what the agent should do for these tickets, instead of the board's default prompt">
+              <MessageSquareText className="size-3" />With a prompt…
+            </Button>
+            <Button size="sm" variant="primary" disabled={!ready || picked.size === 0} onClick={() => void fix([...picked])} title="Fix them with the board's default prompt">
               <Play className="size-3" />Fix {picked.size || ""} with the agent
             </Button>
           </div>
@@ -207,7 +212,8 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
                     </div>
                   </div>
                   {t.url && <IconButton title="Open in the tracker" onClick={() => void openUrl(t.url)}><ExternalLink className="size-3.5" /></IconButton>}
-                  <IconButton title="Fix this one with the agent" disabled={!ready || busy} onClick={() => void fix([t.id])}><Bot className="size-3.5" /></IconButton>
+                  <IconButton title="Fix this one with a prompt of its own…" disabled={!ready || busy} onClick={() => setAsking([t])}><MessageSquareText className="size-3.5" /></IconButton>
+                  <IconButton title="Fix this one with the agent (the board's default prompt)" disabled={!ready || busy} onClick={() => void fix([t.id])}><Bot className="size-3.5" /></IconButton>
                 </div>
               );
             })}
@@ -222,7 +228,57 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
           </div>
         </section>
       </div>
+      {asking && (
+        <FixWithPrompt
+          board={board}
+          list={asking}
+          onClose={() => setAsking(null)}
+          onFix={(prompt) => { const ids = asking.map((t) => t.id); setAsking(null); void fix(ids, prompt); }}
+        />
+      )}
     </div>
+  );
+}
+
+/** Fix tickets with a prompt of their own: it replaces the board's default prompt for them (the
+ *  ticket's text, comments and images still go to the agent). Starts from the default prompt. */
+function FixWithPrompt({ board, list, onClose, onFix }: { board: Board; list: Ticket[]; onClose: () => void; onFix: (prompt: string | null) => void }) {
+  const [text, setText] = useState(board.instructions);
+  const changed = text.trim() !== board.instructions.trim();
+  const what = list.length === 1 ? list[0].key : `${list.length} tickets`;
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={`Fix ${what} with a prompt`}
+      width={620}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={() => onFix(changed && text.trim() ? text : null)}>
+            <Play className="size-3" />{changed && text.trim() ? "Fix with this prompt" : "Fix with the default prompt"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-2">
+        {list.length > 1 && <div className="truncate text-[12px] text-muted">{list.map((t) => t.key).join(", ")}</div>}
+        {list.length === 1 && <div className="truncate text-[13px]"><span className="font-mono text-[11px] text-muted">{list[0].key}</span> {list[0].title}</div>}
+        <Textarea
+          autoFocus
+          rows={8}
+          className="w-full"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="What the agent should do for this ticket: the approach, files to change or leave alone, how to test…"
+        />
+        <p className="text-[11px] text-muted">
+          Replaces the board's default prompt for {list.length === 1 ? "this ticket" : "these tickets"}, this time only. The ticket's text, comments and
+          images still go to the agent, and DevCat still moves and comments on the ticket as the board says.
+          {board.instructions.trim() && changed && <> <button className="underline hover:text-fg" onClick={() => setText(board.instructions)}>Back to the default prompt</button></>}
+        </p>
+      </div>
+    </Dialog>
   );
 }
 
@@ -262,6 +318,9 @@ function HistoryItem({ r }: { r: RunRecord }) {
         <span className="shrink-0 text-[10px] text-faint">{when(r.finished)}</span>
       </button>
       {r.movedTo && <div className="mt-0.5 text-[11px] text-muted">Moved to {r.movedTo}</div>}
+      {r.prompt && (open
+        ? <div className="selectable mt-1 text-[12px] whitespace-pre-wrap text-muted"><span className="font-medium text-fg/80">Prompt: </span>{r.prompt}</div>
+        : <div className="mt-0.5 truncate text-[11px] text-muted" title={r.prompt}><MessageSquareText className="mr-1 inline size-3" />{r.prompt}</div>)}
       {(open || r.outcome !== "fixed") && r.summary && <div className="selectable mt-1 text-[12px] whitespace-pre-wrap text-fg/80">{r.summary}</div>}
       {open && r.testing && <div className="selectable mt-1.5 text-[12px] whitespace-pre-wrap text-muted"><span className="font-medium text-fg/80">How to test: </span>{r.testing}</div>}
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-faint">

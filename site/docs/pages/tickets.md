@@ -47,7 +47,8 @@ to the column you chose, the move is skipped and the reason shows in the history
   and the ticket's history says so.
 - **AI connection**: Claude Code (your login, or a Claude Code connection with an API key) or a DevCat Agent
   connection (any model API). Optionally a **Model** (`sonnet`, `haiku`…).
-- **Instructions for every ticket**: conventions, where things are, how to test. They're added to each ticket.
+- **Default prompt**: what the agent is told with every ticket: conventions, where things are, how to test. A
+  ticket you fix with a prompt of its own (below) gets that prompt instead.
 - **Let the agent run commands**: off by default, so the agent can only read and edit files in the
   repository. Turn it on to let it build and run tests. It will then run any command it decides to, as you.
 
@@ -55,6 +56,12 @@ to the column you chose, the move is skipped and the reason shows in the history
 
 Pick tickets in the list and click **Fix with the agent**, or use the robot icon on a single ticket. Tickets
 are done one at a time; the panel on the right shows what the agent is doing, and **Stop** stops it.
+
+To tell the agent something for particular tickets, click **With a prompt…** (or the speech bubble on a single
+ticket). The prompt starts as the board's default prompt; what you write replaces it for those tickets, that
+time only. The ticket's text, comments and images still go to the agent, and DevCat still moves and comments
+on the ticket as the board says. The history shows the prompt a ticket was fixed with. Tickets the board picks
+up by itself (**Watch**) always get the default prompt.
 
 For each ticket:
 

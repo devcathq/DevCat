@@ -196,8 +196,8 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
             </Field>
             <Field label="Model" hint="Empty: the connection's default."><Input value={b.model ?? ""} onChange={(e) => set({ model: e.target.value || null })} placeholder="sonnet" /></Field>
           </div>
-          <Field label="Instructions for every ticket" hint="Conventions, where things are, how to test…">
-            <Textarea rows={3} value={b.instructions} onChange={(e) => set({ instructions: e.target.value })} placeholder="Run `pnpm test` before finishing. Keep the API backwards compatible." />
+          <Field label="Default prompt" hint="Given to the agent with every ticket: conventions, where things are, how to test. When you fix tickets by hand, “With a prompt…” replaces it for those tickets.">
+            <Textarea rows={4} value={b.instructions} onChange={(e) => set({ instructions: e.target.value })} placeholder="Run `pnpm test` before finishing. Keep the API backwards compatible." />
           </Field>
           <div className="flex flex-col gap-2">
             <Checkbox label="Let the agent run commands (builds, tests) without asking" checked={b.allowCommands} onChange={(v) => set({ allowCommands: v })} />

@@ -187,7 +187,8 @@ pub struct Board {
     /// Tickets per check, at most.
     #[serde(default = "three")]
     pub max_per_run: u32,
-    /// Added to every ticket's prompt (conventions, how to test…).
+    /// The default prompt: added to every ticket's (conventions, how to test…). A ticket fixed with
+    /// a prompt of its own gets that one instead.
     #[serde(default)]
     pub instructions: String,
 }
@@ -216,6 +217,9 @@ pub struct RunRecord {
     pub started: i64,
     pub finished: i64,
     pub cost_usd: Option<f64>,
+    /// The user's prompt for this ticket, when it replaced the board's default one.
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 pub fn init(data_dir: PathBuf) {
@@ -369,10 +373,11 @@ pub async fn tickets_list(board_id: String, column: String) -> AppResult<Vec<Tic
     Ok(worker::with_label(&b, list))
 }
 
-/// Queue tickets for the agent (it works on them one at a time).
+/// Queue tickets for the agent (it works on them one at a time). `prompt`: what it's told for
+/// these tickets instead of the board's default prompt (None or empty: the default).
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn tickets_fix(board_id: String, ticket_ids: Vec<String>) -> AppResult<()> {
-    worker::enqueue(board(&board_id)?, ticket_ids)
+pub async fn tickets_fix(board_id: String, ticket_ids: Vec<String>, prompt: Option<String>) -> AppResult<()> {
+    worker::enqueue(board(&board_id)?, ticket_ids, prompt)
 }
 
 /// Stop the ticket being worked on and drop the queue.
