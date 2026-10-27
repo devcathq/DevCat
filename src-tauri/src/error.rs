@@ -40,6 +40,22 @@ impl AppError {
     }
 }
 
+/// `e` with its causes ("error sending request for url (…): connection refused"): reqwest's own
+/// message leaves out why.
+pub fn chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut src = e.source();
+    while let Some(c) = src {
+        let m = c.to_string();
+        if !s.contains(&m) {
+            s.push_str(": ");
+            s.push_str(&m);
+        }
+        src = c.source();
+    }
+    s
+}
+
 impl Serialize for AppError {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&self.to_string())

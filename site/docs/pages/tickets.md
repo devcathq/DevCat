@@ -7,7 +7,8 @@ branch, DevCat commits the work, comments on the ticket with what changed and ho
 
 ## Connect a board
 
-Open **Settings** (the gear at the top right) → **Tickets**, then **Connect a board**.
+Click **Tickets** in the left bar (the checklist icon), then **Connect a board** (or **+** at the top of the
+list). The list shows each board and what the agent is doing on it; click one to see its tickets.
 
 | Tracker | What you enter | Token |
 | --- | --- | --- |
@@ -32,6 +33,13 @@ to the column you chose, the move is skipped and the reason shows in the history
 
 ## The agent
 
+- **Project**: the DevCat project the board works for. The agent gets that project's shared memory (what
+  your agents learned there, the same memory your chats use) and its connections, like a chat in the
+  project. Leave it on **From the repository** to use the project whose code folder holds the repository
+  (shown next to the option), or the repository's own memory when no project holds it. Picking a project
+  with code folders fills in the **Repository** when it's empty. In focus mode the Tickets list shows the
+  focused project's boards (and those in no project). The agent can change data on a connection only when
+  its **AI / MCP access** is **Full**, as for agents over MCP: it works on text from the tracker, unattended.
 - **Repository**: the git repository the agent works in, or a folder of repositories (say, a front end and its
   API next to each other). A single repository must have no uncommitted changes when a ticket starts, so the
   agent's work never mixes with yours. In a folder, each repository gets the ticket's branch and the agent
@@ -39,7 +47,8 @@ to the column you chose, the move is skipped and the reason shows in the history
   and the ticket's history says so.
 - **AI connection**: Claude Code (your login, or a Claude Code connection with an API key) or a DevCat Agent
   connection (any model API). Optionally a **Model** (`sonnet`, `haiku`…).
-- **Instructions for every ticket**: conventions, where things are, how to test. They're added to each ticket.
+- **Default prompt**: what the agent is told with every ticket: conventions, where things are, how to test. A
+  ticket you fix with a prompt of its own (below) gets that prompt instead.
 - **Let the agent run commands**: off by default, so the agent can only read and edit files in the
   repository. Turn it on to let it build and run tests. It will then run any command it decides to, as you.
 
@@ -47,6 +56,12 @@ to the column you chose, the move is skipped and the reason shows in the history
 
 Pick tickets in the list and click **Fix with the agent**, or use the robot icon on a single ticket. Tickets
 are done one at a time; the panel on the right shows what the agent is doing, and **Stop** stops it.
+
+To tell the agent something for particular tickets, click **With a prompt…** (or the speech bubble on a single
+ticket). The prompt starts as the board's default prompt; what you write replaces it for those tickets, that
+time only. The ticket's text, comments and images still go to the agent, and DevCat still moves and comments
+on the ticket as the board says. The history shows the prompt a ticket was fixed with. Tickets the board picks
+up by itself (**Watch**) always get the default prompt.
 
 For each ticket:
 
