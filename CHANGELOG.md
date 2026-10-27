@@ -18,6 +18,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **AI connections:** saving a DevCat Agent connection no longer fails with "Invalid API key variable name" when
   another type was picked first and its "Passed as" field filled in. A Claude Code, Codex or Gemini connection
   set up the same way now passes its key in its own variable, not the other type's hidden one (#98).
+- **New chat stays new:** changing the model or permission mode of a new Claude Code chat and pressing **Restart
+  claude** no longer opens another tab's conversation in the same folder. A chat with no message yet starts
+  fresh again; one you've written in picks up where it was (#101).
 
 ## 0.14.0 - 2026-10-27
 

@@ -5,6 +5,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, errMsg } from "../../lib/api";
+import { isRemote } from "../../lib/remotePath";
 import type { ClaudeInfo, ClaudeMsg, ClaudePermissionMode, GitStatus } from "../../lib/types";
 import { useTabs } from "../../store/tabs";
 
@@ -41,6 +42,8 @@ export interface TabState {
   isClaude: boolean;
   /** Session the next `claude` launch resumes (null = fresh session). */
   sessionId: string | null;
+  /** `sessionId` is the id a new chat was launched with (`--session-id`): no transcript until its first message. */
+  sessionFresh: boolean;
   /** Launch options picked in the header vs. the ones the running process was started with. */
   options: LaunchOptions;
   launched: LaunchOptions | null;
@@ -65,7 +68,7 @@ export interface TabState {
 const newReview = (): ReviewState => ({ runId: null, status: "idle", scope: "uncommitted", base: "main", model: "", progress: [] });
 
 const newTab = (cwd: string, sessionId: string | null): TabState => ({
-  cwd, isClaude: true, sessionId, options: { model: "", permissionMode: "" }, launched: null, launchedAt: null, ptyId: null, startSeq: 0,
+  cwd, isClaude: true, sessionId, sessionFresh: false, options: { model: "", permissionMode: "" }, launched: null, launchedAt: null, ptyId: null, startSeq: 0,
 
   repo: null, git: null, gitError: null, gitLoading: false, gitTick: 0, diffFocus: null, review: newReview(),
 });
@@ -116,7 +119,7 @@ export async function loadInfo(force = false) {
 
 /** Whether the tab runs Claude Code (set by the tab from its AI connection). */
 export function setTabIsClaude(tabId: string, isClaude: boolean) {
-  if (get(tabId)?.isClaude !== isClaude) patch(tabId, { isClaude, ...(isClaude ? {} : { sessionId: null }) });
+  if (get(tabId)?.isClaude !== isClaude) patch(tabId, { isClaude, ...(isClaude ? {} : { sessionId: null, sessionFresh: false }) });
 }
 
 /** CLI args for the next launch (Claude: session / model / permission mode; others: none); records what was launched. */
@@ -128,11 +131,21 @@ export function claudeLaunchArgs(tabId: string): string[] {
     return [];
   }
   const args: string[] = [];
-  if (s.sessionId) args.push("--resume", s.sessionId);
+  // A new chat's id that detectSession never confirmed (its launch was cancelled): pick a new one.
+  let sessionId = s.sessionFresh ? null : s.sessionId;
+  let sessionFresh = false;
+  if (sessionId) args.push("--resume", sessionId);
+  // New chat: we pick its session id, so the tab knows its own session before the first message (on
+  // SSH hosts we can't see transcripts, so a restart couldn't tell whether there's one to resume).
+  else if (!isRemote(s.cwd)) {
+    sessionId = crypto.randomUUID();
+    sessionFresh = true;
+    args.push("--session-id", sessionId);
+  }
   if (s.options.model) args.push("--model", s.options.model);
   // Manual is the CLI's default: omit the flag.
   if (s.options.permissionMode && s.options.permissionMode !== "manual") args.push("--permission-mode", s.options.permissionMode);
-  patch(tabId, { launched: { ...s.options }, launchedAt: Date.now() });
+  patch(tabId, { sessionId, sessionFresh, launched: { ...s.options }, launchedAt: Date.now() });
   return args;
 }
 
@@ -142,7 +155,8 @@ export const setLaunchOptions = (tabId: string, p: Partial<LaunchOptions>) => pa
 
 /**
  * Session the claude process worked on since it was launched: the newest session of the folder
- * updated after launch (covers /clear and /resume inside the TUI), else the one it was started with.
+ * updated after launch (covers /clear and /resume inside the TUI) that no other tab is on, else the
+ * one it was started with — or none, for a new chat that never got a message.
  */
 export async function detectSession(tabId: string): Promise<string | null> {
   const s = get(tabId);
@@ -151,12 +165,19 @@ export async function detectSession(tabId: string): Promise<string | null> {
   try {
     const list = await api.claudeSessions(s.cwd);
     const since = (s.launchedAt ?? 0) - 2000;
+    // Another tab's agent in the same folder keeps its session updated too: never take that one.
+    const others = new Set(Object.entries(useClaude.getState().tabs).flatMap(([id, t]) => (id !== tabId && t.sessionId ? [t.sessionId] : [])));
     const newest = list
-      .filter((x) => x.updatedAt && Date.parse(x.updatedAt) >= since)
+      .filter((x) => x.updatedAt && Date.parse(x.updatedAt) >= since && !others.has(x.id))
       .sort((a, b) => Date.parse(b.updatedAt!) - Date.parse(a.updatedAt!))[0];
     if (newest) {
-      patch(tabId, { sessionId: newest.id });
+      patch(tabId, { sessionId: newest.id, sessionFresh: false });
       return newest.id;
+    }
+    // New chat with nothing written yet: there's nothing to resume.
+    if (s.sessionFresh) {
+      patch(tabId, { sessionId: null, sessionFresh: false });
+      return null;
     }
   } catch { /* backend not ready: keep the known session */ }
   return s.sessionId;
@@ -170,7 +191,7 @@ export async function restartClaude(tabId: string) {
 
 /** Restart the agent with a fresh session. */
 export function newSession(tabId: string) {
-  patch(tabId, (s) => ({ sessionId: null, startSeq: s.startSeq + 1 }));
+  patch(tabId, (s) => ({ sessionId: null, sessionFresh: false, startSeq: s.startSeq + 1 }));
 }
 
 /** Paste text into the claude prompt without submitting it (bracketed paste). */
