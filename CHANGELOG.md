@@ -12,6 +12,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.14.0 - 2026-10-27
+
 - **Tickets in the left bar:** Tickets has its own view in the left bar instead of an entry in the Settings menu. It
   lists your boards and what the agent is doing on each (a dot on the icon while it works); click one to see its
   tickets. In focus mode only the focused project's boards are listed.
