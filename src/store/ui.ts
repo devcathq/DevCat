@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 /** "claude" = the AI workspace (internal id kept). */
-export type SidebarView = "claude" | "connections" | "rooms" | "network" | "git" | "notes";
+export type SidebarView = "claude" | "connections" | "rooms" | "network" | "git" | "notes" | "tickets";
 
 const COLLAPSED_KEY = "devcat.sidebar.collapsed";
 

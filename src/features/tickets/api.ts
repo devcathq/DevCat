@@ -32,6 +32,8 @@ export interface Board {
   hasWebhook?: boolean;
   /** A git repository, or a folder of them. */
   repo: string;
+  /** DevCat project whose memory and connections the agent gets (null: the one `repo` is in). */
+  projectId?: string | null;
   providerId: string;
   model?: string | null;
   pickFrom?: Column | null;
@@ -61,6 +63,8 @@ export interface RunRecord {
   /** A folder of repositories: the ones changed, "name (n files)". */
   repos: string[]; movedTo?: string | null;
   notes: string[]; started: number; finished: number; costUsd?: number | null;
+  /** The prompt given for this ticket instead of the board's default one. */
+  prompt?: string | null;
 }
 
 export const ASSIGNED: Record<Assigned, string> = { anyone: "Anyone", me: "Me", meOrNobody: "Me, or nobody yet" };
@@ -68,7 +72,7 @@ export const ASSIGNED: Record<Assigned, string> = { anyone: "Anyone", me: "Me", 
 export const TRACKERS: Record<TrackerKind, string> = { jira: "Jira", trello: "Trello", linear: "Linear" };
 
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
-  id: "", name: "", kind, site: "", user: "", project: "", repo: "", providerId: "claude", model: null,
+  id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
   pickFrom: null, working: null, doneTo: null, failedTo: null, label: "", assigned: "anyone",
   comment: true, push: false, allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
 });
@@ -79,7 +83,8 @@ export const tickets = {
   remove: (id: string) => invoke<void>("tickets_board_delete", { id }),
   columns: (board: Board) => invoke<Column[]>("tickets_columns", { board }),
   list: (boardId: string, column: string) => invoke<Ticket[]>("tickets_list", { boardId, column }),
-  fix: (boardId: string, ticketIds: string[]) => invoke<void>("tickets_fix", { boardId, ticketIds }),
+  /** `prompt`: what the agent is told for these tickets instead of the board's default prompt. */
+  fix: (boardId: string, ticketIds: string[], prompt?: string | null) => invoke<void>("tickets_fix", { boardId, ticketIds, prompt: prompt ?? null }),
   stop: (boardId: string) => invoke<void>("tickets_stop", { boardId }),
   jobs: () => invoke<Record<string, JobView>>("tickets_jobs"),
   history: (boardId: string) => invoke<RunRecord[]>("tickets_history", { boardId }),

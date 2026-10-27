@@ -111,7 +111,10 @@ const toForm = (p: AiProvider): Form => ({
 
 const fromForm = (f: Form): AiProvider => ({
   id: f.id, name: f.name.trim(), kind: f.kind, command: f.command.trim() || null, args: splitArgs(f.args),
-  env: f.env.filter((e) => e.key.trim()), apiKeyEnv: f.apiKeyEnv.trim() || null,
+  // Only what the form shows for this type: a variable name typed under another type stays hidden
+  // (and would be used, or refused for DevCat Agent, #91).
+  env: f.kind === "agent" ? [] : f.env.filter((e) => e.key.trim()),
+  apiKeyEnv: KINDS[f.kind].keyEnvEditable ? f.apiKeyEnv.trim() || null : null,
   apiKey: f.clearKey ? "" : f.apiKey.trim() ? f.apiKey.trim() : undefined,
   agent: f.kind === "agent" ? { ...f.agent, baseUrl: f.agent.baseUrl.trim(), model: f.agent.model.trim() } : null,
 });
@@ -316,7 +319,8 @@ export function AiConnectionsDialog() {
               <Field label="Type">
                 <Select value={form.kind} disabled={form.builtin} onChange={(e) => {
                   const k = e.target.value as AiKind;
-                  set({ kind: k, name: form.name === kind.label || !form.name.trim() ? KINDS[k].label : form.name });
+                  // the key's variable belongs to the type: the new one starts from its own default
+                  set({ kind: k, name: form.name === kind.label || !form.name.trim() ? KINDS[k].label : form.name, apiKeyEnv: "" });
                 }}>
                   {KIND_ORDER.map((k) => <option key={k} value={k}>{KINDS[k].label}</option>)}
                 </Select>

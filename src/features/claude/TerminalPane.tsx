@@ -27,6 +27,42 @@ const CODE_EXT = new Set(("ts tsx js jsx mjs cjs json md mdx css scss html rs go
   "ini sql lua dart scala vue svelte txt lock xml gradle env conf proto graphql").split(" "));
 // path(:line(:col)?)? preceded by start / whitespace / quote / bracket; Windows paths too (C:/x/y.html, C:\x\y.html, src\a.ts)
 const PATH_RE = /(^|[\s'"`(\[{<])((?:[A-Za-z]:[\\/]|(?:~|\.{1,2})?[\\/]?)(?:[\w.@+-]+[\\/])*[\w@+-][\w.@+-]*\.([A-Za-z][\w]{0,7}))(?::(\d+)(?::(\d+))?)?/g;
+// A file name PATH_RE can't take (spaces, like `exports/Akun Simulasi 26 Okt.xlsx`, or an extension it
+// doesn't know): the whole of a candidate, linked only when the file is there.
+const NAME_RE = /^(?:[A-Za-z]:[\\/]|~?[\\/]|\.{1,2}[\\/])?[^\\/:*?"<>|]+(?:[\\/][^\\/:*?"<>|]+)*\.[A-Za-z][\w]{0,7}$/;
+
+/** Text that may be a file name with spaces: a run in one color (how Claude Code prints `code`, file
+ *  names included) or in quotes. `keys`: each character's color (logicalLine). */
+function nameCandidates(line: string, keys: string[]): { start: number; text: string }[] {
+  const spans: { start: number; text: string }[] = [];
+  for (let i = 0; i < line.length; ) {
+    let j = i + 1;
+    while (j < line.length && keys[j] === keys[i]) j++;
+    if (keys[i]) spans.push({ start: i, text: line.slice(i, j) });
+    i = j;
+  }
+  for (const m of line.matchAll(/(["'`])([^"'`]{3,300}?)\1/g)) spans.push({ start: (m.index ?? 0) + 1, text: m[2] });
+  const out: { start: number; text: string }[] = [];
+  for (const { start, text } of spans) {
+    // the name alone, without the spaces or sentence punctuation around it
+    const lead = text.length - text.trimStart().length;
+    const t = text.trim().replace(/[.,;:!?)\]}>]+$/, "");
+    if (t.length < 3 || t.length > 300 || !NAME_RE.test(t) || out.some((o) => o.start === start + lead && o.text === t)) continue;
+    out.push({ start: start + lead, text: t });
+  }
+  return out;
+}
+
+/** Whether a file is there (a few seconds' memory, so hovering doesn't ask again and again). */
+const seen = new Map<string, { there: boolean; at: number }>();
+async function fileThere(abs: string): Promise<boolean> {
+  const hit = seen.get(abs);
+  if (hit && Date.now() - hit.at < 10_000) return hit.there;
+  const there = await api.fsStamp(abs).then((s) => s !== null).catch(() => false);
+  if (seen.size > 500) seen.clear();
+  seen.set(abs, { there, at: Date.now() });
+  return there;
+}
 
 export interface TerminalPaneProps {
   cwd: string;
@@ -149,10 +185,19 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     const offOsc52 = programCopy(term);
 
     // File paths (src/foo.ts:12) → file preview tab (.html renders there); ⌘/Ctrl+click → the default app.
+    const open = (ev: MouseEvent, path: string) => {
+      if (!isClick(ev)) return;
+      const abs = resolvePath(cb.current.cwd, path);
+      // the default app only for a file on this computer: not an SSH host's, not an unexpanded ~/…
+      const local = !isRemote(cb.current.cwd) && !abs.startsWith("~");
+      if ((IS_MAC ? ev.metaKey : ev.ctrlKey) && local) void openExternally(abs);
+      else openFile(cb.current.cwd, path);
+    };
     const links = term.registerLinkProvider({
       provideLinks(y, done) {
-        const { line, at } = logicalLine(term, y);
+        const { line, at, keys } = logicalLine(term, y);
         const out: ILink[] = [];
+        const taken: [number, number][] = [];
         PATH_RE.lastIndex = 0;
         let m: RegExpExecArray | null;
         while ((m = PATH_RE.exec(line))) {
@@ -162,23 +207,26 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
           if (!IS_WIN && /\\|^[A-Za-z]:/.test(path)) continue;
           const start = m.index + pre.length;
           const text = m[0].slice(pre.length);
+          taken.push([start, start + text.length]);
           const range = { start: at(start), end: at(start + text.length - 1) };
           if (range.end.y < y || range.start.y > y) continue;
-          out.push({
-            range,
-            text,
-            decorations: { underline: true, pointerCursor: true },
-            activate: (ev) => {
-              if (!isClick(ev)) return;
-              const abs = resolvePath(cb.current.cwd, path);
-              // the default app only for a file on this computer: not an SSH host's, not an unexpanded ~/…
-              const local = !isRemote(cb.current.cwd) && !abs.startsWith("~");
-              if ((IS_MAC ? ev.metaKey : ev.ctrlKey) && local) void openExternally(abs);
-              else openFile(cb.current.cwd, path);
-            },
-          });
+          out.push({ range, text, decorations: { underline: true, pointerCursor: true }, activate: (ev) => open(ev, path) });
         }
-        done(out.length ? out : undefined);
+        // Names with spaces: only on this computer, where it's quick to check the file is there.
+        const cwd = cb.current.cwd;
+        const names = isRemote(cwd) ? [] : nameCandidates(line, keys).filter(({ start, text }) => {
+          const range = { start: at(start), end: at(start + text.length - 1) };
+          return range.end.y >= y && range.start.y <= y && !taken.some(([a, b]) => start < b && a < start + text.length);
+        });
+        if (!names.length) return done(out.length ? out : undefined);
+        void Promise.all(names.map(({ text }) => fileThere(resolvePath(cwd, text)))).then((there) => {
+          names.forEach(({ start, text }, i) => {
+            if (!there[i]) return;
+            const range = { start: at(start), end: at(start + text.length - 1) };
+            out.push({ range, text, decorations: { underline: true, pointerCursor: true }, activate: (ev) => open(ev, text) });
+          });
+          done(out.length ? out : undefined);
+        });
       },
     });
 
@@ -360,7 +408,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
 
 /** Row `y` (1-based) with the rows the terminal wrapped it onto, so a long path is one link; `at`
  *  maps an index in `line` to its cell, read cell by cell so wide characters (CJK, emoji) don't shift links. */
-function logicalLine(term: Terminal, y: number): { line: string; at: (i: number) => { x: number; y: number } } {
+function logicalLine(term: Terminal, y: number): { line: string; at: (i: number) => { x: number; y: number }; keys: string[] } {
   const buf = term.buffer.active;
   let first = y - 1;
   while (first > 0 && y - 1 - first < 20 && buf.getLine(first)?.isWrapped) first--;
@@ -368,6 +416,8 @@ function logicalLine(term: Terminal, y: number): { line: string; at: (i: number)
   while (last - first < 40 && buf.getLine(last + 1)?.isWrapped) last++;
   let line = "";
   const cells: { x: number; y: number }[] = [];
+  // each character's foreground color ("" for the default one)
+  const keys: string[] = [];
   const cell = buf.getNullCell();
   for (let r = first; r <= last; r++) {
     const row = buf.getLine(r);
@@ -376,11 +426,15 @@ function logicalLine(term: Terminal, y: number): { line: string; at: (i: number)
       row.getCell(x, cell);
       if (cell.getWidth() === 0) continue; // the second half of a wide character
       const ch = cell.getChars() || " ";
-      for (let k = 0; k < ch.length; k++) cells.push({ x: x + 1, y: r + 1 });
+      const key = cell.isFgDefault() ? "" : `${cell.getFgColorMode()}:${cell.getFgColor()}`;
+      for (let k = 0; k < ch.length; k++) {
+        cells.push({ x: x + 1, y: r + 1 });
+        keys.push(key);
+      }
       line += ch;
     }
   }
-  return { line, at: (i) => cells[Math.min(i, cells.length - 1)] };
+  return { line, at: (i) => cells[Math.min(i, cells.length - 1)], keys };
 }
 
 function fileToBase64(f: File): Promise<string> {
