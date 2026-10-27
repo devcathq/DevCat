@@ -115,6 +115,10 @@ impl AiStore {
             if a.model.is_empty() {
                 return Err(AppError::msg("Enter the model name, e.g. glm-5.3-flash"));
             }
+            // It runs no program and sends the key itself: a variable name or variables left over
+            // from another type (hidden in the form) mean nothing here, and mustn't block saving.
+            p.api_key_env = None;
+            p.env.clear();
         } else {
             p.agent = None;
         }
@@ -247,6 +251,23 @@ mod tests {
         p.env = vec![AiEnvVar { key: "BAD-NAME".into(), value: "1".into() }];
         assert!(store.save(p).is_err());
         assert!(valid_env_name("_A1") && !valid_env_name("1A") && !valid_env_name(""));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn devcat_agent_saves_whatever_another_type_left_in_the_form() {
+        // #91: "Passed as" typed under Custom, then the type switched to DevCat Agent
+        let dir = tmp();
+        let store = AiStore::new(dir.clone(), Box::new(MemSecrets::default()));
+        let mut p = provider(AiKind::Agent);
+        p.agent = Some(crate::ai::AgentSettings { protocol: devcat_harness::Protocol::Anthropic, base_url: "https://api.anthropic.com/".into(), model: "claude-opus-5-5".into() });
+        p.api_key_env = Some("API Key".into());
+        p.env = vec![AiEnvVar { key: "BAD-NAME".into(), value: "1".into() }];
+        p.api_key = Some("sk-ant".into());
+        let saved = store.save(p).unwrap();
+        assert!(saved.api_key_env.is_none() && saved.env.is_empty());
+        assert_eq!(store.api_key(&saved.id).as_deref(), Some("sk-ant"));
+        assert_eq!(saved.agent.unwrap().base_url, "https://api.anthropic.com");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

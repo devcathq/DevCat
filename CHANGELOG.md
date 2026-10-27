@@ -15,6 +15,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like
   `exports/Akun Simulasi Internal 26 Okt 2026.xlsx`, shown as code by Claude Code or in quotes by a tool, opens
   on a click like any other path (Ctrl/⌘-click: in its default app), once DevCat has checked the file is there (#105).
+- **AI connections:** saving a DevCat Agent connection no longer fails with "Invalid API key variable name" when
+  another type was picked first and its "Passed as" field filled in. A Claude Code, Codex or Gemini connection
+  set up the same way now passes its key in its own variable, not the other type's hidden one (#98).
 
 ## 0.14.0 - 2026-10-27
 
