@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Find in spreadsheets and CSV files:** ⌘F (Ctrl+F) in a spreadsheet or CSV preview searches every row, not only
+  the ones on screen. It highlights the matching cells and counts them (**3 of 17**); Enter and Shift+Enter go to
+  the next and previous match, in the table's sort order. Before, only the rows on screen could be found.
+- **Data grids:** moving the selection down with the arrow keys no longer leaves the selected row just below the
+  visible part of the table.
+
 ## 0.13.0 - 2026-10-26
 
 - **Sync MCP:** each connection now has its own **AI / MCP access** (Edit connection → Advanced): **Off** hides it

@@ -38,6 +38,7 @@ function Grid({ sheet, header }: { sheet: SheetData; header: boolean }) {
   if (!grid.columns.length) return <div className="p-4 text-xs text-faint italic">Empty sheet</div>;
   return (
     <DataGrid
+      find
       columns={grid.columns}
       rows={grid.rows}
       footer={sheet.truncated && (
