@@ -15,7 +15,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Tickets:** choose the branch the agent works on in the board's settings: a new branch per ticket with your own
   prefix (`devcat/` by default), or an existing branch such as `main` or `staging` that fixed tickets are committed
   straight onto (unfinished work still goes on a branch of its own). Each history entry has **open chat**, which
-  opens the agent's conversation for that ticket in the AI workspace.
+  opens the agent's conversation for that ticket in the AI workspace (#110).
 - **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
   project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like
