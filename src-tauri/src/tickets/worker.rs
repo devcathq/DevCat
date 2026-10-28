@@ -2,10 +2,12 @@
 //! at a time, each on its own branch made from the branch the repository was on:
 //!
 //! 1. the repository must be clean (the agent's work never mixes with the user's);
-//! 2. `devcat/<key>-<title>` is created, the ticket moves to the board's "working" column;
+//! 2. `devcat/<key>-<title>` is created (the prefix is the board's; or the board's existing
+//!    branch, e.g. main, is checked out), the ticket moves to the board's "working" column;
 //! 3. the agent (Claude Code or DevCat Agent) fixes it and answers fixed / needs_info / failed
 //!    with a summary and how to test;
-//! 4. DevCat commits what changed (unfinished work too, marked WIP), goes back to the original
+//! 4. DevCat commits what changed (unfinished work too, marked WIP, and on a new branch when the
+//!    board commits to an existing one), goes back to the original
 //!    branch, pushes if the board says so, comments on the ticket and moves it to "done" (fixed)
 //!    or "failed" (else back where it was).
 use super::trackers::Tracker;
@@ -16,7 +18,7 @@ use crate::error::{AppError, AppResult};
 use devcat_harness::approval::DenyAll;
 use devcat_harness::prompt::{Environment, system_prompt};
 use devcat_harness::tools::Registry;
-use devcat_harness::{Agent, AgentEvent, Block, Cancel, Llm, Policy, Session, TurnEnd};
+use devcat_harness::{Agent, AgentEvent, Block, Cancel, Llm, Policy, Session, SessionEvent, TurnEnd};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -233,6 +235,9 @@ fn error_record(ticket_id: &str, why: String) -> RunRecord {
         finished: now_ms(),
         cost_usd: None,
         prompt: None,
+        session_id: None,
+        provider_id: None,
+        cwd: None,
     }
 }
 
@@ -273,22 +278,41 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, ca
         v.url = Some(t.url.clone());
     });
 
-    // The repositories: on a branch, without the user's changes (those are left alone).
-    let (repos, skipped) = prepare(&b.repo).await?;
-    let branch = free_branch(&repos, &branch_name(&t)).await;
+    // The repositories: on a branch, without the user's changes (those are left alone). `own`: a
+    // new branch per ticket, else the board's existing branch.
+    let (mut repos, mut skipped) = prepare(&b.repo).await?;
+    let target = b.target_branch.trim();
+    let own = target.is_empty();
+    if !own {
+        with_branch(&mut repos, &mut skipped, target).await?;
+    }
+    let new_branch = free_branch(&repos, &branch_name(&b.branch_prefix, &t)).await;
+    let branch = if own { new_branch.clone() } else { target.to_string() };
     for (n, r) in repos.iter().enumerate() {
-        if let Err(e) = git(&r.path, &["checkout", "-q", "-b", &branch]).await {
+        let res = if own { git(&r.path, &["checkout", "-q", "-b", &branch]).await } else { git(&r.path, &["checkout", "-q", &branch]).await };
+        if let Err(e) = res {
             for done in &repos[..n] {
                 let _ = git(&done.path, &["checkout", "-q", &done.original]).await;
-                let _ = git(&done.path, &["branch", "-q", "-D", &branch]).await;
+                if own {
+                    let _ = git(&done.path, &["branch", "-q", "-D", &branch]).await;
+                }
             }
-            return Err(AppError::msg(format!("Couldn't make the branch {branch} in {}: {e}", r.name)));
+            return Err(AppError::msg(format!("Couldn't {} the branch {branch} in {}: {e}", if own { "make" } else { "check out" }, r.label())));
         }
     }
+    let what = if own { "Branch" } else { "On" };
     stage(&b.id, &match repos.as_slice() {
-        [r] if skipped.is_empty() && r.name.is_empty() => format!("Branch {branch} (from {})", r.original),
-        _ => format!("Branch {branch} in {}", repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")),
+        [r] if skipped.is_empty() && r.name.is_empty() => format!("{what} {branch} (from {})", r.original),
+        _ => format!("{what} {branch} in {}", repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")),
     });
+    if !own && b.push {
+        // It's pushed when fixed: start from what origin has.
+        for r in &repos {
+            if let Err(e) = git(&r.path, &["pull", "-q", "--ff-only", "origin", &branch]).await {
+                rec.notes.push(format!("Couldn't update {branch} in {} from origin: {e}", r.label()));
+            }
+        }
+    }
     for (name, why, _) in &skipped {
         rec.notes.push(format!("Left {name} alone: {why}"));
     }
@@ -310,22 +334,36 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, ca
     if custom.is_some() {
         log(&b.id, "With your prompt for this ticket (instead of the board's default)".into());
     }
-    let answer = run_agent(b, &t, &where_text(&branch, &repos, &skipped), &images, custom, cancel).await;
+    let session = Arc::new(Mutex::new(None));
+    let answer = run_agent(b, &t, &where_text(&branch, own, &repos, &skipped), &images, custom, cancel, &session).await;
+    rec.session_id = session.lock().clone();
+    rec.provider_id = Some(provider_of(b).to_string());
+    rec.cwd = Some(b.repo.clone());
 
     // Whatever happened: keep the work on the branch and give each repository back as it was.
     stage(&b.id, "Saving the work");
     let summary = answer.as_ref().map(|a| a.summary.clone()).unwrap_or_default();
     let said_fixed = matches!(&answer, Ok(a) if a.status == "fixed");
+    // Unfinished work doesn't go onto the board's existing branch: on a new one instead.
+    let wip = !own && !said_fixed;
+    let saved_on = if wip { new_branch.as_str() } else { branch.as_str() };
     let mut changed: Vec<&Repo> = vec![];
     let mut saved = true;
     for r in &repos {
         let files = changed_files(&r.path).await.unwrap_or(0);
         if files > 0 {
+            if wip
+                && let Err(e) = git(&r.path, &["checkout", "-q", "-b", saved_on]).await
+            {
+                saved = false;
+                rec.notes.push(format!("Couldn't make the branch {saved_on} for the unfinished work in {} (left uncommitted on {branch}): {e}", r.label()));
+                continue;
+            }
             let head = if said_fixed { format!("{}: {}", t.key, t.title) } else { format!("WIP {}: {} (unfinished)", t.key, t.title) };
             let msg = format!("{head}\n\n{summary}\n\n{}\nWorked on by the DevCat agent.", t.url).trim().to_string();
             if let Err(e) = commit(&r.path, &msg, rec).await {
                 saved = false;
-                rec.notes.push(format!("Couldn't commit the agent's work in {} (left uncommitted on {branch}): {e}", r.label()));
+                rec.notes.push(format!("Couldn't commit the agent's work in {} (left uncommitted on {saved_on}): {e}", r.label()));
                 continue;
             }
             rec.files_changed += files;
@@ -339,7 +377,7 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, ca
             rec.notes.push(format!("Couldn't go back to {} in {}: {e}", r.original, r.label()));
             continue;
         }
-        if files == 0 {
+        if files == 0 && own {
             let _ = git(&r.path, &["branch", "-q", "-D", &branch]).await;
         }
     }
@@ -353,8 +391,8 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, ca
     let files = rec.files_changed;
     let fixed = said_fixed && files > 0 && saved;
     if files > 0 {
-        rec.branch = Some(branch.clone());
-        log(&b.id, format!("{files} file{} changed, committed on {branch}", if files == 1 { "" } else { "s" }));
+        rec.branch = Some(saved_on.to_string());
+        log(&b.id, format!("{files} file{} changed, committed on {saved_on}", if files == 1 { "" } else { "s" }));
     }
     let mut pushed = false;
     if fixed && b.push {
@@ -564,9 +602,16 @@ pub fn scope_of(b: &Board) -> Scope {
     Scope { project: b.project_id.clone().filter(|p| !p.trim().is_empty()), folder: Some(b.repo.clone().into()), mcp: true }
 }
 
-async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom: Option<&str>, cancel: &Cancel) -> AppResult<Answer> {
+/// The board's AI connection.
+fn provider_of(b: &Board) -> &str {
+    if b.provider_id.is_empty() { crate::ai::BUILTIN_ID } else { b.provider_id.as_str() }
+}
+
+/// `session`: set to the chat's session id (Claude's, or the DevCat Agent's), to open it later in
+/// the AI workspace.
+async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom: Option<&str>, cancel: &Cancel, session: &Arc<Mutex<Option<String>>>) -> AppResult<Answer> {
     let providers = crate::ai::ai_providers_list().await?;
-    let id = if b.provider_id.is_empty() { crate::ai::BUILTIN_ID } else { b.provider_id.as_str() };
+    let id = provider_of(b);
     let p = providers.into_iter().find(|p| p.id == id).ok_or_else(|| AppError::msg("The board's AI connection is gone: choose another one"))?;
     let board = b.id.clone();
     let activity: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |l| log(&board, l));
@@ -595,6 +640,7 @@ async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom
                 timeout: TICKET_TIMEOUT,
                 images: images.iter().map(|i| (i.media_type.clone(), i.data.clone())).collect(),
                 mcp,
+                session: session.clone(),
             };
             let c = cancel.clone();
             let o = crate::claude::headless::run(job, activity, move || c.is_cancelled()).await?;
@@ -605,13 +651,25 @@ async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom
         crate::ai::AiKind::Agent => {
             log(&b.id, format!("DevCat Agent ({})", p.name));
             let blocks = images.iter().map(|i| Block::Image { media_type: i.media_type.clone(), data: i.data.clone() }).collect();
-            run_devcat_agent(b, &p.id, model, &prompt(b, t, where_, images, custom, true), blocks, cancel, activity).await
+            let title = format!("{}: {}", t.key, t.title);
+            run_devcat_agent(b, &p.id, model, &prompt(b, t, where_, images, custom, true), blocks, cancel, activity, session, &title).await
         }
         k => Err(AppError::msg(format!("Tickets are worked on by Claude Code or DevCat Agent; \"{}\" is {}", p.name, k.label()))),
     }
 }
 
-async fn run_devcat_agent(b: &Board, provider: &str, model: Option<String>, prompt: &str, images: Vec<Block>, cancel: &Cancel, activity: Arc<dyn Fn(String) + Send + Sync>) -> AppResult<Answer> {
+#[allow(clippy::too_many_arguments)]
+async fn run_devcat_agent(
+    b: &Board,
+    provider: &str,
+    model: Option<String>,
+    prompt: &str,
+    images: Vec<Block>,
+    cancel: &Cancel,
+    activity: Arc<dyn Fn(String) + Send + Sync>,
+    slot: &Mutex<Option<String>>,
+    title: &str,
+) -> AppResult<Answer> {
     let (_, mut cfg) = crate::ai::agent_config(provider)?;
     if let Some(m) = model {
         cfg.model = m;
@@ -633,8 +691,10 @@ async fn run_devcat_agent(b: &Board, provider: &str, model: Option<String>, prom
     let policy = if b.allow_commands { Policy::Bypass } else { Policy::AutoEdit };
     let mut agent = Agent::new(Arc::new(Llm::new(cfg)), tools, policy, Arc::new(DenyAll), system);
     agent.context_window = Some(128_000);
-    let sessions = super::dir()?.join("sessions");
-    let mut session = Session::create(&sessions, &b.repo).await.map_err(|e| AppError::msg(e.to_string()))?;
+    // With the AI workspace's chats, so it can be opened (and continued) there.
+    let mut session = Session::create(crate::agent::sessions_dir()?, &b.repo).await.map_err(|e| AppError::msg(e.to_string()))?;
+    let _ = session.append(SessionEvent::Title { title: format!("Ticket {title}") }).await;
+    *slot.lock() = Some(session.id.clone());
     let mut last_text = String::new();
     let mut on = |e: AgentEvent| match e {
         AgentEvent::ToolCall { name, summary, .. } => activity(format!("{name} {}", summary.lines().next().unwrap_or("")).trim().to_string()),
@@ -747,8 +807,8 @@ async fn git_push(repo: &str, branch: &str) -> AppResult<()> {
     git(repo, &["push", "-q", "-u", "origin", branch]).await.map(drop)
 }
 
-/// `devcat/abc-12-fix-the-login-redirect`
-pub fn branch_name(t: &Ticket) -> String {
+/// `<prefix>abc-12-fix-the-login-redirect` (prefix e.g. `devcat/`).
+pub fn branch_name(prefix: &str, t: &Ticket) -> String {
     let raw = format!("{} {}", t.key.trim_start_matches('#'), t.title).to_lowercase();
     let mut slug = String::new();
     for c in raw.chars() {
@@ -760,7 +820,7 @@ pub fn branch_name(t: &Ticket) -> String {
     }
     let slug: String = slug.chars().take(48).collect();
     let slug = slug.trim_matches('-');
-    format!("devcat/{}", if slug.is_empty() { "ticket" } else { slug })
+    format!("{}{}", prefix.trim(), if slug.is_empty() { "ticket" } else { slug })
 }
 
 /// A branch name no repository has yet.
@@ -873,14 +933,43 @@ pub async fn prepare(folder: &str) -> AppResult<(Vec<Repo>, Vec<(String, String,
     Ok((repos, skipped))
 }
 
-/// What the agent is told about where it works.
-pub fn where_text(branch: &str, repos: &[Repo], skipped: &[(String, String, String)]) -> String {
+/// Keep the repositories that have `branch` (locally or on origin); the others are left alone.
+async fn with_branch(repos: &mut Vec<Repo>, skipped: &mut Vec<(String, String, String)>, branch: &str) -> AppResult<()> {
+    let mut keep = vec![];
+    for r in repos.drain(..) {
+        let mut has = false;
+        for refname in [format!("refs/heads/{branch}"), format!("refs/remotes/origin/{branch}")] {
+            if git(&r.path, &["rev-parse", "--verify", "--quiet", &refname]).await.is_ok() {
+                has = true;
+                break;
+            }
+        }
+        if has {
+            keep.push(r);
+        } else if r.name.is_empty() {
+            return Err(AppError::msg(format!("{} has no branch {branch}: make it, or choose another branch in the board settings", r.path)));
+        } else {
+            let f = fingerprint(&r.path).await;
+            skipped.push((r.name, format!("it has no branch {branch}"), f));
+        }
+    }
+    if keep.is_empty() {
+        return Err(AppError::msg(format!("No repository here has the branch {branch}")));
+    }
+    *repos = keep;
+    Ok(())
+}
+
+/// What the agent is told about where it works. `made`: DevCat created `branch` (else it's the
+/// board's existing branch, checked out).
+pub fn where_text(branch: &str, made: bool, repos: &[Repo], skipped: &[(String, String, String)]) -> String {
+    let did = if made { "created" } else { "checked out" };
     let rules = "stay on it, and don't commit, push or switch branches (DevCat commits your changes when you finish)";
     match repos {
-        [r] if r.name.is_empty() => format!("You work in this git repository. DevCat created the branch `{branch}` for it: {rules}."),
+        [r] if r.name.is_empty() => format!("You work in this git repository. DevCat {did} the branch `{branch}` for it: {rules}."),
         _ => {
             let mut s = format!(
-                "This folder holds several git repositories; the ticket may need changes in one or more of them. DevCat created the branch `{branch}` in each of these: {}. Change files only inside them: {rules}. Changes anywhere else in the folder aren't saved.",
+                "This folder holds several git repositories; the ticket may need changes in one or more of them. DevCat {did} the branch `{branch}` in each of these: {}. Change files only inside them: {rules}. Changes anywhere else in the folder aren't saved.",
                 repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
             );
             if !skipped.is_empty() {
@@ -948,11 +1037,11 @@ mod tests {
 
     #[test]
     fn branch_names() {
-        assert_eq!(branch_name(&ticket()), "devcat/abc-12-fix-the-login-redirect");
+        assert_eq!(branch_name("devcat/", &ticket()), "devcat/abc-12-fix-the-login-redirect");
         let t = Ticket { key: "#7".into(), title: "  ".into(), ..ticket() };
-        assert_eq!(branch_name(&t), "devcat/7");
+        assert_eq!(branch_name("devcat/", &t), "devcat/7");
         let t = Ticket { title: "x".repeat(100), ..ticket() };
-        assert!(branch_name(&t).len() <= "devcat/".len() + 48);
+        assert!(branch_name("devcat/", &t).len() <= "devcat/".len() + 48);
     }
 
     #[test]
@@ -1214,20 +1303,41 @@ mod tests {
         let (repos, skipped) = prepare(folder).await.unwrap();
         assert_eq!(repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["api", "group/deep"]);
         assert_eq!((skipped[0].0.as_str(), skipped[0].1.as_str()), ("web", "it has uncommitted changes"));
-        let w = where_text("devcat/x", &repos, &skipped);
+        let w = where_text("devcat/x", true, &repos, &skipped);
         assert!(w.contains("in each of these: api, group/deep") && w.contains("Don't change these (you may read them): web (it has uncommitted changes)"));
 
         // One repository: its own wording; dirty: refused.
         let api = root.join("api");
         let (one, none) = prepare(api.to_str().unwrap()).await.unwrap();
         assert!(none.is_empty() && one[0].name.is_empty());
-        assert!(where_text("devcat/x", &one, &none).starts_with("You work in this git repository."));
+        assert!(where_text("devcat/x", true, &one, &none).starts_with("You work in this git repository."));
         assert!(prepare(root.join("web").to_str().unwrap()).await.unwrap_err().to_string().contains("uncommitted changes"));
         // Nothing ready, nothing there.
         std::fs::write(api.join("a.txt"), "x\n").unwrap();
         std::fs::write(root.join("group/deep/d.txt"), "x\n").unwrap();
         assert!(prepare(folder).await.unwrap_err().to_string().starts_with("No repository in"));
         assert!(prepare(root.join("notes").to_str().unwrap()).await.unwrap_err().to_string().contains("has none inside"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn existing_branch() {
+        let root = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("devcat-tickets-target-{}", uuid::Uuid::new_v4()));
+        repo_at(&root.join("api"), &[("a.txt", "a\n")]).await;
+        repo_at(&root.join("web"), &[("w.txt", "w\n")]).await;
+        let api = root.join("api");
+        git(api.to_str().unwrap(), &["branch", "staging"]).await.unwrap();
+        let (mut repos, mut skipped) = prepare(root.to_str().unwrap()).await.unwrap();
+        with_branch(&mut repos, &mut skipped, "staging").await.unwrap();
+        assert_eq!(repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["api"]);
+        assert_eq!((skipped[0].0.as_str(), skipped[0].1.as_str()), ("web", "it has no branch staging"));
+        assert!(where_text("staging", false, &repos, &skipped).contains("DevCat checked out the branch `staging`"));
+        // One repository without it: refused.
+        let (mut one, mut none) = prepare(root.join("web").to_str().unwrap()).await.unwrap();
+        assert!(with_branch(&mut one, &mut none, "staging").await.unwrap_err().to_string().contains("has no branch staging"));
+        let (mut nothing, mut none) = prepare(root.to_str().unwrap()).await.unwrap();
+        assert!(with_branch(&mut nothing, &mut none, "prod").await.is_err());
+        assert_eq!(branch_name("fix/", &ticket()), "fix/abc-12-fix-the-login-redirect");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1280,6 +1390,6 @@ mod tests {
         let c = comment_text(&b, &r, false);
         assert!(c.starts_with("DevCat agent fixed this. Moved to Testing."));
         assert!(c.contains("Changed x.") && c.contains("How to test:\nLog in") && c.contains("2 files changed"));
-        assert!(b.comment && b.interval_min == 10, "defaults");
+        assert!(b.comment && b.interval_min == 10 && b.branch_prefix == "devcat/" && b.target_branch.is_empty(), "defaults");
     }
 }
