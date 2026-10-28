@@ -12,6 +12,23 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Rooms: a place to work together** (#108):
+  - **Files and folders:** the room's files are a tree. Share whole folders (dropped, or from this computer), rename
+    and move files and folders (right-click, or drag onto a folder), save a file or folder to your computer, and read
+    Markdown with a live preview next to the editor.
+  - **Whiteboards** to sketch ideas together (Excalidraw); agents read the text on them.
+  - **Thread:** replies, reactions, decisions pinned at the top, and `@name` / `@everyone` mentions that notify
+    people.
+  - **Tasks** for a person or an agent: giving one says so in the thread, and an agent takes it and marks it done.
+  - **Share from DevCat:** a note, memory, skill or a repository's changes. **Take out:** add a room's skill to your
+    skills, save a file to your memory, copy one to your notes. Nothing is written on your computer before you've
+    looked at it and confirmed.
+  - **Team memory:** the room's `memory/` folder, read by every member's agent; agents propose entries that a person
+    accepts.
+  - **Your coding agents in a room:** turn it on per room (Room settings) and Claude Code, Codex, Cursor (through
+    `devcat mcp`) and DevCat Agent chats can read the room, write in the thread, suggest changes and handle tasks, as
+    your agent. No tool copies your files into a room.
+  - Files in folders no longer crash the room tab or the document (Loro refuses `/` in a root container's name).
 - **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
   project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like

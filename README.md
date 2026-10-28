@@ -265,10 +265,13 @@ of these step by step, with every keyboard shortcut on
   Each connection's **AI / MCP access** is off, read-only (the default for new connections) or full, enforced by
   DevCat; a read-only connection is never full. Every call goes into **MCP activity**. See
   [the docs](https://devcathq.github.io/DevCat/home/docs/sync-mcp.html).
-- **Rooms** (two people in the left bar): share documents with other people, peer to peer and end-to-end
-  encrypted, no account or server. Drag files onto a room to share them; edit text together, talk in the
-  thread, and mention anyone's DevCat Agent to bring it in: it reads the files (and looks at the room's
-  images) and suggests changes that people accept or reject.
+- **Rooms** (two people in the left bar): work with other people, peer to peer and end-to-end encrypted, no
+  account or server. Share files and folders (drag them in), edit text together with a Markdown preview, draw on
+  whiteboards, talk in the thread (replies, reactions, decisions pinned, `@name` notifications), and hand out tasks.
+  Share a note, memory, skill or repository's changes from DevCat, and take a room's skill, memory or notes back
+  into yours. The `memory/` folder is a team memory every member's agent reads. Mention anyone's DevCat Agent to
+  bring it in: it reads the files, boards and images, takes tasks, and suggests changes that people accept or
+  reject. Let your own Claude Code, Codex or DevCat Agent chats work in a room too (per room, through `devcat mcp`).
 - **Appearance** (⚙️ Settings in the title bar): dark, light or system mode, 8 dark and 3 light themes (editors and terminals
   follow), and **window glass** on macOS and Windows: the desktop shows through the sidebar and work area, blurred,
   with separate opacity for each.
