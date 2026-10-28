@@ -42,7 +42,21 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "room_board" => out(c!(crate::rooms::room_board, "room")),
         "room_doc_updates" => out(c!(crate::rooms::room_doc_updates, "room", "version")),
         "room_doc_import" => out(c!(crate::rooms::room_doc_import, "room", "updates", "peer")),
-        "room_post" => out(c!(crate::rooms::room_post, "room", "text")),
+        "room_post" => out(c!(crate::rooms::room_post, "room", "text", "replyTo")),
+        "room_react" => out(c!(crate::rooms::room_react, "room", "message", "emoji")),
+        "room_pin" => out(c!(crate::rooms::room_pin, "room", "message", "pin")),
+        "room_task_add" => out(c!(crate::rooms::room_task_add, "room", "title", "notes", "assignee")),
+        "room_task_update" => out(c!(crate::rooms::room_task_update, "room", "id", "patch")),
+        "room_task_delete" => out(c!(crate::rooms::room_task_delete, "room", "id")),
+        "room_file_rename" => out(c!(crate::rooms::room_file_rename, "room", "from", "to")),
+        "room_folder_delete" => out(c!(crate::rooms::room_folder_delete, "room", "path")),
+        "room_board_new" => out(c!(crate::rooms::room_board_new, "room", "path")),
+        "room_share_text" => out(c!(crate::rooms::room_share_text, "room", "name", "text", "folder")),
+        "room_paths_add" => out(c!(crate::rooms::room_paths_add, "room", "paths", "folder")),
+        "room_file_add_bytes" => out(c!(crate::rooms::room_file_add_bytes, "room", "name", "data", "folder")),
+        "room_file_save" => out(c!(crate::rooms::room_file_save, "room", "path", "dest")),
+        "room_folder_save" => out(c!(crate::rooms::room_folder_save, "room", "path", "dest", "replace")),
+        "skills_list" => out(c!(crate::rooms::skills_list, "folders")),
         "room_suggest" => {
             let (room, path, find, replacement, note) = (arg(args, "room")?, arg(args, "path")?, arg(args, "find")?, arg(args, "replacement")?, arg(args, "note")?);
             out(crate::rooms::room_suggest(room, path, find, replacement, note).await)

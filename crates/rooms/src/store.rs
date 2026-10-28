@@ -40,6 +40,11 @@ pub struct Prefs {
     pub agent_provider: Option<String>,
     #[serde(default)]
     pub mentions: Mentions,
+    /// This user's coding agents (Claude Code, Codex… through `devcat mcp`, and DevCat Agent
+    /// chats) may use the room: read it, write in the thread, suggest changes. Off until the user
+    /// turns it on.
+    #[serde(default)]
+    pub coding_agents: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

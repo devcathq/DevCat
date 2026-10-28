@@ -636,7 +636,12 @@ impl Room {
     pub fn me(&self, agent: bool) -> Author {
         let st = self.state.lock();
         let name = st.membership.member(&self.me).map(|m| m.name.clone()).unwrap_or_else(|| "Me".into());
-        Author { member: self.me.clone(), name, agent }
+        Author { member: self.me.clone(), name, agent, via: None }
+    }
+
+    /// This DevCat user's coding agent acting from outside the room (`via`: Claude Code, Codex…).
+    pub fn agent_via(&self, via: &str) -> Author {
+        Author { via: Some(via.chars().take(40).collect()), ..self.me(true) }
     }
 
     pub fn summary(&self) -> RoomSummary {
