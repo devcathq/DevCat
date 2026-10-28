@@ -2,11 +2,15 @@
 // with the backend's copy by exchanging updates. Typing goes into this copy and its updates go to
 // the backend, which merges and passes them on; changes from others come back as updates. Both
 // copies merge whatever arrives in whatever order, so no edit overwrites another.
-import { LoroDoc, UndoManager, type LoroText } from "loro-crdt/base64";
+import { LoroDoc, UndoManager, type LoroMap, type LoroText } from "loro-crdt/base64";
 import type * as Monaco from "monaco-editor";
 import { toast } from "sonner";
 import { errMsg } from "../../lib/api";
 import { fromB64, rooms, toB64 } from "./api";
+
+/** A path inside a root container's name: Loro refuses "/" there (a file in a folder), so "/" is
+ *  written %2F and "%" %25, as the backend does (crates/rooms doc.rs `root_part`). */
+export const rootPart = (path: string) => path.replace(/%/g, "%25").replace(/\//g, "%2F");
 
 export class Replica {
   readonly doc = new LoroDoc();
@@ -50,7 +54,12 @@ export class Replica {
   }
 
   text(path: string): LoroText {
-    return this.doc.getText(`file:${path}`);
+    return this.doc.getText(`file:${rootPart(path)}`);
+  }
+
+  /** A whiteboard's shapes (shape id → its JSON): the backend's root map `board:<path>`. */
+  board(path: string): LoroMap {
+    return this.doc.getMap(`board:${rootPart(path)}`);
   }
 
   onChange(f: () => void): () => void {

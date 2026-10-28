@@ -25,6 +25,7 @@ import { useQuickCommands } from "../../features/terminal/quickCommands";
 import { UpdateDialog } from "../../features/update/UpdateDialog";
 import { MobileDialog } from "../../features/mobile/MobileDialog";
 import { RoomJoinPrompt, RoomsDialog, RoomsPanel } from "../../features/rooms/RoomsDialog";
+import { ShareToRoomDialog } from "../../features/rooms/Exchange";
 import { startRooms, useRooms } from "../../features/rooms/store";
 import TicketsPanel from "../../features/tickets/TicketsPanel";
 import { TicketsDialog } from "../../features/tickets/TicketsTab";
@@ -185,6 +186,7 @@ export default function AppShell() {
       <MobileDialog />
       <RoomsDialog />
       <RoomJoinPrompt />
+      <ShareToRoomDialog />
       <AppearanceDialog />
       <MemoryDialog />
       <TicketsDialog />
@@ -206,6 +208,7 @@ function ActivityBar() {
   };
   // Someone waits to be let into one of this user's rooms.
   const roomWaiting = useRooms((s) => s.pending.length > 0);
+  const roomMentions = useRooms((s) => Object.values(s.mentions).reduce((a, b) => a + b, 0));
   // The agent is working on a ticket.
   const ticketsWorking = useTickets((s) => Object.keys(s.jobs).length > 0);
   const item = (v: SidebarView, icon: ReactNode, title: string) => (
@@ -229,7 +232,7 @@ function ActivityBar() {
       {item("git", <GitBranch className="size-5" />, "Git repositories")}
       {item("notes", <NotebookPen className="size-5" />, "Notes")}
       {item("tickets", <span className="relative"><ListTodo className="size-5" />{ticketsWorking && <span className="absolute -top-0.5 -right-0.5 size-2 animate-pulse rounded-full bg-accent" />}</span>, ticketsWorking ? "Tickets: the agent is working on a ticket" : "Tickets: let the agent work through Jira, Trello and Linear tickets")}
-      {item("rooms", <span className="relative"><Users className="size-5" />{roomWaiting && <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-warn" />}</span>, roomWaiting ? "Rooms: someone wants to join" : "Rooms: share documents and agents with other people")}
+      {item("rooms", <span className="relative"><Users className="size-5" />{(roomWaiting || roomMentions > 0) && <span className={`absolute -top-0.5 -right-0.5 size-2 rounded-full ${roomMentions > 0 ? "bg-accent" : "bg-warn"}`} />}</span>, roomWaiting ? "Rooms: someone wants to join" : roomMentions > 0 ? `Rooms: you were mentioned (${roomMentions})` : "Rooms: share documents and agents with other people")}
       <div className="flex-1" />
       <button
         title={`${sidebarCollapsed ? "Show" : "Hide"} sidebar (${toggleKey})`}

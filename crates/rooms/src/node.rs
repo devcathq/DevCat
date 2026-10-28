@@ -698,6 +698,10 @@ impl Room {
         self.subs.lock().push(sub);
         let me = me_device_peer(&self.doc);
         self.doc.set_peer(me, &self.me);
+        // files in folders from before root names were encoded (doc.rs `move_old_roots`)
+        if self.is_owner() {
+            self.doc.move_old_roots();
+        }
 
         if let Some(mut rx) = self.out_rx.lock().take() {
             let w = Arc::downgrade(self);

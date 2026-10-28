@@ -239,7 +239,7 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
     // Rooms keep their identity and documents here (DEVBRIDGE_DATA: keep them across runs).
     crate::rooms::init(std::env::var_os("DEVBRIDGE_DATA").map(std::path::PathBuf::from).unwrap_or(d));
     crate::events::add_tap(|event, payload| {
-        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward" | "rooms-changed" | "room-join-request" | "room-join-resolved" | "room-agent" | "tickets-job" | "tickets-changed") {
+        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward" | "rooms-changed" | "room-join-request" | "room-join-resolved" | "room-agent" | "room-mention" | "tickets-job" | "tickets-changed") {
             let mut q = EVENTS.lock();
             if q.len() < 20_000 {
                 q.push(json!({ "event": event, "payload": payload }));

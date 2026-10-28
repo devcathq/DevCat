@@ -50,12 +50,19 @@ pub const MAX_FILE_CHARS: usize = 200_000;
 /// Longest thread message, in characters.
 pub const MAX_MESSAGE_CHARS: usize = 20_000;
 
+/// A path inside a root container's name. Loro refuses "/" in root names when it imports changes
+/// (a panic, in the window and here), so "/" is written `%2F` and "%" `%25`; a name with neither
+/// (every file before folders) stays as it was. The window does the same (replica.ts `rootPart`).
+fn root_part(path: &str) -> String {
+    path.replace('%', "%25").replace('/', "%2F")
+}
+
 fn text_root(path: &str) -> String {
-    format!("file:{path}")
+    format!("file:{}", root_part(path))
 }
 
 fn board_root(path: &str) -> String {
-    format!("board:{path}")
+    format!("board:{}", root_part(path))
 }
 
 fn new_id() -> String {
@@ -458,6 +465,42 @@ impl RoomDoc {
         });
         out.sort_by(|a, b| a.path.cmp(&b.path));
         out
+    }
+
+    /// Files in folders from before `root_part` kept their text under the raw path, which the
+    /// window can't change without breaking the room: copy it to the new name. Only the room's
+    /// owner does it (once), so two members can't both copy it and double the text. Returns
+    /// whether anything moved.
+    pub fn move_old_roots(&self) -> bool {
+        let mut moved = false;
+        for f in self.files().into_iter().filter(|f| f.path.contains(['/', '%'])) {
+            match f.meta.kind {
+                FileKind::Text => {
+                    let new = self.text(&f.path);
+                    let old = self.doc.get_text(format!("file:{}", f.path));
+                    let content = old.to_string();
+                    if new.len_unicode() == 0 && !content.is_empty() && new.insert(0, &content).is_ok() {
+                        moved = true;
+                    }
+                }
+                FileKind::Board => {
+                    let (new, old) = (self.board(&f.path), self.doc.get_map(format!("board:{}", f.path)));
+                    if new.is_empty() && !old.is_empty() {
+                        old.for_each(|k, v| {
+                            if let Ok(v) = v.into_value() {
+                                let _ = new.insert(k, v);
+                            }
+                        });
+                        moved = true;
+                    }
+                }
+                FileKind::Blob => {}
+            }
+        }
+        if moved {
+            self.commit();
+        }
+        moved
     }
 
     /// The files in folder `dir` (and its folders).
@@ -1433,6 +1476,42 @@ mod tests {
         // delete a folder
         assert_eq!(a.delete_folder("spec/sub").unwrap(), 1);
         assert!(!a.exists("spec/sub/b.md"));
+    }
+
+    /// Typed in the window's copy (loro-crdt 1.16.2, replica.ts naming): "typed in the window" in
+    /// spec/a.md, and a shape on the board ideas/x. Loro refuses "/" in root names when it imports
+    /// (a panic that took the room down), so the window and this side encode it.
+    const WINDOW_UPDATE: &str = "6c6f726f000000000000000000000000e081ceda0004a901001400140110010700000000000000010100000000000501000001000b0204010200020401000004240273311066696c653a73706563253246612e6d640f626f6172643a69646561732532467800110104030300020204000303050b03031301004713747970656420696e207468652077696e646f7705317b226964223a227331222c2274797065223a2274657874222c2274657874223a224869222c2278223a302c2279223a307d";
+
+    #[test]
+    fn the_windows_changes_to_files_in_folders_merge() {
+        let a = RoomDoc::new();
+        let arif = who("Arif", false);
+        a.create_file("spec/a.md", "", &arif, 1).unwrap();
+        a.create_board("ideas/x", &arif, 1).unwrap();
+        assert!(a.import(&hex::decode(WINDOW_UPDATE).unwrap()).unwrap());
+        assert_eq!(a.read("spec/a.md").unwrap(), "typed in the window");
+        assert!(a.board_text("ideas/x").unwrap().contains("- Hi"));
+        // and they travel on to the others as usual
+        let b = RoomDoc::new();
+        b.import(&a.updates_since(&b.version())).unwrap();
+        assert_eq!(b.read("spec/a.md").unwrap(), "typed in the window");
+        assert_eq!(root_part("a%b/c.md"), "a%25b%2Fc.md");
+        assert_eq!(text_root("plan.md"), "file:plan.md", "names without / stay as they were");
+    }
+
+    #[test]
+    fn old_files_in_folders_move_to_their_new_name_once() {
+        let a = RoomDoc::new();
+        let arif = who("Arif", false);
+        a.create_file("docs/old.md", "", &arif, 1).unwrap();
+        // what a DevCat before root_part wrote: the raw path
+        a.doc.get_text("file:docs/old.md").insert(0, "kept").unwrap();
+        a.commit();
+        assert_eq!(a.read("docs/old.md").unwrap(), "");
+        assert!(a.move_old_roots());
+        assert_eq!(a.read("docs/old.md").unwrap(), "kept");
+        assert!(!a.move_old_roots(), "once");
     }
 
     #[test]

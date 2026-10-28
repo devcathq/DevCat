@@ -1,7 +1,8 @@
 // Rooms (src-tauri/src/rooms.rs, crates/rooms): people on their own networks share documents and a
 // thread, and each person's DevCat Agent can join in.
 // Events: "rooms-changed" ({ room, what }), "room-join-request" (JoinRequest),
-// "room-join-resolved" ({ requestId }), "room-agent" ({ room, running, error? }).
+// "room-join-resolved" ({ requestId }), "room-agent" ({ room, running, error? }),
+// "room-mention" ({ room, roomName, message }: someone named this user).
 import { invoke } from "@tauri-apps/api/core";
 
 export type Role = "owner" | "editor" | "viewer" | "keeper";
@@ -15,7 +16,8 @@ export interface ConnPath { direct: boolean; rttMs: number; relay?: string | nul
 export interface MemberView { id: string; name: string; role: Role; me: boolean; online: boolean; file: string | null; typing: boolean; path: ConnPath | null }
 export interface Invite { token: string; role: Role; createdAt: number; expiresAt: number; used: boolean }
 export interface RoomSettings { name: string; agentEdits: boolean }
-export interface Prefs { agentProvider?: string | null; mentions: Mentions }
+/** `codingAgents`: this user's Claude Code, Codex… (devcat mcp) and DevCat Agent chats may use the room. */
+export interface Prefs { agentProvider?: string | null; mentions: Mentions; codingAgents?: boolean }
 export interface RoomView {
   summary: RoomSummary;
   settings: RoomSettings;
@@ -24,13 +26,17 @@ export interface RoomView {
   members: MemberView[];
   /** `@handle` of each member's agent, by member id. */
   handles: Record<string, string>;
+  /** `@handle` of each member themselves, by member id. */
+  people: Record<string, string>;
   invites: Invite[];
   prefs: Prefs;
   agentRunning: boolean;
 }
 
-export interface Author { member: string; name: string; agent: boolean }
-export interface FileInfo { path: string; kind: "text" | "blob"; createdBy: Author; createdAt: number; blob?: { hash: string; size: number; mime: string }; chars: number }
+/** `via`: the coding agent that acted for the person from outside the room (Claude Code, Codex…). */
+export interface Author { member: string; name: string; agent: boolean; via?: string | null }
+/** `chars`: characters of a text file, shapes of a whiteboard. */
+export interface FileInfo { path: string; kind: "text" | "blob" | "board"; createdBy: Author; createdAt: number; blob?: { hash: string; size: number; mime: string }; chars: number }
 /** A file just shared: its name in the room, and what to tell the person (big text went in as a plain file). */
 export interface SharedFile { name: string; note: string | null }
 export interface Message { id: string; author: Author; text: string; at: number; depth: number; replyTo?: string }
@@ -47,9 +53,23 @@ export interface HistoryItem {
   id: string; kind: "suggestion" | "edit" | "revert" | "newFile"; path: string; by: Author; approvedBy?: Author; at: number;
   before: string; after: string; suggestion?: string; reverts?: string; revertible: boolean;
 }
-export interface RoomBoard { files: FileInfo[]; messages: Message[]; suggestions: Suggestion[]; claims: Claim[]; history: HistoryItem[] }
+export type TaskState = "open" | "doing" | "done";
+export interface Assignee { member: string; agent: boolean }
+export interface Task {
+  id: string; title: string; notes?: string | null; assignee?: Assignee | null; state: TaskState;
+  createdBy: Author; createdAt: number; updatedBy?: Author | null; updatedAt: number;
+}
+/** Fields left out stay; `null` clears notes, or makes the task anyone's. */
+export interface TaskPatch { title?: string; notes?: string | null; assignee?: Assignee | null; state?: TaskState }
+export interface Pin { message: string; by: Author; at: number }
+export interface Reaction { message: string; emoji: string; by: Author; at: number }
+export interface RoomBoard { files: FileInfo[]; messages: Message[]; suggestions: Suggestion[]; claims: Claim[]; history: HistoryItem[]; tasks: Task[]; pins: Pin[]; reactions: Reaction[] }
+/** A skill on this computer: `dir`/SKILL.md; `from`: "~" (every project) or a project folder. */
+export interface SkillInfo { name: string; description: string; dir: string; from: string }
+/** What a message reacts with (crates/rooms REACTION_EMOJI). */
+export const REACTIONS = ["👍", "❤️", "🎉", "😄", "🤔", "👀", "✅"];
 
-export const label = (a: Author) => (a.agent ? `${a.name}'s agent` : a.name);
+export const label = (a: Author) => (a.agent ? `${a.name}'s agent${a.via ? ` (${a.via})` : ""}` : a.name);
 
 export const rooms = {
   /** `start` false: only if rooms are already running (doesn't open the rooms socket). */
@@ -65,16 +85,36 @@ export const rooms = {
   /** What a copy at `version` (base64url, "" for none) lacks. */
   docUpdates: (room: string, version: string) => invoke<{ updates: string; version: string }>("room_doc_updates", { room, version }),
   docImport: (room: string, updates: string, peer: string) => invoke<void>("room_doc_import", { room, updates, peer }),
-  post: (room: string, text: string) => invoke<Message>("room_post", { room, text }),
+  post: (room: string, text: string, replyTo?: string) => invoke<Message>("room_post", { room, text, replyTo: replyTo ?? null }),
+  /** Returns whether the reaction is on now (a second click takes it back). */
+  react: (room: string, message: string, emoji: string) => invoke<boolean>("room_react", { room, message, emoji }),
+  /** Pin a message as a decision (`pin` false: unpin). */
+  pin: (room: string, message: string, pin: boolean) => invoke<void>("room_pin", { room, message, pin }),
+  taskAdd: (room: string, title: string, notes?: string, assignee?: Assignee | null) => invoke<Task>("room_task_add", { room, title, notes: notes ?? null, assignee: assignee ?? null }),
+  taskUpdate: (room: string, id: string, patch: TaskPatch) => invoke<Task>("room_task_update", { room, id, patch }),
+  taskDelete: (room: string, id: string) => invoke<void>("room_task_delete", { room, id }),
   suggest: (room: string, path: string, find: string, replacement: string, note?: string) => invoke<void>("room_suggest", { room, path, find, replacement, note: note ?? null }),
   decide: (room: string, id: string, accept: boolean, reason?: string) => invoke<void>("room_decide", { room, id, accept, reason: reason ?? null }),
   revert: (room: string, change: string) => invoke<void>("room_revert", { room, change }),
   fileNew: (room: string, path: string, content?: string) => invoke<void>("room_file_new", { room, path, content: content ?? null }),
   fileDelete: (room: string, path: string) => invoke<void>("room_file_delete", { room, path }),
+  /** Returns how many files it held. */
+  folderDelete: (room: string, path: string) => invoke<number>("room_folder_delete", { room, path }),
+  /** Rename or move a file or a folder; returns each [old, new] path. */
+  rename: (room: string, from: string, to: string) => invoke<[string, string][]>("room_file_rename", { room, from, to }),
+  boardNew: (room: string, path: string) => invoke<void>("room_board_new", { room, path }),
+  /** Share text from DevCat (a note, a memory, a diff) as `name` in `folder`, or the next free name. */
+  shareText: (room: string, name: string, text: string, folder?: string) => invoke<SharedFile>("room_share_text", { room, name, text, folder: folder ?? null }),
+  /** Share files and folders from this computer into `folder` of the room. */
+  pathsAdd: (room: string, paths: string[], folder?: string) => invoke<SharedFile[]>("room_paths_add", { room, paths, folder: folder ?? null }),
+  fileSave: (room: string, path: string, dest: string) => invoke<void>("room_file_save", { room, path, dest }),
+  /** Save a room folder into `dest`; `replace`: also when `dest` has files. Returns how many. */
+  folderSave: (room: string, path: string, dest: string, replace = false) => invoke<number>("room_folder_save", { room, path, dest, replace }),
+  skillsList: (folders: string[]) => invoke<SkillInfo[]>("skills_list", { folders }),
   /** Share a file from this computer; returns its name in the room. */
   fileAdd: (room: string, local: string, path?: string) => invoke<SharedFile>("room_file_add", { room, local, path: path ?? null }),
   /** Share a dropped or pasted file (`data`: its bytes, base64). */
-  fileAddBytes: (room: string, name: string, data: string) => invoke<SharedFile>("room_file_add_bytes", { room, name, data }),
+  fileAddBytes: (room: string, name: string, data: string, folder?: string) => invoke<SharedFile>("room_file_add_bytes", { room, name, data, folder: folder ?? null }),
   blob: (room: string, hash: string) => invoke<string>("room_blob", { room, hash }),
   blobSave: (room: string, hash: string, dest: string) => invoke<void>("room_blob_save", { room, hash, dest }),
   memberRemove: (room: string, member: string) => invoke<void>("room_member_remove", { room, member }),

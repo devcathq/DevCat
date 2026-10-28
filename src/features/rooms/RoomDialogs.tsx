@@ -181,6 +181,18 @@ export function SettingsDialog({ open, onClose, room, view, tabId }: { open: boo
             </Select>
           </Field>
         </div>
+        <div className="space-y-2">
+          <div className="font-semibold">Your coding agents</div>
+          <Checkbox
+            label="Let my coding agents use this room: Claude Code, Codex, Cursor… (through DevCat's MCP server) and DevCat Agent chats can read it, write in the thread, suggest changes, and take and update tasks, as your agent"
+            checked={!!view.prefs.codingAgents}
+            onChange={(v) => setPrefs({ codingAgents: v })}
+          />
+          <p className="text-[11px] text-muted">
+            Only you choose this, only for you; the others don't see it. Claude Code and Codex get the room tools after Sync MCP (Connections → the plug button), with DevCat open.
+            What people write in the room reaches agents that can run commands on your computer: turn it on in rooms with people you trust. They can't copy your files into the room.
+          </p>
+        </div>
         <div className="flex items-center justify-between border-t border-line pt-3">
           <span className="text-[11px] text-faint">
             Your DevCat's id in rooms <span className="font-mono">{view.me.slice(0, 12)}…</span>{" "}
