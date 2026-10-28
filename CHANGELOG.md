@@ -29,6 +29,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
     `devcat mcp`) and DevCat Agent chats can read the room, write in the thread, suggest changes and handle tasks, as
     your agent. No tool copies your files into a room.
   - Files in folders no longer crash the room tab or the document (Loro refuses `/` in a root container's name).
+  - A member you remove no longer receives what was written while DevCat was telling them they were removed.
 - **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
   project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like

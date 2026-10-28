@@ -1121,7 +1121,10 @@ impl Room {
                 if let Some(b) = unb64(&updates) {
                     self.import_remote(&b);
                 }
-                let mine = self.doc.updates_since(&unb64(&version).unwrap_or_default());
+                // Only to someone who still reads the room: the owner also syncs with a member it
+                // just removed (so they learn it), and must not send what was written since.
+                let reads = self.state.lock().membership.member(peer).is_some_and(|m| m.role.reads());
+                let mine = if reads { self.doc.updates_since(&unb64(&version).unwrap_or_default()) } else { Vec::new() };
                 let _ = write_frame(&mut send, &Push { updates: b64(&mine) }).await;
                 let _ = send.finish();
                 if new_epoch {

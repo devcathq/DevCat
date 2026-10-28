@@ -95,12 +95,14 @@ async fn invite_join_sync_remove() {
     assert_eq!(rc.role(), Role::Viewer);
     until("B sees three members", 20, || rb.membership().members.len() == 3).await;
     ra.remove_member(&c.id()).unwrap();
+    // Written while the owner is still telling C it was removed (that sync must not carry it).
+    ra.doc().post(&ra.me(false), "secret: written just after Budi was removed", 0, None, 5).unwrap();
     until("C learns it was removed", 30, || *hc.removed.lock()).await;
     until("B moves to the new epoch", 30, || rb.membership().epoch == 1).await;
     ra.doc().post(&ra.me(false), "secret plan after Budi left", 0, None, 5).unwrap();
     until("B gets messages in the new epoch", 30, || rb.doc().messages().iter().any(|m| m.text.contains("secret plan"))).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
-    assert!(!rc.doc().messages().iter().any(|m| m.text.contains("secret plan")), "a removed member gets nothing new");
+    assert!(!rc.doc().messages().iter().any(|m| m.text.contains("secret")), "a removed member gets nothing new");
     assert!(rc.removed());
 
     // Blobs: shared sealed, fetched from whoever has it.
