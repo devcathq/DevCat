@@ -15,12 +15,17 @@
 //! - `tasks` (map): id → [`Task`]: work for a person or an agent.
 //! - `pins` (map): message id → [`Pin`]: the thread's decisions.
 //! - `reactions` (map): `message|member|emoji` → [`Reaction`].
+//! - `activity` (list): [`Activity`]: who shared, made, moved, deleted or took out what.
+//!
+//! Who *edited* a file comes from the document's own history: each change belongs to a Loro peer,
+//! and `peers` says whose DevCat (or window) that is; agents' changes carry their author as the
+//! change's message (`commit_by`). See [`RoomDoc::edits`].
 //!
 //! Ranges are kept as Loro cursors on their first and last character, so they follow the text as
 //! others type, and text typed just outside a range stays outside it. A change is applied only if
 //! its range still holds exactly what its author saw; otherwise it is *out of date*.
 use loro::cursor::{Cursor, Side};
-use loro::{ExportMode, LoroDoc, LoroMap, LoroText, LoroValue, VersionVector};
+use loro::{ContainerID, ContainerTrait, ExportMode, JsonOpContent, JsonTextOp, LoroDoc, LoroMap, LoroText, LoroValue, VersionVector};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +38,12 @@ const PEERS: &str = "peers";
 const TASKS: &str = "tasks";
 const PINS: &str = "pins";
 const REACTIONS: &str = "reactions";
+const ACTIVITY: &str = "activity";
+/// Changes made within this many seconds of each other merge into one (Loro's default is 1000):
+/// short enough for the edit history to say when.
+pub const CHANGE_MERGE_SECS: i64 = 60;
+/// Edits by the same person less than this far apart count as one stretch of editing.
+const EDIT_GAP_MS: i64 = 10 * 60 * 1000;
 
 /// Reactions people can put on a message.
 pub const REACTION_EMOJI: &[&str] = &["👍", "❤️", "🎉", "😄", "🤔", "👀", "✅"];
@@ -350,6 +361,61 @@ pub struct Reaction {
     pub at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityKind {
+    /// Brought in from outside the room (`from`: this computer, a note, a memory, a skill…).
+    Shared,
+    /// Made in the room (a new file or whiteboard).
+    Created,
+    /// Renamed or moved (`to`: its new name).
+    Moved,
+    Deleted,
+    /// Taken out of the room by someone (`to`: their computer, skills, memory or notes).
+    TookOut,
+}
+
+/// Something someone did with a file or folder. Records from a newer DevCat this one doesn't
+/// know are left out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    pub id: String,
+    pub kind: ActivityKind,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// For a folder: how many files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
+    pub by: Author,
+    pub at: i64,
+}
+
+/// One change to a file: (time, member, agent, via, inserted, deleted).
+type EditEvent = (i64, Option<String>, bool, Option<String>, usize, usize);
+
+/// A stretch of one person's (or agent's) edits to a file: changes less than 10 minutes apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditSpan {
+    /// The member whose DevCat made them (none: a DevCat the room doesn't know).
+    pub member: Option<String>,
+    /// Their agent's, and through what (Claude Code…), when an agent made them.
+    pub agent: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// Milliseconds; 0 when the change didn't record its time.
+    pub from: i64,
+    pub to: i64,
+    /// Characters added and removed (a whiteboard: shapes changed, in `inserted`).
+    pub inserted: usize,
+    pub deleted: usize,
+    pub changes: usize,
+}
+
 pub type DocResult<T> = Result<T, String>;
 
 pub struct RoomDoc {
@@ -362,6 +428,7 @@ impl RoomDoc {
     pub fn new() -> RoomDoc {
         let doc = LoroDoc::new();
         doc.set_record_timestamp(true);
+        doc.set_change_merge_interval(CHANGE_MERGE_SECS);
         RoomDoc { doc }
     }
 
@@ -418,6 +485,13 @@ impl RoomDoc {
     }
 
     fn commit(&self) {
+        self.doc.commit();
+    }
+
+    /// Commit, saying who made the change (an agent, or a suggestion's author): the edit history
+    /// shows them instead of the DevCat that applied it.
+    fn commit_by(&self, by: &Author) {
+        self.doc.set_next_commit_message(&json(by));
         self.doc.commit();
     }
 
@@ -632,7 +706,7 @@ impl RoomDoc {
     /// Rename or move a file, or a folder with everything in it, to `to`. Refused while a file
     /// that moves has open suggestions or an agent's claim on it (their anchors stay with the old
     /// name). Returns each (old, new) path.
-    pub fn rename(&self, from: &str, to: &str, now: i64) -> DocResult<Vec<(String, String)>> {
+    pub fn rename(&self, from: &str, to: &str, by: &Author, now: i64) -> DocResult<Vec<(String, String)>> {
         let (from, to) = (clean_path(from)?, clean_path(to)?);
         if from == to {
             return Ok(vec![]);
@@ -691,6 +765,8 @@ impl RoomDoc {
             files.insert(b, json(&meta)).map_err(err)?;
             files.delete(a).map_err(err)?;
         }
+        let folder = !self.exists(&to) || moves.len() > 1 || moves[0].0 != from;
+        self.push_activity(ActivityKind::Moved, &from, None, Some(&to), folder.then_some(moves.len()), by, now)?;
         self.commit();
         Ok(moves)
     }
@@ -843,6 +919,126 @@ impl RoomDoc {
         }
         self.commit();
         Ok(on)
+    }
+
+    // -------------------------------------------------------------- activity
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_activity(&self, kind: ActivityKind, path: &str, from: Option<&str>, to: Option<&str>, files: Option<usize>, by: &Author, now: i64) -> DocResult<()> {
+        let a = Activity { id: new_id(), kind, path: path.to_string(), from: from.map(String::from), to: to.map(String::from), files, by: by.clone(), at: now };
+        self.doc.get_list(ACTIVITY).push(json(&a)).map_err(err)?;
+        Ok(())
+    }
+
+    /// Record that `by` did something with a file or folder (shared it in, made it, deleted it,
+    /// took it out of the room). Moves are recorded by [`Self::rename`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn log(&self, kind: ActivityKind, path: &str, from: Option<&str>, to: Option<&str>, files: Option<usize>, by: &Author, now: i64) -> DocResult<()> {
+        self.push_activity(kind, path, from, to, files, by, now)?;
+        self.commit();
+        Ok(())
+    }
+
+    /// Everything done with files, oldest first.
+    pub fn activity(&self) -> Vec<Activity> {
+        let mut out = Vec::new();
+        self.doc.get_list(ACTIVITY).for_each(|v| {
+            if let Some(a) = v.into_value().ok().and_then(record::<Activity>) {
+                out.push(a);
+            }
+        });
+        out
+    }
+
+    /// `path` and the names it had before (moves of it, or of a folder it was in), newest first.
+    pub fn names_of(&self, path: &str) -> Vec<String> {
+        let moves: Vec<Activity> = self.activity().into_iter().filter(|a| a.kind == ActivityKind::Moved).collect();
+        let mut names = vec![path.to_string()];
+        let mut cur = path.to_string();
+        for _ in 0..20 {
+            let earlier = moves.iter().rev().find_map(|m| {
+                let to = m.to.as_deref()?;
+                if cur == to {
+                    Some(m.path.clone())
+                } else {
+                    cur.strip_prefix(&format!("{to}/")).map(|rest| format!("{}/{rest}", m.path))
+                }
+            });
+            match earlier {
+                Some(e) if !names.contains(&e) => {
+                    names.push(e.clone());
+                    cur = e;
+                }
+                _ => break,
+            }
+        }
+        names
+    }
+
+    /// What was done with this file: under any of its names, or with a folder it was in.
+    pub fn activity_of(&self, path: &str) -> Vec<Activity> {
+        let names = self.names_of(path);
+        let about = |p: &str| names.iter().any(|n| n == p || n.starts_with(&format!("{p}/")));
+        self.activity().into_iter().filter(|a| about(&a.path) || a.to.as_deref().is_some_and(about)).collect()
+    }
+
+    /// Who edited a file, and when: its text's (or whiteboard's) history, under all its names, in
+    /// stretches of one person's edits, oldest first. A move (one change emptying the old name
+    /// and filling the new) isn't an edit.
+    pub fn edits(&self, path: &str) -> Vec<EditSpan> {
+        let Some(meta) = self.meta(path) else { return vec![] };
+        let names = self.names_of(path);
+        let roots: Vec<ContainerID> = match meta.kind {
+            FileKind::Text => names.iter().map(|n| self.text(n).id()).collect(),
+            FileKind::Board => names.iter().map(|n| self.board(n).id()).collect(),
+            FileKind::Blob => return vec![],
+        };
+        let history = self.doc.export_json_updates_without_peer_compression(&VersionVector::default(), &self.doc.oplog_vv());
+        let mut events: Vec<EditEvent> = Vec::new();
+        for ch in history.changes {
+            let ops: Vec<_> = ch.ops.iter().filter(|o| roots.contains(&o.container)).collect();
+            if ops.is_empty() {
+                continue;
+            }
+            let first = &ops[0].container;
+            if ops.iter().any(|o| o.container != *first) {
+                continue;
+            }
+            let (mut ins, mut del) = (0usize, 0usize);
+            for o in &ops {
+                match &o.content {
+                    JsonOpContent::Text(JsonTextOp::Insert { text, .. }) => ins += text.chars().count(),
+                    JsonOpContent::Text(JsonTextOp::Delete { len, .. }) => del += len.unsigned_abs() as usize,
+                    JsonOpContent::Map(_) => ins += 1,
+                    _ => {}
+                }
+            }
+            if ins == 0 && del == 0 {
+                continue;
+            }
+            let by: Option<Author> = ch.msg.as_deref().and_then(|m| serde_json::from_str(m).ok());
+            let member = by.as_ref().map(|a| a.member.clone()).or_else(|| self.peer_member(ch.id.peer));
+            let (agent, via) = by.map(|a| (a.agent, a.via)).unwrap_or((false, None));
+            events.push((ch.timestamp * 1000, member, agent, via, ins, del));
+        }
+        events.sort_by_key(|e| e.0);
+        let mut out: Vec<EditSpan> = Vec::new();
+        for (at, member, agent, via, ins, del) in events {
+            if let Some(last) = out.last_mut()
+                && last.member == member
+                && last.agent == agent
+                && last.via == via
+                && at - last.to <= EDIT_GAP_MS
+            {
+                last.to = last.to.max(at);
+                last.inserted += ins;
+                last.deleted += del;
+                last.changes += 1;
+                continue;
+            }
+            out.push(EditSpan { member, agent, via, from: at, to: at, inserted: ins, deleted: del, changes: 1 });
+        }
+        out
     }
 
     // ---------------------------------------------------------------- ranges
@@ -1055,7 +1251,8 @@ impl RoomDoc {
         done.state = SuggestionState::Accepted;
         self.put_suggestion(&done)?;
         self.doc.get_list(HISTORY).push(json(&change)).map_err(err)?;
-        self.commit();
+        // the text is the suggestion's author's (approved by `by`, in the history)
+        self.commit_by(&s.author);
         Ok(Some(change))
     }
 
@@ -1104,7 +1301,7 @@ impl RoomDoc {
             }
         }
         self.doc.get_list(HISTORY).push(json(&change)).map_err(err)?;
-        self.commit();
+        self.commit_by(by);
         Ok(change)
     }
 
@@ -1452,11 +1649,11 @@ mod tests {
         sync(&a, &b);
 
         // a file
-        assert_eq!(a.rename("plan.md", "notes/plan.md", 2).unwrap(), vec![("plan.md".to_string(), "notes/plan.md".to_string())]);
+        assert_eq!(a.rename("plan.md", "notes/plan.md", &arif, 2).unwrap(), vec![("plan.md".to_string(), "notes/plan.md".to_string())]);
         assert!(!a.exists("plan.md"));
         assert_eq!(a.read("notes/plan.md").unwrap(), "# Plan\n");
         // a folder, with what's in it (a board too)
-        let moved = a.rename("docs", "spec", 3).unwrap();
+        let moved = a.rename("docs", "spec", &arif, 3).unwrap();
         assert_eq!(moved.len(), 3);
         assert_eq!(a.read("spec/sub/b.md").unwrap(), "B");
         assert!(a.files_in("docs").is_empty());
@@ -1467,11 +1664,11 @@ mod tests {
         assert!(!b.exists("docs/a.md"));
 
         // refused: onto a file, into itself, while a suggestion waits, a missing name
-        assert!(a.rename("spec/a.md", "notes/plan.md", 4).unwrap_err().contains("already exists"));
-        assert!(a.rename("spec", "spec/inner", 4).unwrap_err().contains("into itself"));
+        assert!(a.rename("spec/a.md", "notes/plan.md", &arif, 4).unwrap_err().contains("already exists"));
+        assert!(a.rename("spec", "spec/inner", &arif, 4).unwrap_err().contains("into itself"));
         a.suggest("spec/a.md", "A", "AA", &who("Akbar", true), None, 4).unwrap();
-        assert!(a.rename("spec/a.md", "spec/c.md", 5).unwrap_err().contains("suggestions waiting"));
-        assert!(a.rename("nothing", "x", 5).is_err());
+        assert!(a.rename("spec/a.md", "spec/c.md", &arif, 5).unwrap_err().contains("suggestions waiting"));
+        assert!(a.rename("nothing", "x", &arif, 5).is_err());
 
         // delete a folder
         assert_eq!(a.delete_folder("spec/sub").unwrap(), 1);
@@ -1512,6 +1709,67 @@ mod tests {
         assert!(a.move_old_roots());
         assert_eq!(a.read("docs/old.md").unwrap(), "kept");
         assert!(!a.move_old_roots(), "once");
+    }
+
+    #[test]
+    fn who_shared_moved_and_took_out_a_file() {
+        let a = RoomDoc::new();
+        let (arif, akbar) = (who("Arif", false), who("Akbar", false));
+        a.create_file("docs/spec.md", "x", &arif, 1).unwrap();
+        a.log(ActivityKind::Shared, "docs/spec.md", Some("this computer"), None, None, &arif, 1).unwrap();
+        a.create_file("other.md", "y", &arif, 1).unwrap();
+        a.log(ActivityKind::Created, "other.md", None, None, None, &arif, 1).unwrap();
+        a.rename("docs/spec.md", "docs/proposal.md", &akbar, 2).unwrap();
+        a.rename("docs", "spec", &akbar, 3).unwrap();
+        a.log(ActivityKind::TookOut, "spec/proposal.md", None, Some("their computer"), None, &akbar, 4).unwrap();
+        assert_eq!(a.names_of("spec/proposal.md"), vec!["spec/proposal.md", "docs/proposal.md", "docs/spec.md"]);
+        let mine: Vec<(ActivityKind, String)> = a.activity_of("spec/proposal.md").into_iter().map(|x| (x.kind, x.by.name)).collect();
+        assert_eq!(mine, vec![(ActivityKind::Shared, "Arif".into()), (ActivityKind::Moved, "Akbar".into()), (ActivityKind::Moved, "Akbar".into()), (ActivityKind::TookOut, "Akbar".into())]);
+        let folder = a.activity().into_iter().find(|x| x.path == "docs").unwrap();
+        assert_eq!((folder.to.as_deref(), folder.files), (Some("spec"), Some(1)), "a folder's move says how many files");
+        // a record from a newer DevCat this one doesn't know is left out
+        a.doc.get_list(ACTIVITY).push(r#"{"id":"z","kind":"teleported","path":"x","by":{"member":"m","name":"N"},"at":5}"#).unwrap();
+        a.commit();
+        assert_eq!(a.activity().len(), 5);
+    }
+
+    #[test]
+    fn who_edited_a_file_comes_from_the_documents_history() {
+        let (a, b) = (RoomDoc::new(), RoomDoc::new());
+        let (arif, akbar) = (who("Arif", false), who("Akbar", false));
+        a.set_peer(a.peer(), &arif.member);
+        b.set_peer(b.peer(), &akbar.member);
+        a.create_file("plan.md", "Ship in March.", &arif, 1).unwrap();
+        sync(&a, &b);
+        // Akbar types (in his copy, as his window would)
+        b.text("plan.md").insert(0, "# Plan\n").unwrap();
+        b.commit();
+        sync(&a, &b);
+        // Akbar's agent, through Claude Code, edits inside a claim
+        let agent = Author { via: Some("Claude Code".into()), ..who("Akbar", true) };
+        b.claim("plan.md", "March", &agent, None, 2).unwrap();
+        b.edit("plan.md", "March", "April", &agent, 2).unwrap();
+        b.release_all(&agent);
+        // a suggestion by Arif's agent, accepted by Akbar: the text is the agent's
+        let arifs_agent = who("Arif", true);
+        sync(&a, &b);
+        let s = a.suggest("plan.md", "Ship", "Ship v2", &arifs_agent, None, 3).unwrap();
+        sync(&a, &b);
+        b.decide(&s.id, true, &akbar, None, 3).unwrap();
+        // a move isn't an edit, and the history follows the new name
+        b.rename("plan.md", "docs/plan.md", &akbar, 4).unwrap();
+        sync(&a, &b);
+        let e = a.edits("docs/plan.md");
+        let who_did: Vec<(Option<&str>, bool, Option<&str>)> = e.iter().map(|x| (x.member.as_deref(), x.agent, x.via.as_deref())).collect();
+        assert_eq!(who_did, vec![
+            (Some("Arif-id"), false, None),
+            (Some("Akbar-id"), false, None),
+            (Some("Akbar-id"), true, Some("Claude Code")),
+            (Some("Arif-id"), true, None),
+        ], "{e:?}");
+        assert_eq!((e[0].inserted, e[1].inserted), (14, 7), "Arif's text, then Akbar's heading");
+        assert_eq!(b.edits("docs/plan.md"), e, "every copy tells the same history");
+        assert!(a.edits("nope.md").is_empty());
     }
 
     #[test]

@@ -8,7 +8,8 @@ import { toast } from "sonner";
 import { Badge, Button, Textarea } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { isFileDrag } from "../files/drop";
-import { label, REACTIONS, rooms, type HistoryItem, type Message, type Pin, type Reaction, type RoomView, type Suggestion } from "./api";
+import { label, REACTIONS, rooms, type Activity, type HistoryItem, type Message, type Pin, type Reaction, type RoomView, type Suggestion } from "./api";
+import { ActivityFeed } from "./FileHistory";
 import { shareFiles } from "./share";
 import { useRooms } from "./store";
 
@@ -302,7 +303,27 @@ export function SuggestionsPanel({ room, canEdit, suggestions, onShow }: { room:
 
 const KIND: Record<HistoryItem["kind"], string> = { suggestion: "accepted suggestion", edit: "agent edit", revert: "revert", newFile: "new file" };
 
-export function HistoryPanel({ room, canEdit, history }: { room: string; canEdit: boolean; history: HistoryItem[] }) {
+/** Applied changes (each revertible while its text is untouched), or the room's activity: who
+ *  shared, made, moved, deleted or took out what. */
+export function HistoryPanel({ room, canEdit, history, activity }: { room: string; canEdit: boolean; history: HistoryItem[]; activity: Activity[] }) {
+  const [show, setShow] = useState<"changes" | "activity">("changes");
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 gap-0.5 border-b border-line px-2 py-1">
+        {(["changes", "activity"] as const).map((k) => (
+          <button key={k} onClick={() => setShow(k)} className={clsx("rounded px-2 py-0.5 text-[11.5px]", show === k ? "bg-hover text-fg" : "text-muted hover:text-fg")}>
+            {k === "changes" ? "Changes" : "Who shared what"}
+          </button>
+        ))}
+      </div>
+      <div className="min-h-0 flex-1">
+        {show === "changes" ? <ChangesList room={room} canEdit={canEdit} history={history} /> : <div className="h-full overflow-auto px-3 py-2"><ActivityFeed activity={activity} /></div>}
+      </div>
+    </div>
+  );
+}
+
+function ChangesList({ room, canEdit, history }: { room: string; canEdit: boolean; history: HistoryItem[] }) {
   const revert = async (h: HistoryItem) => {
     try {
       await rooms.revert(room, h.id);

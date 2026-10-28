@@ -10,7 +10,10 @@ export type Mentions = "anyone" | "me" | "off";
 
 export interface RoomSummary { id: string; name: string; role: Role; members: number; online: number; removed: boolean }
 export interface JoinRequest { requestId: string; room: string; roomName: string; member: string; name: string; role: Role }
-export interface RoomsInfo { id: string; rooms: RoomSummary[]; pending: JoinRequest[] }
+/** A room this DevCat was removed from, and so deleted. */
+export interface Gone { id: string; name: string }
+/** `gone`: rooms deleted since the window last asked (told once). */
+export interface RoomsInfo { id: string; rooms: RoomSummary[]; pending: JoinRequest[]; gone: Gone[] }
 
 export interface ConnPath { direct: boolean; rttMs: number; relay?: string | null }
 export interface MemberView { id: string; name: string; role: Role; me: boolean; online: boolean; file: string | null; typing: boolean; path: ConnPath | null }
@@ -63,7 +66,14 @@ export interface Task {
 export interface TaskPatch { title?: string; notes?: string | null; assignee?: Assignee | null; state?: TaskState }
 export interface Pin { message: string; by: Author; at: number }
 export interface Reaction { message: string; emoji: string; by: Author; at: number }
-export interface RoomBoard { files: FileInfo[]; messages: Message[]; suggestions: Suggestion[]; claims: Claim[]; history: HistoryItem[]; tasks: Task[]; pins: Pin[]; reactions: Reaction[] }
+/** Something someone did with a file or folder: shared it in (`from` where), made, moved (`to` its
+ *  new name), deleted, or took it out (`to`: their computer, skills, memory, notes…). */
+export type ActivityKind = "shared" | "created" | "moved" | "deleted" | "tookOut";
+export interface Activity { id: string; kind: ActivityKind; path: string; from?: string | null; to?: string | null; files?: number | null; by: Author; at: number }
+/** A stretch of someone's edits to a file (from the document's own history). */
+export interface EditView { who: string; member?: string | null; agent: boolean; from: number; to: number; inserted: number; deleted: number; changes: number }
+export interface FileHistory { names: string[]; activity: Activity[]; edits: EditView[] }
+export interface RoomBoard { files: FileInfo[]; messages: Message[]; suggestions: Suggestion[]; claims: Claim[]; history: HistoryItem[]; tasks: Task[]; pins: Pin[]; reactions: Reaction[]; activity: Activity[] }
 /** A skill on this computer: `dir`/SKILL.md; `from`: "~" (every project) or a project folder. */
 export interface SkillInfo { name: string; description: string; dir: string; from: string }
 /** What a message reacts with (crates/rooms REACTION_EMOJI). */
@@ -104,17 +114,23 @@ export const rooms = {
   rename: (room: string, from: string, to: string) => invoke<[string, string][]>("room_file_rename", { room, from, to }),
   boardNew: (room: string, path: string) => invoke<void>("room_board_new", { room, path }),
   /** Share text from DevCat (a note, a memory, a diff) as `name` in `folder`, or the next free name. */
-  shareText: (room: string, name: string, text: string, folder?: string) => invoke<SharedFile>("room_share_text", { room, name, text, folder: folder ?? null }),
-  /** Share files and folders from this computer into `folder` of the room. */
-  pathsAdd: (room: string, paths: string[], folder?: string) => invoke<SharedFile[]>("room_paths_add", { room, paths, folder: folder ?? null }),
-  fileSave: (room: string, path: string, dest: string) => invoke<void>("room_file_save", { room, path, dest }),
+  /** `from`: what it was ("a note"…), for the room's activity. */
+  shareText: (room: string, name: string, text: string, folder?: string, from?: string) => invoke<SharedFile>("room_share_text", { room, name, text, folder: folder ?? null, from: from ?? null }),
+  /** Share files and folders from this computer into `folder` of the room (`from`: where, for the room's activity). */
+  pathsAdd: (room: string, paths: string[], folder?: string, from?: string) => invoke<SharedFile[]>("room_paths_add", { room, paths, folder: folder ?? null, from: from ?? null }),
+  /** `to`: what the room's activity says ("their computer" by default). */
+  fileSave: (room: string, path: string, dest: string, to?: string) => invoke<void>("room_file_save", { room, path, dest, to: to ?? null }),
   /** Save a room folder into `dest`; `replace`: also when `dest` has files. Returns how many. */
-  folderSave: (room: string, path: string, dest: string, replace = false) => invoke<number>("room_folder_save", { room, path, dest, replace }),
+  folderSave: (room: string, path: string, dest: string, replace = false, to?: string) => invoke<number>("room_folder_save", { room, path, dest, replace, to: to ?? null }),
+  /** Tell the room this user took a file or folder out (to their memory, notes, the clipboard…). */
+  tookOut: (room: string, path: string, to: string, files?: number) => invoke<void>("room_took_out", { room, path, to, files: files ?? null }),
+  /** Who shared, moved, took out and edited a file. */
+  fileHistory: (room: string, path: string) => invoke<FileHistory>("room_file_history", { room, path }),
   skillsList: (folders: string[]) => invoke<SkillInfo[]>("skills_list", { folders }),
   /** Share a file from this computer; returns its name in the room. */
   fileAdd: (room: string, local: string, path?: string) => invoke<SharedFile>("room_file_add", { room, local, path: path ?? null }),
   /** Share a dropped or pasted file (`data`: its bytes, base64). */
-  fileAddBytes: (room: string, name: string, data: string, folder?: string) => invoke<SharedFile>("room_file_add_bytes", { room, name, data, folder: folder ?? null }),
+  fileAddBytes: (room: string, name: string, data: string, folder?: string, from?: string) => invoke<SharedFile>("room_file_add_bytes", { room, name, data, folder: folder ?? null, from: from ?? null }),
   blob: (room: string, hash: string) => invoke<string>("room_blob", { room, hash }),
   blobSave: (room: string, hash: string, dest: string) => invoke<void>("room_blob_save", { room, hash, dest }),
   memberRemove: (room: string, member: string) => invoke<void>("room_member_remove", { room, member }),

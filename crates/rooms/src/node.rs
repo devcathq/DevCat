@@ -156,6 +156,16 @@ struct Inner {
     keeper: Option<crate::keeper::Keeper>,
     /// Join tokens being answered (one request per token at a time).
     pending_tokens: Mutex<HashSet<String>>,
+    /// Rooms deleted because this DevCat was removed from them, not yet told to its user.
+    gone: Mutex<Vec<Gone>>,
+}
+
+/// A room this DevCat was removed from, and so deleted.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Gone {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -205,12 +215,21 @@ impl Node {
             relay: cfg.relay.clone(),
             keeper,
             pending_tokens: Mutex::new(HashSet::new()),
+            gone: Mutex::new(Vec::new()),
         });
         let router = Router::builder(endpoint).accept(wire::ALPN, RoomProto(Arc::downgrade(&inner))).accept(iroh_gossip::ALPN, gossip).spawn();
         *inner.router.lock() = Some(router);
         if !cfg.keeper {
+            let me = inner.me();
             for id in inner.store.room_ids() {
                 match inner.store.load(&id) {
+                    // removed on a list the owner signed (while this DevCat kept rooms it was
+                    // removed from): delete it now
+                    Ok((state, _)) if state.membership.member(&me).is_none() && state.membership.verify(&state.id) => {
+                        if inner.store.delete(&id).is_ok() {
+                            inner.gone.lock().push(Gone { id: id.clone(), name: state.membership.settings.name.clone() });
+                        }
+                    }
                     Ok((state, doc)) => {
                         let doc = doc.and_then(|d| RoomDoc::load(&d).ok()).unwrap_or_default();
                         inner.open_room(state, doc);
@@ -249,6 +268,11 @@ impl Node {
         if let Some(r) = router {
             let _ = r.shutdown().await;
         }
+    }
+
+    /// Rooms deleted because this DevCat was removed from them, since this was last asked.
+    pub fn take_gone(&self) -> Vec<Gone> {
+        std::mem::take(&mut *self.inner.gone.lock())
     }
 
     pub fn rooms(&self) -> Vec<RoomSummary> {
@@ -434,13 +458,14 @@ impl Inner {
             }
             Hello::Sync { room, membership, version, name: _, hints } => {
                 let Some(r) = self.rooms.lock().get(&room).cloned() else {
-                    let _ = write_frame(&mut send, &Reply::Denied { reason: "That room isn't here.".into(), removed: false }).await;
+                    let _ = write_frame(&mut send, &Reply::Denied { reason: "That room isn't here.".into(), removed: false, membership: None }).await;
                     return;
                 };
                 r.adopt(membership);
                 let st = r.state.lock().clone();
                 let Some(m) = st.membership.member(&peer).cloned() else {
-                    let _ = write_frame(&mut send, &Reply::Denied { reason: "You're not in this room any more.".into(), removed: true }).await;
+                    // with the list the owner signed: the proof that lets their DevCat delete its copy
+                    let _ = write_frame(&mut send, &Reply::Denied { reason: "You're not in this room any more.".into(), removed: true, membership: Some(st.membership.clone()) }).await;
                     return;
                 };
                 if !m.role.reads() {
@@ -466,14 +491,14 @@ impl Inner {
             Hello::KeeperPush { room, membership, items } => {
                 let reply = match &self.keeper {
                     Some(k) => k.push(&peer, &room, membership, items),
-                    None => Reply::Denied { reason: "This DevCat isn't a keeper.".into(), removed: false },
+                    None => Reply::Denied { reason: "This DevCat isn't a keeper.".into(), removed: false, membership: None },
                 };
                 let _ = write_frame(&mut send, &reply).await;
             }
             Hello::KeeperFetch { room, membership, after } => {
                 let reply = match &self.keeper {
                     Some(k) => k.fetch(&peer, &room, membership, after),
-                    None => Reply::Denied { reason: "This DevCat isn't a keeper.".into(), removed: false },
+                    None => Reply::Denied { reason: "This DevCat isn't a keeper.".into(), removed: false, membership: None },
                 };
                 let _ = write_frame(&mut send, &reply).await;
             }
@@ -483,7 +508,7 @@ impl Inner {
     }
 
     async fn answer_join(&self, peer: &str, room: &str, token: &str, name: &str, hints: &Hints, send: &mut iroh::endpoint::SendStream) -> Reply {
-        let denied = |reason: &str| Reply::Denied { reason: reason.to_string(), removed: false };
+        let denied = |reason: &str| Reply::Denied { reason: reason.to_string(), removed: false, membership: None };
         let Some(r) = self.rooms.lock().get(room).cloned() else { return denied("That room isn't on the owner's DevCat any more.") };
         if !r.is_owner() {
             return denied("Only the room's owner can let people in.");
@@ -557,6 +582,8 @@ pub struct Room {
     seen: Mutex<HashSet<String>>,
     focus: Mutex<(Option<String>, bool)>,
     dirty: AtomicBool,
+    /// Removed and deleted (`wipe`): nothing is written for it any more.
+    wiped: AtomicBool,
     keeper_pushed: Mutex<HashMap<String, Vec<u8>>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     subs: Mutex<Vec<loro::Subscription>>,
@@ -584,6 +611,7 @@ impl Room {
             seen: Mutex::new(seen),
             focus: Mutex::new((None, false)),
             dirty: AtomicBool::new(false),
+            wiped: AtomicBool::new(false),
             keeper_pushed: Mutex::new(HashMap::new()),
             tasks: Mutex::new(Vec::new()),
             subs: Mutex::new(Vec::new()),
@@ -759,6 +787,9 @@ impl Room {
     }
 
     pub fn save(&self) {
+        if self.wiped.load(Ordering::Relaxed) {
+            return;
+        }
         if self.dirty.swap(false, Ordering::Relaxed) && let Some(n) = self.node() && let Err(e) = n.store.save_doc(&self.id, &self.doc.snapshot()) {
             tracing::warn!("saving room {}: {e}", self.id);
             self.dirty.store(true, Ordering::Relaxed);
@@ -766,10 +797,31 @@ impl Room {
     }
 
     fn save_state(&self) {
+        if self.wiped.load(Ordering::Relaxed) {
+            return;
+        }
         let st = self.state.lock().clone();
         if let Some(n) = self.node() {
             let _ = n.store.save_state(&st);
         }
+    }
+
+    /// This DevCat was removed, on a list the owner signed: delete its copy of the room (the
+    /// document, shared files, keys and settings), stop its work, and say so. What the person
+    /// already saved outside the room stays theirs. A DevCat that doesn't play along could keep
+    /// it: this is what an honest one does.
+    fn wipe(self: &Arc<Self>) {
+        if self.wiped.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        self.stop();
+        let Some(node) = self.node() else { return };
+        node.rooms.lock().remove(&self.id);
+        if let Err(e) = node.store.delete(&self.id) {
+            tracing::warn!("deleting room {}: {e}", self.id);
+        }
+        node.gone.lock().push(Gone { id: self.id.clone(), name: self.name() });
+        self.changed(Change::Removed);
     }
 
     fn changed(&self, what: Change) {
@@ -970,14 +1022,11 @@ impl Room {
             st.removed = removed;
             (removed, !st.keys.contains_key(&st.membership.epoch))
         };
-        self.save_state();
         if removed {
-            if let Some(g) = self.gossip.lock().take() {
-                g.task.abort();
-            }
-            self.changed(Change::Removed);
+            self.wipe();
             return;
         }
+        self.save_state();
         self.changed(Change::Members);
         let r = self.clone();
         tokio::spawn(async move {
@@ -1131,7 +1180,10 @@ impl Room {
                     self.subscribe().await;
                 }
             }
-            Ok(Ok(Some(Reply::Denied { removed: true, .. }))) => {
+            // with the owner's signed list, the proof (see `adopt`)
+            Ok(Ok(Some(Reply::Denied { removed: true, membership: Some(m), .. }))) => self.adopt(m),
+            // an older DevCat says so without proof: read-only, nothing deleted on its word
+            Ok(Ok(Some(Reply::Denied { removed: true, membership: None, .. }))) => {
                 self.state.lock().removed = true;
                 self.save_state();
                 self.changed(Change::Removed);
@@ -1290,7 +1342,13 @@ impl Room {
             let hints = self.state.lock().hints.get(&k).cloned();
             // fetch
             let after = self.state.lock().keeper_seen.get(&k).copied().unwrap_or(0);
-            if let Some(Reply::Items { items, last }) = keeper_call(&node, &k, hints.as_ref(), Hello::KeeperFetch { room: self.id.clone(), membership: membership.clone(), after }).await {
+            let fetched = keeper_call(&node, &k, hints.as_ref(), Hello::KeeperFetch { room: self.id.clone(), membership: membership.clone(), after }).await;
+            // the keeper knows a newer list without us: it's the proof (see `adopt`)
+            if let Some(Reply::Denied { removed: true, membership: Some(m), .. }) = fetched {
+                self.adopt(m);
+                return;
+            }
+            if let Some(Reply::Items { items, last }) = fetched {
                 for (_, item) in items {
                     let Ok(env) = serde_json::from_slice::<Envelope>(&unb64(&item).unwrap_or_default()) else { continue };
                     let Some(k2) = self.key(env.e) else { continue };

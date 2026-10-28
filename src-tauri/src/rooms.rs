@@ -12,9 +12,9 @@
 //! This user's coding agents reach rooms through `rooms_tools.rs` (only rooms that allow it).
 use crate::error::{AppError, AppResult};
 use async_trait::async_trait;
-use devcat_rooms::doc::{Assignee, ChangeRecord, ClaimView, FileInfo, FileKind, Message, Pin, Reaction, SuggestionView, Task, TaskPatch, clean_path};
+use devcat_rooms::doc::{Activity, ActivityKind, Assignee, ChangeKind, ChangeRecord, ClaimView, FileInfo, FileKind, Message, Pin, Reaction, SuggestionView, Task, TaskPatch, clean_path};
 use devcat_rooms::wire::{b64, unb64};
-use devcat_rooms::{Author, Change, Config, Host, Invite, JoinRequest, MemberView, Node, Prefs, RelayConfig, Role, Room, RoomSettings, RoomSummary};
+use devcat_rooms::{Author, Change, Config, Gone, Host, Invite, JoinRequest, MemberView, Node, Prefs, RelayConfig, Role, Room, RoomSettings, RoomSummary};
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -108,6 +108,9 @@ impl Host for AppHost {
     }
 
     fn changed(&self, room: &str, what: Change) {
+        if what == Change::Removed {
+            crate::rooms_agent::stop(room);
+        }
         crate::events::emit("rooms-changed", json!({ "room": room, "what": what }));
     }
 
@@ -145,16 +148,18 @@ pub struct RoomsInfo {
     pub id: String,
     pub rooms: Vec<RoomSummary>,
     pub pending: Vec<JoinRequest>,
+    /// Rooms this DevCat was removed from, and so deleted, since the window last asked.
+    pub gone: Vec<Gone>,
 }
 
 /// `start`: false = don't start rooms just to look (empty when not running yet).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn rooms_info(start: Option<bool>) -> AppResult<RoomsInfo> {
     if start == Some(false) && NODE.get().is_none() {
-        return Ok(RoomsInfo { id: String::new(), rooms: vec![], pending: vec![] });
+        return Ok(RoomsInfo { id: String::new(), rooms: vec![], pending: vec![], gone: vec![] });
     }
     let n = node().await?;
-    Ok(RoomsInfo { id: n.id(), rooms: n.rooms(), pending: PENDING.lock().clone() })
+    Ok(RoomsInfo { id: n.id(), rooms: n.rooms(), pending: PENDING.lock().clone(), gone: n.take_gone() })
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -241,6 +246,8 @@ pub struct RoomBoard {
     /// Decisions: pinned messages.
     pub pins: Vec<Pin>,
     pub reactions: Vec<Reaction>,
+    /// Who shared, made, moved, deleted or took out what (the latest 300).
+    pub activity: Vec<Activity>,
 }
 
 #[derive(Serialize)]
@@ -256,7 +263,7 @@ pub async fn room_board(room: String) -> AppResult<RoomBoard> {
     let r = self::room(&room).await?;
     let d = r.doc();
     let history = d.history().into_iter().rev().take(200).map(|c| HistoryItem { revertible: d.revertible(&c), change: c }).collect();
-    Ok(RoomBoard { files: d.files(), messages: d.messages(), suggestions: d.suggestions(), claims: d.claims(devcat_rooms::now_ms()), history, tasks: d.tasks(), pins: d.pins(), reactions: d.reactions() })
+    Ok(RoomBoard { files: d.files(), messages: d.messages(), suggestions: d.suggestions(), claims: d.claims(devcat_rooms::now_ms()), history, tasks: d.tasks(), pins: d.pins(), reactions: d.reactions(), activity: { let all = d.activity(); all[all.len().saturating_sub(300)..].to_vec() } })
 }
 
 #[derive(Serialize)]
@@ -382,7 +389,11 @@ pub async fn room_suggest(room: String, path: String, find: String, replacement:
 pub async fn room_decide(room: String, id: String, accept: bool, reason: Option<String>) -> AppResult<()> {
     let r = self::room(&room).await?;
     let me = editor(&r)?;
-    r.doc().decide(&id, accept, &me, reason, devcat_rooms::now_ms()).map(|_| ()).map_err(AppError::msg)
+    let change = r.doc().decide(&id, accept, &me, reason, devcat_rooms::now_ms()).map_err(AppError::msg)?;
+    if let Some(c) = change.filter(|c| c.kind == ChangeKind::NewFile) {
+        let _ = r.doc().log(ActivityKind::Created, &c.path, None, None, None, &c.by, devcat_rooms::now_ms());
+    }
+    Ok(())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -396,22 +407,29 @@ pub async fn room_revert(room: String, change: String) -> AppResult<()> {
 pub async fn room_file_new(room: String, path: String, content: Option<String>) -> AppResult<()> {
     let r = self::room(&room).await?;
     let me = editor(&r)?;
-    r.doc().create_file(&path, content.as_deref().unwrap_or(""), &me, devcat_rooms::now_ms()).map_err(AppError::msg)
+    let now = devcat_rooms::now_ms();
+    r.doc().create_file(&path, content.as_deref().unwrap_or(""), &me, now).map_err(AppError::msg)?;
+    let _ = r.doc().log(ActivityKind::Created, &clean_path(&path).unwrap_or(path), None, None, None, &me, now);
+    Ok(())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn room_file_delete(room: String, path: String) -> AppResult<()> {
     let r = self::room(&room).await?;
-    editor(&r)?;
-    r.doc().delete_file(&path).map_err(AppError::msg)
+    let me = editor(&r)?;
+    r.doc().delete_file(&path).map_err(AppError::msg)?;
+    let _ = r.doc().log(ActivityKind::Deleted, &path, None, None, None, &me, devcat_rooms::now_ms());
+    Ok(())
 }
 
 /// Delete a folder and everything in it. Returns how many files.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn room_folder_delete(room: String, path: String) -> AppResult<usize> {
     let r = self::room(&room).await?;
-    editor(&r)?;
-    r.doc().delete_folder(&path).map_err(AppError::msg)
+    let me = editor(&r)?;
+    let n = r.doc().delete_folder(&path).map_err(AppError::msg)?;
+    let _ = r.doc().log(ActivityKind::Deleted, &path, None, None, Some(n), &me, devcat_rooms::now_ms());
+    Ok(n)
 }
 
 /// Rename or move a file, or a folder with what's in it. Returns the new path of each file
@@ -419,8 +437,8 @@ pub async fn room_folder_delete(room: String, path: String) -> AppResult<usize> 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn room_file_rename(room: String, from: String, to: String) -> AppResult<Vec<(String, String)>> {
     let r = self::room(&room).await?;
-    editor(&r)?;
-    r.doc().rename(&from, &to, devcat_rooms::now_ms()).map_err(AppError::msg)
+    let me = editor(&r)?;
+    r.doc().rename(&from, &to, &me, devcat_rooms::now_ms()).map_err(AppError::msg)
 }
 
 /// A new, empty whiteboard.
@@ -428,18 +446,87 @@ pub async fn room_file_rename(room: String, from: String, to: String) -> AppResu
 pub async fn room_board_new(room: String, path: String) -> AppResult<()> {
     let r = self::room(&room).await?;
     let me = editor(&r)?;
-    r.doc().create_board(&path, &me, devcat_rooms::now_ms()).map_err(AppError::msg)
+    let now = devcat_rooms::now_ms();
+    r.doc().create_board(&path, &me, now).map_err(AppError::msg)?;
+    let _ = r.doc().log(ActivityKind::Created, &clean_path(&path).unwrap_or(path), None, None, None, &me, now);
+    Ok(())
 }
 
 /// Share text from DevCat (a note, a memory, a diff) as a file named `name` in `folder`, or the
-/// next free name like it.
+/// next free name like it. `from`: what it was ("a note"…), for the room's activity.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn room_share_text(room: String, name: String, text: String, folder: Option<String>) -> AppResult<SharedFile> {
+pub async fn room_share_text(room: String, name: String, text: String, folder: Option<String>, from: Option<String>) -> AppResult<SharedFile> {
     let r = self::room(&room).await?;
     let me = editor(&r)?;
     let name = free_name(&r, &in_folder(folder.as_deref(), &file_name_of(&name, false))?);
     let note = share(&r, &me, &name, text.as_bytes())?;
+    shared(&r, &name, from.as_deref().unwrap_or("DevCat"), None, &me);
     Ok(SharedFile { name, note })
+}
+
+/// Record in the room that `by` shared `path` (a file, or a folder of `files`) from `from`.
+fn shared(r: &Room, path: &str, from: &str, files: Option<usize>, by: &Author) {
+    let _ = r.doc().log(ActivityKind::Shared, path, Some(from), None, files, by, devcat_rooms::now_ms());
+}
+
+/// Record that this DevCat's user took a room file or folder out (`to`: their computer, skills,
+/// memory, notes, the clipboard), for everyone in the room to see. Readers can too.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn room_took_out(room: String, path: String, to: String, files: Option<usize>) -> AppResult<()> {
+    let r = self::room(&room).await?;
+    let me = member(&r)?;
+    r.doc().log(ActivityKind::TookOut, &path, None, Some(&to), files, &me, devcat_rooms::now_ms()).map_err(AppError::msg)
+}
+
+/// Someone's stretch of edits to a file, with their name.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditView {
+    /// Who, as the room shows them ("Arif", "Arif's agent (Claude Code)"); a former member or an
+    /// unknown DevCat when the room's list doesn't have them.
+    pub who: String,
+    pub member: Option<String>,
+    pub agent: bool,
+    pub from: i64,
+    pub to: i64,
+    pub inserted: usize,
+    pub deleted: usize,
+    pub changes: usize,
+}
+
+/// Who shared, moved, took out and edited a file, from the room's own document (every member's
+/// copy tells the same story).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHistory {
+    /// Its names, newest first.
+    pub names: Vec<String>,
+    pub activity: Vec<Activity>,
+    pub edits: Vec<EditView>,
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn room_file_history(room: String, path: String) -> AppResult<FileHistory> {
+    let r = self::room(&room).await?;
+    let d = r.doc();
+    let m = r.membership();
+    // names from the room's list, else from what they did in it
+    let activity = d.activity();
+    let name_of = |id: &str| m.member(id).map(|x| x.name.clone()).or_else(|| activity.iter().rev().find(|a| a.by.member == id).map(|a| format!("{} (no longer here)", a.by.name)));
+    let edits = d
+        .edits(&path)
+        .into_iter()
+        .map(|e| {
+            let name = e.member.as_deref().and_then(name_of).unwrap_or_else(|| "A DevCat the room doesn't know".into());
+            let who = match (e.agent, &e.via) {
+                (true, Some(v)) => format!("{name}'s agent ({v})"),
+                (true, None) => format!("{name}'s agent"),
+                _ => name,
+            };
+            EditView { who, member: e.member, agent: e.agent, from: e.from, to: e.to, inserted: e.inserted, deleted: e.deleted, changes: e.changes }
+        })
+        .collect();
+    Ok(FileHistory { names: d.names_of(&path), activity: d.activity_of(&path), edits })
 }
 
 /// Folders a shared folder leaves out: version control, and dependencies and builds that tools
@@ -514,9 +601,10 @@ fn free_folder(r: &Room, name: &str) -> String {
 /// `folder` of the room. A folder comes with what's in it, under its own name (or the next free
 /// one). Files that can't be shared are told about in the notes; the rest are shared.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn room_paths_add(room: String, paths: Vec<String>, folder: Option<String>) -> AppResult<Vec<SharedFile>> {
+pub async fn room_paths_add(room: String, paths: Vec<String>, folder: Option<String>, from: Option<String>) -> AppResult<Vec<SharedFile>> {
     let r = self::room(&room).await?;
     let me = editor(&r)?;
+    let from = from.unwrap_or_else(|| "this computer".into());
     let mut out = Vec::new();
     for p in paths {
         let local = PathBuf::from(&p);
@@ -532,10 +620,13 @@ pub async fn room_paths_add(room: String, paths: Vec<String>, folder: Option<Str
                 };
                 out.push(shared.unwrap_or_else(|e| SharedFile { name: String::new(), note: Some(format!("{rel} wasn't shared: {e}")) }));
             }
+            let n = out.iter().filter(|s| s.name.starts_with(&format!("{root}/"))).count();
+            shared(&r, &root, &from, Some(n), &me);
         } else {
             let bytes = tokio::fs::read(&local).await.map_err(|e| AppError::msg(format!("Couldn't read {}: {e}", local.display())))?;
             let name = free_name(&r, &in_folder(folder.as_deref(), &base)?);
             let note = share(&r, &me, &name, &bytes)?;
+            shared(&r, &name, &from, None, &me);
             out.push(SharedFile { name, note });
         }
     }
@@ -559,20 +650,25 @@ async fn write_out(r: &Room, f: &FileInfo, dest: &std::path::Path) -> AppResult<
     tokio::fs::write(dest, bytes).await.map_err(|e| AppError::msg(format!("Couldn't save {}: {e}", dest.display())))
 }
 
-/// Save one room file to `dest` on this computer.
+/// Save one room file to `dest` on this computer (`to`: what to tell the room, default "their
+/// computer").
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn room_file_save(room: String, path: String, dest: String) -> AppResult<()> {
+pub async fn room_file_save(room: String, path: String, dest: String, to: Option<String>) -> AppResult<()> {
     let r = self::room(&room).await?;
+    let me = member(&r)?;
     let f = r.doc().files().into_iter().find(|f| f.path == path).ok_or_else(|| AppError::msg(format!("{path} isn't in the room.")))?;
-    write_out(&r, &f, std::path::Path::new(&dest)).await
+    write_out(&r, &f, std::path::Path::new(&dest)).await?;
+    let _ = r.doc().log(ActivityKind::TookOut, &path, None, Some(to.as_deref().unwrap_or("their computer")), None, &me, devcat_rooms::now_ms());
+    Ok(())
 }
 
 /// Save a room folder (its files, with their folders) into `dest` on this computer. A `dest`
 /// that already has files is refused unless `replace` (then files of the same name are
 /// overwritten; others stay). Returns how many files.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn room_folder_save(room: String, path: String, dest: String, replace: bool) -> AppResult<usize> {
+pub async fn room_folder_save(room: String, path: String, dest: String, replace: bool, to: Option<String>) -> AppResult<usize> {
     let r = self::room(&room).await?;
+    let me = member(&r)?;
     let dir = clean_path(&path).map_err(AppError::msg)?;
     let files = r.doc().files_in(&dir);
     if files.is_empty() {
@@ -586,6 +682,7 @@ pub async fn room_folder_save(room: String, path: String, dest: String, replace:
     for f in &files {
         write_out(&r, f, &dest.join(&f.path[dir.len() + 1..])).await?;
     }
+    let _ = r.doc().log(ActivityKind::TookOut, &dir, None, Some(to.as_deref().unwrap_or("their computer")), Some(files.len()), &me, devcat_rooms::now_ms());
     Ok(files.len())
 }
 
@@ -647,6 +744,7 @@ pub async fn room_file_add(room: String, local: String, path: Option<String>) ->
         None => free_name(&r, &local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into())),
     };
     let note = share(&r, &me, &name, &bytes)?;
+    shared(&r, &name, "this computer", None, &me);
     Ok(SharedFile { name, note })
 }
 
@@ -654,13 +752,14 @@ pub async fn room_file_add(room: String, local: String, path: Option<String>) ->
 /// in `folder` of the room (a folder dropped from the system: its own folders), under the next
 /// free name like `name (2).ext`.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn room_file_add_bytes(room: String, name: String, data: String, folder: Option<String>) -> AppResult<SharedFile> {
+pub async fn room_file_add_bytes(room: String, name: String, data: String, folder: Option<String>, from: Option<String>) -> AppResult<SharedFile> {
     use base64::Engine;
     let r = self::room(&room).await?;
     let me = editor(&r)?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|e| AppError::msg(format!("Couldn't read the file: {e}")))?;
     let name = free_name(&r, &in_folder(folder.as_deref(), &file_name_of(&name, folder.is_some()))?);
     let note = share(&r, &me, &name, &bytes)?;
+    shared(&r, &name, from.as_deref().unwrap_or("a dropped file"), None, &me);
     Ok(SharedFile { name, note })
 }
 

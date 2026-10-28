@@ -44,7 +44,8 @@ const fileName = (s: string) => s.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g,
 
 // ---------------------------------------------------------- share a text
 
-interface ShareTextReq { name: string; text: string; folder?: string; what: string }
+/** `from`: what it was, for the room's activity ("a note", "a memory"). */
+interface ShareTextReq { name: string; text: string; folder?: string; what: string; from: string }
 
 /** "Share to room…" from elsewhere in DevCat (Notes, Memory): pick a room, share the text there. */
 export const useShareToRoom = create<{ req: ShareTextReq | null; share: (r: ShareTextReq | null) => void }>((set) => ({
@@ -68,7 +69,7 @@ export function ShareToRoomDialog() {
   const go = async () => {
     setBusy(true);
     try {
-      const { name, note } = await rooms.shareText(room, req.name, req.text, req.folder);
+      const { name, note } = await rooms.shareText(room, req.name, req.text, req.folder, req.from);
       const r = list.find((x) => x.id === room);
       toast.success(`Shared ${name} with ${r?.name ?? "the room"}`, r ? { action: { label: "Open", onClick: () => openRoom(r) } } : undefined);
       if (note) toast.info(note, { duration: 10000 });
@@ -126,15 +127,15 @@ export function ShareFromDevCatDialog({ room, open, onClose, onShared }: { room:
     try { await f(); } catch (e) { toast.error(errMsg(e)); } finally { setBusy(false); }
   };
   const shareNote = (n: Note) => run(async () => {
-    const r = await rooms.shareText(room, `${fileName(noteTitle(n.body))}.md`, n.body, "notes");
+    const r = await rooms.shareText(room, `${fileName(noteTitle(n.body))}.md`, n.body, "notes", "a note");
     done(r.name, r.note);
   });
   const shareMemory = (m: Memory) => run(async () => {
-    const r = await rooms.shareText(room, `${m.name}.md`, memoryFile(m), "memory");
+    const r = await rooms.shareText(room, `${m.name}.md`, memoryFile(m), "memory", "a memory");
     done(r.name, r.note);
   });
   const shareSkill = (s: SkillInfo) => run(async () => {
-    const out = await rooms.pathsAdd(room, [s.dir], "skills");
+    const out = await rooms.pathsAdd(room, [s.dir], "skills", "a skill");
     for (const x of out) if (!x.name && x.note) toast.error(x.note);
     const first = out.find((x) => x.name.endsWith("/SKILL.md")) ?? out.find((x) => x.name);
     toast.success(`Shared the skill ${s.name} (${out.filter((x) => x.name).length} files)`);
@@ -151,7 +152,7 @@ export function ShareFromDevCatDialog({ room, open, onClose, onShared }: { room:
       return;
     }
     const repo = dir.split(/[\\/]/).filter(Boolean).pop() ?? "repo";
-    const r = await rooms.shareText(room, `${fileName(repo)} ${new Date().toISOString().slice(0, 10)}.diff`, diff, "changes");
+    const r = await rooms.shareText(room, `${fileName(repo)} ${new Date().toISOString().slice(0, 10)}.diff`, diff, "changes", "repository changes");
     done(r.name, r.note);
   });
 
@@ -232,11 +233,11 @@ export function AddSkillDialog({ room, folder, files, skillText, onClose }: { ro
     try {
       let n: number;
       try {
-        n = await rooms.folderSave(room, folder, dest);
+        n = await rooms.folderSave(room, folder, dest, false, "their skills");
       } catch (e) {
         if (!/already exists/.test(errMsg(e))) throw e;
         if (!(await confirmDialog({ title: `Replace your skill ${name}?`, message: `${dest} already has files: the room's files of the same name replace them (others stay).`, confirmLabel: "Replace", danger: true }))) return;
-        n = await rooms.folderSave(room, folder, dest, true);
+        n = await rooms.folderSave(room, folder, dest, true, "their skills");
       }
       toast.success(`Added the skill ${name} (${n} files) to ${place}`);
       onClose();
@@ -266,7 +267,7 @@ export function AddSkillDialog({ room, folder, files, skillText, onClose }: { ro
 }
 
 /** Save a room file (Markdown, maybe with memory frontmatter) as one of your memories. */
-export function SaveMemoryDialog({ path, text, onClose }: { path: string; text: string; onClose: () => void }) {
+export function SaveMemoryDialog({ room, path, text, onClose }: { room: string; path: string; text: string; onClose: () => void }) {
   const projects = useConnections((s) => s.projects);
   const focus = useFocusProject();
   const { fields, body } = frontmatter(text);
@@ -280,6 +281,7 @@ export function SaveMemoryDialog({ path, text, onClose }: { path: string; text: 
     try {
       const p: MemoryPlace = place === "global" ? { kind: "global" } : { kind: "project", id: place.slice("project:".length) };
       await api.memorySave({ place: p, name: name.trim(), description: description.trim(), kind, body });
+      void rooms.tookOut(room, path, "their memory").catch(() => {});
       toast.success(`Saved ${name} to your memory: your coding agents read it from now on`);
       onClose();
     } catch (e) {
@@ -315,9 +317,10 @@ export function SaveMemoryDialog({ path, text, onClose }: { path: string; text: 
 }
 
 /** Copy a room file into your notes (the focused project's, or General). */
-export async function copyToNotes(text: string, projectId: string | null) {
+export async function copyToNotes(room: string, path: string, text: string, projectId: string | null) {
   try {
     await useNotes.getState().save({ id: "", projectId, body: text, pinned: false, createdAt: 0, updatedAt: 0 });
+    void rooms.tookOut(room, path, "their notes").catch(() => {});
     toast.success("Copied to your notes");
   } catch (e) {
     toast.error(errMsg(e));

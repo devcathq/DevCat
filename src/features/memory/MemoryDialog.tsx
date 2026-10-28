@@ -289,7 +289,7 @@ function MemoryRow({ memory: m, onEdit, onForget }: { memory: Memory; onEdit: ()
           </>
         ) : (
           <>
-            <button title="Share with a room (its team memory)" className="rounded p-1 text-muted hover:bg-hover hover:text-fg" onClick={() => useShareToRoom.getState().share({ name: `${m.name}.md`, text: memoryFile(m), folder: "memory", what: `the memory ${m.name}` })}><Users className="size-3" /></button>
+            <button title="Share with a room (its team memory)" className="rounded p-1 text-muted hover:bg-hover hover:text-fg" onClick={() => useShareToRoom.getState().share({ name: `${m.name}.md`, text: memoryFile(m), folder: "memory", what: `the memory ${m.name}`, from: "a memory" })}><Users className="size-3" /></button>
             <button title="Edit" className="rounded p-1 text-muted hover:bg-hover hover:text-fg" onClick={onEdit}><Pencil className="size-3" /></button>
             <button title="Forget" className="rounded p-1 text-muted hover:bg-hover hover:text-danger" onClick={() => setConfirm(true)}><Trash2 className="size-3" /></button>
           </>

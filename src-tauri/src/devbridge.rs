@@ -51,12 +51,23 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "room_file_rename" => out(c!(crate::rooms::room_file_rename, "room", "from", "to")),
         "room_folder_delete" => out(c!(crate::rooms::room_folder_delete, "room", "path")),
         "room_board_new" => out(c!(crate::rooms::room_board_new, "room", "path")),
-        "room_share_text" => out(c!(crate::rooms::room_share_text, "room", "name", "text", "folder")),
-        "room_paths_add" => out(c!(crate::rooms::room_paths_add, "room", "paths", "folder")),
-        "room_file_add_bytes" => out(c!(crate::rooms::room_file_add_bytes, "room", "name", "data", "folder")),
-        "room_file_save" => out(c!(crate::rooms::room_file_save, "room", "path", "dest")),
-        "room_folder_save" => out(c!(crate::rooms::room_folder_save, "room", "path", "dest", "replace")),
+        "room_share_text" => {
+            let (room, name, text, folder, from) = (arg(args, "room")?, arg(args, "name")?, arg(args, "text")?, arg(args, "folder")?, arg(args, "from")?);
+            out(crate::rooms::room_share_text(room, name, text, folder, from).await)
+        }
+        "room_paths_add" => out(c!(crate::rooms::room_paths_add, "room", "paths", "folder", "from")),
+        "room_file_add_bytes" => {
+            let (room, name, data, folder, from) = (arg(args, "room")?, arg(args, "name")?, arg(args, "data")?, arg(args, "folder")?, arg(args, "from")?);
+            out(crate::rooms::room_file_add_bytes(room, name, data, folder, from).await)
+        }
+        "room_file_save" => out(c!(crate::rooms::room_file_save, "room", "path", "dest", "to")),
+        "room_folder_save" => {
+            let (room, path, dest, replace, to) = (arg(args, "room")?, arg(args, "path")?, arg(args, "dest")?, arg(args, "replace")?, arg(args, "to")?);
+            out(crate::rooms::room_folder_save(room, path, dest, replace, to).await)
+        }
         "skills_list" => out(c!(crate::rooms::skills_list, "folders")),
+        "room_took_out" => out(c!(crate::rooms::room_took_out, "room", "path", "to", "files")),
+        "room_file_history" => out(c!(crate::rooms::room_file_history, "room", "path")),
         "room_suggest" => {
             let (room, path, find, replacement, note) = (arg(args, "room")?, arg(args, "path")?, arg(args, "find")?, arg(args, "replacement")?, arg(args, "note")?);
             out(crate::rooms::room_suggest(room, path, find, replacement, note).await)

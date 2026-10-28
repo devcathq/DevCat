@@ -29,6 +29,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
     `devcat mcp`) and DevCat Agent chats can read the room, write in the thread, suggest changes and handle tasks, as
     your agent. No tool copies your files into a room.
   - Files in folders no longer crash the room tab or the document (Loro refuses `/` in a root container's name).
+  - **Removing someone deletes their copy:** their DevCat deletes the room (files, whiteboards, thread, tasks,
+    keys) as soon as it learns, at once if they're online, else the next time it reaches anyone in the room. Only
+    on proof (your signed member list), so nobody else can make a DevCat delete a room. What they saved outside
+    the room stays with them.
+  - **Who shared and edited it:** each file shows who shared it and from where; **Who edited it** lists who
+    shared, moved, took it out (to their computer, skills, memory, notes) and edited it, and when, from the room's
+    own document (peer to peer, no server). **History → Who shared what** shows the whole room's.
   - A member you remove no longer receives what was written while DevCat was telling them they were removed.
 - **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
   project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).

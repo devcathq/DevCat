@@ -46,8 +46,21 @@ export const useRooms = create<RoomsState>((set) => ({
   refresh: async (start = true) => {
     const i = await rooms.info(start);
     set({ id: i.id, list: i.rooms, pending: i.pending });
+    for (const g of i.gone ?? []) {
+      closeRoomTabs(g.id);
+      toast.info(`You were removed from ${g.name}`, {
+        description: "Its files, whiteboards, thread and tasks were deleted from this DevCat. What you saved outside the room stays yours.",
+        duration: 20000,
+      });
+    }
   },
 }));
+
+/** Close this window's tabs of a room that's gone. */
+function closeRoomTabs(room: string) {
+  const tabs = useTabs.getState();
+  for (const t of tabs.tabs.filter((x) => x.type === "room" && x.roomId === room)) tabs.close(t.id, true);
+}
 
 const NAME_KEY = "devcat.rooms.myName";
 /** The name this user goes by in rooms (asked once, offered again). */
@@ -66,7 +79,11 @@ export function startRooms() {
   const bump = (room: string) => useRooms.setState((s) => ({ ticks: { ...s.ticks, [room]: (s.ticks[room] ?? 0) + 1 } }));
   void listen<{ room: string; what: string }>("rooms-changed", (e) => {
     bump(e.payload.room);
-    if (e.payload.what !== "doc" && e.payload.what !== "presence") void useRooms.getState().refresh(false).catch(() => {});
+    if (e.payload.what === "doc" || e.payload.what === "presence") return;
+    void useRooms.getState().refresh(false).then(() => {
+      // removed, and the copy deleted (with proof): its tabs close in every window
+      if (e.payload.what === "removed" && !useRooms.getState().list.some((r) => r.id === e.payload.room)) closeRoomTabs(e.payload.room);
+    }).catch(() => {});
   });
   void listen<JoinRequest>("room-join-request", (e) => useRooms.setState((s) => ({ pending: [...s.pending.filter((p) => p.requestId !== e.payload.requestId), e.payload] })));
   void listen<{ requestId: string }>("room-join-resolved", (e) => useRooms.setState((s) => ({ pending: s.pending.filter((p) => p.requestId !== e.payload.requestId) })));

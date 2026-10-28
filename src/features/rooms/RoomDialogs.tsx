@@ -37,7 +37,7 @@ export function PeopleDialog({ open, onClose, room, view }: { open: boolean; onC
     }
   };
   const remove = async (m: MemberView) => {
-    const ok = await confirmDialog({ title: `Remove ${m.name}?`, message: "They keep what they already have, but get nothing new: the room moves to a new key.", confirmLabel: "Remove", danger: true });
+    const ok = await confirmDialog({ title: `Remove ${m.name}?`, message: "Their DevCat deletes its copy of the room (files, whiteboards, thread, tasks) as soon as it hears: at once if they're online, else the next time it reaches anyone in the room. What they already saved outside the room stays with them. The room moves to a new key.", confirmLabel: "Remove", danger: true });
     if (!ok) return;
     try {
       await rooms.memberRemove(room, m.id);

@@ -101,7 +101,13 @@ Allowed        ─► room keys + member list + the document, over that encrypte
 
 - Members only sync with, and hand keys to, endpoints in the newest signed member list.
 - Removing a member starts a new epoch with a new `room_key`, sent only to remaining members. The
-  removed member keeps what they already had, and gets nothing new.
+  removed member gets nothing new. **Built:** and their DevCat deletes its copy (`Room::wipe`: the document,
+  sealed files, keys, `room.json`) once it holds the proof, a member list the owner signed without it: in the
+  owner's sync right after the removal, in a later sync (`Denied { removed, membership }` carries the list), from
+  the keeper, or at start for a copy kept by an older DevCat. A refusal without a list (from an older DevCat) only
+  makes the room read-only, so no member can make another's DevCat delete a room by saying so. The owner also
+  never pushes document changes to a peer that isn't a reader in its newest list (it syncs once with the member
+  it removed, to tell them).
 
 ### 4.4 Data
 
@@ -119,6 +125,7 @@ suggestions  map   id → { path, anchors, base text, replacement, author, state
 history      list  applied changes { before, after, anchors, by, approved by } (for revert)
 peers        map   Loro peer → member (who typed what)
 tasks        map   id → { title, notes, assignee (member, or their agent), state, by, at }
+activity     list  { kind: shared | created | moved | deleted | tookOut, path, from, to, files, by, at }
 pins         map   message id → { by, at }: the thread's decisions
 reactions    map   "message|member|emoji" → { by, at }
 ```
@@ -134,6 +141,13 @@ reactions    map   "message|member|emoji" → { by, at }
   goes up, and shapes from others are merged with Excalidraw's `reconcileElements` (the newer version wins, and a
   shape being drawn here isn't replaced mid-stroke). The backend reads a board's text for agents
   (`board_text`).
+- **Who edited a file** isn't recorded separately: it's the document's history. Each Loro change belongs to a
+  peer, `peers` maps peers to members, and every copy records change timestamps (merged at most 60 s apart).
+  Agents' edits and accepted suggestions carry their author as the change's message (`commit_by`). `edits(path)`
+  walks the history (`export_json_updates`) for the file's text or board under all its names (moves come from
+  `activity`), skips the move itself, and groups one member's changes less than 10 minutes apart.
+- **Who shared, moved and took out** is the `activity` list, written by the DevCat doing it (taking out is a
+  person's act in their window: saving, adding to skills, memory, notes, copying).
 - **Tasks** are replaced whole on each change (the later change wins when two are made at once); pins and
   reactions are one entry each, so they never conflict.
 
@@ -294,7 +308,8 @@ list the owner signed, and `--owner <id>` limits it to chosen owners' rooms.
 | A non-member finds the room | Random 32-byte id; gossip topic derived from the secret; no room list |
 | An invite link leaks | Single-use, expiring token; owner approves each join; no key in the link |
 | A relay or keeper reads data | Room-key encryption on top of iroh's end-to-end encryption |
-| A removed member keeps reading | New epoch and key for remaining members only |
+| A removed member keeps reading | New epoch and key for remaining members only; their DevCat deletes its copy on the owner's signed list |
+| A member makes another's DevCat delete a room | Deleting needs a list signed by the owner, newer than the one it has, without that DevCat |
 | An injected instruction in a shared doc | Room tools only; suggestions by default; undo |
 | A room member reaches someone's computer | Separate ALPNs; room code never reaches `dispatch.rs` or the PTY |
 | Room content steers someone's coding agent (it has a shell) | Off per room until its user turns it on; no tool copies local files into a room; writes ask in a chat; agents told room content is information |
@@ -328,8 +343,10 @@ list the owner signed, and `--owner <id>` limits it to chosen owners' rooms.
   DevCat refuses to send editor changes for a viewer, but the CRDT accepts any member's changes: a
   modified client could still edit. Likewise the author written on a message or suggestion isn't signed.
   Members are people the owner let in; signing changes is future work.
-- **Removing someone hides what comes next, not what they had.** They keep their copy up to the
-  removal.
+- **Removing someone deletes their copy only on an honest DevCat**, and only once it reaches someone in the room
+  (or the keeper). What they saved outside the room, or a DevCat changed not to delete, keeps what they had.
+- **Who shared and took out** is recorded by the DevCat that did it; **who edited** comes from the document's
+  history, where a modified DevCat could still claim another peer's identity until changes are signed (§12.2).
 - **The keeper's log only grows** (no compaction yet).
 - **Presence and typing** are best-effort (gossip, every 15 s); catch-up sync is what guarantees
   copies converge.

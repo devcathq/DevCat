@@ -411,7 +411,7 @@ mod tests {
         use devcat_rooms::{Config, RelayConfig};
         let dir = std::env::temp_dir().join(format!("devcat-rooms-tools-{}", devcat_rooms::now_ms()));
         let node = Node::start(Config { dir: dir.join("rooms"), relay: RelayConfig::Off, port: 0, keeper: false, keeper_owners: vec![] }, Arc::new(Quiet)).await.unwrap();
-        let open = node.room(&node.create("Universitas Indonesia", "Akbar").unwrap()).unwrap();
+        let open = node.room(&node.create("Study group", "Akbar").unwrap()).unwrap();
         let closed = node.room(&node.create("Private", "Akbar").unwrap()).unwrap();
         let me = open.me(false);
         open.doc().create_file("spec.md", "# Spec\nShip in March.\n", &me, 1).unwrap();
@@ -423,27 +423,27 @@ mod tests {
         assert!(run("rooms_list", json!({})).await.content.contains("No DevCat room lets coding agents in"));
         open.set_prefs(devcat_rooms::Prefs { coding_agents: true, ..open.prefs() });
         let list = run("rooms_list", json!({})).await.content;
-        assert!(list.contains("\"Universitas Indonesia\"") && !list.contains("Private"), "{list}");
+        assert!(list.contains("\"Study group\"") && !list.contains("Private"), "{list}");
         assert!(list.contains("deadlines (memory/deadlines.md): Hand-ins are due Fridays at 17:00"), "{list}");
 
         // Reading, by name or id; the other room stays shut.
-        assert_eq!(run("room_read", json!({ "room": "universitas indonesia", "path": "spec.md" })).await.content, "# Spec\nShip in March.\n");
+        assert_eq!(run("room_read", json!({ "room": "study group", "path": "spec.md" })).await.content, "# Spec\nShip in March.\n");
         assert!(!run("room_read", json!({ "room": &open.id[..8], "path": "spec.md" })).await.is_error);
         let shut = run("room_read", json!({ "room": "Private", "path": "secret.md" })).await;
         assert!(shut.is_error && !shut.content.contains("nope"), "{}", shut.content);
 
         // Writing: as "Akbar's agent (Claude Code)", suggestions only (the room doesn't allow edits).
-        let posted = run("room_post", json!({ "room": "Universitas Indonesia", "text": "Summary: March holds." })).await;
+        let posted = run("room_post", json!({ "room": "Study group", "text": "Summary: March holds." })).await;
         assert!(!posted.is_error, "{}", posted.content);
         let m = open.doc().messages().into_iter().last().unwrap();
         assert_eq!((m.author.label(), m.depth), ("Akbar's agent (Claude Code)".to_string(), 1));
-        assert!(!run("room_suggest", json!({ "room": "Universitas Indonesia", "path": "spec.md", "find": "March", "replace": "April" })).await.is_error);
+        assert!(!run("room_suggest", json!({ "room": "Study group", "path": "spec.md", "find": "March", "replace": "April" })).await.is_error);
         assert_eq!(open.doc().read("spec.md").unwrap(), "# Spec\nShip in March.\n", "suggested, not applied");
-        assert!(run("room_edit", json!({ "room": "Universitas Indonesia", "path": "spec.md", "find": "March", "replace": "May" })).await.content.contains("hasn't let agents edit"));
-        let task = run("room_task", json!({ "room": "Universitas Indonesia", "title": "Check the dates", "assign": "@akbar" })).await;
+        assert!(run("room_edit", json!({ "room": "Study group", "path": "spec.md", "find": "March", "replace": "May" })).await.content.contains("hasn't let agents edit"));
+        let task = run("room_task", json!({ "room": "Study group", "title": "Check the dates", "assign": "@akbar" })).await;
         assert!(!task.is_error, "{}", task.content);
         assert_eq!(open.doc().tasks()[0].assignee.as_ref().map(|a| a.agent), Some(false));
-        assert!(run("room_nonsense", json!({ "room": "Universitas Indonesia" })).await.is_error);
+        assert!(run("room_nonsense", json!({ "room": "Study group" })).await.is_error);
         node.shutdown().await;
         let _ = std::fs::remove_dir_all(dir);
     }

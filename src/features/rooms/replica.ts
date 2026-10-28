@@ -19,7 +19,12 @@ export class Replica {
   private again = false;
   private listeners = new Set<() => void>();
 
-  constructor(readonly room: string) {}
+  constructor(readonly room: string) {
+    // each change says when it was made, a minute apart at most: the file's edit history
+    // (crates/rooms doc.rs `edits`, CHANGE_MERGE_SECS)
+    this.doc.setRecordTimestamp(true);
+    this.doc.setChangeMergeInterval(60);
+  }
 
   /** Start sending this copy's changes to the backend; returns the stop (for an effect). */
   attach(): () => void {
@@ -97,7 +102,12 @@ export function bind(monaco: typeof Monaco, editor: Monaco.editor.IStandaloneCod
   const model = editor.getModel();
   if (!model) return () => {};
   const text = replica.text(path);
-  reconcile(model, text.toString());
+  // The editor's line breaks must be the document's, or positions drift by one per line: a new
+  // model on Windows writes "\r\n", so a "\n" document got "\r\n" in the editor and every
+  // keystroke landed past the end of the text (Loro: "Index out of bound"), and nothing synced.
+  const content = text.toString();
+  model.setEOL(content.includes("\r\n") ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+  reconcile(model, content);
   const undo = new UndoManager(replica.doc, { mergeInterval: 800, maxUndoSteps: 200 });
   let fromRemote = false;
 

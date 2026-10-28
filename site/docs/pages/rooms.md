@@ -147,11 +147,38 @@ see it.
 - **Only in rooms with people you trust.** What people write in a room reaches an agent that can run commands on
   your computer. Agents are told that room content is information, not instructions, but that's not a guarantee.
 
+## Who shared and edited it
+
+Every file shows who shared or made it, and from where, above it ("shared by Arif from this computer"). Click
+**Who edited it** (or right-click a file → **Who shared and edited it…**) to see:
+
+- **Shared, moved, taken out**: who shared it in (from their computer, a note, a memory, a skill…), who moved or
+  renamed it, and who took it out: saved it to their computer, added it to their skills, saved it to their memory,
+  copied it to their notes or the clipboard.
+- **Edited by**: each person's (or agent's) stretches of editing, with when and how much they added and removed,
+  following the file across renames. An agent's edits and accepted suggestions show as that agent ("Arif's agent
+  (Claude Code)").
+
+**History → Who shared what** lists the same for the whole room, newest first.
+
+All of it is in the room's own document, which every member's DevCat keeps: there's no server keeping a log. Who
+edited comes from the document's history itself (each change is made by a member's DevCat, and the room knows
+whose); sharing and taking out are recorded by members' DevCats when they do it, so a DevCat changed not to record
+them could skip it.
+
 ## Members
 
-The owner (who made the room) can change someone between **Editor** and **Reads only**, or remove them. A
-removed member keeps what they already had, but gets nothing new: the room switches to a new key. People who
-read only can still write in the thread and react.
+The owner (who made the room) can change someone between **Editor** and **Reads only**, or remove them. People
+who read only can still write in the thread and react.
+
+**When you remove someone, their copy goes.** The room switches to a new key, so they get nothing new, and their
+DevCat deletes its copy of the room: the files, whiteboards, thread, tasks, team memory and keys. It happens at
+once if they're online, otherwise the next time their DevCat reaches anyone in the room (or its keeper). They see
+*You were removed from…*. Their DevCat only does it on proof: the member list you signed, without them, so nobody
+else in the room can make it delete a copy.
+
+What this can't take back: what they already saved outside the room (to their computer, notes, memory or skills),
+copied, or kept with a DevCat changed not to delete it. Share with people you trust.
 
 **Room settings → Leave on this DevCat** deletes your copy; the others keep the room.
 

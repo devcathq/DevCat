@@ -80,4 +80,10 @@ so what comes from a room is untrusted input. Keep these rules:
 - **Root container names never contain `/`**: Loro panics when it imports a change to such a root (in the window and
   in Rust). Files in folders use `doc.rs` `root_part` (`/` → `%2F`, `%` → `%25`), and the window the same
   (`replica.ts` `rootPart`). Any new per-file container must go through it.
+- **A room is deleted from a DevCat only on proof**: a member list the owner signed without that DevCat
+  (`Room::wipe`, from `adopt`). Never on a peer's word: a `Denied { removed }` without a signed list only marks it
+  read-only. And never send document changes to a peer that isn't a reader in the newest list.
+- **Who shared, moved and took out what** goes in the room's `activity` (`doc.log`, or `rename` for moves); a new
+  way into or out of a room records itself there. Who *edited* comes from the document's history (`doc.edits`):
+  an agent's changes must be committed with `commit_by` so they show as the agent.
 - Rooms are desktop-only, like the SSH workbench: keep them out of the phone dispatcher.

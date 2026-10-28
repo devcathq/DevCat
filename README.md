@@ -272,6 +272,8 @@ of these step by step, with every keyboard shortcut on
   into yours. The `memory/` folder is a team memory every member's agent reads. Mention anyone's DevCat Agent to
   bring it in: it reads the files, boards and images, takes tasks, and suggests changes that people accept or
   reject. Let your own Claude Code, Codex or DevCat Agent chats work in a room too (per room, through `devcat mcp`).
+  See who shared, moved, took out and edited each file, from the room's own document. Removing someone deletes
+  their copy of the room as soon as their DevCat learns of it.
 - **Appearance** (⚙️ Settings in the title bar): dark, light or system mode, 8 dark and 3 light themes (editors and terminals
   follow), and **window glass** on macOS and Windows: the desktop shows through the sidebar and work area, blurred,
   with separate opacity for each.

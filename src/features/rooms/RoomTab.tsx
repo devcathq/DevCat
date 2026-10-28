@@ -24,6 +24,7 @@ import { AddSkillDialog, copyToNotes, frontmatter, SaveMemoryDialog, ShareFromDe
 import { FileTree, type TreeTarget } from "./FileTree";
 import { bind, Replica, utf16 } from "./replica";
 import { PeopleDialog, SettingsDialog, pathText } from "./RoomDialogs";
+import { FileHistoryDialog } from "./FileHistory";
 import { HistoryPanel, SuggestionsPanel, ThreadPanel } from "./RoomPanels";
 import { shareFiles } from "./share";
 import { startRooms, useRooms } from "./store";
@@ -54,6 +55,8 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
   const [skill, setSkill] = useState<string | null>(null);
   const [memory, setMemory] = useState<string | null>(null);
   const [mdMode, setMdMode] = useState<MdMode>("split");
+  // the file or folder whose sharing and editing history is shown
+  const [historyOf, setHistoryOf] = useState<string | null>(null);
   const [reveal, setReveal] = useState<{ path: string; from: number; to: number; at: number } | null>(null);
   // files dragged over the room (from the system or DevCat's Files tree), to share them
   const [dragging, setDragging] = useState(false);
@@ -201,13 +204,14 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
       );
     }
     if (!t.folder) out.push({ label: "Open", icon: ic(Eye), onClick: () => setFile(t.path) });
+    out.push({ label: t.folder ? "Who shared and moved it…" : "Who shared and edited it…", icon: ic(History), onClick: () => setHistoryOf(t.path) });
     if (canEdit) out.push({ label: "Rename or move…", icon: ic(Pencil), onClick: () => void rename(t.path) });
     out.push("separator");
     if (sk) out.push({ label: "Add to my skills…", icon: ic(Sparkles), onClick: () => setSkill(sk) });
     if (!t.folder && t.file?.kind === "text") {
       if (isMarkdown(t.path)) out.push({ label: "Save to my memory…", icon: ic(Brain), onClick: () => setMemory(t.path) });
-      out.push({ label: "Copy to my notes", icon: ic(NotebookPen), onClick: () => void copyToNotes(textOf(t.path), focus?.id ?? null) });
-      out.push({ label: "Copy the text", icon: ic(Copy), onClick: () => void navigator.clipboard.writeText(textOf(t.path)).then(() => toast.success("Copied")) });
+      out.push({ label: "Copy to my notes", icon: ic(NotebookPen), onClick: () => void copyToNotes(room, t.path, textOf(t.path), focus?.id ?? null) });
+      out.push({ label: "Copy the text", icon: ic(Copy), onClick: () => void navigator.clipboard.writeText(textOf(t.path)).then(() => { toast.success("Copied"); void rooms.tookOut(room, t.path, "the clipboard").catch(() => {}); }) });
     }
     out.push({ label: t.folder ? "Save the folder to this computer…" : "Save to this computer…", icon: ic(Download), onClick: () => void saveOut(t) });
     if (canEdit) out.push("separator", { label: t.folder ? "Delete the folder" : "Delete", icon: ic(Trash2), danger: true, onClick: () => void remove(t) });
@@ -229,6 +233,11 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
   };
   const here = view.members.filter((m) => !m.me && m.online && m.role !== "keeper");
   const md = current?.kind === "text" && isMarkdown(current.path);
+  // who brought the open file into the room, and from where (the room's activity), else who made it
+  const came = current ? [...board.activity].reverse().find((a) => a.path === current.path && (a.kind === "shared" || a.kind === "created")) : undefined;
+  const origin = !current ? "" : came
+    ? `${came.kind === "shared" ? "shared" : "made"} by ${label(came.by)}${came.from ? ` from ${came.from}` : ""}, ${new Date(came.at).toLocaleDateString()}`
+    : `by ${label(current.createdBy)}, ${new Date(current.createdAt).toLocaleDateString()}`;
 
   return (
     <div className="relative flex h-full min-h-0 flex-col"
@@ -289,12 +298,22 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
           )}
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
-          {md && (
-            <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-2">
-              <span className="mr-auto truncate text-[11.5px] text-muted">{current.path}</span>
-              <PanelTab active={mdMode === "edit"} onClick={() => setMdMode("edit")} icon={<SquarePen className="size-3.5" />}>Edit</PanelTab>
-              <PanelTab active={mdMode === "split"} onClick={() => setMdMode("split")} icon={<Columns2 className="size-3.5" />}>Both</PanelTab>
-              <PanelTab active={mdMode === "preview"} onClick={() => setMdMode("preview")} icon={<Eye className="size-3.5" />}>Preview</PanelTab>
+          {current && (
+            <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
+              <span className="min-w-0 truncate text-[11.5px] text-muted" title={`${current.path} · ${origin}`}>
+                <span className="text-fg">{current.path}</span> · {origin}
+              </span>
+              <button onClick={() => setHistoryOf(current.path)} title="Who shared, moved, took out and edited it"
+                className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] text-muted hover:bg-hover hover:text-fg">
+                <History className="size-3.5" />Who edited it
+              </button>
+              {md && (
+                <span className="ml-auto flex shrink-0 items-center gap-0.5">
+                  <PanelTab active={mdMode === "edit"} onClick={() => setMdMode("edit")} icon={<SquarePen className="size-3.5" />}>Edit</PanelTab>
+                  <PanelTab active={mdMode === "split"} onClick={() => setMdMode("split")} icon={<Columns2 className="size-3.5" />}>Both</PanelTab>
+                  <PanelTab active={mdMode === "preview"} onClick={() => setMdMode("preview")} icon={<Eye className="size-3.5" />}>Preview</PanelTab>
+                </span>
+              )}
             </div>
           )}
           <div className="flex min-h-0 flex-1">
@@ -342,7 +361,7 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
             {panel === "thread" && <ThreadPanel room={room} view={view} messages={board.messages} pins={board.pins} reactions={board.reactions} canShare={canEdit} canEdit={canEdit} files={files.map((f) => f.path)} onOpen={setFile} />}
             {panel === "tasks" && <TasksPanel room={room} view={view} tasks={board.tasks} canEdit={canEdit} />}
             {panel === "suggestions" && <SuggestionsPanel room={room} canEdit={canEdit} suggestions={board.suggestions} onShow={show} />}
-            {panel === "history" && <HistoryPanel room={room} canEdit={canEdit} history={board.history} />}
+            {panel === "history" && <HistoryPanel room={room} canEdit={canEdit} history={board.history} activity={board.activity} />}
           </div>
         </div>
       </div>
@@ -350,7 +369,8 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
       <SettingsDialog open={settings} onClose={() => setSettings(false)} room={room} view={view} tabId={tab.id} />
       <ShareFromDevCatDialog room={room} open={sharing} onClose={() => setSharing(false)} onShared={setFile} />
       {skill && <AddSkillDialog room={room} folder={skill} files={files} skillText={textOf(`${skill}/SKILL.md`)} onClose={() => setSkill(null)} />}
-      {memory && <SaveMemoryDialog path={memory} text={textOf(memory)} onClose={() => setMemory(null)} />}
+      {memory && <SaveMemoryDialog room={room} path={memory} text={textOf(memory)} onClose={() => setMemory(null)} />}
+      {historyOf && <FileHistoryDialog room={room} path={historyOf} onClose={() => setHistoryOf(null)} />}
       {menuCtx.element}
     </div>
   );

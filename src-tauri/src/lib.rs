@@ -389,6 +389,8 @@ pub fn run() {
             rooms::room_task_update,
             rooms::room_task_delete,
             rooms::skills_list,
+            rooms::room_took_out,
+            rooms::room_file_history,
             rooms::room_blob,
             rooms::room_blob_save,
             rooms::room_member_remove,

@@ -58,13 +58,13 @@ async function walk(dir: FileSystemDirectoryEntry): Promise<{ file: File; rel: s
   return out;
 }
 
-async function shareBytes(room: string, f: File, name: string, folder: string | undefined, shared: SharedFile[]) {
+async function shareBytes(room: string, f: File, name: string, folder: string | undefined, from: string, shared: SharedFile[]) {
   if (f.size > MAX_BYTES) {
     toast.error(`${name} is over 25 MB: too large to share in a room.`);
     return;
   }
   try {
-    shared.push(await rooms.fileAddBytes(room, name, await toBase64(f), folder));
+    shared.push(await rooms.fileAddBytes(room, name, await toBase64(f), folder, from));
   } catch (e) {
     toast.error(`Couldn't share ${name}: ${errMsg(e)}`);
   }
@@ -84,7 +84,7 @@ export async function shareFiles(room: string, from: DataTransfer | File[], into
     let paths: string[] = [];
     try { paths = JSON.parse(fromTree) as string[]; } catch { return []; }
     try {
-      const out = await rooms.pathsAdd(room, paths, into);
+      const out = await rooms.pathsAdd(room, paths, into, "DevCat's Files");
       shared.push(...out.filter((s) => s.name));
       for (const s of out) if (!s.name && s.note) toast.error(s.note);
     } catch (e) {
@@ -101,7 +101,7 @@ export async function shareFiles(room: string, from: DataTransfer | File[], into
           const inside = await walk(entry as FileSystemDirectoryEntry);
           for (const f of inside) {
             const dir = f.rel.includes("/") ? f.rel.slice(0, f.rel.lastIndexOf("/")) : undefined;
-            await shareBytes(room, f.file, f.file.name, join(into, root, dir), shared);
+            await shareBytes(room, f.file, f.file.name, join(into, root, dir), "a dropped folder", shared);
           }
           taken.push(join(into, root));
         } catch (e) {
@@ -109,7 +109,7 @@ export async function shareFiles(room: string, from: DataTransfer | File[], into
         }
         continue;
       }
-      if (file) await shareBytes(room, file, pastedName(file, pasted), into, shared);
+      if (file) await shareBytes(room, file, pastedName(file, pasted), into, pasted ? "a paste" : "a dropped file", shared);
     }
   }
   const out = shared.map((s) => s.name);

@@ -103,7 +103,11 @@ async fn invite_join_sync_remove() {
     until("B gets messages in the new epoch", 30, || rb.doc().messages().iter().any(|m| m.text.contains("secret plan"))).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!rc.doc().messages().iter().any(|m| m.text.contains("secret")), "a removed member gets nothing new");
-    assert!(rc.removed());
+    // and its DevCat deletes its copy: the document, shared files, keys
+    until("C's copy is deleted", 30, || c.room(&room).is_err()).await;
+    assert!(!dc.join(&room).exists(), "nothing left on C's disk");
+    assert_eq!(c.take_gone().iter().map(|g| (g.id.as_str(), g.name.as_str())).collect::<Vec<_>>(), vec![(room.as_str(), "Q4 spec")]);
+    assert!(c.take_gone().is_empty(), "told once");
 
     // Blobs: shared sealed, fetched from whoever has it.
     ra.add_blob("logo.png", b"\x89PNG fake image bytes", "image/png", &ra.me(false)).unwrap();
@@ -116,6 +120,53 @@ async fn invite_join_sync_remove() {
         n.shutdown().await;
     }
     for d in [da, db, dc] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_removed_while_away_loses_the_room_when_back() {
+    let (da, db) = (tmp("a4"), tmp("b4"));
+    let (a, ha) = start(&da, false).await;
+    let room = a.create("Study group", "Akbar").unwrap();
+    let ra = a.room(&room).unwrap();
+    ra.doc().create_file("spec/proposal.md", "Our plan.", &ra.me(false), 1).unwrap();
+    *ha.answer.lock() = Some(Role::Editor);
+    let (b, _hb) = start(&db, false).await;
+    b.join(&a.invite(&room, Role::Editor).unwrap(), "Arif").await.unwrap();
+    until("B has the document", 20, || b.room(&room).is_ok_and(|r| r.doc().read("spec/proposal.md").is_some())).await;
+    let arif = b.id();
+
+    // B goes away; meanwhile the owner removes it.
+    b.shutdown().await;
+    drop(b);
+    ra.remove_member(&arif).unwrap();
+
+    // Back: B still has its copy on disk until it reaches the room, where the owner's signed list
+    // (the proof) says it's out.
+    assert!(db.join(&room).join("room.json").exists());
+    let (b, hb) = start(&db, false).await;
+    until("B learns it was removed and deletes its copy", 40, || b.room(&room).is_err()).await;
+    assert!(*hb.removed.lock());
+    assert!(!db.join(&room).exists(), "nothing left on B's disk");
+    assert_eq!(b.take_gone().len(), 1);
+
+    // A copy whose signed list already leaves this DevCat out (DevCats from before this kept them)
+    // is deleted at start, without asking anyone: here, the owner's own files, list and all.
+    b.shutdown().await;
+    drop(b);
+    std::fs::create_dir_all(db.join(&room)).unwrap();
+    for f in ["room.json", "doc.loro"] {
+        std::fs::copy(da.join(&room).join(f), db.join(&room).join(f)).unwrap();
+    }
+    let (b, _hb) = start(&db, false).await;
+    assert!(b.room(&room).is_err(), "not opened");
+    assert!(!db.join(&room).exists());
+    assert_eq!(b.take_gone().iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), vec!["Study group"]);
+    for n in [a, b] {
+        n.shutdown().await;
+    }
+    for d in [da, db] {
         let _ = std::fs::remove_dir_all(d);
     }
 }

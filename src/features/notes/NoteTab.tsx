@@ -161,7 +161,7 @@ export default function NoteTab({ tab }: { tab: Extract<Tab, { type: "note" }> }
             </button>
           ))}
         </div>
-        <IconButton title="Share with a room" onClick={() => useShareToRoom.getState().share({ name: `${(title || "note").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80)}.md`, text: draft, folder: "notes", what: "this note" })}><Users className="size-3.5" /></IconButton>
+        <IconButton title="Share with a room" onClick={() => useShareToRoom.getState().share({ name: `${(title || "note").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80)}.md`, text: draft, folder: "notes", what: "this note", from: "a note" })}><Users className="size-3.5" /></IconButton>
         <IconButton title="Delete note" onClick={() => void remove()}><Trash2 className="size-3.5" /></IconButton>
       </Toolbar>
       {mode === "preview" && (
