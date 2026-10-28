@@ -12,6 +12,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Tickets: choose the branch.** In a board's settings, **Branch** gives each ticket a new branch with your own
+  prefix (`devcat/` by default), or uses an existing branch such as `main` or `staging` that fixed tickets are
+  committed straight onto (unfinished work still goes on a branch of its own).
+- **Tickets: open chat.** Each history entry has **open chat**, which opens the agent's conversation for that
+  ticket in the AI workspace.
 - **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
   project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like
@@ -55,8 +60,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   attach the connection list and a database's schema as MCP resources (`devcat://project/…/connections`,
   `devcat://conn/…/schema`).
 - **Tidier window:** the row of icons at the top right is now one **Settings** menu (Appearance, AI memory, Mobile
-  pairing, Tickets, Keep awake, New window); a coffee cup still shows while keep awake is on. **Rooms** moved to
-  the left bar, and saved queries and query history now sit under the connection list (**Queries**) instead of
+  pairing, Keep awake, New window); a coffee cup still shows while keep awake is on. **Rooms** and **Tickets**
+  moved to the left bar (Tickets lists your boards and what the agent is doing on each), and saved queries and query history now sit under the connection list (**Queries**) instead of
   having their own icon.
 - **File links on SSH sessions:** clicking an absolute or `~/…` path in an SSH session's terminal (or in an
   agent's reply there) opens that file from the server, over the same session, instead of looking for it on
