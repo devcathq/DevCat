@@ -66,12 +66,12 @@ export function TasksPanel({ room, view, tasks, canEdit }: { room: string; view:
         )}
       </div>
       {canEdit && t.state !== "done" && (
-        <div className="flex gap-1.5 pl-6">
-          <Select className="h-6 flex-1 text-[11px]" value={key(t.assignee)} onChange={(e) => void run(() => rooms.taskUpdate(room, t.id, { assignee: parse(e.target.value) }))}>
+        <div className="flex min-w-0 gap-1.5 pl-6">
+          <Select className="h-6 min-w-0 flex-1 text-[11px]" value={key(t.assignee)} onChange={(e) => void run(() => rooms.taskUpdate(room, t.id, { assignee: parse(e.target.value) }))}>
             <option value="">For anyone</option>
             {options.map((o) => <option key={o.k} value={o.k}>{o.label}</option>)}
           </Select>
-          <Select className="h-6 w-24 text-[11px]" value={t.state} onChange={(e) => void run(() => rooms.taskUpdate(room, t.id, { state: e.target.value as TaskState }))}>
+          <Select className="h-6 w-24 shrink-0 text-[11px]" value={t.state} onChange={(e) => void run(() => rooms.taskUpdate(room, t.id, { state: e.target.value as TaskState }))}>
             {(Object.keys(STATE) as TaskState[]).map((s) => <option key={s} value={s}>{STATE[s]}</option>)}
           </Select>
         </div>
@@ -94,7 +94,7 @@ export function TasksPanel({ room, view, tasks, canEdit }: { room: string; view:
         <div className="space-y-1.5 border-t border-line p-2">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="New task, e.g. Draft the introduction" onKeyDown={(e) => { if (e.key === "Enter") void add(); }} />
           <div className="flex gap-1.5">
-            <Select className="flex-1" value={assign} onChange={(e) => setAssign(e.target.value)}>
+            <Select className="min-w-0 flex-1" value={assign} onChange={(e) => setAssign(e.target.value)}>
               <option value="">For anyone</option>
               {options.map((o) => <option key={o.k} value={o.k}>{o.label}</option>)}
             </Select>

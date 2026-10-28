@@ -73,7 +73,8 @@ export default function Board({ replica, path, readOnly }: { replica: Replica; p
     <div className="h-full w-full">
       <Excalidraw
         excalidrawAPI={setApi}
-        initialData={{ elements: initial, appState: { viewBackgroundColor: dark ? "#1e1e1e" : "#ffffff" }, scrollToContent: true }}
+        // white: Excalidraw draws the dark theme by inverting the canvas
+        initialData={{ elements: initial, appState: { viewBackgroundColor: "#ffffff" }, scrollToContent: true }}
         onChange={(els) => onChange(els as readonly Shape[])}
         theme={dark ? "dark" : "light"}
         viewModeEnabled={readOnly}
