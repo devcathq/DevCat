@@ -12,6 +12,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.15.0 - 2026-10-28
+
 - **Tickets:** choose the branch the agent works on in the board's settings: a new branch per ticket with your own
   prefix (`devcat/` by default), or an existing branch such as `main` or `staging` that fixed tickets are committed
   straight onto (unfinished work still goes on a branch of its own). Each history entry has **open chat**, which
