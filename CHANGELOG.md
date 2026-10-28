@@ -37,6 +37,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
     shared, moved, took it out (to their computer, skills, memory, notes) and edited it, and when, from the room's
     own document (peer to peer, no server). **History → Who shared what** shows the whole room's.
   - A member you remove no longer receives what was written while DevCat was telling them they were removed.
+  - Typing in a room's file works on Windows: the editor used Windows line breaks for a file with plain ones, so
+    every keystroke landed in the wrong place, didn't reach the room, and was undone.
 - **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
   project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like
