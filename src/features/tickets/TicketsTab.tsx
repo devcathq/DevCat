@@ -2,12 +2,13 @@
 // fix them), what the agent is doing now, and what it did.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
-import { Bot, Brain, Eye, ExternalLink, GitBranch, ListTodo, MessageSquareText, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
+import { Bot, Brain, Eye, ExternalLink, GitBranch, ListTodo, MessageSquare, MessageSquareText, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge, Button, Dialog, Empty, ErrorBox, IconButton, Select, Spinner, Textarea, Toolbar } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { useConnections } from "../../store/connections";
+import { openClaudeWorkspace } from "../claude/open";
 import { confirmDialog } from "../connections/dialogs";
 import { ASSIGNED, TRACKERS, tickets, type Board, type JobView, type Outcome, type RunRecord, type Ticket } from "./api";
 import { BoardDialog } from "./BoardDialog";
@@ -328,6 +329,15 @@ function HistoryItem({ r }: { r: RunRecord }) {
         {r.repos?.length ? <span>{r.repos.join(", ")}</span> : r.filesChanged > 0 && <span>{r.filesChanged} file{r.filesChanged === 1 ? "" : "s"}</span>}
         {r.costUsd != null && <span>${r.costUsd.toFixed(2)}</span>}
         {r.url && <button className="hover:text-fg" onClick={() => void openUrl(r.url)}>open ticket</button>}
+        {r.sessionId && r.cwd && (
+          <button
+            className="flex items-center gap-1 hover:text-fg"
+            title="Open the agent's chat in the AI workspace (you can continue it there)"
+            onClick={() => openClaudeWorkspace(r.cwd!, { sessionId: r.sessionId, providerId: r.providerId, title: `${r.key} ${r.title}` })}
+          >
+            <MessageSquare className="size-3" />open chat
+          </button>
+        )}
       </div>
       {r.notes.map((n, i) => <div key={i} className="mt-1 text-[11px] text-warn">{n}</div>)}
     </div>

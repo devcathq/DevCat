@@ -66,7 +66,11 @@ up by itself (**Watch**) always get the default prompt.
 For each ticket:
 
 1. DevCat makes the branch `devcat/<key>-<title>` from the branch the repository is on (in a folder: in each
-   repository), and moves the ticket to your *working* column.
+   repository), and moves the ticket to your *working* column. The prefix (`devcat/`) is set in the board's
+   settings under **Branch**. There you can also choose **An existing branch** (say `main` or `staging`): DevCat
+   checks it out instead (with **Push** on, it's pulled from `origin` first), and fixed tickets are committed straight
+   onto it. Unfinished work still goes on a new `devcat/…` branch, so it never lands on yours. In a folder,
+   repositories without that branch are left alone.
 2. The agent reads the ticket (title, description, labels, recent comments) and makes the change. The
    ticket's images (screenshots attached in Jira or Trello, or pasted into a Linear description) are shown to
    it: png, jpeg, gif or webp, up to 6 of them and 5 MB each. Other attachments are only named.
@@ -78,6 +82,9 @@ For each ticket:
 
 If the agent is stopped or crashes, the ticket goes back where it was, without a comment. A ticket the agent
 changed nothing for has its branch removed.
+
+Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
+workspace, where you can read what it did and carry on from there.
 
 ## Watch a column
 

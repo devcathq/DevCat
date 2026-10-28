@@ -44,6 +44,10 @@ export interface Board {
   assigned: Assigned;
   comment: boolean;
   push: boolean;
+  /** New branches are `<prefix><key>-<title>` (default "devcat/"). */
+  branchPrefix: string;
+  /** Commit fixed tickets onto this existing branch (main, staging…); "" = a new branch per ticket. */
+  targetBranch: string;
   allowCommands: boolean;
   watch: boolean;
   intervalMin: number;
@@ -65,6 +69,8 @@ export interface RunRecord {
   notes: string[]; started: number; finished: number; costUsd?: number | null;
   /** The prompt given for this ticket instead of the board's default one. */
   prompt?: string | null;
+  /** The agent's chat (open it in the AI workspace): session id, AI connection, folder. */
+  sessionId?: string | null; providerId?: string | null; cwd?: string | null;
 }
 
 export const ASSIGNED: Record<Assigned, string> = { anyone: "Anyone", me: "Me", meOrNobody: "Me, or nobody yet" };
@@ -74,7 +80,7 @@ export const TRACKERS: Record<TrackerKind, string> = { jira: "Jira", trello: "Tr
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
   pickFrom: null, working: null, doneTo: null, failedTo: null, label: "", assigned: "anyone",
-  comment: true, push: false, allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
+  comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
 });
 
 export const tickets = {
