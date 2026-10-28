@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Layers, FolderPlus, GitBranch, ListTodo, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, Users, X, Zap } from "lucide-react";
+import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Layers, FolderPlus, GitBranch, ListTodo, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, Trash2, Users, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { Toaster } from "sonner";
@@ -17,7 +17,7 @@ import NotesPanel from "../../features/notes/NotesPanel";
 import { createNote, noteInFocus, useNotes } from "../../features/notes/store";
 import { inFocus, useConnections, useFocusProject } from "../../store/connections";
 import { useContextMenu, type MenuItem } from "../../features/connections/ContextMenu";
-import { createProject, focusProject } from "../../features/connections/tree/projectActions";
+import { createProject, deleteProject, focusProject } from "../../features/connections/tree/projectActions";
 import { confirmDialog } from "../../features/connections/dialogs";
 import { detectSession } from "../../features/claude/store";
 import { useTabActivity } from "../../features/claude/activity";
@@ -304,6 +304,19 @@ function ProjectBar() {
       })),
       "separator",
       { label: "New project…", icon: <FolderPlus className="size-3.5" />, onClick: async () => { const p = await createProject(); if (p) focusProject(p.id); } },
+      ...(projects.length
+        ? [{
+            label: "Delete project",
+            icon: <Trash2 className="size-3.5" />,
+            // asks first; the project's connections are kept and moved out of it
+            submenu: projects.map((p): MenuItem => ({
+              label: `${p.name}…`,
+              icon: <Folder className="size-3.5" style={{ color: p.color ?? undefined }} />,
+              danger: true,
+              onClick: () => void deleteProject(p),
+            })),
+          } as MenuItem]
+        : []),
       "separator",
       { label: "New window", icon: <AppWindow className="size-3.5" />, shortcut: NEW_WINDOW_SHORTCUT, onClick: () => void openNewWindow() },
       { label: "Check for updates…", icon: <ArrowUpCircle className="size-3.5" />, onClick: () => void useUpdate.getState().check(true) },

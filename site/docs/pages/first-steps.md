@@ -26,6 +26,10 @@ A project groups the connections, chats, repositories and notes of one piece of 
 Right-click a project → **Focus on this project** to show only that project everywhere. **Exit focus mode** shows
 everything again. The project menu at the top left switches between projects.
 
+To delete a project, open the project menu → **Delete project** → pick it, or right-click it in *Connections* →
+**Delete project…**. DevCat asks first. The project's connections are kept and moved out of it. To delete them
+too, right-click the project → **Delete project and connections…**.
+
 In focus, tabs that belong to another project are hidden (they come back when you leave focus): its connections and
 notes, and chats, terminals, files and Git tabs of folders that aren't the project's. A folder becomes the
 project's when you use it while the project is focused, as the AI Workspace folder or by opening a chat, terminal,

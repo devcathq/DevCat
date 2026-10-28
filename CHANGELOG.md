@@ -12,6 +12,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
+  project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like
   `exports/Akun Simulasi Internal 26 Okt 2026.xlsx`, shown as code by Claude Code or in quotes by a tool, opens
   on a click like any other path (Ctrl/⌘-click: in its default app), once DevCat has checked the file is there (#105).
