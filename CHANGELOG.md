@@ -39,6 +39,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   - A member you remove no longer receives what was written while DevCat was telling them they were removed.
   - Typing in a room's file works on Windows: the editor used Windows line breaks for a file with plain ones, so
     every keystroke landed in the wrong place, didn't reach the room, and was undone.
+
+## 0.15.0 - 2026-10-28
+
+- **Tickets:** choose the branch the agent works on in the board's settings: a new branch per ticket with your own
+  prefix (`devcat/` by default), or an existing branch such as `main` or `staging` that fixed tickets are committed
+  straight onto (unfinished work still goes on a branch of its own). Each history entry has **open chat**, which
+  opens the agent's conversation for that ticket in the AI workspace (#110).
 - **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
   project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like

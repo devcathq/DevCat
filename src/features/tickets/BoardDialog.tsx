@@ -30,6 +30,8 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isNew = !board;
+  // Commit to an existing branch (main, staging…) instead of a new one per ticket.
+  const [existing, setExisting] = useState(!!board?.targetBranch);
   const set = (p: Partial<Board>) => setB((x) => ({ ...x, ...p }));
   const projects = useConnections((s) => s.projects);
   const detected = projectForFolder(projects, b.repo);
@@ -73,7 +75,8 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
     setSaving(true);
     setError(null);
     try {
-      const saved = await tickets.save(withSecrets(b));
+      if (existing && !b.targetBranch.trim()) throw new Error("Type the branch the agent commits to (main, staging…)");
+      const saved = await tickets.save(withSecrets({ ...b, targetBranch: existing ? b.targetBranch : "" }));
       toast.success(isNew ? "Board connected" : "Board saved");
       onSaved(saved);
     } catch (e) {
@@ -181,12 +184,29 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
               {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.folders?.length ? "" : " (no code folders)"}</option>)}
             </Select>
           </Field>
-          <Field label="Repository" hint="A git repository, or a folder of them (the agent changes the ones the ticket needs). Each gets a new branch, devcat/<ticket>; a repository with uncommitted changes is left alone.">
+          <Field label="Repository" hint="A git repository, or a folder of them (the agent changes the ones the ticket needs). Each gets the ticket's branch (below); a repository with uncommitted changes is left alone.">
             <div className="flex gap-2">
               <Input value={b.repo} onChange={(e) => set({ repo: e.target.value })} placeholder="/path/to/repo or /path/to/folder-of-repos" />
               <Button onClick={() => void pickRepo()}><FolderOpen className="size-3.5" />Choose</Button>
             </div>
           </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Branch" hint={existing ? "Fixed tickets are committed straight onto it (it must exist). Unfinished work goes on a new branch instead." : "Each ticket gets its own branch, made from the one the repository is on."}>
+              <Select value={existing ? "existing" : "new"} onChange={(e) => setExisting(e.target.value === "existing")}>
+                <option value="new">A new branch per ticket</option>
+                <option value="existing">An existing branch</option>
+              </Select>
+            </Field>
+            {existing ? (
+              <Field label="Branch name" hint="E.g. main or staging.">
+                <Input value={b.targetBranch} onChange={(e) => set({ targetBranch: e.target.value })} placeholder="main" />
+              </Field>
+            ) : (
+              <Field label="Branch prefix" hint={`Branches look like ${b.branchPrefix.trim()}abc-12-fix-the-login.`}>
+                <Input value={b.branchPrefix} onChange={(e) => set({ branchPrefix: e.target.value })} placeholder="devcat/" />
+              </Field>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="AI connection" hint="Claude Code or a DevCat Agent connection.">
               <Select value={b.providerId} onChange={(e) => set({ providerId: e.target.value })}>
@@ -202,7 +222,7 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
           <div className="flex flex-col gap-2">
             <Checkbox label="Let the agent run commands (builds, tests) without asking" checked={b.allowCommands} onChange={(v) => set({ allowCommands: v })} />
             <Checkbox label="Comment on the ticket with what was done and how to test it" checked={b.comment} onChange={(v) => set({ comment: v })} />
-            <Checkbox label="Push the ticket's branch to origin when fixed" checked={b.push} onChange={(v) => set({ push: v })} />
+            <Checkbox label={existing ? `Push ${b.targetBranch.trim() || "the branch"} to origin when fixed (pulled from origin first)` : "Push the ticket's branch to origin when fixed"} checked={b.push} onChange={(v) => set({ push: v })} />
             <div className="flex items-center gap-2">
               <Checkbox label="Watch the column: work on new tickets every" checked={b.watch} onChange={(v) => set({ watch: v })} />
               <Input type="number" min={1} className="w-16" value={b.intervalMin} onChange={(e) => set({ intervalMin: Number(e.target.value) || 10 })} />
