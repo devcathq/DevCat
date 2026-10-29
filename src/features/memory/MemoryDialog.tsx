@@ -4,7 +4,8 @@
 // all agents"); "Memories" lists, edits and forgets what the agents saved; "Other computers" shares
 // it with the user's other computers (OtherComputers.tsx). Desktop only.
 import clsx from "clsx";
-import { Brain, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
+import { Brain, ChevronRight, Pencil, Plus, Trash2, Users } from "lucide-react";
+import { memoryFile, useShareToRoom } from "../rooms/Exchange";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { create } from "zustand";
@@ -288,6 +289,7 @@ function MemoryRow({ memory: m, onEdit, onForget }: { memory: Memory; onEdit: ()
           </>
         ) : (
           <>
+            <button title="Share with a room (its team memory)" className="rounded p-1 text-muted hover:bg-hover hover:text-fg" onClick={() => useShareToRoom.getState().share({ name: `${m.name}.md`, text: memoryFile(m), folder: "memory", what: `the memory ${m.name}`, from: "a memory" })}><Users className="size-3" /></button>
             <button title="Edit" className="rounded p-1 text-muted hover:bg-hover hover:text-fg" onClick={onEdit}><Pencil className="size-3" /></button>
             <button title="Forget" className="rounded p-1 text-muted hover:bg-hover hover:text-danger" onClick={() => setConfirm(true)}><Trash2 className="size-3" /></button>
           </>
