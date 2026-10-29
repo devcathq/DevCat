@@ -884,6 +884,14 @@ pub fn repos_in(folder: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+/// A repository's name: its path below the board's folder, with `/` between folders on every system.
+fn repo_name(folder: &Path, p: &Path) -> String {
+    match p.strip_prefix(folder) {
+        Ok(rel) => rel.iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>().join("/"),
+        Err(_) => p.to_string_lossy().into_owned(),
+    }
+}
+
 fn repos_dir(folder: &str, name: &str) -> Option<String> {
     (!name.is_empty()).then(|| Path::new(folder).join(name).to_string_lossy().into_owned())
 }
@@ -913,7 +921,7 @@ pub async fn prepare(folder: &str) -> AppResult<(Vec<Repo>, Vec<(String, String,
     }
     let (mut repos, mut skipped) = (vec![], vec![]);
     for p in found {
-        let name = p.strip_prefix(folder).unwrap_or(&p).to_string_lossy().trim_start_matches('/').to_string();
+        let name = repo_name(Path::new(folder), &p);
         let path = p.to_string_lossy().into_owned();
         let original = git(&path, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map(|s| s.trim().to_string()).unwrap_or_default();
         if changed_files(&path).await.unwrap_or(1) > 0 {
@@ -1298,7 +1306,7 @@ mod tests {
         std::fs::write(root.join("web").join("w.txt"), "mine\n").unwrap();
         let folder = root.to_str().unwrap();
 
-        let names: Vec<String> = repos_in(&root).iter().map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = repos_in(&root).iter().map(|p| repo_name(&root, p)).collect();
         assert_eq!(names, vec!["api", "group/deep", "web"]);
         let (repos, skipped) = prepare(folder).await.unwrap();
         assert_eq!(repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["api", "group/deep"]);
