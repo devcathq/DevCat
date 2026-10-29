@@ -162,7 +162,7 @@ of these step by step, with every keyboard shortcut on
 
 - **Projects**: group connections into projects and focus on one project at a time. In focus, tabs of other
   projects are hidden: their connections and notes, and chats, terminals, files and Git tabs of folders you haven't
-  used with this project.
+  used with this project. The project menu at the top left switches, creates and deletes projects.
 - **Hide the sidebar**: click the active icon in the left bar, the toggle at its bottom, or press ⌘B (Ctrl+B).
 - **Notes**: Markdown notes with Edit / Preview, saved as you type. Each note belongs to a project (shown only
   while that project is focused) or to General (shown everywhere); pin, search and move them between projects.
@@ -236,7 +236,7 @@ of these step by step, with every keyboard shortcut on
     fall back to the password prompt. *Remove* deletes both files. Windows keeps using UAC.
 - **AI Workspace**: runs your installed coding-agent CLI in a real terminal (like iTerm2), with
   **Chat ⌥⇧⌘1 · Diff ⌥⇧⌘2**, extra terminals in the same folder (**+** or ⌥⇧⌘T, each its own tab next to Chat), a git-aware file tree (copy and paste files to and from Explorer / Finder) and file previews (code, Markdown, PDF, images,
-  Excel/CSV, Word). The agent is an *AI connection* picked in the sidebar header: [Claude Code](https://docs.claude.com/en/docs/claude-code)
+  Excel/CSV with ⌘F / Ctrl+F to find in every row, Word). The agent is an *AI connection* picked in the sidebar header: [Claude Code](https://docs.claude.com/en/docs/claude-code)
   by default, or OpenAI Codex, Gemini CLI, GitHub Copilot CLI, Aider, opencode or any custom command
   (args + env vars). Each uses its own login, or an optional API key kept in the OS keychain and passed as
   the provider's env var (e.g. `OPENAI_API_KEY`). With Claude Code you also get **Code Review ⌥⇧⌘3**,

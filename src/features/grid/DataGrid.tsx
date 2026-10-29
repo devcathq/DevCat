@@ -14,6 +14,7 @@
 //   columnFilters       per-column "contains" text shown in a filter row under the header;
 //   onColumnFilter      called with (column, text) on Enter ("" clears). The row shows only with both.
 //   onActiveRowChange   data index of the focused row (e.g. for a form view).
+//   find                Ctrl/⌘+F (while the grid is on screen) opens a find bar over every row.
 //   footer              extra content at the right of the status bar.
 import clsx from "clsx";
 import {
@@ -27,6 +28,7 @@ import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
 import CellEditorDialog from "./CellEditorDialog";
 import { copyText, serialize, type CopyFormat } from "./copy";
 import { cellKind, displayText, editText, needsPopup, parseInput } from "./format";
+import { FIND_KEY, FindBar, findMatches, firstFrom, focusFind } from "./GridFind";
 import { useGridController, type GridController } from "./useGridController";
 
 export interface DataGridProps {
@@ -45,6 +47,7 @@ export interface DataGridProps {
   columnFilters?: Record<string, string>;
   onColumnFilter?: (column: string, text: string) => void;
   onActiveRowChange?: (dataIndex: number | null) => void;
+  find?: boolean;
   footer?: ReactNode;
   hideStatus?: boolean;
   className?: string;
@@ -77,6 +80,8 @@ export default function DataGrid(props: DataGridProps) {
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_H,
     overscan: 12,
+    // rows start under the header (like columns after the row numbers), which stays on top of them
+    paddingStart: headH,
     scrollPaddingStart: headH,
   });
   const colVirt = useVirtualizer({
@@ -113,6 +118,69 @@ export default function DataGrid(props: DataGridProps) {
   }, [rowVirt, colVirt]);
 
   const focusGrid = useCallback(() => scrollRef.current?.focus({ preventScroll: true }), []);
+
+  // ---- find: matches over every row (in view order), the selected cell is the current one
+  const rootRef = useRef<HTMLDivElement>(null);
+  const findRef = useRef<HTMLInputElement>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findText, setFindText] = useState("");
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setQuery(findText), 120);
+    return () => clearTimeout(t);
+  }, [findText]);
+  const nCols = columns.length;
+  const matches = useMemo(() => findMatches(ctl.order, nCols, ctl.value, findOpen ? query : ""), [ctl.order, nCols, ctl.value, findOpen, query]);
+  const focusKey = ctl.sel ? ctl.sel.focus.r * nCols + ctl.sel.focus.c : -1;
+  const focusKeyRef = useRef(focusKey);
+  focusKeyRef.current = focusKey;
+  const currentMatch = matches.set.has(focusKey) ? firstFrom(matches.keys, focusKey) : -1;
+
+  const goToMatch = useCallback((k: number | undefined) => {
+    if (k === undefined) return;
+    const r = Math.floor(k / nCols), c = k % nCols;
+    ctl.setSel({ anchor: { r, c }, focus: { r, c } });
+    // a match off screen comes to the middle, as in a browser's find
+    const el = scrollRef.current, top = headH + r * ROW_H;
+    const shown = !!el && top >= el.scrollTop + headH && top + ROW_H <= el.scrollTop + el.clientHeight;
+    rowVirt.scrollToIndex(r, { align: shown ? "auto" : "center" });
+    colVirt.scrollToIndex(c, { align: "auto" });
+  }, [ctl, nCols, headH, rowVirt, colVirt]);
+  // New results: go to the first match from the selected cell on, as a browser's find does.
+  useEffect(() => {
+    const { keys } = matches;
+    if (keys.length) goToMatch(keys[firstFrom(keys, Math.max(focusKeyRef.current, 0))] ?? keys[0]);
+  }, [matches]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stepMatch = (dir: 1 | -1) => {
+    const { keys } = matches;
+    if (!keys.length) return;
+    const i = dir > 0 ? firstFrom(keys, focusKey + 1) : firstFrom(keys, focusKey) - 1;
+    goToMatch(keys[i] ?? keys[dir > 0 ? 0 : keys.length - 1]);
+  };
+  // (the bar focuses its input when it mounts)
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    focusFind(findRef.current);
+  }, []);
+  const closeFind = () => {
+    setFindOpen(false);
+    focusGrid();
+  };
+  useEffect(() => {
+    if (!props.find) return;
+    const h = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "f") return;
+      // only the grid on screen (other tabs are display: none), and not from a field or an editor
+      // elsewhere (those have their own find)
+      if (!scrollRef.current?.getClientRects().length) return;
+      const t = e.target;
+      if (t instanceof Element && !rootRef.current?.contains(t) && t.closest("input, textarea, select, [contenteditable=true], .cm-editor, .xterm")) return;
+      e.preventDefault();
+      openFind();
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [props.find, openFind]);
 
   // ---- editing
   const startEdit = useCallback((r: number, c: number, initial?: string) => {
@@ -350,14 +418,26 @@ export default function DataGrid(props: DataGridProps) {
   const editingPopup = popup && ctl.order[popup.r] !== undefined ? popup : null;
 
   return (
-    <div className={clsx("flex h-full min-h-0 flex-col bg-panel", props.className)}>
+    <div ref={rootRef} className={clsx("flex h-full min-h-0 flex-col bg-panel", props.className)}>
+      {findOpen && (
+        <FindBar
+          inputRef={findRef}
+          text={findText}
+          onText={setFindText}
+          matches={matches}
+          current={currentMatch}
+          searching={findText !== query}
+          onStep={stepMatch}
+          onClose={closeFind}
+        />
+      )}
       <div
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={onKeyDown}
         className="no-select relative min-h-0 flex-1 overflow-auto font-mono text-xs outline-none"
       >
-        <div style={{ width: totalW, height: totalH + headH, position: "relative" }}>
+        <div style={{ width: totalW, height: totalH, position: "relative" }}>
           {/* header */}
           <div className="sticky top-0 z-20 flex border-b border-line bg-raised" style={{ height: headH, width: totalW }}>
             <div
@@ -425,7 +505,7 @@ export default function DataGrid(props: DataGridProps) {
                   "absolute left-0 flex",
                   inserted ? "bg-ok/10" : deleted ? "bg-danger/10" : r % 2 ? "bg-white/[0.015]" : "",
                 )}
-                style={{ top: headH + vr.start, height: ROW_H, width: totalW }}
+                style={{ top: vr.start, height: ROW_H, width: totalW }}
               >
                 <div
                   className={clsx(
@@ -448,13 +528,14 @@ export default function DataGrid(props: DataGridProps) {
                   const selected = inRange(r, c);
                   const focused = ctl.sel?.focus.r === r && ctl.sel?.focus.c === c;
                   const modified = ctl.isModified(d, c) || (inserted && v !== undefined);
+                  const found = matches.set.has(r * nCols + c);
                   return (
                     <div
                       key={vc.key}
                       className={clsx(
                         "absolute top-0 flex h-full items-center overflow-hidden border-r border-b border-line/60 px-2",
-                        modified && !inserted && "bg-warn/15",
-                        selected && "bg-accent/15",
+                        modified && !inserted && !found && "bg-warn/15",
+                        found ? (focused ? "bg-warn/45" : "bg-warn/20") : selected && "bg-accent/15",
                         focused && "outline outline-1 -outline-offset-1 outline-accent",
                         deleted && "text-danger/80 line-through",
                       )}
@@ -505,6 +586,11 @@ export default function DataGrid(props: DataGridProps) {
           )}
           <span className="flex-1" />
           {props.footer}
+          {props.find && (
+            <button type="button" className="-mr-1 inline-flex items-center gap-1 rounded px-1 hover:bg-hover hover:text-fg" title={`Find in all rows (${FIND_KEY})`} onClick={openFind}>
+              <Search className="size-3" />Find
+            </button>
+          )}
         </div>
       )}
 

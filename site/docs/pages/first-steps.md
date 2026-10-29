@@ -5,11 +5,11 @@ The parts of the window, projects, tabs and windows: what you need before using 
 ## The window
 
 - **Left bar**: one icon per area. From top to bottom: *AI Workspace*, *Connections* (with your saved queries and
-  query history under the list), *VPN & SSH tunnels*, *Git repositories*, *Notes* and *Rooms*.
+  query history under the list), *VPN & SSH tunnels*, *Git repositories*, *Notes*, *Rooms* and *Tickets*.
 - **Sidebar**: the list for the selected area (your connections, your repositories, your notes…).
 - **Tabs**: everything you open (a query, a table, a chat, a cluster) opens in a tab on the right.
 - **Title bar**, top right: the **Settings** menu (gear): **Appearance**, **AI memory**, **Mobile pairing**,
-  **Tickets**, **Keep awake** and **New window**. While keep awake is on, a coffee cup shows next to it.
+  **Keep awake** and **New window**. While keep awake is on, a coffee cup shows next to it.
 - **Status bar** at the bottom: open connections and the version (click it to check for updates).
 
 To hide the sidebar, click the active icon in the left bar again, use the toggle at the bottom of the left bar, or
@@ -25,6 +25,10 @@ A project groups the connections, chats, repositories and notes of one piece of 
 
 Right-click a project → **Focus on this project** to show only that project everywhere. **Exit focus mode** shows
 everything again. The project menu at the top left switches between projects.
+
+To delete a project, open the project menu → **Delete project** → pick it, or right-click it in *Connections* →
+**Delete project…**. DevCat asks first. The project's connections are kept and moved out of it. To delete them
+too, right-click the project → **Delete project and connections…**.
 
 In focus, tabs that belong to another project are hidden (they come back when you leave focus): its connections and
 notes, and chats, terminals, files and Git tabs of folders that aren't the project's. A folder becomes the

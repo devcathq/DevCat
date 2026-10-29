@@ -35,7 +35,9 @@ The toolbar above the chat has two menus:
 - **Model**: the model Claude starts with. You can still switch with `/model` during the session.
 - **Permission mode**: for example *Default mode* or *Bypass permissions*.
 
-Changing either restarts Claude with the new options and resumes the same session.
+After changing either, click **Restart claude**: Claude starts again with the new options and resumes this
+tab's conversation. A chat you haven't written in yet starts fresh; it never picks up another tab's
+conversation in the same folder.
 
 ## Views in a chat tab
 
@@ -58,6 +60,8 @@ Use it for test runs, servers or anything you don't want the agent to touch.
   on Windows and Linux.
 - **New line in the prompt:** <kbd>Shift+Enter</kbd>.
 - **Links and files:** web links and file paths like `src/app.ts:12` are clickable. Files open in a preview tab.
+  A file name with spaces (`exports/Akun Simulasi 26 Okt.xlsx`) is clickable too when Claude Code shows it as code
+  or a tool prints it in quotes, and the file exists on this computer.
 - **Font size:** <kbd>⌘=</kbd> / <kbd>⌘-</kbd> / <kbd>⌘0</kbd> (<kbd>Ctrl</kbd> on Windows and Linux). The font
   and line height are in [Appearance](appearance.md).
 - **After the agent exits**, press <kbd>Enter</kbd> to start it again.

@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Layers, FolderPlus, GitBranch, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, Users, X, Zap } from "lucide-react";
+import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Layers, FolderPlus, GitBranch, ListTodo, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, Trash2, Users, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { Toaster } from "sonner";
@@ -17,7 +17,7 @@ import NotesPanel from "../../features/notes/NotesPanel";
 import { createNote, noteInFocus, useNotes } from "../../features/notes/store";
 import { inFocus, useConnections, useFocusProject } from "../../store/connections";
 import { useContextMenu, type MenuItem } from "../../features/connections/ContextMenu";
-import { createProject, focusProject } from "../../features/connections/tree/projectActions";
+import { createProject, deleteProject, focusProject } from "../../features/connections/tree/projectActions";
 import { confirmDialog } from "../../features/connections/dialogs";
 import { detectSession } from "../../features/claude/store";
 import { useTabActivity } from "../../features/claude/activity";
@@ -26,6 +26,9 @@ import { UpdateDialog } from "../../features/update/UpdateDialog";
 import { MobileDialog } from "../../features/mobile/MobileDialog";
 import { RoomJoinPrompt, RoomsDialog, RoomsPanel } from "../../features/rooms/RoomsDialog";
 import { startRooms, useRooms } from "../../features/rooms/store";
+import TicketsPanel from "../../features/tickets/TicketsPanel";
+import { TicketsDialog } from "../../features/tickets/TicketsTab";
+import { startTickets, useTickets } from "../../features/tickets/store";
 import { AppearanceDialog } from "../../features/appearance/AppearanceDialog";
 import { MemoryDialog } from "../../features/memory/MemoryDialog";
 import { MemoryPairPrompt } from "../../features/memory/OtherComputers";
@@ -79,6 +82,10 @@ export default function AppShell() {
   useEffect(() => {
     startRooms();
     void useRooms.getState().refresh(false).catch(() => {});
+  }, []);
+  useEffect(() => {
+    startTickets();
+    void useTickets.getState().refresh().catch(() => {});
   }, []);
   // A project's own look (Appearance → This project) follows the window's focus.
   const focusId = useConnections((s) => s.focusProjectId);
@@ -180,6 +187,7 @@ export default function AppShell() {
       <RoomJoinPrompt />
       <AppearanceDialog />
       <MemoryDialog />
+      <TicketsDialog />
       <MemoryPairPrompt />
       <PairPrompt />
       <QuickOpen />
@@ -198,6 +206,8 @@ function ActivityBar() {
   };
   // Someone waits to be let into one of this user's rooms.
   const roomWaiting = useRooms((s) => s.pending.length > 0);
+  // The agent is working on a ticket.
+  const ticketsWorking = useTickets((s) => Object.keys(s.jobs).length > 0);
   const item = (v: SidebarView, icon: ReactNode, title: string) => (
     <button
       title={sidebar === v ? `${title} (click to ${sidebarCollapsed ? "show" : "hide"} the sidebar, ${toggleKey})` : title}
@@ -218,6 +228,7 @@ function ActivityBar() {
       {item("network", <Shield className="size-5" />, "VPN & SSH tunnels")}
       {item("git", <GitBranch className="size-5" />, "Git repositories")}
       {item("notes", <NotebookPen className="size-5" />, "Notes")}
+      {item("tickets", <span className="relative"><ListTodo className="size-5" />{ticketsWorking && <span className="absolute -top-0.5 -right-0.5 size-2 animate-pulse rounded-full bg-accent" />}</span>, ticketsWorking ? "Tickets: the agent is working on a ticket" : "Tickets: let the agent work through Jira, Trello and Linear tickets")}
       {item("rooms", <span className="relative"><Users className="size-5" />{roomWaiting && <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-warn" />}</span>, roomWaiting ? "Rooms: someone wants to join" : "Rooms: share documents and agents with other people")}
       <div className="flex-1" />
       <button
@@ -238,7 +249,7 @@ function Sidebar() {
     <div className="flex h-full flex-col bg-panel">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-3">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-          {sidebar === "connections" ? "Connections" : sidebar === "network" ? "VPN & Tunnels" : sidebar === "claude" ? "AI Workspace" : sidebar === "git" ? "Git" : sidebar === "notes" ? "Notes" : "Rooms"}
+          {sidebar === "connections" ? "Connections" : sidebar === "network" ? "VPN & Tunnels" : sidebar === "claude" ? "AI Workspace" : sidebar === "git" ? "Git" : sidebar === "notes" ? "Notes" : sidebar === "tickets" ? "Tickets" : "Rooms"}
         </span>
         {sidebar === "connections" && (
           <IconButton title="New connection" onClick={() => openDialog(null)}><Plus className="size-4" /></IconButton>
@@ -246,6 +257,9 @@ function Sidebar() {
         {sidebar === "claude" && <ProviderPicker />}
         {sidebar === "notes" && (
           <IconButton title="New note" onClick={() => void createNote()}><Plus className="size-4" /></IconButton>
+        )}
+        {sidebar === "tickets" && (
+          <IconButton title="Connect a board" onClick={() => useTickets.getState().edit("new")}><Plus className="size-4" /></IconButton>
         )}
         {sidebar === "rooms" && (
           <span className="flex items-center gap-0.5">
@@ -255,7 +269,7 @@ function Sidebar() {
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
-        {sidebar === "connections" ? <ConnectionsSidebar /> : sidebar === "network" ? <NetworkPanel /> : sidebar === "claude" ? <ClaudePanel /> : sidebar === "git" ? <GitPanel /> : sidebar === "notes" ? <NotesPanel /> : <RoomsPanel />}
+        {sidebar === "connections" ? <ConnectionsSidebar /> : sidebar === "network" ? <NetworkPanel /> : sidebar === "claude" ? <ClaudePanel /> : sidebar === "git" ? <GitPanel /> : sidebar === "notes" ? <NotesPanel /> : sidebar === "tickets" ? <TicketsPanel /> : <RoomsPanel />}
       </div>
     </div>
   );
@@ -290,6 +304,19 @@ function ProjectBar() {
       })),
       "separator",
       { label: "New project…", icon: <FolderPlus className="size-3.5" />, onClick: async () => { const p = await createProject(); if (p) focusProject(p.id); } },
+      ...(projects.length
+        ? [{
+            label: "Delete project",
+            icon: <Trash2 className="size-3.5" />,
+            // asks first; the project's connections are kept and moved out of it
+            submenu: projects.map((p): MenuItem => ({
+              label: `${p.name}…`,
+              icon: <Folder className="size-3.5" style={{ color: p.color ?? undefined }} />,
+              danger: true,
+              onClick: () => void deleteProject(p),
+            })),
+          } as MenuItem]
+        : []),
       "separator",
       { label: "New window", icon: <AppWindow className="size-3.5" />, shortcut: NEW_WINDOW_SHORTCUT, onClick: () => void openNewWindow() },
       { label: "Check for updates…", icon: <ArrowUpCircle className="size-3.5" />, onClick: () => void useUpdate.getState().check(true) },

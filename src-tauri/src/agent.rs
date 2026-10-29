@@ -33,6 +33,12 @@ fn dir() -> AppResult<&'static PathBuf> {
     DIR.get().ok_or_else(|| AppError::msg("DevCat Agent is not initialised"))
 }
 
+/// Where chats are saved; other features (ticket fixing) put their sessions here so the AI
+/// workspace can open them.
+pub fn sessions_dir() -> AppResult<&'static PathBuf> {
+    dir()
+}
+
 struct Run {
     id: String,
     cwd: String,

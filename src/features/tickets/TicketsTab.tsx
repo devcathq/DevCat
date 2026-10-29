@@ -1,16 +1,18 @@
-// Tickets: connected boards on the left; for the selected one, the tickets in a column (pick some
-// and let the agent fix them), what the agent is doing now, and what it did.
+// Tickets: the board picked in the sidebar: the tickets in a column (pick some and let the agent
+// fix them), what the agent is doing now, and what it did.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
-import { Bot, Eye, ExternalLink, GitBranch, ListTodo, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
+import { Bot, Brain, Eye, ExternalLink, GitBranch, ListTodo, MessageSquare, MessageSquareText, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Badge, Button, Empty, ErrorBox, IconButton, Select, Spinner, Toolbar } from "../../components/ui";
+import { Badge, Button, Dialog, Empty, ErrorBox, IconButton, Select, Spinner, Textarea, Toolbar } from "../../components/ui";
 import { errMsg } from "../../lib/api";
+import { useConnections } from "../../store/connections";
+import { openClaudeWorkspace } from "../claude/open";
 import { confirmDialog } from "../connections/dialogs";
 import { ASSIGNED, TRACKERS, tickets, type Board, type JobView, type Outcome, type RunRecord, type Ticket } from "./api";
 import { BoardDialog } from "./BoardDialog";
-import { startTickets, useTickets } from "./store";
+import { boardProject, openTickets, startTickets, useTickets } from "./store";
 
 const OUTCOME: Record<Outcome, { label: string; tone: "ok" | "warn" | "danger" | "default" }> = {
   fixed: { label: "fixed", tone: "ok" },
@@ -25,8 +27,7 @@ const when = (ms: number) => new Date(ms).toLocaleString(undefined, { dateStyle:
 export default function TicketsTab() {
   const boards = useTickets((s) => s.boards);
   const jobs = useTickets((s) => s.jobs);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [editing, setEditing] = useState<Board | "new" | null>(null);
+  const selected = useTickets((s) => s.selected);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,56 +35,42 @@ export default function TicketsTab() {
     void useTickets.getState().refresh().catch((e) => setError(errMsg(e)));
   }, []);
   useEffect(() => {
-    if (!selected || !boards.some((b) => b.id === selected)) setSelected(boards[0]?.id ?? null);
+    if (!selected || !boards.some((b) => b.id === selected)) useTickets.getState().select(boards[0]?.id ?? null);
   }, [boards, selected]);
   const board = boards.find((b) => b.id === selected) ?? null;
 
   return (
-    <div className="flex h-full min-h-0">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-line bg-panel">
-        <div className="flex h-9 items-center justify-between border-b border-line px-3">
-          <span className="text-xs font-semibold tracking-wide text-muted uppercase">Boards</span>
-          <IconButton title="Connect a board" onClick={() => setEditing("new")}><Plus className="size-4" /></IconButton>
-        </div>
-        <div className="min-h-0 flex-1 space-y-0.5 overflow-auto p-1.5">
-          {boards.map((b) => (
-            <button
-              key={b.id}
-              onClick={() => setSelected(b.id)}
-              className={clsx("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left", b.id === selected ? "bg-hover text-fg" : "text-muted hover:bg-hover/60")}
-            >
-              <ListTodo className="size-4 shrink-0 text-accent" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px]">{b.name}</span>
-                <span className="block truncate text-[11px] text-faint">{TRACKERS[b.kind]} · {b.pickFrom?.name ?? "?"} → {b.doneTo?.name ?? "?"}</span>
-              </span>
-              {jobs[b.id] ? <Spinner className="size-3.5 text-accent" /> : b.watch && <Eye className="size-3.5 text-ok" aria-label="Watching" />}
-            </button>
-          ))}
-        </div>
-      </aside>
-      <main className="flex min-w-0 flex-1 flex-col">
-        {error && <ErrorBox error={error} />}
-        {board ? (
-          <BoardView key={board.id} board={board} job={jobs[board.id] ?? null} onEdit={() => setEditing(board)} />
-        ) : (
-          <Empty icon={<ListTodo className="size-8" />} title="Let the agent work through your tickets">
-            <p className="mb-3">
-              Connect a Jira project, Trello board or Linear team. The agent takes tickets from a column (say, To Do), fixes each one on its own branch,
-              comments on the ticket and moves it on (say, to Testing). Results can go to Slack too.
-            </p>
-            <Button variant="primary" onClick={() => setEditing("new")}><Plus className="size-3.5" />Connect a board</Button>
-          </Empty>
-        )}
-      </main>
-      {editing && (
-        <BoardDialog
-          board={editing === "new" ? null : editing}
-          onClose={() => setEditing(null)}
-          onSaved={(b) => { setEditing(null); setSelected(b.id); void useTickets.getState().refresh(); }}
-        />
+    <div className="flex h-full min-h-0 flex-col">
+      {error && <ErrorBox error={error} />}
+      {board ? (
+        <BoardView key={board.id} board={board} job={jobs[board.id] ?? null} onEdit={() => useTickets.getState().edit(board)} />
+      ) : (
+        <Empty icon={<ListTodo className="size-8" />} title="Let the agent work through your tickets">
+          <p className="mb-3">
+            Connect a Jira project, Trello board or Linear team. The agent takes tickets from a column (say, To Do), fixes each one on its own branch,
+            comments on the ticket and moves it on (say, to Testing). Results can go to Slack too.
+          </p>
+          <Button variant="primary" onClick={() => useTickets.getState().edit("new")}><Plus className="size-3.5" />Connect a board</Button>
+        </Empty>
       )}
     </div>
+  );
+}
+
+/** The board settings dialog, wherever it was opened from (sidebar or tab). Mounted once by AppShell. */
+export function TicketsDialog() {
+  const editing = useTickets((s) => s.editing);
+  if (!editing) return null;
+  return (
+    <BoardDialog
+      board={editing === "new" ? null : editing}
+      onClose={() => useTickets.getState().edit(null)}
+      onSaved={(b) => {
+        useTickets.getState().edit(null);
+        openTickets(b.id);
+        void useTickets.getState().refresh();
+      }}
+    />
   );
 }
 
@@ -125,9 +112,11 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
     return m;
   }, [history]);
 
-  const fix = async (ids: string[]) => {
+  // Tickets to fix with a prompt of their own (the dialog is open).
+  const [asking, setAsking] = useState<Ticket[] | null>(null);
+  const fix = async (ids: string[], prompt?: string | null) => {
     try {
-      await tickets.fix(board.id, ids);
+      await tickets.fix(board.id, ids, prompt);
       toast.success(ids.length === 1 ? "The agent is on it" : `Queued ${ids.length} tickets`);
       setPicked(new Set());
     } catch (e) {
@@ -150,6 +139,8 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
 
   const toggle = (id: string) => setPicked((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const ready = !!board.repo && !!board.doneTo;
+  const projects = useConnections((s) => s.projects);
+  const { project, detected } = boardProject(board, projects);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -158,6 +149,15 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
         <Badge>{TRACKERS[board.kind]}</Badge>
         <span className="truncate text-[12px] text-muted">
           {board.pickFrom?.name ?? "?"}{board.working ? ` → ${board.working.name}` : ""} → {board.doneTo?.name ?? "?"}
+        </span>
+        <span
+          className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
+          title={project
+            ? `The agent uses the shared memory and connections of the project ${project.name}${detected ? " (its code folder holds the repository)" : ""}, like a chat there`
+            : "The agent uses the repository's shared memory (set a project in the board settings for its memory and connections)"}
+        >
+          <Brain className="size-3" style={project?.color ? { color: project.color } : undefined} />
+          {project ? project.name : "repository memory"}{detected && project ? " (detected)" : ""}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <Button size="sm" variant={board.watch ? "primary" : "default"} onClick={() => void toggleWatch()} disabled={!ready || !board.pickFrom} title={`Check ${board.pickFrom?.name ?? "the column"} every ${board.intervalMin} min and work on new tickets`}>
@@ -182,7 +182,10 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
             <IconButton title="Refresh" onClick={() => void load()}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
             {board.assigned !== "anyone" && <Badge tone="info">assigned: {ASSIGNED[board.assigned].toLowerCase()}</Badge>}
             {board.label && <Badge tone="info">label: {board.label}</Badge>}
-            <Button size="sm" variant="primary" className="ml-auto" disabled={!ready || picked.size === 0} onClick={() => void fix([...picked])}>
+            <Button size="sm" className="ml-auto" disabled={!ready || picked.size === 0} onClick={() => setAsking((list ?? []).filter((t) => picked.has(t.id)))} title="Write what the agent should do for these tickets, instead of the board's default prompt">
+              <MessageSquareText className="size-3" />With a prompt…
+            </Button>
+            <Button size="sm" variant="primary" disabled={!ready || picked.size === 0} onClick={() => void fix([...picked])} title="Fix them with the board's default prompt">
               <Play className="size-3" />Fix {picked.size || ""} with the agent
             </Button>
           </div>
@@ -210,7 +213,8 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
                     </div>
                   </div>
                   {t.url && <IconButton title="Open in the tracker" onClick={() => void openUrl(t.url)}><ExternalLink className="size-3.5" /></IconButton>}
-                  <IconButton title="Fix this one with the agent" disabled={!ready || busy} onClick={() => void fix([t.id])}><Bot className="size-3.5" /></IconButton>
+                  <IconButton title="Fix this one with a prompt of its own…" disabled={!ready || busy} onClick={() => setAsking([t])}><MessageSquareText className="size-3.5" /></IconButton>
+                  <IconButton title="Fix this one with the agent (the board's default prompt)" disabled={!ready || busy} onClick={() => void fix([t.id])}><Bot className="size-3.5" /></IconButton>
                 </div>
               );
             })}
@@ -225,7 +229,57 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
           </div>
         </section>
       </div>
+      {asking && (
+        <FixWithPrompt
+          board={board}
+          list={asking}
+          onClose={() => setAsking(null)}
+          onFix={(prompt) => { const ids = asking.map((t) => t.id); setAsking(null); void fix(ids, prompt); }}
+        />
+      )}
     </div>
+  );
+}
+
+/** Fix tickets with a prompt of their own: it replaces the board's default prompt for them (the
+ *  ticket's text, comments and images still go to the agent). Starts from the default prompt. */
+function FixWithPrompt({ board, list, onClose, onFix }: { board: Board; list: Ticket[]; onClose: () => void; onFix: (prompt: string | null) => void }) {
+  const [text, setText] = useState(board.instructions);
+  const changed = text.trim() !== board.instructions.trim();
+  const what = list.length === 1 ? list[0].key : `${list.length} tickets`;
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={`Fix ${what} with a prompt`}
+      width={620}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={() => onFix(changed && text.trim() ? text : null)}>
+            <Play className="size-3" />{changed && text.trim() ? "Fix with this prompt" : "Fix with the default prompt"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-2">
+        {list.length > 1 && <div className="truncate text-[12px] text-muted">{list.map((t) => t.key).join(", ")}</div>}
+        {list.length === 1 && <div className="truncate text-[13px]"><span className="font-mono text-[11px] text-muted">{list[0].key}</span> {list[0].title}</div>}
+        <Textarea
+          autoFocus
+          rows={8}
+          className="w-full"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="What the agent should do for this ticket: the approach, files to change or leave alone, how to test…"
+        />
+        <p className="text-[11px] text-muted">
+          Replaces the board's default prompt for {list.length === 1 ? "this ticket" : "these tickets"}, this time only. The ticket's text, comments and
+          images still go to the agent, and DevCat still moves and comments on the ticket as the board says.
+          {board.instructions.trim() && changed && <> <button className="underline hover:text-fg" onClick={() => setText(board.instructions)}>Back to the default prompt</button></>}
+        </p>
+      </div>
+    </Dialog>
   );
 }
 
@@ -265,6 +319,9 @@ function HistoryItem({ r }: { r: RunRecord }) {
         <span className="shrink-0 text-[10px] text-faint">{when(r.finished)}</span>
       </button>
       {r.movedTo && <div className="mt-0.5 text-[11px] text-muted">Moved to {r.movedTo}</div>}
+      {r.prompt && (open
+        ? <div className="selectable mt-1 text-[12px] whitespace-pre-wrap text-muted"><span className="font-medium text-fg/80">Prompt: </span>{r.prompt}</div>
+        : <div className="mt-0.5 truncate text-[11px] text-muted" title={r.prompt}><MessageSquareText className="mr-1 inline size-3" />{r.prompt}</div>)}
       {(open || r.outcome !== "fixed") && r.summary && <div className="selectable mt-1 text-[12px] whitespace-pre-wrap text-fg/80">{r.summary}</div>}
       {open && r.testing && <div className="selectable mt-1.5 text-[12px] whitespace-pre-wrap text-muted"><span className="font-medium text-fg/80">How to test: </span>{r.testing}</div>}
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-faint">
@@ -272,6 +329,15 @@ function HistoryItem({ r }: { r: RunRecord }) {
         {r.repos?.length ? <span>{r.repos.join(", ")}</span> : r.filesChanged > 0 && <span>{r.filesChanged} file{r.filesChanged === 1 ? "" : "s"}</span>}
         {r.costUsd != null && <span>${r.costUsd.toFixed(2)}</span>}
         {r.url && <button className="hover:text-fg" onClick={() => void openUrl(r.url)}>open ticket</button>}
+        {r.sessionId && r.cwd && (
+          <button
+            className="flex items-center gap-1 hover:text-fg"
+            title="Open the agent's chat in the AI workspace (you can continue it there)"
+            onClick={() => openClaudeWorkspace(r.cwd!, { sessionId: r.sessionId, providerId: r.providerId, title: `${r.key} ${r.title}` })}
+          >
+            <MessageSquare className="size-3" />open chat
+          </button>
+        )}
       </div>
       {r.notes.map((n, i) => <div key={i} className="mt-1 text-[11px] text-warn">{n}</div>)}
     </div>
