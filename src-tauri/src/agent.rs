@@ -424,6 +424,12 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     }
     crate::agent_tools::add(&mut tools, &scope);
     crate::agent_notes::add(&mut tools);
+    // the rooms the user lets coding agents use (rooms_tools.rs)
+    if crate::rooms_tools::allowed_anywhere() {
+        for t in crate::rooms_tools::tools("devcat-agent", false) {
+            tools.add_arc(t);
+        }
+    }
     context.connections = crate::agent_tools::names(&scope);
     let (hooks, hook_files, review) = hooks_for(cwd);
     (context.hooks, context.hooks_review) = (hook_files, review);

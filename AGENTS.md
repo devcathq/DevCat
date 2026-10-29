@@ -59,3 +59,31 @@ one-time code plus approval. Every paired computer reads and writes everything; 
 encryption yet, so don't use it to share memory between people. It isn't a phone feature either: a paired phone must
 not pair computers or start syncs through the dispatcher. Incoming files go through `plan::clean_incoming` (the same
 scrubber and `MAX_BODY` as saving); keep it that way for any new file kind.
+
+## Rooms
+
+Rooms (`crates/rooms`, `src-tauri/src/rooms.rs`, `docs/rooms-architecture.md`) are for sharing with *other people*,
+so what comes from a room is untrusted input. Keep these rules:
+
+- **One set of room tools.** The room agent's tools (`rooms_agent.rs`: `spec_of`, `make`, `tools_for`) are also
+  what this user's coding agents get (`rooms_tools.rs`: the same tools with a `room` input, for DevCat Agent chats
+  and `devcat mcp`). A new room tool goes in `rooms_agent.rs` and both get it.
+- **Coding agents only where the user turned it on**, per room (`Prefs::coding_agents`, local, never shared), with
+  the room agent's limits (editors' tools for editors, `room_edit` only where the owner allows agent edits). Their
+  writes are `Kind::Fetch` in a chat, so they ask: the text goes to other people.
+- **Nothing copies this computer's files into a room from an agent.** Sharing files and folders is a person's act
+  in the window (`room_paths_add`, `room_file_add_bytes`); don't add a tool for it. Likewise nothing from a room is
+  written on the computer (skills, memory, notes, files) without a person looking at it and confirming.
+- **The bridge for `devcat mcp`** is the app listening on 127.0.0.1 with a fresh token in `<data>/rooms/agents.json`
+  (`rooms_tools::start_bridge`); `devcat mcp` can't open the rooms itself (one iroh key, one writer of the
+  document). Keep requests token-checked and loopback-only.
+- **Root container names never contain `/`**: Loro panics when it imports a change to such a root (in the window and
+  in Rust). Files in folders use `doc.rs` `root_part` (`/` → `%2F`, `%` → `%25`), and the window the same
+  (`replica.ts` `rootPart`). Any new per-file container must go through it.
+- **A room is deleted from a DevCat only on proof**: a member list the owner signed without that DevCat
+  (`Room::wipe`, from `adopt`). Never on a peer's word: a `Denied { removed }` without a signed list only marks it
+  read-only. And never send document changes to a peer that isn't a reader in the newest list.
+- **Who shared, moved and took out what** goes in the room's `activity` (`doc.log`, or `rename` for moves); a new
+  way into or out of a room records itself there. Who *edited* comes from the document's history (`doc.edits`):
+  an agent's changes must be committed with `commit_by` so they show as the agent.
+- Rooms are desktop-only, like the SSH workbench: keep them out of the phone dispatcher.

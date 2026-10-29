@@ -38,6 +38,7 @@ mod projects;
 mod remote;
 mod rooms;
 mod rooms_agent;
+mod rooms_tools;
 mod rt;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
@@ -384,6 +385,21 @@ pub fn run() {
             rooms::room_file_delete,
             rooms::room_file_add,
             rooms::room_file_add_bytes,
+            rooms::room_paths_add,
+            rooms::room_share_text,
+            rooms::room_file_rename,
+            rooms::room_folder_delete,
+            rooms::room_file_save,
+            rooms::room_folder_save,
+            rooms::room_board_new,
+            rooms::room_react,
+            rooms::room_pin,
+            rooms::room_task_add,
+            rooms::room_task_update,
+            rooms::room_task_delete,
+            rooms::skills_list,
+            rooms::room_took_out,
+            rooms::room_file_history,
             rooms::room_blob,
             rooms::room_blob_save,
             rooms::room_member_remove,

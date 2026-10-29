@@ -1,13 +1,15 @@
-// The room tab's side panels: the thread (with agent mentions), suggestions waiting for people, and
-// the history of applied changes (each can be reverted while its text is untouched).
+// The room tab's side panels: the thread (mentions of people and agents, replies, reactions, and
+// messages pinned as decisions), suggestions waiting for people, and the history of applied
+// changes (each can be reverted while its text is untouched).
 import clsx from "clsx";
-import { AtSign, Bot, Check, CornerDownRight, Loader2, Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
+import { AtSign, Bot, Check, ChevronDown, ChevronRight, CornerDownRight, Loader2, Paperclip, Pin as PinIcon, Reply, RotateCcw, Send, SmilePlus, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Badge, Button, Textarea } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { isFileDrag } from "../files/drop";
-import { label, rooms, type HistoryItem, type Message, type RoomView, type Suggestion } from "./api";
+import { label, REACTIONS, rooms, type Activity, type HistoryItem, type Message, type Pin, type Reaction, type RoomView, type Suggestion } from "./api";
+import { ActivityFeed } from "./FileHistory";
 import { shareFiles } from "./share";
 import { useRooms } from "./store";
 
@@ -24,7 +26,7 @@ const namePart = /[\p{L}\p{N}_\\/-]/u;
 /** Message text with @handles picked out, and the room's files it names as links to them. */
 function Rich({ text, handles, files, onOpen }: { text: string; handles: string[]; files: string[]; onOpen: (path: string) => void }) {
   const parts = useMemo(() => {
-    const known = new Set([...handles.map((h) => h.toLowerCase()), "@agents"]);
+    const known = new Set([...handles.map((h) => h.toLowerCase()), "@agents", "@everyone"]);
     // longest first, so "plan v2.md" wins over "plan"
     const names = [...files].filter((f) => f.length > 2).sort((a, b) => b.length - a.length).map(escapeRe);
     const re = new RegExp(`@[\\w-]+${names.length ? `|${names.join("|")}` : ""}`, "g");
@@ -49,26 +51,60 @@ function Rich({ text, handles, files, onOpen }: { text: string; handles: string[
   return <div className="text-[13px] break-words whitespace-pre-wrap">{parts}</div>;
 }
 
+/** A message's reactions, one chip per emoji (yours highlighted; a click adds or takes back yours),
+ *  and the picker. */
+function Reactions({ room, message, reactions, me, canReact }: { room: string; message: string; reactions: Reaction[]; me: string; canReact: boolean }) {
+  const [picking, setPicking] = useState(false);
+  const groups = REACTIONS.map((e) => ({ e, by: reactions.filter((r) => r.emoji === e) })).filter((g) => g.by.length);
+  const react = (e: string) => {
+    setPicking(false);
+    void rooms.react(room, message, e).catch((er) => toast.error(errMsg(er)));
+  };
+  if (!groups.length && !picking) return canReact ? <button className="mt-0.5 hidden text-faint group-hover:inline-block hover:text-fg" title="React" onClick={() => setPicking(true)}><SmilePlus className="size-3.5" /></button> : null;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1">
+      {groups.map((g) => (
+        <button key={g.e} disabled={!canReact} onClick={() => react(g.e)} title={g.by.map((r) => r.by.name).join(", ")}
+          className={clsx("flex items-center gap-0.5 rounded-full border px-1.5 text-[11px]", g.by.some((r) => r.by.member === me) ? "border-accent/60 bg-accent/15 text-fg" : "border-line bg-app text-muted")}>
+          {g.e}<span>{g.by.length}</span>
+        </button>
+      ))}
+      {canReact && (picking
+        ? <span className="flex items-center gap-0.5 rounded-full border border-line bg-app px-1">{REACTIONS.map((e) => <button key={e} className="px-0.5 hover:scale-125" onClick={() => react(e)}>{e}</button>)}<button className="text-faint hover:text-fg" title="Close" onClick={() => setPicking(false)}><X className="size-3" /></button></span>
+        : <button className="text-faint hover:text-fg" title="React" onClick={() => setPicking(true)}><SmilePlus className="size-3.5" /></button>)}
+    </div>
+  );
+}
+
 /** `files`: the room's files, linked where a message names them (`onOpen` opens one). `canShare`:
- *  files dropped or pasted here are shared with the room and named in the message being written. */
-export function ThreadPanel({ room, view, messages, files, onOpen, canShare }: { room: string; view: RoomView; messages: Message[]; files: string[]; onOpen: (path: string) => void; canShare: boolean }) {
+ *  files dropped or pasted here are shared with the room and named in the message being written.
+ *  `canEdit`: may pin messages as decisions. */
+export function ThreadPanel({ room, view, messages, pins, reactions, files, onOpen, canShare, canEdit }: {
+  room: string; view: RoomView; messages: Message[]; pins: Pin[]; reactions: Reaction[]; files: string[]; onOpen: (path: string) => void; canShare: boolean; canEdit: boolean;
+}) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [decisionsOpen, setDecisionsOpen] = useState(true);
   const running = useRooms((s) => s.agents[room]) ?? view.agentRunning;
   const agentError = useRooms((s) => s.agentErrors[room]);
   const end = useRef<HTMLDivElement>(null);
-  const handles = Object.values(view.handles);
+  const handles = [...Object.values(view.handles), ...Object.values(view.people ?? {})];
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
+  const pinned = useMemo(() => new Set(pins.map((p) => p.message)), [pins]);
   useEffect(() => { void end.current?.scrollIntoView({ block: "end" }); }, [messages.length]);
+  const jump = (id: string) => document.getElementById(`room-msg-${id}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  const pin = (m: Message, on: boolean) => void rooms.pin(room, m.id, on).catch((e) => toast.error(errMsg(e)));
   const send = async () => {
     const t = text.trim();
     if (!t) return;
     setSending(true);
     try {
-      await rooms.post(room, t);
+      await rooms.post(room, t, replyTo?.id);
       setText("");
+      setReplyTo(null);
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
@@ -106,25 +142,47 @@ export function ThreadPanel({ room, view, messages, files, onOpen, canShare }: {
           </div>
         </div>
       )}
+      {pins.length > 0 && (
+        <div className="max-h-40 shrink-0 overflow-auto border-b border-line bg-warn/5 px-3 py-1.5">
+          <button className="flex w-full items-center gap-1 text-[11px] font-semibold tracking-wide text-warn uppercase" onClick={() => setDecisionsOpen((v) => !v)}>
+            {decisionsOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}<PinIcon className="size-3" />Decisions ({pins.length})
+          </button>
+          {decisionsOpen && pins.map((p) => {
+            const m = byId.get(p.message);
+            return m ? (
+              <button key={p.message} onClick={() => jump(m.id)} title={`Pinned by ${label(p.by)} · ${time(p.at)}`} className="block w-full truncate py-0.5 text-left text-[12px] text-fg hover:underline">
+                {m.text}
+              </button>
+            ) : null;
+          })}
+        </div>
+      )}
       <div className="min-h-0 flex-1 space-y-2 overflow-auto p-3">
         {messages.length === 0 && <div className="py-8 text-center text-[12px] text-muted">Nothing said yet. Mention an agent to bring it in, e.g. <span className="font-mono">{myHandle ?? "@you-agent"}</span>.</div>}
         {messages.map((m) => {
           const reply = m.replyTo ? byId.get(m.replyTo) : undefined;
           const mine = m.author.member === view.me && !m.author.agent;
+          const isPinned = pinned.has(m.id);
           return (
-            <div key={m.id} className={clsx("rounded-md px-2.5 py-1.5", m.author.agent ? "border border-accent/25 bg-accent/5" : mine ? "bg-hover" : "bg-raised")}>
+            <div id={`room-msg-${m.id}`} key={m.id} className={clsx("group rounded-md px-2.5 py-1.5", isPinned && "ring-1 ring-warn/50", m.author.agent ? "border border-accent/25 bg-accent/5" : mine ? "bg-hover" : "bg-raised")}>
               <div className="mb-0.5 flex items-center gap-1.5 text-[11px] text-muted">
                 {m.author.agent && <Bot className="size-3 text-accent" />}
                 <span className={clsx("font-semibold", m.author.agent ? "text-accent" : "text-fg")}>{label(m.author)}</span>
                 <span>{time(m.at)}</span>
+                {isPinned && <span className="flex items-center gap-0.5 text-warn" title="Pinned as a decision"><PinIcon className="size-3" />decision</span>}
+                <span className="ml-auto hidden items-center gap-1.5 group-hover:flex">
+                  {!view.summary.removed && <button className="hover:text-fg" title="Reply" onClick={() => setReplyTo(m)}><Reply className="size-3.5" /></button>}
+                  {canEdit && <button className="hover:text-fg" title={isPinned ? "Unpin" : "Pin as a decision"} onClick={() => pin(m, !isPinned)}><PinIcon className={clsx("size-3.5", isPinned && "text-warn")} /></button>}
+                </span>
               </div>
               {reply && (
-                <div className="mb-1 flex items-start gap-1 text-[11px] text-faint">
+                <button onClick={() => jump(reply.id)} className="mb-1 flex w-full items-start gap-1 text-left text-[11px] text-faint hover:text-muted">
                   <CornerDownRight className="mt-0.5 size-3 shrink-0" />
                   <span className="truncate">{label(reply.author)}: {reply.text}</span>
-                </div>
+                </button>
               )}
               <Rich text={m.text} handles={handles} files={files} onOpen={onOpen} />
+              <Reactions room={room} message={m.id} reactions={reactions.filter((r) => r.message === m.id)} me={view.me} canReact={!view.summary.removed} />
             </div>
           );
         })}
@@ -138,9 +196,20 @@ export function ThreadPanel({ room, view, messages, files, onOpen, canShare }: {
       )}
       {!running && agentError && <div className="border-t border-line px-3 py-1.5 text-[11px] text-danger">Your agent: {agentError}</div>}
       <div className="space-y-1.5 border-t border-line p-2">
+        {replyTo && (
+          <div className="flex items-center gap-1.5 rounded bg-hover px-2 py-1 text-[11px] text-muted">
+            <Reply className="size-3 shrink-0" /><span className="truncate">Replying to {label(replyTo.author)}: {replyTo.text}</span>
+            <button className="ml-auto shrink-0 hover:text-fg" title="Don't reply" onClick={() => setReplyTo(null)}><X className="size-3" /></button>
+          </div>
+        )}
         <div className="flex flex-wrap gap-1">
-          {[...new Set(["@agents", ...handles])].map((h) => (
-            <button key={h} onClick={() => mention(h)} className="flex items-center gap-0.5 rounded bg-hover px-1.5 py-px text-[11px] text-muted hover:text-fg" title={h === "@agents" ? "Wake every agent in the room" : `Wake ${h}`}>
+          {[...new Set(["@agents", ...Object.values(view.handles)])].map((h) => (
+            <button key={h} onClick={() => mention(h)} className="flex items-center gap-0.5 rounded bg-accent/10 px-1.5 py-px text-[11px] text-accent hover:bg-accent/20" title={h === "@agents" ? "Wake every agent in the room" : `Wake ${h}`}>
+              <Bot className="size-3" />{h.slice(1)}
+            </button>
+          ))}
+          {[...new Set(["@everyone", ...Object.entries(view.people ?? {}).filter(([id]) => id !== view.me).map(([, h]) => h)])].map((h) => (
+            <button key={h} onClick={() => mention(h)} className="flex items-center gap-0.5 rounded bg-hover px-1.5 py-px text-[11px] text-muted hover:text-fg" title={h === "@everyone" ? "Tell everyone in the room" : `Tell ${h.slice(1)}: they're notified`}>
               <AtSign className="size-3" />{h.slice(1)}
             </button>
           ))}
@@ -234,7 +303,27 @@ export function SuggestionsPanel({ room, canEdit, suggestions, onShow }: { room:
 
 const KIND: Record<HistoryItem["kind"], string> = { suggestion: "accepted suggestion", edit: "agent edit", revert: "revert", newFile: "new file" };
 
-export function HistoryPanel({ room, canEdit, history }: { room: string; canEdit: boolean; history: HistoryItem[] }) {
+/** Applied changes (each revertible while its text is untouched), or the room's activity: who
+ *  shared, made, moved, deleted or took out what. */
+export function HistoryPanel({ room, canEdit, history, activity }: { room: string; canEdit: boolean; history: HistoryItem[]; activity: Activity[] }) {
+  const [show, setShow] = useState<"changes" | "activity">("changes");
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 gap-0.5 border-b border-line px-2 py-1">
+        {(["changes", "activity"] as const).map((k) => (
+          <button key={k} onClick={() => setShow(k)} className={clsx("rounded px-2 py-0.5 text-[11.5px]", show === k ? "bg-hover text-fg" : "text-muted hover:text-fg")}>
+            {k === "changes" ? "Changes" : "Who shared what"}
+          </button>
+        ))}
+      </div>
+      <div className="min-h-0 flex-1">
+        {show === "changes" ? <ChangesList room={room} canEdit={canEdit} history={history} /> : <div className="h-full overflow-auto px-3 py-2"><ActivityFeed activity={activity} /></div>}
+      </div>
+    </div>
+  );
+}
+
+function ChangesList({ room, canEdit, history }: { room: string; canEdit: boolean; history: HistoryItem[] }) {
   const revert = async (h: HistoryItem) => {
     try {
       await rooms.revert(room, h.id);

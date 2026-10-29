@@ -37,7 +37,7 @@ export function PeopleDialog({ open, onClose, room, view }: { open: boolean; onC
     }
   };
   const remove = async (m: MemberView) => {
-    const ok = await confirmDialog({ title: `Remove ${m.name}?`, message: "They keep what they already have, but get nothing new: the room moves to a new key.", confirmLabel: "Remove", danger: true });
+    const ok = await confirmDialog({ title: `Remove ${m.name}?`, message: "Their DevCat deletes its copy of the room (files, whiteboards, thread, tasks) as soon as it hears: at once if they're online, else the next time it reaches anyone in the room. What they already saved outside the room stays with them. The room moves to a new key.", confirmLabel: "Remove", danger: true });
     if (!ok) return;
     try {
       await rooms.memberRemove(room, m.id);
@@ -180,6 +180,18 @@ export function SettingsDialog({ open, onClose, room, view, tabId }: { open: boo
               {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </Select>
           </Field>
+        </div>
+        <div className="space-y-2">
+          <div className="font-semibold">Your coding agents</div>
+          <Checkbox
+            label="Let my coding agents use this room: Claude Code, Codex, Cursor… (through DevCat's MCP server) and DevCat Agent chats can read it, write in the thread, suggest changes, and take and update tasks, as your agent"
+            checked={!!view.prefs.codingAgents}
+            onChange={(v) => setPrefs({ codingAgents: v })}
+          />
+          <p className="text-[11px] text-muted">
+            Only you choose this, only for you; the others don't see it. Claude Code and Codex get the room tools after Sync MCP (Connections → the plug button), with DevCat open.
+            What people write in the room reaches agents that can run commands on your computer: turn it on in rooms with people you trust. They can't copy your files into the room.
+          </p>
         </div>
         <div className="flex items-center justify-between border-t border-line pt-3">
           <span className="text-[11px] text-faint">

@@ -42,7 +42,32 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "room_board" => out(c!(crate::rooms::room_board, "room")),
         "room_doc_updates" => out(c!(crate::rooms::room_doc_updates, "room", "version")),
         "room_doc_import" => out(c!(crate::rooms::room_doc_import, "room", "updates", "peer")),
-        "room_post" => out(c!(crate::rooms::room_post, "room", "text")),
+        "room_post" => out(c!(crate::rooms::room_post, "room", "text", "replyTo")),
+        "room_react" => out(c!(crate::rooms::room_react, "room", "message", "emoji")),
+        "room_pin" => out(c!(crate::rooms::room_pin, "room", "message", "pin")),
+        "room_task_add" => out(c!(crate::rooms::room_task_add, "room", "title", "notes", "assignee")),
+        "room_task_update" => out(c!(crate::rooms::room_task_update, "room", "id", "patch")),
+        "room_task_delete" => out(c!(crate::rooms::room_task_delete, "room", "id")),
+        "room_file_rename" => out(c!(crate::rooms::room_file_rename, "room", "from", "to")),
+        "room_folder_delete" => out(c!(crate::rooms::room_folder_delete, "room", "path")),
+        "room_board_new" => out(c!(crate::rooms::room_board_new, "room", "path")),
+        "room_share_text" => {
+            let (room, name, text, folder, from) = (arg(args, "room")?, arg(args, "name")?, arg(args, "text")?, arg(args, "folder")?, arg(args, "from")?);
+            out(crate::rooms::room_share_text(room, name, text, folder, from).await)
+        }
+        "room_paths_add" => out(c!(crate::rooms::room_paths_add, "room", "paths", "folder", "from")),
+        "room_file_add_bytes" => {
+            let (room, name, data, folder, from) = (arg(args, "room")?, arg(args, "name")?, arg(args, "data")?, arg(args, "folder")?, arg(args, "from")?);
+            out(crate::rooms::room_file_add_bytes(room, name, data, folder, from).await)
+        }
+        "room_file_save" => out(c!(crate::rooms::room_file_save, "room", "path", "dest", "to")),
+        "room_folder_save" => {
+            let (room, path, dest, replace, to) = (arg(args, "room")?, arg(args, "path")?, arg(args, "dest")?, arg(args, "replace")?, arg(args, "to")?);
+            out(crate::rooms::room_folder_save(room, path, dest, replace, to).await)
+        }
+        "skills_list" => out(c!(crate::rooms::skills_list, "folders")),
+        "room_took_out" => out(c!(crate::rooms::room_took_out, "room", "path", "to", "files")),
+        "room_file_history" => out(c!(crate::rooms::room_file_history, "room", "path")),
         "room_suggest" => {
             let (room, path, find, replacement, note) = (arg(args, "room")?, arg(args, "path")?, arg(args, "find")?, arg(args, "replacement")?, arg(args, "note")?);
             out(crate::rooms::room_suggest(room, path, find, replacement, note).await)
@@ -225,7 +250,7 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
     // Rooms keep their identity and documents here (DEVBRIDGE_DATA: keep them across runs).
     crate::rooms::init(std::env::var_os("DEVBRIDGE_DATA").map(std::path::PathBuf::from).unwrap_or(d));
     crate::events::add_tap(|event, payload| {
-        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward" | "rooms-changed" | "room-join-request" | "room-join-resolved" | "room-agent" | "tickets-job" | "tickets-changed") {
+        if matches!(event, "pty-output" | "pty-exit" | "sftp-progress" | "sftp-done" | "ssh-forward" | "rooms-changed" | "room-join-request" | "room-join-resolved" | "room-agent" | "room-mention" | "tickets-job" | "tickets-changed") {
             let mut q = EVENTS.lock();
             if q.len() < 20_000 {
                 q.push(json!({ "event": event, "payload": payload }));

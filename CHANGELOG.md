@@ -21,6 +21,35 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **SSH sessions on Windows:** no more console window flashing up for a moment when pasting an image, opening a
   folder on an SSH session, starting a port forward or opening a terminal on a session with a saved password, nor
   when a Kubernetes cluster logs in through its kubeconfig's helper (aws, gke-gcloud-auth-plugin, kubelogin).
+## 0.16.0 - 2026-10-29
+
+- **Rooms: a place to work together** (#108):
+  - **Files and folders:** the room's files are a tree. Share whole folders (dropped, or from this computer), rename
+    and move files and folders (right-click, or drag onto a folder), save a file or folder to your computer, and read
+    Markdown with a live preview next to the editor.
+  - **Whiteboards** to sketch ideas together (Excalidraw); agents read the text on them.
+  - **Thread:** replies, reactions, decisions pinned at the top, and `@name` / `@everyone` mentions that notify
+    people.
+  - **Tasks** for a person or an agent: giving one says so in the thread, and an agent takes it and marks it done.
+  - **Share from DevCat:** a note, memory, skill or a repository's changes. **Take out:** add a room's skill to your
+    skills, save a file to your memory, copy one to your notes. Nothing is written on your computer before you've
+    looked at it and confirmed.
+  - **Team memory:** the room's `memory/` folder, read by every member's agent; agents propose entries that a person
+    accepts.
+  - **Your coding agents in a room:** turn it on per room (Room settings) and Claude Code, Codex, Cursor (through
+    `devcat mcp`) and DevCat Agent chats can read the room, write in the thread, suggest changes and handle tasks, as
+    your agent. No tool copies your files into a room.
+  - Files in folders no longer crash the room tab or the document (Loro refuses `/` in a root container's name).
+  - **Removing someone deletes their copy:** their DevCat deletes the room (files, whiteboards, thread, tasks,
+    keys) as soon as it learns, at once if they're online, else the next time it reaches anyone in the room. Only
+    on proof (your signed member list), so nobody else can make a DevCat delete a room. What they saved outside
+    the room stays with them.
+  - **Who shared and edited it:** each file shows who shared it and from where; **Who edited it** lists who
+    shared, moved, took it out (to their computer, skills, memory, notes) and edited it, and when, from the room's
+    own document (peer to peer, no server). **History → Who shared what** shows the whole room's.
+  - A member you remove no longer receives what was written while DevCat was telling them they were removed.
+  - Typing in a room's file works on Windows: the editor used Windows line breaks for a file with plain ones, so
+    every keystroke landed in the wrong place, didn't reach the room, and was undone.
 
 ## 0.15.0 - 2026-10-28
 

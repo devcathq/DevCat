@@ -39,7 +39,15 @@ pub enum Reply {
     Waiting,
     /// `keys`: (epoch, key hex); a list because JSON object keys are strings.
     Admitted { membership: Membership, keys: Vec<(u32, String)>, doc: String, hints: BTreeMap<String, Hints> },
-    Denied { reason: String, #[serde(default)] removed: bool },
+    /// `removed`: the asker isn't in the room any more; `membership`: the newest list the owner
+    /// signed, the proof (a DevCat deletes its copy of a room only on a signed list without it).
+    Denied {
+        reason: String,
+        #[serde(default)]
+        removed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        membership: Option<Membership>,
+    },
     Synced { membership: Membership, keys: Vec<(u32, String)>, updates: String, version: String, hints: BTreeMap<String, Hints> },
     Blob { sealed: Option<String> },
     /// Keeper: stored, up to this index.

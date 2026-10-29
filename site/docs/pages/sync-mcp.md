@@ -26,6 +26,12 @@ agents right away, without syncing again.
 | Cursor | `~/.cursor/mcp.json` |
 | Gemini CLI | `~/.gemini/settings.json` |
 
+## Rooms
+
+The same server gives agents the [rooms](rooms.md) you let them use (**Room settings → Let my coding agents use
+this room**): `rooms_list`, then reading a room's files, thread and tasks, writing in its thread, suggesting changes,
+and proposing team memory, as your agent. They need the DevCat app open; with it closed, the tools say so.
+
 ## Which connections an agent sees
 
 Give a project its **code folders** (project menu → **Code folders & MCP…**). Its connections then go only to

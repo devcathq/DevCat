@@ -19,7 +19,7 @@ pub mod wire;
 pub use crypto::RoomKey;
 pub use doc::{Author, RoomDoc};
 pub use model::{Invite, Member, Membership, Role, RoomSettings, Ticket};
-pub use node::{Change, Config, Host, JoinRequest, MemberView, Node, RelayConfig, Room, RoomSummary};
+pub use node::{Change, Config, Gone, Host, JoinRequest, MemberView, Node, RelayConfig, Room, RoomSummary};
 pub use store::{Mentions, Prefs};
 
 /// Milliseconds since the Unix epoch.

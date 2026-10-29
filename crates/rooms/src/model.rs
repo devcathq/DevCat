@@ -116,6 +116,25 @@ impl Membership {
             .collect()
     }
 
+    /// The handle that names the member themselves in the thread: their agent's without
+    /// `-agent` (`@arif`, or `@arif-1a2b` when two share a first name).
+    pub fn person_handle(&self, id: &str) -> Option<String> {
+        self.agent_handle(id).map(|h| h.trim_end_matches("-agent").to_string())
+    }
+
+    /// Members `text` names (`@everyone` names them all); `@arif` doesn't name Arif's agent, nor
+    /// `@arif-agent` Arif.
+    pub fn mentioned_people(&self, text: &str) -> Vec<String> {
+        let low = text.to_lowercase();
+        let all = contains_word(&low, "@everyone");
+        self.members
+            .iter()
+            .filter(|m| m.role != Role::Keeper)
+            .filter(|m| all || self.person_handle(&m.id).is_some_and(|h| contains_word(&low, &h)))
+            .map(|m| m.id.clone())
+            .collect()
+    }
+
     /// `other` is a valid, newer version of the same room from the same owner.
     pub fn superseded_by(&self, other: &Membership) -> bool {
         other.owner == self.owner && other.version > self.version && other.verify(&self.room)
@@ -306,6 +325,12 @@ mod tests {
         assert!(m.mentioned_agents("@akbar-agents").is_empty(), "not a prefix match");
         assert_eq!(m.mentioned_agents("@agents what do you think?").len(), 3);
         assert!(m.mentioned_agents("no mention").is_empty());
+        // people: the handle without -agent, and not each other's
+        assert_eq!(m.person_handle(&b).unwrap(), "@akbar");
+        assert_eq!(m.mentioned_people("@Akbar can you look?"), vec![b.clone()]);
+        assert!(m.mentioned_people("@akbar-agent can you look?").is_empty(), "the agent, not the person");
+        assert!(m.mentioned_agents("@akbar can you look?").is_empty(), "the person, not the agent");
+        assert_eq!(m.mentioned_people("@everyone lunch?").len(), 3);
     }
 
     #[test]

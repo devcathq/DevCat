@@ -37,7 +37,7 @@ impl Keeper {
     }
 
     fn denied(reason: &str) -> Reply {
-        Reply::Denied { reason: reason.to_string(), removed: false }
+        Reply::Denied { reason: reason.to_string(), removed: false, membership: None }
     }
 
     /// The member list to judge `peer` by: the newest valid one of what's stored and what came.
@@ -64,7 +64,7 @@ impl Keeper {
             return Err(Self::denied("This DevCat isn't the room's keeper.").into());
         }
         if !m.member(peer).is_some_and(|x| x.role.reads()) {
-            return Err(Reply::Denied { reason: "You're not in this room.".into(), removed: true }.into());
+            return Err(Reply::Denied { reason: "You're not in this room.".into(), removed: true, membership: Some(m) }.into());
         }
         std::fs::create_dir_all(&d).map_err(|e| Box::new(Self::denied(&e.to_string())))?;
         let _ = crate::store::write_atomic(&d.join("membership.json"), &serde_json::to_vec(&m).expect("serializes"));
