@@ -12,6 +12,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.16.0 - 2026-10-29
+
 - **Rooms: a place to work together** (#108):
   - **Files and folders:** the room's files are a tree. Share whole folders (dropped, or from this computer), rename
     and move files and folders (right-click, or drag onto a folder), save a file or folder to your computer, and read
