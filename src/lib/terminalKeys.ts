@@ -12,6 +12,23 @@ export function copyText(text: string) {
   void navigator.clipboard.writeText(text).catch(() => api.clipboardWriteText(text)).catch(() => {});
 }
 
+/** The clipboard's text for a terminal paste ("" when none): the app reads it, so the webview shows no
+ *  permission prompt; the browser version reads it through the webview. */
+export async function clipboardText(): Promise<string> {
+  try {
+    return await api.clipboardReadText();
+  } catch {
+    return navigator.clipboard.readText().catch(() => "");
+  }
+}
+
+/** Keys shown in a terminal's right-click menu (the ones `terminalEditKey` handles). */
+export const EDIT_KEYS = IS_MAC
+  ? { copy: "⌘C", paste: "⌘V", selectAll: "⌘A", clear: "⌘K" }
+  : IS_WIN
+    ? { copy: "Ctrl+C", paste: "Ctrl+V", selectAll: "Ctrl+Shift+A", clear: "Ctrl+Shift+K" }
+    : { copy: "Ctrl+Shift+C", paste: "Ctrl+Shift+V", selectAll: "Ctrl+Shift+A", clear: "Ctrl+Shift+K" };
+
 /** Copy / paste / clear / select all in an xterm terminal, shared by every terminal in the app:
  *  ⌘C ⌘V ⌘K ⌘A on macOS, Ctrl+Shift+C/V/K/A elsewhere. On Windows also plain Ctrl+C (only with a
  *  selection, else it's still ^C) and Ctrl+V, like Windows Terminal; on Linux they stay with the shell,

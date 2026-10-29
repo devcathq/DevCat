@@ -12,6 +12,15 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Terminal:** right-clicking a terminal opens DevCat's own menu: **Copy** (the selection), **Paste**, **Select all**
+  and **Clear**. The webview's menu could never copy a terminal selection, so its Copy was always greyed out. When
+  a program like Claude Code or tmux has the mouse, the menu says how to select in the terminal instead
+  (Shift+drag, ⌥+drag on macOS).
+- **SSH sessions on Windows:** the tab no longer reads `C:\Windows\System32\OpenSSH\ssh.EXE`; it shows the
+  session's name until the host sets a title (a shell's prompt, Claude Code's task).
+- **SSH sessions on Windows:** no more console window flashing up for a moment when pasting an image, opening a
+  folder on an SSH session, starting a port forward or opening a terminal on a session with a saved password, nor
+  when a Kubernetes cluster logs in through its kubeconfig's helper (aws, gke-gcloud-auth-plugin, kubelogin).
 ## 0.16.0 - 2026-10-29
 
 - **Rooms: a place to work together** (#108):

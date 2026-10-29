@@ -58,6 +58,22 @@ pub async fn clipboard_write_text(text: String) -> AppResult<()> {
     }
 }
 
+/// The clipboard's text ("" when it holds none), for Paste in a terminal's right-click menu: read here,
+/// so the webview doesn't ask for clipboard permission. Desktop only, like `clipboard_write_text`.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn clipboard_read_text() -> AppResult<String> {
+    #[cfg(feature = "gui")]
+    return crate::rt::spawn_blocking(|| {
+        use clipboard_rs::{Clipboard, ClipboardContext};
+        let ctx = ClipboardContext::new().map_err(|e| AppError::msg(format!("Couldn't open the clipboard: {e}")))?;
+        Ok(ctx.get_text().unwrap_or_default())
+    })
+    .await
+    .map_err(|e| AppError::msg(e.to_string()))?;
+    #[cfg(not(feature = "gui"))]
+    Err(AppError::msg("Pasting needs the DevCat app"))
+}
+
 /// Paste the OS clipboard into the folder `dir` of the workspace `root`: files and folders copied in
 /// Explorer / Finder / a Linux file manager (or with Copy in the tree), or else an image (a
 /// screenshot), saved as a PNG. A taken name gets " copy" (`a.ts` → `a copy.ts`, `a copy 2.ts`), so
