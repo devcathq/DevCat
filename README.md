@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/devcathq/DevCat/releases/latest"><img src="https://img.shields.io/github/v/release/devcathq/DevCat?label=release&color=f5a524" alt="Latest release"></a>
   <a href="https://github.com/devcathq/DevCat/releases"><img src="https://img.shields.io/github/downloads/devcathq/DevCat/total?color=3b82f6" alt="Downloads"></a>
-  <a href="https://github.com/devcathq/DevCat/actions/workflows/build.yml"><img src="https://github.com/devcathq/DevCat/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="https://github.com/devcathq/DevCat/actions/workflows/check.yml?query=branch%3Amaster"><img src="https://github.com/devcathq/DevCat/actions/workflows/check.yml/badge.svg?branch=master" alt="Checks on master"></a>
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-555" alt="Platforms: macOS, Windows, Linux, Android">
   <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db" alt="Built with Tauri 2"></a>
 </p>
