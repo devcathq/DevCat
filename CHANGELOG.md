@@ -12,6 +12,15 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.17.0 - 2026-10-30
+
+- **Tickets: answer the agent** (#114): a board's panel has **Working**, **Chat** and **History** tabs. When the
+  agent needs a person (a question, a decision, something it couldn't do), the ticket gets a thread in **Chat**:
+  answer there and the agent goes on with the ticket in the same chat, on the branch its last try left. The answer
+  stays in DevCat (it isn't posted to the tracker). Clicking a run in **History** opens its chat in the AI workspace.
+- **Crash screen** (#112): when the window hits an error, it shows what went wrong (with **Copy details** and
+  **Reload**) and a **Report on GitHub** link that fills in an issue for you to check and send, instead of a blank
+  window. Nothing is sent by itself.
 - **Terminal:** right-clicking a terminal opens DevCat's own menu: **Copy** (the selection), **Paste**, **Select all**
   and **Clear**. The webview's menu could never copy a terminal selection, so its Copy was always greyed out. When
   a program like Claude Code or tmux has the mouse, the menu says how to select in the terminal instead
