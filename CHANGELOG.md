@@ -21,6 +21,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **SSH sessions on Windows:** no more console window flashing up for a moment when pasting an image, opening a
   folder on an SSH session, starting a port forward or opening a terminal on a session with a saved password, nor
   when a Kubernetes cluster logs in through its kubeconfig's helper (aws, gke-gcloud-auth-plugin, kubelogin).
+- **Tickets on Windows:** a repository two folders down in a board's folder is called `group/deep`, as on macOS and
+  Linux, not `group\deep`, in what the agent is told and in the run's notes.
+
 ## 0.16.0 - 2026-10-29
 
 - **Rooms: a place to work together** (#108):
