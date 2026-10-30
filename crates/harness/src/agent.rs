@@ -649,46 +649,55 @@ impl Agent {
                 None => on(AgentEvent::Hook { event: "PreToolUse".into(), message: format!("A hook's updatedInput for `{name}` was ignored: it can't be rewritten that way.") }),
             }
         }
+        // what the user types to allow a call that can't be undone (after a hook's rewrite: the
+        // text names what this call does)
+        let confirm = tool.confirm(&input);
         // 1. helpers and plan mode: nothing that changes something runs, not even with a yes
-        if self.helper.is_some() && matches!(kind, Kind::Edit | Kind::EditOutside | Kind::Exec) {
+        if self.helper.is_some() && (confirm.is_some() || matches!(kind, Kind::Edit | Kind::EditOutside | Kind::Exec)) {
             return Ok(ToolOutput::err("Not run: a helper only looks; it doesn't change files or run commands. If this needs doing, say so in your answer."));
         }
         if self.policy.refuses(kind) {
             return Ok(ToolOutput::err("Not run: plan mode is on, so nothing is changed or run yet. Look around as much as you need, then answer with your plan; the user starts it."));
         }
         // 2. approval (fail closed); a hook can allow it or make it ask, PermissionRequest hooks
-        // can answer for the user, and a helper can't ask
-        let mut ask = (self.policy.needs_approval(kind) && !self.allowed.contains(name) && !pre.allow) || pre.ask;
+        // can answer for the user, and a helper can't ask. A call with `confirm` always asks the
+        // user: no policy, hook or earlier "always allow" answers for them.
+        let mut ask = (self.policy.needs_approval(kind) && !self.allowed.contains(name) && !pre.allow) || pre.ask || confirm.is_some();
         if ask {
             let o = self.hook(session, "PermissionRequest", Some(&names), foreign(&input), cancel, on).await;
-            if o.block.is_some() || o.allow {
+            let allow = o.allow && confirm.is_none();
+            if o.block.is_some() || allow {
                 session.append(SessionEvent::Approval { tool_use_id: id.to_string(), tool: name.to_string(), allowed: o.block.is_none(), by: "hook".into() }).await?;
             }
             if let Some(why) = o.block {
                 return Ok(ToolOutput::err(format!("Not run: a PermissionRequest hook declined it. {why}")));
             }
-            ask = !o.allow;
+            ask = !allow;
         }
         if ask {
             if self.helper.is_some() {
                 return Ok(ToolOutput::err("Not run: this needs the user's OK, and a helper can't ask. If you need it, say so in your answer."));
             }
-            let req = ApprovalRequest { tool_use_id: id.to_string(), tool: name.to_string(), kind, summary: summary.clone(), input: input.clone() };
+            let req = ApprovalRequest { tool_use_id: id.to_string(), tool: name.to_string(), kind, summary: summary.clone(), input: input.clone(), confirm: confirm.clone() };
             let (decision, by) = tokio::select! {
                 d = self.approver.decide(&req) => d,
                 _ = cancel.cancelled() => return Ok(ToolOutput::err("Not run: stopped by the user.")),
             };
-            let allowed = !matches!(decision, Decision::Deny { .. });
+            let allowed = decision.allows(confirm.as_deref());
             session.append(SessionEvent::Approval { tool_use_id: id.to_string(), tool: name.to_string(), allowed, by }).await?;
             match decision {
-                Decision::Allow => {}
-                Decision::AllowForSession => {
-                    self.allowed.insert(name.to_string());
-                }
                 Decision::Deny { reason } => {
                     let why = reason.filter(|r| !r.trim().is_empty()).map(|r| format!(" Reason: {r}")).unwrap_or_default();
                     return Ok(ToolOutput::err(format!("The user declined this call.{why}")));
                 }
+                _ if !allowed => {
+                    let want = confirm.unwrap_or_default();
+                    return Ok(ToolOutput::err(format!("Not run: this can't be undone, so it runs only when the user types \"{want}\" to confirm it in DevCat, and they didn't.")));
+                }
+                Decision::AllowForSession if confirm.is_none() => {
+                    self.allowed.insert(name.to_string());
+                }
+                _ => {}
             }
         }
         on(AgentEvent::ToolCall { id: id.to_string(), name: name.to_string(), summary, input: input.clone() });

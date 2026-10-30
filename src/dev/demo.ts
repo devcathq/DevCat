@@ -320,6 +320,65 @@ const demoClaudeImport = {
   ],
 };
 
+// ---------------------------------------------------------------- DevCat Agent (made up)
+
+const agentProvider = {
+  id: "p-agent", name: "DevCat Agent", kind: "agent" as const, args: [], env: [], hasApiKey: true,
+  agent: { protocol: "anthropic" as const, baseUrl: "https://api.example.com", model: "claude-sonnet-5" },
+};
+const providersList = [{ id: "claude", name: "Claude Code", kind: "claude" as const, args: [], env: [], builtin: true }, agentProvider];
+const usage = (i: number, o: number) => ({ input_tokens: i, output_tokens: o, cache_read_tokens: Math.floor(i * 0.6) });
+
+/** A chat opened from the shop-db connection: it looks at refunds, then dumps the database. */
+const agentEvents = [
+  { event: "meta", id: "demo-chat", cwd: "/tmp/devcat-demo/storefront", created_ms: NOW - 18 * 60_000 },
+  { event: "user", text: "Which customers got refunds in the last 30 days? Anything unusual?" },
+  { event: "assistant", model: "claude-sonnet-5", usage: usage(9200, 180), content: [
+    { type: "text", text: "I'll check the orders table first." },
+    { type: "tool_use", id: "t1", name: "db_schema", input: { connection: "shop-db", table: "orders" } },
+  ] },
+  { event: "tool_results", took_ms: [140], results: [{ type: "tool_result", tool_use_id: "t1", content: "Table orders\nColumns:\n- id int8 PRIMARY KEY\n- customer text\n- status text\n- total numeric\n- created_at timestamptz" }] },
+  { event: "assistant", model: "claude-sonnet-5", usage: usage(9900, 220), content: [
+    { type: "tool_use", id: "t2", name: "db_query", input: { connection: "shop-db", query: "SELECT customer, count(*) AS refunds, sum(total) AS amount\nFROM orders\nWHERE status = 'refunded' AND created_at > now() - interval '30 days'\nGROUP BY customer ORDER BY amount DESC LIMIT 5" } },
+  ] },
+  { event: "tool_results", took_ms: [86], results: [{ type: "tool_result", tool_use_id: "t2", content: "customer | refunds | amount\nNoah Silva | 4 | 612.40\nMia Novak | 2 | 238.10\nLeo Kim | 1 | 74.90\n(3 rows, 86 ms)" }] },
+  { event: "assistant", model: "claude-sonnet-5", usage: usage(10400, 410), content: [
+    { type: "text", text: "Three customers were refunded in the last 30 days:\n\n| Customer | Refunds | Amount |\n| --- | ---: | ---: |\n| Noah Silva | 4 | $612.40 |\n| Mia Novak | 2 | $238.10 |\n| Leo Kim | 1 | $74.90 |\n\n**Unusual:** Noah Silva's 4 refunds are all on orders shipped to different countries in one week. Worth a look before the next payout." },
+  ] },
+  { event: "user", text: "Dump the shop database to a file before I clean these up." },
+  { event: "assistant", model: "claude-sonnet-5", usage: usage(10900, 120), content: [
+    { type: "tool_use", id: "t3", name: "db_dump", input: { connection: "shop-db", database: "shop" } },
+  ] },
+  { event: "approval", tool_use_id: "t3", tool: "db_dump", allowed: true, by: "user" },
+  { event: "tool_results", took_ms: [4200], results: [{ type: "tool_result", tool_use_id: "t3", content: "Dumped shop to ~/Downloads/shop-20261030-142211.sql: 14 tables, 48,212 rows, 9.4 MB in 4.2 s" }] },
+  { event: "assistant", model: "claude-sonnet-5", usage: usage(11300, 90), content: [
+    { type: "text", text: "Done: `~/Downloads/shop-20261030-142211.sql` (14 tables, 48,212 rows). DevCat's Restore reads it back if you need it." },
+  ] },
+  { event: "title", title: "Refunds in the last 30 days" },
+];
+
+const agentContext = (ghost: boolean, focus: boolean) => ({
+  rules: ghost ? [] : ["AGENTS.md"], skills: ghost ? [] : ["release-notes"], mcp: [], notices: [], mcpLoading: false,
+  connections: ghost ? [] : ["shop-db", "shop-cache", "prod-cluster"], hooks: [],
+  focus: focus ? "shop-db" : null, focusKind: focus ? "postgres" : null, ghost,
+});
+
+const integrations = {
+  bots: [
+    { id: "b-tg", kind: "telegram", name: "@acme_devcat_bot", enabled: true, running: true, error: null, warning: null },
+    { id: "b-dc", kind: "discord", name: "DevCat Helper", enabled: true, running: true, error: null, warning: null },
+  ],
+  links: [
+    { id: "l-1", botId: "b-tg", chatId: "1001", chatName: "Chat with @ava_tan", users: [{ id: "1", name: "@ava_tan" }], folder: "/tmp/devcat-demo/storefront", providerId: "p-agent",
+      perms: { notify: true, approve: true, requests: true, files: true, connections: false, autoEdit: false }, sessionId: null, createdMs: NOW - 3 * 86_400_000 },
+    { id: "l-2", botId: "b-dc", chatId: "2002", chatName: "#payments-dev", users: [{ id: "2", name: "Omar Haddad" }], folder: "/tmp/devcat-demo/payments", providerId: "p-agent",
+      perms: { notify: true, approve: true, requests: false, files: false, connections: false, autoEdit: false }, sessionId: null, createdMs: NOW - 86_400_000 },
+  ],
+  channels: [{ id: "ch-1", kind: "slack", name: "Slack", enabled: true, onDone: true, onInput: true }],
+  code: null,
+  requests: [],
+};
+
 export function demoInvoke(cmd: string, args: Record<string, unknown>, emit: Emit): unknown {
   switch (cmd) {
     case "list_projects": return projects;
@@ -418,6 +477,32 @@ export function demoInvoke(cmd: string, args: Record<string, unknown>, emit: Emi
     case "memory_sync_all": return { imported: 2, updated: 0, removed: 0, agents: ["Claude Code", "Codex", "Gemini CLI"], rulesFiles: ["~/.codex/AGENTS.md"], notes: [] };
     case "memory_save": return args.memory;
     case "memory_delete": return null;
+    case "ai_providers_list": return providersList;
+    case "ai_provider_save": {
+      const saved = { ...(args.provider as Record<string, unknown>), id: (args.provider as { id?: string }).id || `p-${Date.now()}` };
+      (providersList as unknown[]).push(saved);
+      return saved;
+    }
+    case "ai_agent_models": return [{ id: "claude-sonnet-5", context: 1_000_000, price: { input: 3, output: 15, cacheRead: 0.3 } }];
+    case "agent_sandbox": return { available: true, reason: null };
+    case "agent_jobs": return [];
+    case "agent_sessions": return [
+      { id: "demo-chat", title: "Refunds in the last 30 days", updatedMs: NOW - 2 * 60_000, messages: 2 },
+      { id: "demo-2", title: "Add a cache to getOrder()", updatedMs: NOW - 3 * 3_600_000, messages: 5 },
+      { id: "demo-3", title: "Why is checkout slow on mobile?", updatedMs: NOW - 26 * 3_600_000, messages: 3 },
+    ];
+    case "agent_open": {
+      const ghost = !!args.ghostWindow;
+      const focus = !!args.connectionId;
+      return {
+        sessionId: ghost ? "demo-ghost" : "demo-chat", title: ghost ? "" : "Refunds in the last 30 days", model: "claude-sonnet-5", providerName: "DevCat Agent",
+        busy: false, events: ghost ? [] : agentEvents, usage: ghost ? usage(0, 0) : usage(51700, 1020), context: agentContext(ghost, focus), live: [], seq: 0,
+      };
+    }
+    case "agent_close": case "agent_send": case "agent_stop": return null;
+    case "integrations_status": return integrations;
+    // Sync MCP already set up (no "let your agents use your connections?" suggestion in the shots)
+    case "mcp_sync_preview": return { changes: [], lookalikes: [], agents: ["Claude Code", "Codex", "Cursor", "Gemini CLI"], notes: [], enabled: true, dismissed: false };
     default: return undefined;
   }
 }

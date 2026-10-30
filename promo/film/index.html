@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      :root { --app: #0f1114; --line: #2a2f39; --fg: #e6e8ec; --muted: #8b93a3; --accent: #f5a524; --ok: #4ade80; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--app); }
+      #root { position: relative; width: 1920px; height: 1080px; font-family: -apple-system, "SF Pro Display", "Inter", "Segoe UI", sans-serif; color: var(--fg); }
+      .clip { position: absolute; inset: 0; overflow: hidden; }
+      .glow { background: radial-gradient(1300px 800px at 85% -10%, #2a2110 0%, var(--app) 55%); }
+      .glow2 { background: radial-gradient(1300px 800px at 0% 110%, #10192a 0%, var(--app) 55%); }
+      .kicker { color: var(--accent); font-size: 24px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+      .h { font-size: 66px; font-weight: 760; letter-spacing: -.028em; line-height: 1.04; margin-top: 16px; }
+      .sub { font-size: 29px; color: var(--muted); margin-top: 24px; line-height: 1.4; }
+      .text { position: absolute; left: 120px; top: 50%; width: 560px; transform: translateY(-50%); }
+      .win { position: absolute; border-radius: 18px; overflow: hidden; border: 1px solid var(--line); box-shadow: 0 40px 120px rgba(0,0,0,.6); background: #14161a; }
+      .win img { display: block; width: 100%; }
+      .right { left: 720px; top: 178px; width: 1160px; }
+      .pills { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
+      .pill { font-size: 24px; border: 1px solid var(--line); border-radius: 999px; padding: 8px 18px; color: #c9ced8; background: #14161a; }
+      .pill.on { border-color: rgba(245,165,36,.6); color: var(--accent); }
+      .hl { position: absolute; border: 3px solid var(--accent); border-radius: 10px; box-shadow: 0 0 0 9999px rgba(15,17,20,.45); }
+      /* intro / end */
+      .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+      .logo { width: 150px; height: 150px; border-radius: 34px; }
+      .brand { font-size: 120px; font-weight: 800; letter-spacing: -.04em; margin-top: 26px; }
+      .tag { font-size: 40px; color: var(--muted); margin-top: 12px; }
+      .tag b { color: var(--fg); font-weight: 650; }
+      .url { font-size: 30px; color: var(--accent); margin-top: 40px; font-weight: 600; }
+      /* grid */
+      .grid { position: absolute; left: 260px; top: 200px; display: grid; grid-template-columns: 680px 680px; gap: 30px 40px; }
+      .cell { position: relative; }
+      .cell .win { position: relative; }
+      .cell .cap { position: absolute; left: 18px; bottom: 16px; font-size: 22px; font-weight: 700; background: rgba(15,17,20,.82); border: 1px solid var(--line); padding: 6px 14px; border-radius: 10px; }
+      .top { position: absolute; left: 260px; top: 70px; }
+      .zoom { overflow: hidden; }
+      .zoom img { transform-origin: var(--ox, 50%) var(--oy, 50%); transform: scale(var(--z, 1.5)); }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="social" data-start="0" data-duration="60" data-width="1920" data-height="1080">
+
+      <!-- 1. Intro -->
+      <section id="s1" class="clip glow" data-start="0" data-duration="4">
+        <div class="center">
+          <img class="logo" id="s1-logo" src="assets/icon.png" alt="">
+          <div class="brand" id="s1-brand">DevCat</div>
+          <div class="tag" id="s1-tag">Your agents, repos, databases and clusters. <b>One window.</b></div>
+        </div>
+      </section>
+
+      <!-- 2. Any agent -->
+      <section id="s2" class="clip glow" data-start="4" data-duration="6">
+        <div class="text" id="s2-text">
+          <div class="kicker">AI workspace</div>
+          <div class="h">Any agent.<br>One window.</div>
+          <div class="sub">Your coding agent in a real terminal, next to the project's files and sessions.</div>
+          <div class="pills"><span class="pill on">Claude Code</span><span class="pill">Codex</span><span class="pill">Gemini CLI</span><span class="pill">Copilot</span><span class="pill on">DevCat Agent</span></div>
+        </div>
+        <div class="win right" id="s2-win"><img src="assets/ai.png" alt=""></div>
+      </section>
+
+      <!-- 3. Review -->
+      <section id="s3" class="clip glow" data-start="10" data-duration="5">
+        <div class="text" id="s3-text">
+          <div class="kicker">Review</div>
+          <div class="h">See exactly what it changed.</div>
+          <div class="sub">Every change in the diff, as it happens. Stage, commit, or ask for a code review.</div>
+        </div>
+        <div class="win right" id="s3-win"><img src="assets/diff.png" alt=""></div>
+      </section>
+
+      <!-- 4. Ask your database -->
+      <section id="s4" class="clip glow2" data-start="15" data-duration="7">
+        <div class="text" id="s4-text">
+          <div class="kicker">Connections</div>
+          <div class="h">Ask your database anything.</div>
+          <div class="sub">Right-click a connection: the agent already knows its tables. It queries, dumps and exports, and dropping a database takes your OK twice.</div>
+          <div class="pills"><span class="pill">PostgreSQL</span><span class="pill">MySQL</span><span class="pill">MongoDB</span><span class="pill">Redis</span><span class="pill">Kubernetes</span></div>
+        </div>
+        <div class="win right" id="s4-win"><img src="assets/agent.png" alt=""><div class="hl" id="s4-hl" style="left:418px; top:232px; width:182px; height:94px"></div></div>
+      </section>
+
+      <!-- 5. Everything else -->
+      <section id="s5" class="clip glow" data-start="22" data-duration="5.5">
+        <div class="top" id="s5-text"><div class="kicker">One workbench</div><div class="h" style="font-size:56px">Git, SQL, clusters and VPNs, a tab away.</div></div>
+        <div class="grid">
+          <div class="cell" id="s5-a"><div class="win"><img src="assets/git.png" alt=""></div><span class="cap">Git</span></div>
+          <div class="cell" id="s5-b"><div class="win"><img src="assets/query.png" alt=""></div><span class="cap">SQL editor</span></div>
+          <div class="cell" id="s5-c"><div class="win"><img src="assets/k8s.png" alt=""></div><span class="cap">Kubernetes</span></div>
+          <div class="cell" id="s5-d"><div class="win"><img src="assets/network.png" alt=""></div><span class="cap">VPN &amp; tunnels</span></div>
+        </div>
+      </section>
+
+      <!-- 6. Rooms -->
+      <div id="s6" data-composition-id="rooms" data-composition-src="compositions/rooms.html" data-start="27.5" data-duration="9"></div>
+
+      <!-- 7. Agent bots + mobile -->
+      <div id="s7" data-composition-id="phone" data-composition-src="compositions/phone.html" data-start="36.5" data-duration="8.5"></div>
+
+      <!-- 8. Ghost chat -->
+      <section id="s8" class="clip glow" data-start="45" data-duration="4.5">
+        <div class="text" id="s8-text">
+          <div class="kicker">Ghost chat</div>
+          <div class="h">A fresh start that leaves no trace.</div>
+          <div class="sub">No project, no history, no memory. Close the window and it's gone.</div>
+        </div>
+        <div class="win right zoom" id="s8-win" style="--z:1.7; --oy:22%"><img src="assets/ghost.png" alt=""></div>
+      </section>
+
+      <!-- 9. Shared memory -->
+      <section id="s9" class="clip glow2" data-start="49.5" data-duration="5">
+        <div class="text" id="s9-text">
+          <div class="kicker">Memory &amp; MCP</div>
+          <div class="h">One memory for every agent.</div>
+          <div class="sub">Switch agents mid-task: the next one knows what the last one learned, and gets your connections through MCP.</div>
+          <div class="pills"><span class="pill">Claude Code</span><span class="pill">Codex</span><span class="pill">Cursor</span><span class="pill">Gemini</span><span class="pill on">DevCat Agent</span></div>
+        </div>
+        <div class="win right zoom" id="s9-win" style="--z:1.42; --oy:50%"><img src="assets/memory.png" alt=""></div>
+      </section>
+
+      <!-- 10. End -->
+      <section id="s10" class="clip glow" data-start="54.5" data-duration="5.5">
+        <div class="center">
+          <img class="logo" id="s10-logo" src="assets/icon.png" alt="">
+          <div class="brand" id="s10-brand">DevCat</div>
+          <div class="tag" id="s10-tag">Your agents, repos, databases and clusters. <b>One window.</b></div>
+          <div class="tag" id="s10-free" style="font-size:30px; margin-top:18px">Free for macOS, Windows and Linux. No account.</div>
+          <div class="url" id="s10-url">devcat.ai.id</div>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      const inText = (sel, at) => tl.fromTo(sel, { opacity: 0, x: -40 }, { opacity: 1, x: 0, duration: 0.7, ease: "power3.out" }, at);
+      const inWin = (sel, at) => tl.fromTo(sel, { opacity: 0, y: 80, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.9, ease: "power3.out" }, at);
+      const drift = (sel, at, d) => tl.to(sel, { scale: 1.035, duration: d, ease: "none" }, at);
+      const out = (sel, at) => tl.to(sel, { opacity: 0, duration: 0.4, ease: "power2.in" }, at);
+
+      // 1. intro
+      // on screen from the first frame (the thumbnail), settling in
+      tl.fromTo(["#s1-logo", "#s1-brand"], { scale: 1.06 }, { scale: 1, duration: 1.4, ease: "power2.out" }, 0);
+      tl.fromTo("#s1-tag", { y: 12 }, { y: 0, duration: 1.4, ease: "power2.out" }, 0);
+      out("#s1", 3.6);
+
+      // 2–4. screens with a title each
+      inText("#s2-text", 4.1); inWin("#s2-win", 4.3); drift("#s2-win", 5.2, 4.4); out("#s2", 9.6);
+      inText("#s3-text", 10.1); inWin("#s3-win", 10.3); drift("#s3-win", 11.2, 3.4); out("#s3", 14.6);
+      inText("#s4-text", 15.1); inWin("#s4-win", 15.3);
+      tl.fromTo("#s4-hl", { opacity: 0, scale: 1.3 }, { opacity: 1, scale: 1, duration: 0.5, ease: "power3.out" }, 17.0);
+      tl.to("#s4-hl", { opacity: 0, duration: 0.4 }, 20.2);
+      out("#s4", 21.6);
+
+      // 5. grid
+      inText("#s5-text", 22.1);
+      ["#s5-a", "#s5-b", "#s5-c", "#s5-d"].forEach((s, i) => tl.fromTo(s, { opacity: 0, y: 50, scale: 0.94 }, { opacity: 1, y: 0, scale: 1, duration: 0.6, ease: "power3.out" }, 22.4 + i * 0.35));
+      tl.to(".grid", { scale: 1.03, duration: 3.6, ease: "none" }, 23.4);
+      out("#s5", 27.1);
+
+      // 8–9
+      inText("#s8-text", 45.1); inWin("#s8-win", 45.3); drift("#s8-win", 46.2, 2.8); out("#s8", 49.1);
+      inText("#s9-text", 49.6); inWin("#s9-win", 49.8); drift("#s9-win", 50.7, 3.4); out("#s9", 54.1);
+
+      // 10. end
+      tl.fromTo("#s10-logo", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.7, ease: "back.out(1.6)" }, 54.6);
+      tl.fromTo("#s10-brand", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 54.9);
+      tl.fromTo("#s10-tag", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.6 }, 55.3);
+      tl.fromTo("#s10-free", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.6 }, 55.6);
+      tl.fromTo("#s10-url", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.6 }, 55.9);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["social"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

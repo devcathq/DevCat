@@ -3,7 +3,7 @@
 <h1 align="center">DevCat</h1>
 
 <p align="center">
-  <b>Your coding agents, Git, databases, clusters and VPNs in one desktop app.</b>
+  <b>Your agents, repos, databases and clusters. One window.</b>
 </p>
 
 <p align="center">
@@ -22,16 +22,21 @@
   <a href="https://github.com/devcathq/DevCat/issues"><b>Report a bug</b></a>
 </p>
 
-DevCat is a cross-platform developer workbench. It runs your AI coding agent (Claude Code, Codex, Gemini CLI and
-others) in a real terminal next to the diff and the commit graph, and puts your databases, Kubernetes clusters,
-Docker engines, RabbitMQ brokers and VPN / SSH tunnels in the same window, grouped by project. It is built with
-[Tauri 2](https://tauri.app) (Rust) and React + TypeScript, and needs no account.
+DevCat is a free, cross-platform workbench for coding with AI agents. Run the agent you already use (Claude Code,
+Codex, Gemini CLI and others) in a real terminal, or the built-in **DevCat Agent**, its own agent harness that talks
+to any model API. Review what it changed next to the diff and the commit graph, and let it work with your
+databases, Kubernetes clusters, Docker, RabbitMQ and VPN / SSH tunnels, all in the same window and grouped by
+project. Build with other people in **Rooms** (peer to peer, end-to-end encrypted), give every agent **one shared
+memory**, and keep your agents going from **your phone** or a **Telegram / Discord chat**. Built with
+[Tauri 2](https://tauri.app) (Rust) and React + TypeScript; no account, no server.
 
-<p align="center"><img src="assets/readme/demo.gif" width="960" alt="DevCat tour: AI workspace, diff review, databases, SQL editor, Git, Kubernetes, VPN and notes"></p>
+<p align="center"><img src="assets/readme/demo.gif" width="880" alt="DevCat tour: AI workspace, diff review, asking a database connection, Rooms, approving from a chat app and DevCat Mobile, Git and Kubernetes"></p>
 
 | Area | Supported |
 | --- | --- |
-| AI | AI Workspace (terminal, diff, code review) running your installed coding agent: Claude Code (default), OpenAI Codex, Gemini CLI, GitHub Copilot, Aider, opencode or a custom CLI; or the built-in DevCat Agent with any OpenAI- or Anthropic-compatible model |
+| AI | AI Workspace (terminal, diff, code review) running your installed coding agent: Claude Code (default), OpenAI Codex, Gemini CLI, GitHub Copilot, Aider, opencode or a custom CLI; or the built-in DevCat Agent (its own harness: tools, approvals, hooks, MCP, sandbox, helpers) with any OpenAI- or Anthropic-compatible model. Ask the agent about any connection, or start a ghost chat that keeps nothing |
+| Memory | One memory every agent shares (Claude Code, Codex, Cursor, Gemini, DevCat Agent), synced between your own computers |
+| Rooms | Work with other people, peer to peer and end-to-end encrypted: files, docs, whiteboards, a thread, tasks, and everyone's agents |
 | MCP | Sync MCP: DevCat's MCP server in Claude Code, Codex, Cursor and Gemini CLI, with off / read-only / full access per connection and an activity log |
 | Tickets | Jira, Trello and Linear: the agent fixes tickets from a column on their own branches, comments on them and moves them on (e.g. to Testing); results to Slack |
 | Git | Nested repo discovery, commit graph, blame, branches, tags, stashes, fetch/pull/push |
@@ -40,9 +45,9 @@ Docker engines, RabbitMQ brokers and VPN / SSH tunnels in the same window, group
 | Infrastructure | Kubernetes (any kubeconfig context), Docker (any context, or a host over SSH / TCP), RabbitMQ (management API) |
 | Networking | OpenVPN, WireGuard, SSH tunnels (local forwards + SOCKS proxy) |
 | SSH | Saved sessions (password, key, jump host, start folder), terminal tabs, quick-command bar, SFTP, port forwards, pasting images into agents on the server |
-| Mobile | DevCat Mobile (Android, iPhone): agent notifications and control, databases, Redis, VPNs and Kubernetes through DevCat on your computer |
+| Mobile & chat | DevCat Mobile (Android, iPhone): agent notifications and control, databases, Redis, VPNs and Kubernetes through DevCat on your computer. Agent bots in Telegram and Discord: approve, send requests, get results and files. Notifications to ntfy, Discord, Slack or any webhook |
 
-**Contents:** [Download](#download) · [Tour](#tour) · [Mobile app](#mobile-app) · [Features](#features) ·
+**Contents:** [Download](#download) · [Tour](#tour) · [Mobile app](#mobile-app) · [Agent bots](#agent-bots) · [Features](#features) ·
 [Development](#development) · [Building installers](#building-installers) · [Contributing](#contributing) ·
 [Third-party software](#third-party-software) · [Project layout](#project-layout)
 
@@ -53,12 +58,12 @@ Grab the latest installer for macOS, Windows or Linux from the
 
 ```sh
 # The app
-brew install --cask devileya/devcat/devcat                                     # macOS (Homebrew)
+brew install --cask devcathq/devcat/devcat                                     # macOS (Homebrew)
 curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh -s -- --app       # macOS, Linux (AppImage)
 & ([scriptblock]::Create((irm https://devcathq.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
 
 # Only the CLI (`devcat serve`, no window: servers, SSH; see below)
-brew install devileya/devcat/devcat-cli                                        # macOS, Linux (Homebrew)
+brew install devcathq/devcat/devcat-cli                                        # macOS, Linux (Homebrew)
 curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh                   # macOS, Linux → ~/.local/bin
 irm https://devcathq.github.io/DevCat/install.ps1 | iex                        # Windows (PowerShell)
 ```
@@ -72,19 +77,27 @@ picks a version, `--dir` the CLI's folder. The CLI is also attached to each rele
 <table>
 <tr>
 <td width="50%"><img src="assets/readme/ai.png" alt="AI workspace"><br><b>AI workspace</b>: your coding agent (Claude Code, Codex, Gemini…) in a real terminal, with the project's files and sessions alongside.</td>
-<td width="50%"><img src="assets/readme/diff.png" alt="Diff review"><br><b>Review the changes</b>: see what the agent changed, stage and commit, or ask for a code review.</td>
+<td width="50%"><img src="assets/readme/agent.png" alt="DevCat Agent asking a database"><br><b>Ask a connection</b>: right-click a database or cluster for a DevCat Agent chat that already knows its tables; it queries, dumps and exports.</td>
 </tr>
 <tr>
-<td><img src="assets/readme/table.png" alt="Data grid"><br><b>Databases</b>: browse and edit tables; filter any column by typing in its header.</td>
-<td><img src="assets/readme/query.png" alt="SQL editor"><br><b>SQL editor</b>: schema-aware autocomplete, multiple result sets, explain and export.</td>
-</tr>
-<tr>
+<td><img src="assets/readme/diff.png" alt="Diff review"><br><b>Review the changes</b>: see what the agent changed, stage and commit, or ask for a code review.</td>
 <td><img src="assets/readme/git.png" alt="Git history"><br><b>Git</b>: commit graph across branches, commit details with diffs, branches, stashes and blame.</td>
+</tr>
+<tr>
+<td><img src="assets/readme/query.png" alt="SQL editor"><br><b>SQL editor</b>: schema-aware autocomplete, multiple result sets, explain and export.</td>
 <td><img src="assets/readme/k8s.png" alt="Kubernetes"><br><b>Kubernetes</b>: cluster overview, workloads, logs, shell and port-forwards.</td>
 </tr>
 <tr>
+<td><img src="assets/readme/rooms.png" alt="Rooms"><br><b>Rooms</b>: build with other people and their agents, peer to peer and end-to-end encrypted: files, docs, whiteboards, a thread and tasks.</td>
+<td><img src="assets/readme/chat-bot.png" alt="Approving from a chat app"><br><b>From anywhere</b>: allow what the agent asks, send requests and get the results in Telegram, Discord or DevCat Mobile.</td>
+</tr>
+<tr>
+<td><img src="assets/readme/bots.png" alt="Agent bots"><br><b>Agent bots</b>: link a Telegram or Discord chat to a project; approve, send requests and get results there.</td>
+<td><img src="assets/readme/memory.png" alt="Shared memory"><br><b>One memory</b> for Claude Code, Codex, Cursor, Gemini and the DevCat Agent, across your computers.</td>
+</tr>
+<tr>
+<td><img src="assets/readme/ghost.png" alt="Ghost chat"><br><b>Ghost chat</b>: a fresh DevCat Agent chat in its own window, with no project and nothing kept when you close it.</td>
 <td><img src="assets/readme/network.png" alt="VPN and tunnels"><br><b>VPN & tunnels</b>: OpenVPN, WireGuard, SSH and Kubernetes port-forwards with live traffic.</td>
-<td><img src="assets/readme/notes.png" alt="Notes"><br><b>Notes</b>: Markdown notes per project, saved as you type.</td>
 </tr>
 </table>
 
@@ -120,8 +133,9 @@ logs and deployments.
 - Give each phone **full access** or **read-only**; **Revoke** cuts one off immediately. Every change a phone makes
   is in the **Activity** log on the computer.
 - **Notifications** ("finished", "needs you") come through the free [ntfy](https://ntfy.sh) app, so they arrive
-  even when DevCat Mobile is closed. DevCat learns an agent's state from Claude Code hooks it adds to the
-  terminals it starts (macOS and Linux).
+  even when DevCat Mobile is closed, and to Discord, Slack or any webhook as well (Mobile pairing →
+  Notifications). DevCat Agent chats report their state themselves; Claude Code's comes from hooks DevCat adds to
+  the terminals it starts (macOS and Linux).
 - **Get it**: releases don't include the Android APK for now. Build it yourself, or run the `mobile`
   workflow from the Actions tab. For iPhone, build it with Xcode. Until then, the browser version
   (scan the pairing QR) works on any phone. See [mobile/README.md](mobile/README.md).
@@ -154,12 +168,33 @@ needs `libdbus` (installed almost everywhere).
 - A `devcat serve` you can't reach any more (in the background, a closed terminal, from before an update):
   `devcat stop` stops it. Starting a new one while it has the port offers to stop it (`--replace`: without asking).
 
+## Agent bots
+
+Work with your agents from Telegram or Discord, without opening anything else. In ⚙️ Settings → **Agent bots**,
+add a bot (its token stays in your keychain; the bot runs from your computer, no server) and **link a chat** to a
+project folder: DevCat shows a one-time code, you send `/link CODE` to the bot, and allow the chat in DevCat.
+
+- **Approvals and questions**: the agent's "allow this?" comes with **Allow / Deny** buttons; its questions with
+  their answers to tap.
+- **New requests**: just write what you want done. It runs as a DevCat Agent chat in that folder, with the
+  project's rules and memory. `/new`, `/stop`, `/status`.
+- **Results**: when it's done you get the answer, the files it changed, and buttons for the **summary**, the
+  **files** (`/file src/app.ts` sends any file in the folder) and **Open in DevCat** (opens the chat in DevCat
+  Mobile on a phone already paired with the computer).
+- **Each link decides what it may do**: notifications, approvals, requests, files, editing without asking, and the
+  DevCat connections (off by default: query results would end up in the chat app). Only the person who linked a
+  chat is listened to there, key and password files are never sent, dropping a database is confirmed on the
+  computer only, and ghost chats are never sent.
+
 ## Features
 
 Below is the short list. The [docs](https://devcat.ai.id/docs/) explain how to use each
 of these step by step, with every keyboard shortcut on
 [one page](https://devcat.ai.id/docs/shortcuts.html).
 
+- **Setup guide and tour**: a fresh install starts with a short guide (your coding agent, with what's installed and
+  how to install the rest; a project folder; connections; phone, agent bots, MCP and memory), then a tour of the
+  window. Both can be skipped, and are in ⚙️ Settings → **Set up DevCat…** / **Take the tour** any time.
 - **Projects**: group connections into projects and focus on one project at a time. In focus, tabs of other
   projects are hidden: their connections and notes, and chats, terminals, files and Git tabs of folders you haven't
   used with this project. The project menu at the top left switches, creates and deletes projects.
@@ -170,8 +205,10 @@ of these step by step, with every keyboard shortcut on
   Skip this version), or use *DevCat → Check for Updates…* (macOS menu bar), *Check for updates…* in the project menu
   or click the version in the status bar. Updates are
   signed and verified before installing. Linux .deb/.rpm installs get a download link instead (the AppImage self-updates).
-- **Keep awake**: ⚙️ Settings → **Keep awake** keeps the screen and computer from sleeping (like Caffeine /
-  Amphetamine), until turned off or for 15 minutes to 8 hours. While it's on, a coffee cup at the top right turns it off.
+- **Keep awake**: the cup at the top right keeps the screen and computer from sleeping (like Caffeine /
+  Amphetamine), until turned off or for 15 minutes to 8 hours. On macOS it can also keep the Mac awake **with the
+  lid closed** (it turns system sleep off with your password, and back on when keep awake ends), so agents and
+  networks keep going.
 - **Tabs**: drag a tab along the tab bar to reorder it; every **New chat** opens a chat of its own.
 - **Open files with DevCat**: on macOS DevCat is in Finder's *Open With* for code and text files (choose
   *Always Open With*, or *Get Info → Open with → Change All…* to make it the default); the file opens in an editor tab,
@@ -260,6 +297,16 @@ of these step by step, with every keyboard shortcut on
   **Folders on SSH hosts** too (*Open folder on SSH host…*): the agent and terminals run on that machine, and the
   file tree, previews, edits and git status work over your system `ssh` (hosts from `~/.ssh/config`, keys,
   ssh-agent, ProxyJump; one shared connection per host). Diff and Code Review are local-only for now.
+- **Ask DevCat Agent about a connection**: right-click a database, Redis, MongoDB or Kubernetes connection (or
+  **Ask agent** in a query tab) for a chat that starts out knowing its tables or namespaces (structure only, never
+  rows). It queries, dumps a database to a file, exports tables or query results (CSV, JSON, SQL, Excel), and can
+  drop a database: that asks twice, the second time by typing its name, whatever the permission mode.
+- **Ghost chat** (the ghost at the top right): a DevCat Agent chat in a window of its own that starts from nothing
+  (no project, rules, memory or connections) and keeps nothing: closing the window deletes it.
+- **One memory for every agent** (⚙️ Settings → **AI memory**): Claude Code, Codex, Cursor, Gemini and the DevCat
+  Agent read and save the same memory through DevCat's MCP server; sync Claude Code's own memory into it, and share
+  it between your own computers.
+- **Pinned files**: pin a file from the AI workspace's file list or its tab, and it stays at the top of **Files**.
 - **Sync MCP** (the plug button above the connections): adds DevCat's MCP server (`devcat mcp`) to Claude Code,
   Codex, Cursor and Gemini CLI, so they read schemas, run queries and read clusters without seeing a password.
   Each connection's **AI / MCP access** is off, read-only (the default for new connections) or full, enforced by
@@ -319,9 +366,11 @@ pnpm dev:bridge                                 # http://localhost:1425
 
 ### Screenshots and demo video
 
-`pnpm dev:demo` runs the UI in the browser with made-up databases, VPNs, a cluster and an agent session
-(`src/dev/demo.ts`); git and file screens use a sample repository. `promo/` captures the screens and turns them
-into the README video with [Remotion](https://www.remotion.dev):
+`pnpm dev:demo` runs the UI in the browser with made-up data: databases, VPNs, a cluster, a Claude Code session, a
+DevCat Agent chat and agent bots (`src/dev/demo.ts`); git and file screens use a sample repository. `promo/`
+captures the screens, and `promo/film/` turns them into the README GIF and a one-minute video for social media with
+[HyperFrames](https://hyperframes.heygen.com) (HTML + GSAP rendered to MP4; Rooms and the chat-app scenes are
+animated HTML there):
 
 ```bash
 cd src-tauri && cargo run --example devbridge   # git / files for the sample repo
@@ -330,7 +379,9 @@ cd promo && pnpm install
 pnpm demo-repo            # sample repository in /tmp/devcat-demo
 pnpm capture              # public/shots/*.png (headless Chrome)
 pnpm stills               # → assets/readme/*.png (macOS sips)
-pnpm render && pnpm gif   # out/demo.mp4 → assets/readme/demo.gif
+cp public/shots/*.png film/assets/
+pnpm film                 # film/out/devcat-readme.mp4 + devcat-social.mp4 (HyperFrames; Node 22+, FFmpeg)
+pnpm gif                  # → assets/readme/demo.gif
 ```
 
 Local test services for every supported backend:
@@ -394,7 +445,7 @@ and Windows, and `SHA256SUMS.txt`, and publishes them on the GitHub release. All
 repository). The mobile apps (`.github/workflows/mobile.yml`) aren't part of releases for now:
 run that workflow by hand to get the APK. The install scripts
 (`scripts/install.sh`, `install.ps1`) are served from GitHub Pages; the Homebrew tap
-([devileya/homebrew-devcat](https://github.com/devileya/homebrew-devcat), source in `packaging/homebrew-tap/`)
+([devcathq/homebrew-devcat](https://github.com/devcathq/homebrew-devcat), source in `packaging/homebrew-tap/`)
 picks up each release by itself within the hour.
 
 **Releasing:** in `CHANGELOG.md`, rename *Unreleased* to the new version and date. Then set the version in
@@ -460,8 +511,14 @@ src-tauri/src/
   instance.rs             another DevCat holding the port: find it, stop it
   events.rs               backend events to windows and phones
   notify/                 agent status from Claude Code hooks, ntfy notifications
+  integrations/           agent bots (Telegram, Discord) and notification webhooks
+  agent.rs, agent_tools.rs  DevCat Agent chats and its tools for your connections
+  memory/                 the memory every agent shares, and its sync between computers
+  rooms.rs                Rooms (crates/rooms: the peer-to-peer document and transport)
+crates/harness/           DevCat Agent's harness: model APIs, tools, approvals, hooks, MCP, sandbox, sessions
+crates/rooms/             Rooms: the shared document, membership and transport
 crates/remote-proto/      wire protocol shared by the desktop app and DevCat Mobile
 mobile/                   DevCat Mobile (Tauri 2 for Android / iOS): src = React UI, src-tauri = client
-promo/                    README screenshots + demo video (demo mode capture, Remotion)
+promo/                    README screenshots (demo mode capture); promo/film = README GIF + social video (HyperFrames)
 site/                     landing page; site/docs = docs (Markdown → HTML), both on GitHub Pages
 ```

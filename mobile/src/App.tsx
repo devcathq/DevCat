@@ -2,7 +2,7 @@
 // reconnecting when the app comes back to the foreground, and local notifications.
 import { useEffect } from "react";
 import { phone, startEvents } from "./lib/rpc";
-import { loadMachines, nav, selectMachine, setLocalNotifier, startStateEvents, useApp } from "./lib/store";
+import { loadMachines, nav, selectMachine, setLocalNotifier, startStateEvents, toast, useApp } from "./lib/store";
 import type { Route } from "./lib/types";
 import { Agents, NewChat, Sessions, Terminal, Transcript } from "./screens/agents";
 import { AgentChat } from "./screens/agentchat";
@@ -60,12 +60,54 @@ function takeWebLink(): string | null {
   return link;
 }
 
-/** App: a devcat://pair link it was opened with (from the web page's "Open in DevCat app"). */
+/** A link that opens a DevCat Agent chat (sent by the computer to a linked chat app, see
+ *  integrations in src-tauri): `…#chat=<session>&host=<computer>&cwd=…&provider=…` in a browser,
+ *  `devcat://chat?…` in the app. It pairs nothing: it opens the chat only on a computer this phone
+ *  is already paired with. */
+interface ChatLink { session: string; host: string; cwd: string; provider: string }
+
+function parseChatLink(link: string): ChatLink | null {
+  const i = link.search(/[#?]chat=/);
+  if (i < 0) return null;
+  const q = new URLSearchParams(link.slice(i + 1));
+  const [session, host, cwd, provider] = ["chat", "host", "cwd", "provider"].map((k) => q.get(k) ?? "");
+  return session && host && cwd && provider ? { session, host, cwd, provider } : null;
+}
+
+function chatLinkUrl(c: ChatLink): string {
+  const q = new URLSearchParams({ chat: c.session, host: c.host, cwd: c.cwd, provider: c.provider });
+  return `devcat://chat?${q.toString()}`;
+}
+
+/** Browser: a chat link this page was opened with (taken out of the address bar). */
+function takeWebChatLink(): ChatLink | null {
+  if (!IS_WEB) return null;
+  const c = parseChatLink(location.href);
+  if (c) history.replaceState(null, "", location.pathname);
+  return c;
+}
+
+/** Open a linked chat, if this phone is paired with its computer. */
+async function openChatLink(c: ChatLink): Promise<boolean> {
+  const machines = useApp.getState().machines.length ? useApp.getState().machines : await loadMachines();
+  if (!machines.some((m) => m.id === c.host)) {
+    toast("That chat is on a computer this phone isn't paired with. Pair it in DevCat → Mobile pairing first.", "err");
+    return false;
+  }
+  selectMachine(c.host);
+  nav.reset([{ s: "computers" }, { s: "agents" }, { s: "agentchat", cwd: c.cwd, providerId: c.provider, sessionId: c.session }]);
+  return true;
+}
+
+/** App: a devcat://pair link it was opened with (from the web page's "Open in DevCat app"), or a
+ *  devcat://chat link. */
 async function watchDeepLinks() {
   if (IS_WEB) return;
   try {
     const dl = await import("@tauri-apps/plugin-deep-link");
     const go = (urls: string[] | null | undefined) => {
+      const chat = urls?.map((u) => (u.startsWith("devcat://chat") ? parseChatLink(u) : null)).find(Boolean);
+      if (chat) return void openChatLink(chat);
       const u = urls?.find(isPairLink);
       if (u) nav.push({ s: "pairing", link: u });
     };
@@ -78,6 +120,7 @@ async function boot() {
   await startEvents();
   startStateEvents();
   if (IS_WEB) adoptCarried();
+  const chatLink = takeWebChatLink();
   const webLink = takeWebLink();
   if (IS_WEB) carryPairing();
   const [info, machines] = await Promise.all([phone.info(), loadMachines()]);
@@ -98,6 +141,18 @@ async function boot() {
     }
   }
   void watchDeepLinks();
+  if (chatLink) {
+    // paired in this browser: open it here; else the app may be (it has its own pairings)
+    if (machines.some((m) => m.id === chatLink.host)) {
+      await openChatLink(chatLink);
+      return;
+    }
+    if (prefersApp()) {
+      location.href = chatLinkUrl(chatLink);
+    } else {
+      toast("That chat is on a computer this browser isn't paired with. Open the link on a phone paired with it, or pair this one in DevCat → Mobile pairing.", "err");
+    }
+  }
   if (machines.length === 0) {
     nav.reset([{ s: "welcome" }]);
     return;

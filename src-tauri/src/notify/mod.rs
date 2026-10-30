@@ -95,14 +95,14 @@ pub(crate) fn emit(event: &str, payload: Value) {
 }
 
 #[cfg(feature = "gui")]
-fn app_focused() -> bool {
+pub(crate) fn app_focused() -> bool {
     use tauri::Manager;
     crate::events::app().is_some_and(|a| a.webview_windows().values().any(|w| w.is_focused().unwrap_or(false)))
 }
 
 /// No windows: nobody is looking at the computer.
 #[cfg(not(feature = "gui"))]
-fn app_focused() -> bool {
+pub(crate) fn app_focused() -> bool {
     false
 }
 
@@ -154,26 +154,41 @@ async fn publish(s: &NotifySettings, msg: &Value) -> AppResult<()> {
 /// settings want it (agent_jobs.rs).
 pub(crate) async fn job(title: &str, message: &str, needs_you: bool) {
     let s = load();
-    if !s.enabled || !(if needs_you { s.on_input } else { s.on_done }) || (s.only_when_away && app_focused()) {
+    if !(if needs_you { s.on_input } else { s.on_done }) || (s.only_when_away && app_focused()) {
         return;
     }
-    let (tags, priority) = if needs_you { ("raising_hand", 4) } else { ("alarm_clock", 3) };
-    let msg = json!({ "topic": s.topic, "title": title, "message": message, "tags": [tags], "priority": priority });
-    if let Err(e) = publish(&s, &msg).await {
-        eprintln!("notification failed: {e}");
-    }
-}
-
-pub(crate) async fn on_change(status: &hooks::AgentStatus, change: hooks::Change) {
-    let s = load();
-    if !s.enabled || (s.only_when_away && app_focused()) {
-        return;
-    }
-    if let Some(msg) = message_for(&s, status, &change) {
+    if s.enabled {
+        let (tags, priority) = if needs_you { ("raising_hand", 4) } else { ("alarm_clock", 3) };
+        let msg = json!({ "topic": s.topic, "title": title, "message": message, "tags": [tags], "priority": priority });
         if let Err(e) = publish(&s, &msg).await {
             eprintln!("notification failed: {e}");
         }
     }
+    // and the notification channels (integrations: Discord, Slack, webhooks)
+    crate::integrations::deliver(crate::integrations::Note { title: title.into(), body: message.into(), needs_you, cwd: None, skip_links: vec![], url: None }).await;
+}
+
+pub(crate) async fn on_change(status: &hooks::AgentStatus, change: hooks::Change) {
+    let s = load();
+    if s.only_when_away && app_focused() {
+        return;
+    }
+    let Some(msg) = message_for(&s, status, &change) else { return };
+    if s.enabled
+        && let Err(e) = publish(&s, &msg).await
+    {
+        eprintln!("notification failed: {e}");
+    }
+    // and the notification channels and the chats linked to the agent's folder (integrations)
+    crate::integrations::deliver(crate::integrations::Note {
+        title: msg["title"].as_str().unwrap_or("DevCat").into(),
+        body: msg["message"].as_str().unwrap_or("").into(),
+        needs_you: matches!(change, hooks::Change::NeedsInput { .. }),
+        cwd: status.cwd.clone(),
+        skip_links: vec![],
+        url: None,
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------- commands

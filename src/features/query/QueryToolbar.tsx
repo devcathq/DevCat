@@ -1,5 +1,5 @@
 import MiniSelect from "../grid/MiniSelect";
-import { AlignLeft, ChevronDown, Gauge, ListTree, Play, PlaySquare, Save, Square } from "lucide-react";
+import { AlignLeft, Bot, ChevronDown, Gauge, ListTree, Play, PlaySquare, Save, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button, IconButton } from "../../components/ui";
 import { KindIcon } from "../../components/ui/KindIcon";
@@ -8,6 +8,7 @@ import { useConnections, useScopedConnections } from "../../store/connections";
 import type { Tab } from "../../tabs/types";
 import { useContextMenu } from "../connections/ContextMenu";
 import { hasSchemas, isSqlKind } from "../table/sqlDialect";
+import { openConnectionAgent } from "../agent/connection";
 
 export type ExplainMode = "plain" | "analyze";
 
@@ -125,6 +126,12 @@ export default function QueryToolbar(p: Props) {
           <ChevronDown className="size-3" />
         </Button>
       </div>
+
+      {current && (
+        <Button size="sm" variant="ghost" onClick={() => void openConnectionAgent(current)} title={`Ask DevCat Agent about ${current.name}: it knows the tables, and can query, dump and export`}>
+          <Bot className="size-3.5" /> Ask agent
+        </Button>
+      )}
 
       <div className="flex-1" />
       {p.kind !== "redis" && (

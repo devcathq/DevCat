@@ -220,6 +220,71 @@ pub async fn fs_find_files(root: String) -> AppResult<FoundFiles> {
     crate::rt::spawn_blocking(move || find_files(&path, FIND_CAP)).await.map_err(|e| AppError::msg(e.to_string()))
 }
 
+// ---------- fs_delete ----------
+
+/// `paths` checked for the Trash: each exists and is inside the workspace `root` (not `root` itself).
+/// A symlink is checked (and trashed) as the link, not what it points to.
+fn trash_targets(paths: &[String], root: &Path) -> AppResult<Vec<PathBuf>> {
+    if !root.is_absolute() {
+        return Err(AppError::msg("Path must be absolute"));
+    }
+    let root = root.canonicalize().map_err(|e| AppError::msg(format!("{}: {e}", root.display())))?;
+    let mut out = Vec::new();
+    for p in paths {
+        let path = Path::new(p);
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return Err(AppError::msg(format!("Can't delete {p}")));
+        };
+        if !path.is_absolute() || name == ".." || name == "." {
+            return Err(AppError::msg(format!("Can't delete {p}")));
+        }
+        fs::symlink_metadata(path).map_err(|e| AppError::msg(format!("{p}: {e}")))?;
+        let real = parent.canonicalize().map_err(|e| AppError::msg(format!("{p}: {e}")))?.join(name);
+        if real == root || !real.starts_with(&root) {
+            return Err(AppError::msg("Delete only files and folders inside this workspace"));
+        }
+        out.push(real);
+    }
+    Ok(out)
+}
+
+/// `paths` on the SSH host of the workspace `root` (`ssh://…`), as paths on that host: each on the
+/// same host and inside `root`, not `root` itself.
+fn remote_targets(paths: &[String], root: &super::remote::Target) -> AppResult<Vec<String>> {
+    let base = root.path.trim_end_matches('/');
+    paths
+        .iter()
+        .map(|p| {
+            let t = super::remote::Target::parse(p).filter(|t| t.dest == root.dest && t.port == root.port);
+            let path = t.map(|t| t.path.trim_end_matches('/').to_string()).unwrap_or_default();
+            let inside = path.strip_prefix(base).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1);
+            if !inside || path.split('/').any(|c| c == ".." || c == ".") {
+                return Err(AppError::msg("Delete only files and folders inside this workspace"));
+            }
+            Ok(path)
+        })
+        .collect()
+}
+
+/// Delete files and folders of the workspace `root`. On this computer they go to the Trash (the
+/// Recycle Bin on Windows), where they can be put back; on an SSH host (no Trash there) they're
+/// removed for good, like the SFTP tab's Delete. Checks them all first, so a bad path doesn't leave
+/// half of them deleted.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn fs_delete(paths: Vec<String>, root: String) -> AppResult<()> {
+    if let Some(r) = super::remote::Target::parse(&root) {
+        let targets = remote_targets(&paths, &r)?;
+        return super::remote::remove(&r, &targets).await;
+    }
+    if paths.iter().any(|p| super::remote::Target::parse(p).is_some()) {
+        return Err(AppError::msg("Delete only files and folders inside this workspace"));
+    }
+    let targets = trash_targets(&paths, Path::new(&root))?;
+    crate::rt::spawn_blocking(move || trash::delete_all(&targets).map_err(|e| AppError::msg(format!("Couldn't move it to the Trash: {e}"))))
+        .await
+        .map_err(|e| AppError::msg(e.to_string()))?
+}
+
 // ---------- fs_preview ----------
 
 fn preview(kind: &str, path: &str, size: u64) -> FilePreview {
@@ -767,6 +832,34 @@ mod tests {
 
     fn entry<'a>(entries: &'a [FileEntry], name: &str) -> &'a FileEntry {
         entries.iter().find(|e| e.name == name).unwrap_or_else(|| panic!("{name} missing"))
+    }
+
+    #[test]
+    fn only_paths_inside_the_workspace_go_to_the_trash() {
+        let repo = TempRepo::new("fstrash");
+        repo.write("src/a.ts", "x\n");
+        let root = repo.dir.to_string_lossy().into_owned();
+        let at = |rel: &str| repo.dir.join(rel).to_string_lossy().into_owned();
+        assert_eq!(trash_targets(&[at("src/a.ts")], &repo.dir).unwrap(), vec![repo.dir.canonicalize().unwrap().join("src/a.ts")]);
+        assert!(trash_targets(&[root.clone()], &repo.dir).is_err(), "not the workspace itself");
+        assert!(trash_targets(&[at("src/..")], &repo.dir).is_err());
+        assert!(trash_targets(&[at("missing.ts")], &repo.dir).is_err());
+        let outside = std::env::temp_dir().to_string_lossy().into_owned();
+        assert!(trash_targets(&[outside], &repo.dir).is_err());
+        assert!(trash_targets(&[at("src/a.ts"), at("nope")], &repo.dir).is_err(), "all or nothing");
+    }
+
+    #[test]
+    fn on_an_ssh_host_only_paths_inside_the_workspace_are_deleted() {
+        let root = super::super::remote::Target::parse("ssh://box/srv/app").unwrap();
+        let ok = |p: &str| remote_targets(&[p.to_string()], &root);
+        assert_eq!(ok("ssh://box/srv/app/src/a.ts").unwrap(), ["/srv/app/src/a.ts"]);
+        assert!(ok("ssh://box/srv/app").is_err(), "not the workspace itself");
+        assert!(ok("ssh://box/srv/app/").is_err());
+        assert!(ok("ssh://box/srv/apple/x").is_err(), "a folder, not a name prefix");
+        assert!(ok("ssh://box/srv/app/../etc").is_err());
+        assert!(ok("ssh://other/srv/app/a.ts").is_err(), "another host");
+        assert!(ok("/srv/app/a.ts").is_err(), "a local path");
     }
 
     #[tokio::test]

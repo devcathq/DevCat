@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <body>
+    <!-- Agent bots (8.5 s): in a chat app, the bot asks to run a command, it's allowed with a tap,
+         the result comes back with the changed files, and a file is sent. DevCat Mobile beside it.
+         All made up. -->
+    <div id="phone-root" data-composition-id="phone" data-start="0" data-duration="8.5" data-width="1920" data-height="1080">
+      <style>
+        #phone-root { position: absolute; inset: 0; background: radial-gradient(1100px 800px at 15% 100%, #10192a 0%, #0f1114 60%); font-family: -apple-system, "SF Pro Display", "Inter", "Segoe UI", sans-serif; color: #e6e8ec; overflow: hidden; }
+        #phone-root .p-text { position: absolute; left: 120px; top: 300px; width: 720px; }
+        #phone-root .p-kicker { color: #f5a524; font-size: 24px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+        #phone-root .p-h { font-size: 64px; font-weight: 750; letter-spacing: -.025em; margin-top: 14px; line-height: 1.05; }
+        #phone-root .p-sub { font-size: 28px; color: #8b93a3; margin-top: 22px; line-height: 1.4; }
+        #phone-root .p-apps { display: flex; gap: 12px; margin-top: 30px; }
+        #phone-root .p-app { font-size: 20px; border: 1px solid #2a2f39; border-radius: 999px; padding: 8px 18px; color: #c9ced8; }
+        #phone-root .p-phone { position: absolute; width: 430px; height: 900px; border-radius: 56px; background: #0b0c0f; border: 10px solid #22252c; box-shadow: 0 40px 120px rgba(0,0,0,.6); overflow: hidden; }
+        #phone-root .p-chat { left: 1330px; top: 90px; }
+        #phone-root .p-mobile { left: 930px; top: 140px; transform: rotate(-6deg); }
+        #phone-root .p-mobile img { width: 100%; height: 100%; object-fit: cover; }
+        #phone-root .p-top { height: 110px; background: #16181d; border-bottom: 1px solid #23262d; display: flex; align-items: flex-end; gap: 14px; padding: 0 22px 16px; }
+        #phone-root .p-bot { width: 46px; height: 46px; border-radius: 50%; background: #f5a524; display: grid; place-items: center; font-size: 24px; }
+        #phone-root .p-name { font-size: 20px; font-weight: 700; }
+        #phone-root .p-status { font-size: 14px; color: #4ade80; }
+        #phone-root .p-body { padding: 18px 16px; display: flex; flex-direction: column; gap: 12px; }
+        #phone-root .p-bub { background: #1e2128; border-radius: 18px 18px 18px 6px; padding: 12px 14px; font-size: 17px; line-height: 1.35; max-width: 340px; white-space: pre-line; }
+        #phone-root .p-bub.me { align-self: flex-end; background: #2b5cd6; border-radius: 18px 18px 6px 18px; font-family: "SF Mono", Menlo, monospace; font-size: 15px; }
+        #phone-root .p-btns { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+        #phone-root .p-btn { flex: 1; text-align: center; font-size: 15px; font-weight: 600; padding: 8px 6px; border-radius: 10px; background: #2a2f39; color: #e6e8ec; white-space: nowrap; }
+        #phone-root .p-btn.allow { background: #1f7a45; }
+        #phone-root .p-btn.deny { background: #7a2a2a; }
+        #phone-root .p-done { color: #4ade80; font-weight: 600; }
+        #phone-root .p-file { display: flex; align-items: center; gap: 12px; }
+        #phone-root .p-doc { width: 44px; height: 52px; border-radius: 8px; background: #2b5cd6; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+        #phone-root .p-tap { position: absolute; width: 60px; height: 60px; border-radius: 50%; background: rgba(255,255,255,.35); border: 2px solid rgba(255,255,255,.8); }
+      </style>
+
+      <div class="p-text">
+        <div class="p-kicker">Agent bots · DevCat Mobile</div>
+        <div class="p-h">Approve and follow along from anywhere.</div>
+        <div class="p-sub">Allow or deny what the agent asks, send new requests, and get the answer and the files back.</div>
+        <div class="p-apps"><span class="p-app">Telegram</span><span class="p-app">Discord</span><span class="p-app">DevCat Mobile</span></div>
+      </div>
+
+      <div class="p-phone p-mobile"><img src="../assets/mobile-agents.png" alt=""></div>
+
+      <div class="p-phone p-chat">
+        <div class="p-top"><div class="p-bot">🐱</div><div><div class="p-name">acme_devcat_bot</div><div class="p-status">bot · storefront</div></div></div>
+        <div class="p-body">
+          <div class="p-bub" id="p-b1">🔐 storefront: allow shell?
+            <span style="font-family:'SF Mono',Menlo,monospace;color:#c9ced8">pnpm test cart</span>
+            <div class="p-btns" id="p-b1-btns"><span class="p-btn allow" id="p-allow">Allow</span><span class="p-btn deny">Deny</span></div>
+            <div class="p-done" id="p-b1-done">✅ Allowed by @ava_tan</div>
+          </div>
+          <div class="p-bub" id="p-b2">✅ Done in 2m 14s.
+Coupons now apply to the pre-tax subtotal. All 14 cart tests pass.
+📝 Changed 2 files: src/cart/total.ts, tests/total.test.ts
+            <div class="p-btns"><span class="p-btn">📁 Files</span><span class="p-btn">📝 Summary</span><span class="p-btn">Open in DevCat</span></div>
+          </div>
+          <div class="p-bub me" id="p-b3">/file src/cart/total.ts</div>
+          <div class="p-bub p-file" id="p-b4"><div class="p-doc">TS</div><div><div style="font-weight:600">total.ts</div><div style="color:#8b93a3;font-size:14px">2 KB · src/cart/total.ts</div></div></div>
+        </div>
+        <div class="p-tap" id="p-tap"></div>
+      </div>
+
+      <script>
+        (function () {
+          const tl = gsap.timeline({ paused: true });
+          tl.fromTo("#phone-root .p-text", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 0);
+          tl.fromTo("#phone-root .p-mobile", { opacity: 0, y: 80 }, { opacity: 0.55, y: 0, duration: 0.8, ease: "power3.out" }, 0.2);
+          tl.fromTo("#phone-root .p-chat", { opacity: 0, y: 80 }, { opacity: 1, y: 0, duration: 0.8, ease: "power3.out" }, 0.35);
+          tl.fromTo("#p-b1", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4 }, 1.1);
+          tl.set("#p-b1-done", { display: "none" }, 0);
+          // the tap on Allow
+          tl.fromTo("#p-tap", { opacity: 0, scale: 0.6, x: 80, y: 210 }, { opacity: 1, scale: 1, duration: 0.25 }, 2.3);
+          tl.to("#p-allow", { scale: 0.92, duration: 0.12, yoyo: true, repeat: 1 }, 2.5);
+          tl.to("#p-tap", { opacity: 0, scale: 1.4, duration: 0.3 }, 2.65);
+          tl.set("#p-b1-btns", { display: "none" }, 2.8);
+          tl.set("#p-b1-done", { display: "block" }, 2.8);
+          tl.fromTo("#p-b2", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.45 }, 3.9);
+          tl.fromTo("#p-b3", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.35 }, 5.4);
+          tl.fromTo("#p-b4", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4 }, 6.2);
+          tl.to("#phone-root", { opacity: 0, duration: 0.4 }, 8.1);
+          window.__timelines = window.__timelines || {};
+          window.__timelines["phone"] = tl;
+        })();
+      </script>
+    </div>
+  </body>
+</html>

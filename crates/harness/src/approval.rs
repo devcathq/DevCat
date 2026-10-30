@@ -60,6 +60,9 @@ pub struct ApprovalRequest {
     /// One line for the prompt: the command, or the file being changed.
     pub summary: String,
     pub input: Value,
+    /// What the user must type to allow it (see `Tool::confirm`); a plain allow doesn't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +72,21 @@ pub enum Decision {
     /// Allow this tool for the rest of the session without asking again.
     AllowForSession,
     Deny { reason: Option<String> },
+    /// Allow a call that names what to type (`ApprovalRequest::confirm`), with what the user typed.
+    /// For any other call it's a plain allow.
+    Confirm { text: String },
+}
+
+impl Decision {
+    /// Whether this answer lets the call run: for one that needs `confirm` typed, only that text.
+    pub fn allows(&self, confirm: Option<&str>) -> bool {
+        match (self, confirm) {
+            (Decision::Deny { .. }, _) => false,
+            (Decision::Confirm { text }, Some(want)) => text.trim() == want,
+            (_, Some(_)) => false,
+            _ => true,
+        }
+    }
 }
 
 /// A question the model asks the user (the `ask_user` tool).

@@ -1,13 +1,14 @@
 // Lens-style Kubernetes cluster view.
 import clsx from "clsx";
 import {
-  AlertTriangle, AppWindow, Boxes, Package, ChevronDown, ChevronRight, CloudOff, Gauge, Layers, ListTree, Pencil, Puzzle, RefreshCw, Search,
+  AlertTriangle, AppWindow, Bot, Boxes, Package, ChevronDown, ChevronRight, CloudOff, Gauge, Layers, ListTree, Pencil, Puzzle, RefreshCw, Search,
   Server, Settings2, Network, HardDrive, Shield, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button, ErrorBox, IconButton, Input, Spinner } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { useConnections } from "../../store/connections";
+import { openConnectionAgent } from "../agent/connection";
 import { useUi } from "../../store/ui";
 import type { Tab } from "../../tabs/types";
 import { eventsReady, k8s, type ConnectInfo, type K8sObject } from "./api";
@@ -205,7 +206,7 @@ function ClusterView({ connId, info, reconnect }: { connId: string; info: Connec
   return (
     <div className="flex h-full min-h-0 flex-col bg-app">
       <div className="flex min-h-0 flex-1">
-        <Sidebar info={info} view={view} setView={(v) => { setView(v); setSelection(null); }} crds={crds.data ?? []} reconnect={reconnect} />
+        <Sidebar connId={connId} info={info} view={view} setView={(v) => { setView(v); setSelection(null); }} crds={crds.data ?? []} reconnect={reconnect} />
         <div className="flex min-w-0 flex-1 flex-col bg-panel">
           <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
@@ -339,7 +340,8 @@ function isActive(view: View, v: View) {
   return view.type !== "list" || (v.type === "list" && view.kind === v.kind);
 }
 
-function Sidebar({ info, view, setView, crds, reconnect }: { info: ConnectInfo; view: View; setView: (v: View) => void; crds: K8sObject[]; reconnect: () => void }) {
+function Sidebar({ connId, info, view, setView, crds, reconnect }: { connId: string; info: ConnectInfo; view: View; setView: (v: View) => void; crds: K8sObject[]; reconnect: () => void }) {
+  const conn = useConnections((s) => s.connections.find((c) => c.id === connId));
   const [crdFilter, setCrdFilter] = useState("");
   const crdGroups = useMemo(() => {
     const m = new Map<string, K8sObject[]>();
@@ -360,6 +362,7 @@ function Sidebar({ info, view, setView, crds, reconnect }: { info: ConnectInfo; 
           <div className="truncate text-[12.5px] font-semibold" title={info.context}>{info.context}</div>
           <div className="truncate text-[10.5px] text-muted" title={info.server}>{info.version}</div>
         </div>
+        {conn && <IconButton title="Ask DevCat Agent about this cluster" onClick={() => void openConnectionAgent(conn)}><Bot className="size-3.5" /></IconButton>}
         <IconButton title="Reconnect" onClick={reconnect}><RefreshCw className="size-3.5" /></IconButton>
       </div>
       <nav className="min-h-0 flex-1 overflow-y-auto p-1.5">

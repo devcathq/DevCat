@@ -1,7 +1,9 @@
 import clsx from "clsx";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Layers, FolderPlus, GitBranch, ListTodo, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, Trash2, Users, X, Zap } from "lucide-react";
+import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Ghost, Layers, FolderPlus, GitBranch, ListTodo, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Shield, SquareArrowOutUpRight, Trash2, Users, X, Zap } from "lucide-react";
+import { isPinned, pin, unpin, usePins } from "../../features/files/pins";
+import { openGhostChat } from "../../features/agent/ghost";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { Toaster } from "sonner";
@@ -24,6 +26,11 @@ import { useTabActivity } from "../../features/claude/activity";
 import { useQuickCommands } from "../../features/terminal/quickCommands";
 import { UpdateDialog } from "../../features/update/UpdateDialog";
 import { MobileDialog } from "../../features/mobile/MobileDialog";
+import { IntegrationsDialog } from "../../features/integrations/IntegrationsDialog";
+import { LinkPrompt } from "../../features/integrations/LinkPrompt";
+import { Setup } from "../../features/onboarding/Setup";
+import { Tour } from "../../features/onboarding/Tour";
+import { firstRun } from "../../features/onboarding/store";
 import { RoomJoinPrompt, RoomsDialog, RoomsPanel } from "../../features/rooms/RoomsDialog";
 import { ShareToRoomDialog } from "../../features/rooms/Exchange";
 import { startRooms, useRooms } from "../../features/rooms/store";
@@ -55,7 +62,8 @@ import { SettingsMenu } from "./SettingsMenu";
 
 export default function AppShell() {
   const load = useConnections((s) => s.load);
-  useEffect(() => { load().catch(console.error); }, [load]);
+  // then, on a fresh install, the setup guide (or for someone updating, the offer of the tour)
+  useEffect(() => { load().then(firstRun).catch(console.error); }, [load]);
 
   // Opened as "move / open tab in new window": show that tab.
   useEffect(() => {
@@ -184,6 +192,8 @@ export default function AppShell() {
       <AiConnectionsDialog />
       <UpdateDialog />
       <MobileDialog />
+      <IntegrationsDialog />
+      <LinkPrompt />
       <RoomsDialog />
       <RoomJoinPrompt />
       <ShareToRoomDialog />
@@ -193,6 +203,8 @@ export default function AppShell() {
       <MemoryPairPrompt />
       <PairPrompt />
       <QuickOpen />
+      <Setup />
+      <Tour />
       <Toaster theme={toastTheme} position="bottom-right" richColors closeButton />
     </div>
   );
@@ -213,6 +225,7 @@ function ActivityBar() {
   const ticketsWorking = useTickets((s) => Object.keys(s.jobs).length > 0);
   const item = (v: SidebarView, icon: ReactNode, title: string) => (
     <button
+      data-tour={`sidebar-${v}`}
       title={sidebar === v ? `${title} (click to ${sidebarCollapsed ? "show" : "hide"} the sidebar, ${toggleKey})` : title}
       onClick={() => pick(v)}
       className={clsx(
@@ -346,6 +359,7 @@ function ProjectBar() {
       <button
         onClick={openSwitcher}
         title="Switch project focus"
+        data-tour="projects"
         className="flex h-6 max-w-72 items-center gap-1.5 rounded px-2 hover:bg-hover"
       >
         {focus ? <Crosshair className="size-3.5 shrink-0" style={{ color: focus.color ?? "var(--color-accent)" }} /> : <Layers className="size-3.5 shrink-0 text-muted" />}
@@ -364,11 +378,21 @@ function ProjectBar() {
         </>
       )}
       <div className={clsx("flex items-center gap-0.5", !focus && "ml-auto")}>
+        <IconButton data-tour="ghost" title="New ghost chat (DevCat Agent), in a window of its own: no history or memory is kept once you close it" aria-label="New ghost chat" onClick={() => void ghostChat()}>
+          <Ghost className="size-3.5" />
+        </IconButton>
         <SettingsMenu />
       </div>
       {menu.element}
     </div>
   );
+}
+
+/** A ghost chat, with the active AI workspace tab's DevCat Agent connection if it has one. */
+async function ghostChat() {
+  const tabs = useTabs.getState();
+  const active = tabs.tabs.find((t) => t.id === tabs.activeId);
+  await openGhostChat(active?.type === "claude" ? active.providerId : null);
 }
 
 /** AI workspace tab title: shimmering "working" while the agent runs, a dot when it finished unseen. */
@@ -414,7 +438,8 @@ function Workspace() {
     const focusId = useConnections.getState().focusProjectId;
     const transferable = t.type !== "welcome";
     menu.show(e, [
-      { label: "Move to new window", icon: <SquareArrowOutUpRight className="size-3.5" />, disabled: !transferable, onClick: () => void moveTabToWindow(t) },
+      // a ghost chat belongs to its window: closing that window deletes it
+      { label: "Move to new window", icon: <SquareArrowOutUpRight className="size-3.5" />, disabled: !transferable || (t.type === "claude" && !!t.ghost), onClick: () => void moveTabToWindow(t) },
       // A copy of an AI workspace tab would run a second agent on the same session.
       ...(t.type !== "claude"
         ? [{ label: "Open copy in new window", icon: <Copy className="size-3.5" />, disabled: !transferable, onClick: async () => void openNewWindow(focusId, await tabTransfer(t)) } as MenuItem]
@@ -422,6 +447,12 @@ function Workspace() {
       // Another shell / file browser on the same host (Xshell's duplicate session).
       ...(t.type === "terminal" || t.type === "sftp"
         ? [{ label: "Duplicate tab", icon: <CopyPlus className="size-3.5" />, onClick: () => { const { id: _id, title, dirty: _d, ...spec } = t; openTab(spec, title); } } as MenuItem]
+        : []),
+      // pinned files show at the top of the AI workspace's Files (features/files/pins.ts)
+      ...(t.type === "file"
+        ? [isPinned(usePins.getState().pins, t.path)
+          ? { label: "Unpin file", icon: <PinOff className="size-3.5" />, onClick: () => unpin(t.path) } as MenuItem
+          : { label: "Pin file", icon: <Pin className="size-3.5" />, onClick: () => pin(t.path, t.root ?? null) } as MenuItem]
         : []),
       ...((t.type === "terminal" || t.type === "claude") && !useQuickCommands.getState().visible
         ? [{ label: "Show quick command bar", icon: <Zap className="size-3.5" />, onClick: () => useQuickCommands.getState().setVisible(true) } as MenuItem]
@@ -454,7 +485,7 @@ function Workspace() {
   const { barRef, drag, startDrag } = useTabDrag();
   return (
     <div className="flex h-full flex-col bg-panel">
-      <div ref={barRef} className="no-select flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-line bg-app">
+      <div ref={barRef} data-tour="tabs" className="no-select flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-line bg-app">
         {tabs.map((t, i) => (
           <div
             key={t.id}
