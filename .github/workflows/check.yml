@@ -1,10 +1,22 @@
-# Quick checks on every pull request that changes the app: the frontend type-checks and builds
-# (desktop and mobile web), and the Rust backend compiles (`cargo check`). A few minutes; the
-# crates have their own workflows (harness.yml, rooms.yml).
+# Quick checks on every pull request that changes the app, and on master after each merge (the
+# README's status badge shows master's): the frontend type-checks and builds (desktop and mobile
+# web), and the Rust backend compiles (`cargo check`). A few minutes; the crates have their own
+# workflows (harness.yml, rooms.yml).
 name: check
 
 on:
   pull_request:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "mobile/src/**"
+      - "crates/remote-proto/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/check.yml"
+  # (the same paths)
+  push:
+    branches: [master]
     paths:
       - "src/**"
       - "src-tauri/**"
