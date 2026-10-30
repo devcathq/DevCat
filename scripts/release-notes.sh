@@ -39,7 +39,7 @@ Already on v0.3.0 or later? DevCat offers the update itself.
 - **Windows:** \`DevCat_${version}_x64-setup.exe\` or \`DevCat_${version}_x64_en-US.msi\` (OpenVPN and WireGuard installers included; DevCat offers them the first time you connect)
 - **Linux:** \`.AppImage\`, \`.deb\` (Debian/Ubuntu) or \`.rpm\` (Fedora/RHEL)
 - **CLI only** (\`devcat serve\`: phones and browsers without the app; servers, SSH): \`devcat-cli-<platform>.tar.gz\` / \`.zip\`, or
-  \`curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh\` · \`brew install devileya/devcat/devcat-cli\`
+  \`curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh\` · \`brew install devcathq/devcat/devcat-cli\`
 
 The builds are not notarized by Apple / signed for Windows yet.
 **macOS:** after dragging DevCat to Applications, open it once; when macOS says it can't verify

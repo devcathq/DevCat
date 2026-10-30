@@ -510,11 +510,13 @@ export interface RemoteOpts { remote?: string | null; rebase?: boolean; setUpstr
 export interface UpdateInfo { version: string; currentVersion: string; date?: string | null; notes?: string | null; canInstall: boolean }
 
 // ---- keep awake (mirror src-tauri/src/keep_awake.rs)
-export interface KeepAwakeState { on: boolean; until?: number | null }
+/** `lid`: also with the lid closed (macOS: system sleep is off while it's on). */
+export interface KeepAwakeState { on: boolean; until?: number | null; lid?: boolean }
 
 // ---- DevCat Agent (crates/harness) ----
 export type AgentPolicy = "plan" | "ask" | "auto-edit" | "bypass";
-export type AgentDecision = { decision: "allow" } | { decision: "allow-for-session" } | { decision: "deny"; reason?: string | null };
+/** `confirm`: allows a call that can't be undone (`AgentApprovalRequest.confirm`) with what the user typed. */
+export type AgentDecision = { decision: "allow" } | { decision: "allow-for-session" } | { decision: "deny"; reason?: string | null } | { decision: "confirm"; text: string };
 export interface AgentUsage { input_tokens: number; output_tokens: number; cache_read_tokens: number }
 export type AgentBlock =
   | { type: "text"; text: string }
@@ -536,6 +538,10 @@ export type AgentSessionEvent =
   | { event: "compacted"; summary: string; model: string; usage: AgentUsage; tokens_before: number };
 export interface AgentContext {
   rules: string[]; skills: string[]; mcp: { name: string; tools: number }[]; notices: string[]; mcpLoading: boolean; connections?: string[];
+  /** The connection the chat was opened from (its name and kind): the chat is about it. */
+  focus?: string | null; focusKind?: string | null;
+  /** A ghost chat: nothing of it is kept once it closes. */
+  ghost?: boolean;
   /** Hook files that run in this chat ("~/.claude/settings.json (2)"). */
   hooks?: string[];
   /** Hooks found but not allowed for this folder yet: they don't run until the user allows them. */
@@ -565,7 +571,8 @@ export interface AgentTrace { events: AgentTraceEvent[]; helpers: Record<string,
 /** A DevCat Agent chat open on the computer (the phone's list; `origin`: "desktop" / "phone:<name>"). */
 export interface AgentChatInfo { sessionId: string; cwd: string; title: string; providerId: string; providerName: string; origin: string; busy: boolean; waiting: string | null; since: number }
 export interface AgentQuestion { toolUseId: string; question: string; options: string[] }
-export interface AgentApprovalRequest { toolUseId: string; tool: string; kind: "read" | "edit" | "edit-outside" | "exec" | "fetch" | "query"; summary: string; input: Record<string, unknown> }
+/** `confirm`: the call can't be undone (dropping a database): the user types this to allow it. */
+export interface AgentApprovalRequest { toolUseId: string; tool: string; kind: "read" | "edit" | "edit-outside" | "exec" | "fetch" | "query"; summary: string; input: Record<string, unknown>; confirm?: string }
 /** Payload of `agent-event`. */
 export type AgentLiveEvent =
   | { type: "turnStart"; text: string; attachments?: string[] }

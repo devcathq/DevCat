@@ -132,6 +132,55 @@ async fn a_refused_command_goes_back_to_the_model_as_an_error() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A tool that can't be undone: it runs only when the user types `target` (its `confirm`).
+struct Drop(Arc<Mutex<Vec<String>>>);
+
+#[async_trait]
+impl Tool for Drop {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "drop".into(), description: "drop".into(), input_schema: json!({ "type": "object" }) }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Exec
+    }
+    fn summary(&self, input: &Value) -> String {
+        input["target"].as_str().unwrap_or("").to_string()
+    }
+    fn confirm(&self, input: &Value) -> Option<String> {
+        input["target"].as_str().map(String::from)
+    }
+    async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        self.0.lock().unwrap().push(input["target"].as_str().unwrap_or("").to_string());
+        ToolOutput::ok("dropped")
+    }
+}
+
+#[tokio::test]
+async fn a_call_that_cant_be_undone_runs_only_with_its_name_typed() {
+    let run = |decision: Decision, policy: Policy| async move {
+        let (dir, mut session) = project().await;
+        let dropped = Arc::new(Mutex::new(Vec::new()));
+        let mut tools = Registry::default();
+        tools.add(Drop(dropped.clone()));
+        // twice: an "always allow" never covers the second one
+        let model = Scripted::new(vec![vec![tool("a", "drop", json!({ "target": "shop" }))], vec![tool("b", "drop", json!({ "target": "shop" }))], vec![text("done")]]);
+        let approver = Arc::new(Answer(decision, Mutex::default()));
+        let mut agent = Agent::new(model, tools, policy, approver.clone(), "s".into());
+        agent.turn(&mut session, "drop it", &Cancel::default(), &mut |_| {}).await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+        let asked = approver.1.lock().unwrap().len();
+        let n = dropped.lock().unwrap().len();
+        (asked, n)
+    };
+    // even bypass asks, and a plain yes isn't enough
+    assert_eq!(run(Decision::Allow, Policy::Bypass).await, (2, 0));
+    assert_eq!(run(Decision::AllowForSession, Policy::Ask).await, (2, 0));
+    assert_eq!(run(Decision::Confirm { text: "shopp".into() }, Policy::Ask).await, (2, 0));
+    assert_eq!(run(Decision::Confirm { text: " shop ".into() }, Policy::Bypass).await, (2, 2));
+    // plan mode doesn't run it at all
+    assert_eq!(run(Decision::Confirm { text: "shop".into() }, Policy::Plan).await, (0, 0));
+}
+
 #[tokio::test]
 async fn allow_for_session_stops_asking_and_bypass_never_asks() {
     let (dir, mut session) = project().await;

@@ -24,6 +24,7 @@ import {
   openSchemaCompare, openTableData, openTableDesign,
 } from "../openers";
 import { isSqlKind, selectTop } from "../../table/sqlDialect";
+import { askableKind, openConnectionAgent } from "../../agent/connection";
 import { openSftp, openSshAgent, openSshTerminal, sessionUri } from "../../ssh/open";
 import { forwardsActive, parseForwards, startForwards, stopForwards, useForwards } from "../../ssh/forwards";
 import {
@@ -119,7 +120,12 @@ function connectionMenu(conn: ConnectionConfig): MenuItem[] {
     ];
   }
   if (isInfra(conn)) {
-    return [{ label: "Open", icon: ic(ExternalLink), onClick: () => openInfra(conn.id, conn.kind === "kubernetes" ? "k8s" : conn.kind === "docker" ? "docker" : "rabbitmq") }, "separator", ...edit];
+    return [
+      { label: "Open", icon: ic(ExternalLink), onClick: () => openInfra(conn.id, conn.kind === "kubernetes" ? "k8s" : conn.kind === "docker" ? "docker" : "rabbitmq") },
+      ...(askableKind(conn.kind) ? [{ label: "Ask DevCat Agent", icon: ic(Bot), onClick: () => void openConnectionAgent(conn) } as MenuItem] : []),
+      "separator",
+      ...edit,
+    ];
   }
   const isOpen = useConnections.getState().open.has(conn.id);
   return [
@@ -128,6 +134,7 @@ function connectionMenu(conn: ConnectionConfig): MenuItem[] {
       : { label: "Connect", icon: ic(Plug), onClick: () => activateConnection(conn) },
     { label: "New query", icon: ic(SquareTerminal), onClick: () => openQuery(conn.id, { database: conn.database }) },
     { label: "Refresh", icon: ic(RefreshCw), shortcut: "F5", onClick: () => refresh(conn.id, []) },
+    { label: "Ask DevCat Agent", icon: ic(Bot), onClick: () => void openConnectionAgent(conn) },
     "separator",
     { label: "Data transfer…", icon: ic(ArrowLeftRight), onClick: () => openDataTransfer(conn.id, conn.database) },
     ...(isSqlKind(conn.kind) ? [{ label: "Schema compare…", icon: ic(GitCompare), onClick: () => openSchemaCompare(conn.id) } as MenuItem] : []),

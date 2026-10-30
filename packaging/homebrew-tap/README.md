@@ -1,8 +1,8 @@
 # DevCat for Homebrew
 
 ```sh
-brew install devileya/devcat/devcat-cli        # the CLI: devcat serve (macOS, Linux)
-brew install --cask devileya/devcat/devcat     # the desktop app (macOS)
+brew install devcathq/devcat/devcat-cli        # the CLI: devcat serve (macOS, Linux)
+brew install --cask devcathq/devcat/devcat     # the desktop app (macOS)
 ```
 
 `devcat serve` shares the computer with [DevCat Mobile](https://github.com/devcathq/DevCat#mobile-app) and phone

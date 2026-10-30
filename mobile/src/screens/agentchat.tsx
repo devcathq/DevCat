@@ -493,6 +493,12 @@ function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
       {!["shell", "edit", "write", "db_query", "devcat_note_write"].includes(item.name) && <Code>{req.summary}</Code>}
       {ctx.readonly ? (
         <div className="mt-2 text-[12px] text-muted">Waiting for an answer on the computer or a phone with full access.</div>
+      ) : req.confirm != null ? (
+        // can't be undone (dropping a database): confirmed in DevCat on the computer only
+        <div className="mt-2.5 flex flex-col gap-2">
+          <div className="text-[12px] text-muted">This can't be undone, so it's confirmed in DevCat on the computer.</div>
+          <Btn variant="ghost" block onClick={() => ctx.onDecide(item.id, { decision: "deny" })}>Deny</Btn>
+        </div>
       ) : (
         <div className="mt-2.5 flex flex-col gap-2">
           <Btn variant="primary" block onClick={() => ctx.onDecide(item.id, { decision: "allow" })}>Allow</Btn>

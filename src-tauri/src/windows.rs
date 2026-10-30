@@ -83,6 +83,7 @@ pub fn create<R: Runtime>(
 
 /// A window was closed: stop what it started.
 pub fn on_destroyed(label: &str) {
+    crate::agent::close_ghosts_of(label);
     crate::claude::pty::close_owned_by(label);
     crate::infra::k8s::streams::stop_owned_by(label, None);
     crate::infra::k8s::release_window(label);

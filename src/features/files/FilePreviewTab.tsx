@@ -1,7 +1,7 @@
 // File preview tab: toolbar (path, size, kind, actions) + a viewer per FilePreview kind,
 // or git blame for text files inside a repository. Plain text files (code, config, …) open in an
 // editor (.html also gets a rendered Preview); markdown, pdf, images, sheets, csv and docx stay preview-only.
-import { Copy, ExternalLink, Files, FolderSearch, History, RefreshCw, UserSearch } from "lucide-react";
+import { Copy, ExternalLink, Files, FolderSearch, History, Pin, RefreshCw, UserSearch } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge, ErrorBox, IconButton, Spinner, Toolbar } from "../../components/ui";
 import { api } from "../../lib/api";
@@ -12,6 +12,7 @@ import { BlameView } from "../git/BlameView";
 import { openGitRepo } from "../git/open";
 import { useRepoRoot } from "../git/repoOf";
 import { FileIcon } from "./FileIcon";
+import { isPinned, togglePin, usePins } from "./pins";
 import { copyFile, copyText, fmtSize, openExternally, relPath, revealPath, REVEAL_LABEL } from "./format";
 import { CsvViewer, SheetViewer } from "./viewers/SheetViewer";
 import { BinaryCard, DocxViewer, ImageViewer, MarkdownViewer } from "./viewers/simple";
@@ -117,6 +118,7 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
             <IconButton title="File history" onClick={() => openGitRepo(repo, { path: tab.path })}><History className="size-3.5" /></IconButton>
           </>
         )}
+        <PinButton path={tab.path} root={tab.root ?? null} />
         <IconButton title="Refresh" onClick={() => { void load(); setReload((n) => n + 1); }}><RefreshCw className={loading ? "size-3.5 animate-spin" : "size-3.5"} /></IconButton>
         <IconButton title="Copy path" onClick={() => void copyText(tab.path)}><Copy className="size-3.5" /></IconButton>
         {!isRemote(tab.path) && (
@@ -172,4 +174,14 @@ function Viewer({ preview, slot, root }: { preview: FilePreview; slot: HTMLEleme
     case "docx": return <DocxViewer {...props} />;
     default: return <BinaryCard {...props} />;
   }
+}
+
+/** Pin / unpin the file: pinned files show at the top of the AI workspace's Files. */
+function PinButton({ path, root }: { path: string; root: string | null }) {
+  const pinned = usePins((s) => isPinned(s.pins, path));
+  return (
+    <IconButton title={pinned ? "Unpin (pinned files show at the top of Files)" : "Pin (show it at the top of Files)"} active={pinned} onClick={() => togglePin(path, root)}>
+      <Pin className="size-3.5" />
+    </IconButton>
+  );
 }

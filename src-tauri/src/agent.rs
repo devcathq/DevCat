@@ -27,6 +27,116 @@ static RUNS: Lazy<Mutex<HashMap<String, Arc<Run>>>> = Lazy::new(Default::default
 /// Sessions are kept in `<data>/agent-sessions/<id>.jsonl`.
 pub fn init(data_dir: PathBuf) {
     let _ = DIR.set(data_dir.join("agent-sessions"));
+    // ghost chats left behind by a crash
+    if let Ok(g) = ghost_dir() {
+        let _ = std::fs::remove_dir_all(g);
+    }
+}
+
+/// Ghost chats (opened in a window of their own) keep nothing: their log, helpers' logs and
+/// attachments live in this temporary folder only while the chat is open, and are deleted when it
+/// closes (its tab or window closes, or the app quits; what a crash leaves is deleted at the next
+/// start). They don't read or write the shared memory, notes or rooms, aren't listed (Sessions,
+/// phones) and a phone can't open them. One folder per data folder, so DevCat Dev and DevCat
+/// don't delete each other's.
+fn ghost_dir() -> AppResult<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    dir()?.hash(&mut h);
+    Ok(std::env::temp_dir().join(format!("devcat-ghost-{:x}", h.finish())))
+}
+
+/// Whether `session_id` is an open ghost chat.
+pub fn is_ghost(session_id: &str) -> bool {
+    RUNS.lock().get(session_id).is_some_and(|r| r.ghost.is_some())
+}
+
+/// What integrations need to know about an open chat.
+#[derive(Debug, Clone)]
+pub struct ChatMeta {
+    pub cwd: String,
+    pub provider_id: String,
+    pub owner: String,
+    pub title: String,
+    pub ghost: bool,
+    pub busy: bool,
+}
+
+/// An open chat, if there is one with that id.
+pub fn meta(session_id: &str) -> Option<ChatMeta> {
+    let run = RUNS.lock().get(session_id).cloned()?;
+    let title = run.log.lock().title.clone();
+    Some(ChatMeta {
+        cwd: run.cwd.clone(),
+        provider_id: run.provider_id.clone(),
+        owner: run.owner.clone(),
+        title,
+        ghost: run.ghost.is_some(),
+        busy: run.busy.load(Ordering::SeqCst),
+    })
+}
+
+/// The open chat's last answer (the text of its last step that said something), as of its last
+/// finished turn.
+pub fn last_answer(session_id: &str) -> Option<String> {
+    let run = RUNS.lock().get(session_id).cloned()?;
+    let log = run.log.lock();
+    log.events.iter().rev().find_map(|e| match e {
+        SessionEvent::Assistant { content, .. } => {
+            let text: Vec<&str> = content.iter().filter_map(|b| if let devcat_harness::Block::Text { text } = b { Some(text.as_str()) } else { None }).collect();
+            let text = text.join("\n").trim().to_string();
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    })
+}
+
+/// Files the open chat wrote or edited (absolute paths, first change first), as of its last
+/// finished turn.
+pub fn changed_files(session_id: &str) -> Vec<String> {
+    let Some(run) = RUNS.lock().get(session_id).cloned() else { return vec![] };
+    let log = run.log.lock();
+    let mut out: Vec<String> = Vec::new();
+    for e in &log.events {
+        let SessionEvent::Assistant { content, .. } = e else { continue };
+        for b in content {
+            if let devcat_harness::Block::ToolUse { name, input, .. } = b
+                && (name == "write" || name == "edit")
+                && let Some(p) = input.get("path").and_then(Value::as_str)
+            {
+                let abs = std::path::Path::new(&run.cwd).join(p).to_string_lossy().into_owned();
+                if !out.contains(&abs) {
+                    out.push(abs);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Delete what a ghost chat kept (after its turn has stopped).
+fn forget_ghost(run: Arc<Run>) {
+    crate::rt::spawn(async move {
+        // a stopped turn lets go of the session; then nothing writes to its files anymore
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), run.turn.lock()).await;
+        if let Ok(g) = ghost_dir() {
+            let _ = tokio::fs::remove_file(g.join(format!("{}.jsonl", run.id))).await;
+            let _ = tokio::fs::remove_dir_all(g.join(format!("{}.agents", run.id))).await;
+            let _ = tokio::fs::remove_dir_all(g.join("attachments").join(&run.id)).await;
+            // its scratch folder (only ever one under the ghost folder)
+            if std::path::Path::new(&run.cwd).starts_with(g.join("work")) {
+                let _ = tokio::fs::remove_dir_all(&run.cwd).await;
+            }
+        }
+    });
+}
+
+/// A window was closed: its ghost chats end, and what they kept is deleted.
+pub fn close_ghosts_of(window: &str) {
+    let ids: Vec<String> = RUNS.lock().values().filter(|r| r.ghost.as_deref() == Some(window)).map(|r| r.id.clone()).collect();
+    for id in ids {
+        let _ = close(&id);
+    }
 }
 
 fn dir() -> AppResult<&'static PathBuf> {
@@ -66,6 +176,8 @@ struct Run {
     context: Mutex<AgentContext>,
     /// MCP server processes (stopped when the chat closes).
     mcp: Mutex<Vec<Arc<Server>>>,
+    /// A ghost chat: the label of the window it's open in (see [`ghost_dir`]).
+    ghost: Option<String>,
 }
 
 /// Rules, skills and MCP servers the agent found for the folder.
@@ -81,6 +193,12 @@ pub struct AgentContext {
     pub mcp_loading: bool,
     /// DevCat connections the agent can use (names).
     pub connections: Vec<String>,
+    /// The connection the chat was opened from (its name): the chat is about it.
+    pub focus: Option<String>,
+    /// Its kind ("postgres", "kubernetes", ...).
+    pub focus_kind: Option<String>,
+    /// A ghost chat: nothing of it is kept once it closes.
+    pub ghost: bool,
     /// Hook files that run in this chat ("~/.claude/settings.json (2)").
     pub hooks: Vec<String>,
     /// Hooks the user hasn't allowed for this folder yet (or that changed since): they don't run
@@ -189,6 +307,8 @@ impl UiApprover {
             live.events.clear();
         }
         live.events.push(event.clone());
+        // chat apps linked to its folder (integrations: approvals, questions, results)
+        crate::integrations::agent_event(&self.session_id, &event);
         crate::events::emit("agent-event", json!({ "sessionId": self.session_id, "event": event, "seq": live.seq }));
     }
 
@@ -245,6 +365,7 @@ pub fn list() -> Vec<ChatInfo> {
     let runs: Vec<Arc<Run>> = RUNS.lock().values().cloned().collect();
     let mut out: Vec<ChatInfo> = runs
         .iter()
+        .filter(|r| r.ghost.is_none())
         .filter(|r| r.busy.load(Ordering::SeqCst) || r.log.lock().events.iter().any(|e| matches!(e, SessionEvent::User { .. })))
         .map(|r| info(r))
         .collect();
@@ -264,7 +385,7 @@ pub fn exists(session_id: &str) -> bool {
 
 /// Tell phones a chat started or stopped working or waiting.
 fn chat_changed(session_id: &str) {
-    let run = RUNS.lock().get(session_id).cloned();
+    let run = RUNS.lock().get(session_id).cloned().filter(|r| r.ghost.is_none());
     if let Some(run) = run {
         crate::events::emit("agent-chat", info(&run));
     }
@@ -395,47 +516,77 @@ pub async fn agent_trust_hooks(session_id: String, digest: String) -> AppResult<
 /// MCP servers get this long to start; the chat works without them meanwhile.
 const MCP_START: std::time::Duration = std::time::Duration::from_secs(25);
 
-async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, owner: &str) -> AppResult<Arc<Run>> {
+#[allow(clippy::too_many_arguments)]
+async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, owner: &str, focus: Option<&str>, ghost: Option<&str>, connections: bool) -> AppResult<Arc<Run>> {
     let (provider, cfg) = crate::ai::agent_config(provider_id)?;
     let id = session.id.clone();
     let approver = Arc::new(UiApprover { session_id: id.clone(), pending: Mutex::default(), questions: Mutex::default(), live: Mutex::default() });
     let dir = std::path::Path::new(cwd);
     let home = home_dir();
     let shell = if cfg!(windows) { "PowerShell" } else { "bash" };
-    let mut system = system_prompt(&Environment { cwd: dir, os: std::env::consts::OS, shell, date: &today() });
-    // the memory every agent of the user's shares (see memory/mod.rs)
-    let scope = crate::agent_tools::Scope::folder(dir);
-    system.push_str("\n\n");
-    system.push_str(&crate::memory::brief(crate::memory::place_for(&scope).as_ref(), None));
+    // a ghost chat starts from nothing: no rule files or skills (the user's or a project's)
+    let env = Environment { cwd: dir, os: std::env::consts::OS, shell, date: &today() };
+    let mut system = if ghost.is_some() { devcat_harness::prompt::system_prompt_with_home(&env, None) } else { system_prompt(&env) };
+    // opened from a connection: the chat sees that connection's project, and knows what's in it
+    let focus = match focus {
+        Some(id) => Some(focused(id)?),
+        None => None,
+    };
+    let scope = match &focus {
+        Some(c) => crate::agent_tools::Scope { project: c.project_id.clone(), folder: Some(dir.to_path_buf()), mcp: false },
+        None => crate::agent_tools::Scope::folder(dir),
+    };
+    if let Some(c) = &focus {
+        system.push_str("\n\n");
+        system.push_str(&crate::agent_tools::brief(&scope, c).await);
+    }
+    // the memory every agent of the user's shares (see memory/mod.rs); a ghost chat neither
+    // reads nor writes it
+    if ghost.is_none() {
+        system.push_str("\n\n");
+        system.push_str(&crate::memory::brief(crate::memory::place_for(&scope).as_ref(), None));
+    } else {
+        system.push_str("\n\nThis is a ghost chat: the user asked for a fresh conversation that keeps nothing. There's no project: the working folder is an empty scratch folder, deleted with everything in it when the chat closes. You have no memory, notes, rooms, DevCat connections or MCP servers here. Don't assume anything about the user's projects; ask if you need something.");
+    }
 
     // What the agent picks up from the folder, for the chat to show.
     let mut context = AgentContext::default();
+    let home = if ghost.is_some() { None } else { home };
     if let Some(h) = &home {
         context.rules.extend(USER_RULES.iter().filter(|r| h.join(r).exists()).map(|r| format!("~/{r}")));
     }
     context.rules.extend(PROJECT_RULES.iter().filter(|r| dir.join(r).exists()).map(|r| r.to_string()));
     context.skills = skills(dir, home.as_deref()).into_iter().map(|s| s.name).collect();
-    let configured = !devcat_harness::mcp::configured(dir, home.as_deref()).0.is_empty();
+    let configured = ghost.is_none() && !devcat_harness::mcp::configured(dir, home.as_deref()).0.is_empty();
     context.mcp_loading = configured;
     // the user's DevCat connections (databases, Redis, MongoDB, clusters) and notes
     let mut tools = Registry::standard();
-    for t in crate::memory::tools::for_scope(&scope, "devcat-agent") {
-        tools.add_arc(t);
+    if ghost.is_none() {
+        for t in crate::memory::tools::for_scope(&scope, "devcat-agent") {
+            tools.add_arc(t);
+        }
     }
-    crate::agent_tools::add(&mut tools, &scope);
-    crate::agent_notes::add(&mut tools);
+    if ghost.is_none() && connections {
+        crate::agent_tools::add(&mut tools, &scope);
+    }
+    if ghost.is_none() {
+        crate::agent_notes::add(&mut tools);
+    }
     // the rooms the user lets coding agents use (rooms_tools.rs)
-    if crate::rooms_tools::allowed_anywhere() {
+    if ghost.is_none() && crate::rooms_tools::allowed_anywhere() {
         for t in crate::rooms_tools::tools("devcat-agent", false) {
             tools.add_arc(t);
         }
     }
-    context.connections = crate::agent_tools::names(&scope);
-    let (hooks, hook_files, review) = hooks_for(cwd);
+    context.connections = if ghost.is_none() && connections { crate::agent_tools::names(&scope) } else { vec![] };
+    context.focus_kind = focus.as_ref().map(|c| crate::agent_tools::kind_name(c.kind).to_string());
+    context.focus = focus.map(|c| c.name);
+    context.ghost = ghost.is_some();
+    let (hooks, hook_files, review) = if ghost.is_none() { hooks_for(cwd) } else { Default::default() };
     (context.hooks, context.hooks_review) = (hook_files, review);
     let mut agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
     agent.hooks = Arc::new(hooks);
-    agent.sandbox = sandbox_saved(&session.id);
+    agent.sandbox = ghost.is_none() && sandbox_saved(&session.id);
     let log = Snapshot::of(&agent, &session);
     let inbox = agent.inbox.clone();
     let run = Arc::new(Run {
@@ -456,6 +607,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         busy: AtomicBool::new(false),
         context: Mutex::new(context),
         mcp: Mutex::default(),
+        ghost: ghost.map(String::from),
     });
     // MCP servers start in the background: the chat opens right away and gets their tools when
     // they're ready (between turns, never in the middle of one).
@@ -490,9 +642,22 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
 }
 
 /// Open a chat: a new session, or `session_id` to continue one (still running or from disk).
+/// `connection_id`: opened from that connection (a database, a cluster): the chat is about it.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn agent_open(cwd: String, provider_id: String, session_id: Option<String>) -> AppResult<AgentOpened> {
-    open(cwd, provider_id, session_id, "desktop", "desktop").await
+/// `ghost_window`: a ghost chat in that window (its label): nothing of it is kept (see [`ghost_dir`]).
+pub async fn agent_open(cwd: String, provider_id: String, session_id: Option<String>, connection_id: Option<String>, ghost_window: Option<String>) -> AppResult<AgentOpened> {
+    let ghost = ghost_window.as_deref().filter(|w| !w.is_empty());
+    open(cwd, provider_id, session_id, "desktop", "desktop", connection_id.as_deref().filter(|c| !c.is_empty()), ghost, true).await
+}
+
+/// The connection a chat is opened from, if agents may use it (not an SSH session, AI access on).
+fn focused(id: &str) -> AppResult<crate::models::ConnectionConfig> {
+    let st = crate::state::St::get();
+    let c = st.store.get(id).map_err(|_| AppError::msg("That connection doesn't exist anymore."))?;
+    let scope = crate::agent_tools::Scope { project: c.project_id.clone(), ..Default::default() };
+    crate::agent_tools::view(&scope).connections.into_iter().find(|v| v.id == id).ok_or_else(|| {
+        AppError::msg(format!("Agents can't use {}: its AI access is off. Turn it on in Edit connection → Advanced.", c.name))
+    })
 }
 
 /// The owner of a scheduled job's chat: the run goes on when a tab showing it closes.
@@ -500,15 +665,31 @@ pub const SCHEDULE: &str = "schedule";
 
 /// `agent_open` for the window or a phone (`origin`: "desktop" / "phone:<name>", `owner`:
 /// "desktop" / the phone's device id; both kept from whoever opened the chat first).
-pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, origin: &str, owner: &str) -> AppResult<AgentOpened> {
+/// `focus`: the id of the connection the chat is opened from (see [`focused`]). `ghost`: a new ghost
+/// chat, open in that window (see [`ghost_dir`]). `connections`: it gets the DevCat connection tools
+/// (a chat app's link may leave them out: their rows would go to the chat app).
+#[allow(clippy::too_many_arguments)]
+pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, origin: &str, owner: &str, focus: Option<&str>, ghost: Option<&str>, connections: bool) -> AppResult<AgentOpened> {
     let existing = session_id.as_ref().and_then(|id| RUNS.lock().get(id).cloned());
+    if existing.as_ref().is_some_and(|r| r.ghost.is_some()) && origin != "desktop" {
+        return Err(AppError::msg("That chat is a ghost chat: it's only in its window on the computer."));
+    }
     let run = match (existing, session_id) {
         (Some(r), _) => r,
+        // a ghost chat that was closed is gone: a new one starts
+        // starts from nothing: an empty scratch folder of its own, not the user's project
+        (None, _) if ghost.is_some() => {
+            let g = ghost_dir()?;
+            let work = g.join("work").join(uuid::Uuid::new_v4().to_string());
+            tokio::fs::create_dir_all(&work).await?;
+            let work = work.to_string_lossy().into_owned();
+            build(&work, &provider_id, Session::create(&g, &work).await.map_err(|e| AppError::msg(e.to_string()))?, origin, owner, None, ghost, false).await?
+        }
         (None, Some(id)) if valid_id(&id) && dir()?.join(format!("{id}.jsonl")).exists() => {
             let session = Session::open(&dir()?.join(format!("{id}.jsonl"))).await.map_err(|e| AppError::msg(e.to_string()))?;
-            build(&cwd, &provider_id, session, origin, owner).await?
+            build(&cwd, &provider_id, session, origin, owner, focus, None, connections).await?
         }
-        _ => build(&cwd, &provider_id, Session::create(dir()?, &cwd).await.map_err(|e| AppError::msg(e.to_string()))?, origin, owner).await?,
+        _ => build(&cwd, &provider_id, Session::create(dir()?, &cwd).await.map_err(|e| AppError::msg(e.to_string()))?, origin, owner, focus, None, connections).await?,
     };
     RUNS.lock().insert(run.id.clone(), run.clone());
     if origin == "desktop" && run.owner == SCHEDULE {
@@ -677,6 +858,9 @@ pub fn attachments_dir(session_id: &str) -> AppResult<PathBuf> {
     if !valid_id(session_id) {
         return Err(AppError::msg("Invalid chat"));
     }
+    if is_ghost(session_id) {
+        return Ok(ghost_dir()?.join("attachments").join(session_id));
+    }
     Ok(dir()?.parent().unwrap_or(dir()?).join("agent-attachments").join(session_id))
 }
 
@@ -813,7 +997,9 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
         agent.context_window = context_window.filter(|&w| w > 0);
         if let Some(s) = sandbox {
             agent.sandbox = s;
-            let _ = sandbox_save(&run.id, s);
+            if run.ghost.is_none() {
+                let _ = sandbox_save(&run.id, s);
+            }
         }
         let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
         let mut res = match compact {
@@ -911,7 +1097,11 @@ pub fn close(session_id: &str) -> AppResult<()> {
     if let Some(run) = run {
         run.cancel.lock().cancel();
         run.approver.deny_all();
-        crate::events::emit("agent-chat-gone", json!({ "sessionId": session_id }));
+        if run.ghost.is_some() {
+            forget_ghost(run);
+        } else {
+            crate::events::emit("agent-chat-gone", json!({ "sessionId": session_id }));
+        }
     }
     Ok(())
 }
@@ -982,6 +1172,10 @@ pub fn shutdown_all() {
     for run in RUNS.lock().drain().map(|(_, r)| r) {
         run.cancel.lock().cancel();
         run.approver.deny_all();
+    }
+    // the app is quitting: nothing of a ghost chat stays
+    if let Ok(g) = ghost_dir() {
+        let _ = std::fs::remove_dir_all(g);
     }
 }
 

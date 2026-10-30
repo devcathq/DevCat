@@ -2,7 +2,7 @@
 // items a chat draws, and how those items read (step rows, folded runs of steps). Shared by the
 // desktop chat (./AgentChat.tsx) and the phone / browser version (mobile/src/screens/agentchat.tsx),
 // so nothing here may import Tauri.
-import { Bot, Boxes, Database, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, NotebookPen, Plug, ScrollText, Search, SquareTerminal, StickyNote, Wrench } from "lucide-react";
+import { Bot, Boxes, Database, DatabaseBackup, DatabaseZap, FileDown, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, NotebookPen, Plug, ScrollText, Search, SquareTerminal, StickyNote, Wrench } from "lucide-react";
 import type { AgentApprovalRequest, AgentBlock, AgentContext, AgentLiveEvent, AgentModel, AgentPolicy, AgentQuestion, AgentSessionEvent, AgentUsage } from "../../lib/types";
 
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
@@ -50,6 +50,17 @@ export const POLICIES: { id: AgentPolicy; label: string; hint: string }[] = [
 ];
 
 export const SUGGESTIONS = ["Explain how this project is organized", "Find and fix failing tests", "Review my uncommitted changes for bugs"];
+
+/** What to ask a ghost chat (no project: a fresh conversation). */
+export const GHOST_SUGGESTIONS = ["Explain a concept to me", "Help me draft a message", "Think through a decision with me"];
+
+/** What to ask a chat opened from a connection, by the connection's kind (`AgentContext.focusKind`). */
+export function focusSuggestions(kind: string | null | undefined): string[] {
+  if (kind === "kubernetes") return ["What's unhealthy in this cluster?", "Which pods restarted recently, and why?", "Summarize the deployments in each namespace"];
+  if (kind === "redis") return ["What kinds of keys are in here?", "Which keys take the most memory?", "Find keys without an expiry"];
+  if (kind === "mongodb") return ["Explain how these collections fit together", "Dump this database to a file", "Export a collection to JSON"];
+  return ["Explain how these tables fit together", "Dump this database to a file", "Export a table to CSV"];
+}
 
 let seq = 0;
 const key = () => `i${++seq}`;
@@ -301,6 +312,9 @@ export function describe(name: string, input: Record<string, unknown> | null, st
     case "devcat_connections": return { icon: Database, verb: done ? "Listed connections" : "Listing connections", target: "" };
     case "db_schema": return { icon: Database, verb: done ? "Read the schema of" : "Reading the schema of", target: [str(i.connection), str(i.table)].filter(Boolean).join(" · ") };
     case "db_query": return { icon: Database, verb: done ? "Queried" : "Querying", target: `${str(i.connection)}: ${str(i.query).replace(/\s+/g, " ")}` };
+    case "db_dump": return { icon: DatabaseBackup, verb: done ? "Dumped" : "Dumping", target: [str(i.connection), str(i.database)].filter(Boolean).join(" · ") + (i.path ? ` → ${rel(str(i.path), cwd)}` : "") };
+    case "db_export": return { icon: FileDown, verb: done ? "Exported" : "Exporting", target: `${str(i.connection)}: ${str(i.table) || str(i.query).replace(/\s+/g, " ")}` };
+    case "db_drop_database": return { icon: DatabaseZap, verb: done ? "Dropped database" : "Dropping database", target: `${str(i.database)} on ${str(i.connection)}` };
     case "k8s_get": return { icon: Boxes, verb: done ? "Got" : "Getting", target: `${str(i.connection)}: ${[str(i.kind), str(i.name)].filter(Boolean).join(" ")}${i.namespace ? ` -n ${str(i.namespace)}` : ""}` };
     case "k8s_logs": return { icon: ScrollText, verb: done ? "Read logs of" : "Reading logs of", target: `${str(i.connection)}: ${str(i.namespace)}/${str(i.pod)}` };
     case "devcat_notes": return i.id
@@ -394,6 +408,8 @@ export function allowAllLabel(name: string) {
   if (name === "devcat_note_write") return "saving notes";
   if (name === "web_fetch") return "fetching pages";
   if (name === "db_query") return "queries";
+  if (name === "db_dump") return "dumps";
+  if (name === "db_export") return "exports";
   if (name.startsWith("k8s_")) return "cluster reads";
   if (name.startsWith("mcp__")) return "this tool";
   return "edits";
@@ -403,6 +419,9 @@ export function allowAllLabel(name: string) {
 export function approvalTitle(name: string, kind: AgentApprovalRequest["kind"], input: Record<string, unknown> | null) {
   const i = input ?? {};
   if (name === "db_query") return kind === "query" ? `Read from ${str(i.connection)}?` : `Run this on ${str(i.connection)}? It may change data`;
+  if (name === "db_dump") return `Dump ${str(i.database) || str(i.connection)} to a file?`;
+  if (name === "db_export") return `Export from ${str(i.connection)} to a file?`;
+  if (name === "db_drop_database") return `Drop the database ${str(i.database)} on ${str(i.connection)}? This can't be undone`;
   if (name === "devcat_notes") return "Read your DevCat notes?";
   if (name === "devcat_note_write") return i.id ? "Change a DevCat note?" : "Save a new DevCat note?";
   if (kind === "query") return `Read from ${str(i.connection)}?`;

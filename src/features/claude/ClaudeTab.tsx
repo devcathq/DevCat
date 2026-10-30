@@ -6,7 +6,7 @@
 // its own tab.
 import clsx from "clsx";
 import {
-  AlertOctagon, AlertTriangle, ArrowDown, ArrowUp, Bot, CheckCircle2, ChevronDown, GitBranch, MessageSquarePlus, RotateCcw, ScanSearch, SquareTerminal,
+  AlertOctagon, AlertTriangle, ArrowDown, ArrowUp, Bot, CheckCircle2, ChevronDown, Ghost, GitBranch, MessageSquarePlus, RotateCcw, ScanSearch, SquareTerminal,
   Terminal,
   Sparkle,
 } from "lucide-react";
@@ -16,6 +16,7 @@ import { Button, Dialog, Empty, IconButton, Select, Spinner } from "../../compon
 import type { AiProvider, ClaudePermissionMode } from "../../lib/types";
 import { useContextMenu } from "../connections/ContextMenu";
 import { providerMenu } from "./AiProviders";
+import { openGhostChat } from "../agent/ghost";
 import { useTabs } from "../../store/tabs";
 import type { Tab } from "../../tabs/types";
 import { CopyButton, CodeBlock } from "./Markdown";
@@ -375,6 +376,12 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
         }}>
           <MessageSquarePlus className="size-3.5" /><span className="@max-7xl:hidden">New session</span>
         </Button>
+        {!tab.ghost && (
+          <Button size="sm" variant="ghost" className="shrink-0" title="New ghost chat (DevCat Agent), in a window of its own: no history or memory is kept once you close it"
+            onClick={() => void openGhostChat(provider?.id)}>
+            <Ghost className="size-3.5" />
+          </Button>
+        )}
         {view === "diff" && provider && (
           <IconButton title={`Ask ${agent} to review`} onClick={reviewNow}><ScanSearch className="size-3.5" /></IconButton>
         )}
@@ -393,7 +400,7 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
             isClaude ? <InstallHelp onRetry={() => void loadInfo(true)} error={infoError} /> : <AgentInstallHelp provider={provider} />
           ) : (
             isAgent ? (
-              <AgentChat tabId={tabId} cwd={tab.cwd} provider={provider} visible={active && view === "chat"} onReview={() => setView("diff")} />
+              <AgentChat tabId={tabId} cwd={tab.cwd} connId={tab.connId ?? null} ghost={!!tab.ghost} provider={provider} visible={active && view === "chat"} onReview={() => setView("diff")} />
             ) : (
               <ChatPane tabId={tabId} cwd={tab.cwd} visible={active && view === "chat"} provider={provider} />
             )

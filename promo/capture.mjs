@@ -94,6 +94,28 @@ const scenes = {
     await sleep(2500);
   },
 
+  // DevCat Agent, opened from the shop-db connection (made-up chat: src/dev/demo.ts)
+  agent: async (page) => {
+    await page.evaluate((root) => {
+      const d = window.__demo;
+      d.useUi.getState().setSidebar("claude");
+      d.openTab({ type: "claude", cwd: `${root}/storefront`, connId: "c-pg", providerId: "p-agent", sessionId: null, view: "chat" }, "shop-db · Agent", "agent-conn:c-pg");
+    }, ROOT);
+    // the chat (and its Markdown) loads in parts: wait for the answer to be there
+    await page.getByText("Three customers were refunded", { exact: false }).first().waitFor({ timeout: 15000 });
+    await sleep(1500);
+  },
+
+  bots: async (page) => {
+    await page.evaluate(() => window.__demo.openIntegrations());
+    await sleep(1500);
+  },
+
+  memory: async (page) => {
+    await page.evaluate(() => window.__demo.openMemory());
+    await sleep(1500);
+  },
+
   notes: async (page) => {
     await page.evaluate(() => {
       const d = window.__demo;
@@ -114,17 +136,33 @@ async function expandTree(page, labels) {
     if (!(await row.count())) continue;
     // the expand arrow sits just left of the label
     const box = await row.boundingBox();
+    if (!box) continue;
     await page.mouse.click(box.x - 38, box.y + box.height / 2);
     await sleep(400);
   }
 }
 
-const wanted = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(scenes);
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+/** Scenes that open their own URL instead of the main window. */
+const urls = {
+  ghost: () => `${APP}?tab=${encodeURIComponent(JSON.stringify({ type: "claude", cwd: "", providerId: "p-agent", sessionId: null, view: "chat", ghost: true, title: "Ghost chat" }))}`,
+};
+
+const wanted = process.argv.slice(2).length ? process.argv.slice(2) : [...Object.keys(scenes), ...Object.keys(urls)];
+// No WebGL: headless Chrome draws xterm's GPU renderer blown up at 2x, its DOM renderer is right.
+const browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--disable-webgl", "--disable-webgl2"] });
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
 for (const name of wanted) {
   const page = await ctx.newPage();
   page.on("pageerror", (e) => console.warn(`[${name}] page error: ${e.message}`));
+  if (urls[name]) {
+    await page.goto(urls[name]());
+    await sleep(2500);
+    await page.mouse.move(1439, 899);
+    await page.screenshot({ path: `${OUT}${name}.png` });
+    console.log(`✓ ${name}`);
+    await page.close();
+    continue;
+  }
   await page.goto(APP);
   await page.waitForFunction(() => !!window.__demo);
   await page.evaluate((root) => {

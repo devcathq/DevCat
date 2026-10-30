@@ -23,6 +23,7 @@ mod gitx;
 mod history;
 mod infra;
 mod instance;
+mod integrations;
 mod keep_awake;
 mod mcp_audit;
 mod mcp_server;
@@ -106,6 +107,8 @@ fn init_backend(dir: std::path::PathBuf) {
     // after remote access: sync uses its relay choice
     memory::sync::init(dir.clone());
     tickets::init(dir.clone());
+    keep_awake::init(dir.clone());
+    integrations::init(dir.clone());
     rooms::init(dir);
 }
 
@@ -183,6 +186,20 @@ pub fn run() {
             keep_awake::keep_awake_status,
             fonts::fonts_list,
             keep_awake::keep_awake_set,
+            integrations::integrations_status,
+            integrations::integrations_bot_add,
+            integrations::integrations_bot_enable,
+            integrations::integrations_bot_remove,
+            integrations::integrations_link_code,
+            integrations::integrations_link_cancel_code,
+            integrations::integrations_link_answer,
+            integrations::integrations_link_update,
+            integrations::integrations_link_remove,
+            integrations::integrations_link_test,
+            integrations::integrations_channel_add,
+            integrations::integrations_channel_update,
+            integrations::integrations_channel_remove,
+            integrations::integrations_channel_test,
             // updates
             updater::update_check,
             updater::update_install,
@@ -341,6 +358,7 @@ pub fn run() {
             claude::clipboard::clipboard_write_text,
             claude::clipboard::clipboard_read_text,
             claude::clipboard::fs_paste,
+            claude::files::fs_delete,
             claude::git::git_status,
             claude::git::git_file_versions,
             claude::git::git_diff_text,

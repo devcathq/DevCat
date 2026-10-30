@@ -12,6 +12,54 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Setup guide and tour:** a fresh install opens a short guide: pick your coding agent (DevCat checks which ones are
+  installed and shows how to install the rest, or sets up the built-in DevCat Agent), a project folder, any
+  connections, and your phone, agent bots, Sync MCP and memory. Then a tour shows where everything is, one part at a
+  time. Skip either at any step; both are in Settings (Set up DevCat…, Take the tour) and on the Welcome tab.
+- **A new welcome page:** start an agent chat, a ghost chat or tickets; open Git, Rooms, VPNs, notes and the
+  database tools; connect a database, cluster or server; and set up your phone, agent bots, Sync MCP and the shared
+  memory, all from the first tab.
+- **Agent bots (Telegram, Discord).** Settings → **Agent bots** adds a Telegram or Discord bot (it runs from
+  this computer: no server) and links a chat to a folder with a one-time code (`/link CODE` in the chat, then your OK
+  in DevCat). For agents working in that folder the chat gets **Allow / Deny** buttons and their questions, and the
+  result when they finish; it can send **new requests** (they run as a DevCat Agent chat in the folder, with its
+  project's memory), `/status`, `/stop`, `/summary`, `/files` and `/file <path>` to get files, and `/open` for a link
+  that opens the chat in DevCat Mobile on a phone already paired with the computer. Each link chooses what it may do
+  (notifications, approvals, requests, files, editing without asking, DevCat connections). Only the person who
+  linked a chat is listened to there; key and password files are never sent; dropping a database is confirmed on
+  the computer only; ghost chats are never sent.
+- **More notification channels:** Mobile → Notifications sends "finished" / "needs you" to Discord and Slack webhooks
+  (or any webhook) as well as ntfy, and DevCat Agent chats now notify too, not only Claude Code.
+- **Keep awake with the lid closed (macOS):** macOS sleeps when the lid closes whatever apps ask, so agents and
+  networks stopped. The cup's menu now has **Keep awake with the lid closed…**: DevCat turns system sleep off
+  (`pmset disablesleep`, which asks for your password) and turns it back on when keep awake ends: when you turn it
+  off, its time is up, DevCat quits, or at the next start after a crash. If sleep was already off, it's left alone.
+- **Title bar:** **Mobile pairing** (the phone) and **Keep awake** (the cup) are icons in the title bar, next to
+  Settings, instead of items in the Settings menu. The phone turns blue while phone access is on and shows a dot when
+  a phone wants to pair; the cup shows how long the computer is kept awake.
+- **Ghost chats:** the ghost icon in the top bar (or an AI workspace tab's header) opens a window with only a
+  DevCat Agent chat that starts from nothing and keeps nothing. No project: it works in an empty scratch folder of its
+  own, without rule files, skills, MCP servers, hooks, DevCat connections, memory, notes or rooms. It isn't listed in
+  Sessions or on your phone, and what you type isn't kept for ↑. Closing the window deletes the chat and its scratch
+  folder. (The model's provider still receives the conversation, as for any chat.)
+- **AI workspace files: search the whole folder.** The search box above the file list finds files in folders you
+  haven't opened (with .gitignore respected), showing them with the folders leading to them; type a `/` to match the
+  path. Folders on SSH hosts still filter the folders you've opened.
+- **AI workspace files: Pin.** Pin a file from the file list (right-click → **Pin**), its tab (right-click → **Pin
+  file**) or the pin button in the file's toolbar: it stays at the top of **Files** under **Pinned** for that
+  folder, to open again in one click. Pins are kept on this computer.
+- **AI workspace files: Delete.** Right-click a file or folder → **Delete…** (or Delete, ⌘⌫ on macOS). On this
+  computer it goes to the Trash / Recycle Bin; in a folder on an SSH host it's deleted for good (there's no Trash
+  there), and the confirmation says so.
+- **Ask DevCat Agent about a connection:** right-click a database, Redis, MongoDB or Kubernetes connection (or use
+  **Ask agent** in a query tab, the robot in a cluster's sidebar) for a DevCat Agent chat about it. It starts out
+  knowing the connection: a database's tables and columns, a cluster's namespaces (structure only, never rows), so
+  you can ask right away. The agent can also **dump** a database to a .sql file (a folder of JSON lines for MongoDB),
+  **export** a table or a query's rows to CSV, TSV, JSON, SQL or Excel (to Downloads unless you say where), and
+  **drop a database**. Dropping asks twice, whatever the permission mode: click **Drop…**, then type the database's
+  name. It's confirmed on the computer only (not from a phone), never over MCP, and read-only connections and the
+  server's own databases can't be dropped.
+
 ## 0.17.0 - 2026-10-30
 
 - **Tickets: answer the agent** (#114): a board's panel has **Working**, **Chat** and **History** tabs. When the
@@ -364,5 +412,5 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Install from a terminal:**
   - `curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh` (macOS, Linux);
   - `irm https://devcathq.github.io/DevCat/install.ps1 | iex` (Windows);
-  - Homebrew: `brew install devileya/devcat/devcat-cli`, or `--cask devileya/devcat/devcat` for
+  - Homebrew: `brew install devcathq/devcat/devcat-cli`, or `--cask devcathq/devcat/devcat` for
     the app.

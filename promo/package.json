@@ -2,25 +2,14 @@
   "name": "devcat-promo",
   "private": true,
   "type": "module",
-  "description": "README screenshots and demo video: capture the demo-mode UI, then animate with Remotion.",
+  "description": "README screenshots: capture the demo-mode UI, and turn a demo video into the README GIF.",
   "scripts": {
     "demo-repo": "./setup-demo.sh",
     "capture": "node capture.mjs",
-    "stills": "mkdir -p ../assets/readme && for f in ai diff table query git k8s network notes; do sips -Z 1600 public/shots/$f.png --out ../assets/readme/$f.png >/dev/null; done",
-    "studio": "remotion studio src/index.ts",
-    "render": "remotion render src/index.ts DevCatDemo out/demo.mp4",
+    "stills": "mkdir -p ../assets/readme && for f in ai diff table query git k8s network notes agent bots ghost memory welcome; do sips -Z 1600 public/shots/$f.png --out ../assets/readme/$f.png >/dev/null; done",
     "gif": "./make-gif.sh"
   },
   "dependencies": {
-    "@remotion/cli": "4.0.536",
-    "playwright-core": "^1.64.1",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "remotion": "4.0.536",
-    "zod": "4.5.4"
-  },
-  "devDependencies": {
-    "@types/react": "^19.3.0",
-    "typescript": "^7.0.2"
+    "playwright-core": "^1.64.1"
   }
 }

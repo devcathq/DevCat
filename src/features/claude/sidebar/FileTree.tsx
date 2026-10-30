@@ -3,20 +3,22 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import {
   AlertTriangle, AtSign, ChevronRight, ChevronsDownUp, ClipboardCopy, ClipboardPaste, Copy, Eye, Files, EyeOff, FolderGit2, FolderSearch, GitBranch, History, Loader2, RefreshCw, Search,
-  SquareArrowOutUpRight, UserSearch, X,
+  Pin, PinOff, SquareArrowOutUpRight, Trash2, UserSearch, X,
 } from "lucide-react";
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { forwardRef, memo, useCallback, useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { toast } from "sonner";
 import { IconButton } from "../../../components/ui";
 import { api } from "../../../lib/api";
 import type { FileEntry, GitStatus } from "../../../lib/types";
 import { useTabs } from "../../../store/tabs";
 import { useContextMenu, type MenuItem } from "../../connections/ContextMenu";
+import { confirmDialog } from "../../connections/dialogs";
 import { FileIcon } from "../../files/FileIcon";
 import { basename, copyFile, copyText, dirname, openFilePreview, relPath, revealPath, REVEAL_LABEL } from "../../files/format";
 import { openBlame, openGitRepo } from "../../git/open";
 import { repoRootOf } from "../../git/repoOf";
 import { useWorkspace } from "./workspace";
+import { inFolder, isPinned, togglePin, unpin, unpinUnder, usePins } from "../../files/pins";
 import { isRemote } from "../../../lib/remotePath";
 import { DRAG_PATHS } from "../../files/format";
 import { IS_MAC } from "../../../lib/windows";
@@ -31,6 +33,68 @@ type Row =
   | { type: "note"; id: string; depth: number; text: string; error?: boolean; retry?: string };
 
 export interface FileTreeHandle { refresh: () => void; collapseAll: () => void }
+
+/** Most files a search shows; refine it for the rest. */
+const MAX_HITS = 2000;
+
+/** Every file under the folder (relative, .gitignore respected), for searching it. */
+type AllFiles = { state: "loading" } | { state: "ok"; files: string[]; truncated: boolean } | { state: "error"; message: string };
+
+/** The tree of the files (and folders) whose name matches `q`, with the folders leading to them
+ *  open. `q` with a `/` matches the relative path instead. */
+function searchRows(cwd: string, files: string[], q: string): { rows: Row[]; more: number } {
+  const sep = cwd.includes("\\") && !cwd.includes("/") ? "\\" : "/";
+  const base = cwd.replace(/[\\/]+$/, "");
+  const byPath = q.includes("/");
+  const hit = (rel: string) => (byPath ? rel : rel.slice(rel.lastIndexOf("/") + 1)).toLowerCase().includes(q);
+  const dirs = new Set<string>();
+  const shown = new Set<string>();
+  const addParents = (rel: string) => {
+    for (let i = rel.lastIndexOf("/"); i > 0; i = rel.lastIndexOf("/", i - 1)) {
+      const d = rel.slice(0, i);
+      if (dirs.has(d)) break;
+      dirs.add(d);
+    }
+  };
+  let more = 0;
+  for (const f of files) {
+    // a folder whose name matches shows too (without everything in it)
+    for (let i = f.indexOf("/"); i > 0; i = f.indexOf("/", i + 1)) {
+      const d = f.slice(0, i);
+      if (!dirs.has(d) && hit(d)) { dirs.add(d); addParents(d); }
+    }
+    if (!hit(f)) continue;
+    if (shown.size >= MAX_HITS) { more++; continue; }
+    shown.add(f);
+    addParents(f);
+  }
+  const children = new Map<string, { rel: string; isDir: boolean }[]>();
+  const put = (rel: string, isDir: boolean) => {
+    const i = rel.lastIndexOf("/");
+    const parent = i < 0 ? "" : rel.slice(0, i);
+    const list = children.get(parent) ?? [];
+    list.push({ rel, isDir });
+    children.set(parent, list);
+  };
+  for (const d of dirs) put(d, true);
+  for (const f of shown) put(f, false);
+  const rows: Row[] = [];
+  const walk = (parent: string, depth: number) => {
+    const entries = sortEntries((children.get(parent) ?? []).map(({ rel, isDir }) => ({
+      name: rel.slice(rel.lastIndexOf("/") + 1), path: `${base}${sep}${rel.split("/").join(sep)}`, isDir, size: 0, ignored: false,
+    })));
+    for (const e of entries) {
+      const rel = relOf(e.path, base, sep);
+      const open = e.isDir && children.has(rel);
+      rows.push({ type: "entry", entry: e, depth, expanded: open, loading: false });
+      if (open) walk(rel, depth + 1);
+    }
+  };
+  walk("", 0);
+  return { rows, more };
+}
+
+const relOf = (abs: string, base: string, sep: string) => abs.slice(base.length + 1).split(sep).join("/");
 
 function sortEntries(list: FileEntry[]): FileEntry[] {
   return [...list].sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }) : a.isDir ? -1 : 1));
@@ -83,11 +147,19 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const query = useDeferredValue(filter.trim().toLowerCase());
+  // searching reads every file under the folder (not just the open ones); SSH folders can't yet
+  const [all, setAll] = useState<AllFiles | null>(null);
+  // bumped when the folder changes or on Refresh: a search started before then is dropped
+  const allGen = useRef(0);
+  const searchAll = !isRemote(cwd);
   const activePath = useTabs((s) => {
     const t = s.tabs.find((x) => x.id === s.activeId);
     return t?.type === "file" ? t.path : null;
   });
   const gitIdx = useGitIndex(git);
+  const allPins = usePins((s) => s.pins);
+  const pins = useMemo(() => allPins.filter((p) => inFolder(p.path, cwd)), [allPins, cwd]);
   const menu = useContextMenu();
   const scrollRef = useRef<HTMLDivElement>(null);
   const gen = useRef(0);
@@ -109,7 +181,17 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
     setListings({});
     void load(cwd);
   }, [cwd, load]);
-  useEffect(() => { setExpanded(new Set()); setSelected(null); setFilter(""); }, [cwd]);
+  useEffect(() => { allGen.current++; setExpanded(new Set()); setSelected(null); setFilter(""); setAll(null); }, [cwd]);
+  useEffect(() => {
+    if (!query || !searchAll || all) return;
+    // (no cleanup: setting "loading" runs this again, and must not drop the search it started)
+    const g = allGen.current;
+    setAll({ state: "loading" });
+    api.fsFindFiles(cwd).then(
+      (r) => g === allGen.current && setAll({ state: "ok", files: r.files, truncated: r.truncated }),
+      (e) => g === allGen.current && setAll({ state: "error", message: String(e) }),
+    );
+  }, [query, searchAll, all, cwd]);
 
   // Expanded dirs without a listing (after a reset) get loaded.
   useEffect(() => {
@@ -117,6 +199,8 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
   }, [expanded, listings, load]);
 
   const refresh = useCallback(() => {
+    allGen.current++;
+    setAll(null);
     void load(cwd);
     for (const d of expanded) void load(d);
   }, [cwd, expanded, load]);
@@ -141,6 +225,37 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
   }, [cwd, load]);
   useImperativeHandle(ref, () => ({ refresh, collapseAll }), [refresh, collapseAll]);
 
+  // Delete a file or folder: to the Trash on this computer, for good on an SSH host (no Trash there).
+  const remove = useCallback(async (e: FileEntry) => {
+    const remote = isRemote(e.path);
+    const what = e.isDir ? `the folder ${e.name} and everything in it` : e.name;
+    const ok = await confirmDialog({
+      title: `Delete ${e.name}?`,
+      message: remote ? `This deletes ${what} on the SSH host for good: there's no Trash there.` : `This moves ${what} to the ${IS_MAC ? "Trash" : "Recycle Bin"}, where you can put it back.`,
+      confirmLabel: remote ? "Delete for good" : `Move to ${IS_MAC ? "Trash" : "Recycle Bin"}`,
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.fsDelete([e.path], cwd);
+    } catch (err) {
+      toast.error(String(err));
+      return;
+    }
+    // its tabs close, and the tree shows the folder as it is now
+    const under = (p: string) => p === e.path || p.startsWith(`${e.path}/`) || p.startsWith(`${e.path}\\`);
+    const tabs = useTabs.getState();
+    for (const t of tabs.tabs) if (t.type === "file" && under(t.path)) tabs.close(t.id, true);
+    setExpanded((s) => new Set([...s].filter((d) => !under(d))));
+    unpinUnder(e.path);
+    setSelected(null);
+    allGen.current++;
+    setAll(null);
+    const parent = dirname(e.path);
+    void load(parent && parent !== e.path ? parent : cwd);
+    toast.success(remote ? `Deleted ${e.name}` : `Moved ${e.name} to the ${IS_MAC ? "Trash" : "Recycle Bin"}`);
+  }, [cwd, load]);
+
   const toggle = useCallback((dir: string, open?: boolean) => {
     setExpanded((s) => {
       const n = new Set(s);
@@ -152,7 +267,14 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
 
   const rows = useMemo<Row[]>(() => {
     const out: Row[] = [];
-    const q = filter.trim().toLowerCase();
+    const q = query;
+    if (q && all?.state === "loading") return [{ type: "note", id: "#searching", depth: 0, text: "Searching…" }];
+    if (q && all?.state === "ok") {
+      const { rows: hits, more } = searchRows(cwd, all.files, q);
+      if (more) hits.push({ type: "note", id: "#more", depth: 0, text: `${more.toLocaleString()} more matches: type more of the name` });
+      if (all.truncated && hits.length) hits.push({ type: "note", id: "#truncated", depth: 0, text: "Searched the first 100,000 files only" });
+      return hits;
+    }
     // Filtering walks every loaded node and keeps matches + their ancestors.
     const walk = (dir: string, depth: number, into: Row[]): boolean => {
       const l = listings[dir];
@@ -185,7 +307,7 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
     };
     walk(cwd, 0, out);
     return out;
-  }, [cwd, listings, expanded, filter]);
+  }, [cwd, listings, expanded, query, all]);
 
   const virt = useVirtualizer({
     count: rows.length,
@@ -207,11 +329,26 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
   const rowKey = (r: Row) => (r.type === "entry" ? r.entry.path : r.id);
   const selIndex = selected ? rows.findIndex((r) => r.type === "entry" && r.entry.path === selected) : -1;
 
+  // a folder in search results: leave the search and show it open in the tree
+  const showDir = useCallback((dir: string) => {
+    const base = cwd.replace(/[\\/]+$/, "");
+    const sep = dir.charAt(base.length) || "/";
+    setExpanded((s) => {
+      const n = new Set(s);
+      for (let i = dir.indexOf(sep, base.length + 1); i > 0; i = dir.indexOf(sep, i + 1)) n.add(dir.slice(0, i));
+      n.add(dir);
+      return n;
+    });
+    setFilter("");
+    setReveal(dir);
+  }, [cwd]);
+
   const activate = useCallback((e: FileEntry) => {
     setSelected(e.path);
-    if (e.isDir) toggle(e.path);
+    if (e.isDir && query && all?.state === "ok") showDir(e.path);
+    else if (e.isDir) toggle(e.path);
     else openFilePreview(e.path, cwd);
-  }, [cwd, toggle]);
+  }, [cwd, toggle, query, all, showDir]);
 
   const onKey = (ev: KeyboardEvent<HTMLDivElement>) => {
     if ((ev.target as HTMLElement).tagName === "INPUT") return;
@@ -225,6 +362,10 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
     if (ev.key === "ArrowDown") { ev.preventDefault(); move(selIndex + 1); }
     else if (ev.key === "ArrowUp") { ev.preventDefault(); move(Math.max(0, selIndex - 1)); }
     else if (cur?.type === "entry" && ev.key === "Enter") { ev.preventDefault(); activate(cur.entry); }
+    else if (cur?.type === "entry" && (ev.key === "Delete" || (IS_MAC && ev.key === "Backspace" && ev.metaKey))) {
+      ev.preventDefault();
+      void remove(cur.entry);
+    }
     else if (cur?.type === "entry" && ev.code === "KeyC" && (IS_MAC ? ev.metaKey : ev.ctrlKey) && !ev.shiftKey && !ev.altKey && !isRemote(cur.entry.path)) {
       ev.preventDefault();
       void copyFile(cur.entry.path);
@@ -257,6 +398,9 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
       e.isDir
         ? { label: expanded.has(e.path) ? "Collapse" : "Expand", icon: <ChevronRight className="size-3.5" />, onClick: () => toggle(e.path) }
         : { label: "Open preview", icon: <SquareArrowOutUpRight className="size-3.5" />, onClick: () => openFilePreview(e.path, cwd) },
+      ...(e.isDir ? [] : [isPinned(usePins.getState().pins, e.path)
+        ? { label: "Unpin", icon: <PinOff className="size-3.5" />, onClick: () => unpin(e.path) }
+        : { label: "Pin", icon: <Pin className="size-3.5" />, onClick: () => togglePin(e.path, cwd) }]),
       ...(e.isDir
         ? e.isRepo && !isRemote(e.path) ? [{ label: "Open Git repository", icon: <FolderGit2 className="size-3.5" />, onClick: () => openGitRepo(e.path) }] : []
         : isRemote(e.path) ? [] : [
@@ -272,9 +416,11 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
       { label: "Copy relative path", icon: <ClipboardCopy className="size-3.5" />, onClick: () => void copyText(rel) },
       { label: "Mention in chat", icon: <AtSign className="size-3.5" />, onClick: () => void copyText(`@${rel}${e.isDir ? "/" : ""}`, `Copied @${rel} — paste it in the chat`) },
       ...(isRemote(e.path) ? [] : ["separator", { label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(e.path) }] as MenuItem[]),
+      "separator",
+      { label: "Delete…", shortcut: IS_MAC ? "⌘⌫" : "Del", danger: true, icon: <Trash2 className="size-3.5" />, onClick: () => void remove(e) },
     ];
     menu.show(ev, items);
-  }, [cwd, expanded, toggle, menu, paste]);
+  }, [cwd, expanded, toggle, menu, paste, remove]);
 
   const root = listings[cwd];
 
@@ -287,7 +433,7 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setFilter("")}
-            placeholder="Filter loaded files"
+            placeholder={searchAll ? "Search files" : "Filter loaded files"}
             spellCheck={false}
             className="h-5.5 w-full rounded border border-line bg-app pr-5 pl-6 text-[12px] placeholder:text-faint focus:border-accent focus:outline-none"
           />
@@ -305,14 +451,17 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
           <RefreshCw className={clsx("size-3.5", root?.state === "loading" && "animate-spin")} />
         </IconButton>
       </div>
+      {pins.length > 0 && !query && <PinnedList pins={pins} cwd={cwd} activePath={activePath} onMenu={showMenu} />}
       <div
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={onKey}
         className="min-h-0 flex-1 overflow-auto outline-none focus-visible:outline-none"
       >
-        {filter && rows.length === 0 ? (
-          <div className="px-3 py-2 text-[12px] text-faint italic">No loaded file matches “{filter}”. Expand folders to search deeper.</div>
+        {query && rows.length === 0 ? (
+          <div className="px-3 py-2 text-[12px] text-faint italic">
+            {all?.state === "ok" ? `No file matches “${filter}”.` : `No loaded file matches “${filter}”. Expand folders to search deeper.`}
+          </div>
         ) : (
           <div style={{ height: virt.getTotalSize(), position: "relative" }}>
             {virt.getVirtualItems().map((vi) => {
@@ -328,6 +477,7 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
                       active={activePath === r.entry.path}
                       git={r.entry.git ?? gitIdx.files.get(r.entry.path) ?? null}
                       dirty={r.entry.isDir && gitIdx.dirs.has(r.entry.path)}
+                      pinned={!r.entry.isDir && isPinned(pins, r.entry.path)}
                       onActivate={activate}
                       onToggle={toggle}
                       onMenu={showMenu}
@@ -356,12 +506,41 @@ function NoteRow({ row, onRetry }: { row: Extract<Row, { type: "note" }>; onRetr
   );
 }
 
-const EntryRow = memo(function EntryRow({ row, selected, active, git, dirty, onActivate, onToggle, onMenu }: {
+/** The workspace's pinned files, above the tree: click opens one again. */
+function PinnedList({ pins, cwd, activePath, onMenu }: { pins: { path: string; root: string | null }[]; cwd: string; activePath: string | null; onMenu: (ev: MouseEvent, e: FileEntry) => void }) {
+  return (
+    <div className="max-h-[35%] shrink-0 overflow-y-auto border-b border-line pb-1">
+      <div className="flex h-5 items-center gap-1 px-2.5 text-[10.5px] font-semibold tracking-wider text-faint uppercase"><Pin className="size-2.5" />Pinned</div>
+      {pins.map((p) => {
+        const name = basename(p.path);
+        const dir = relPath(dirname(p.path), cwd);
+        const entry: FileEntry = { name, path: p.path, isDir: false, size: 0, ignored: false };
+        return (
+          <div key={p.path} title={p.path}
+            className={clsx("no-select group flex h-[22px] cursor-default items-center gap-1.5 pr-1 pl-3 text-[13px]", activePath === p.path ? "bg-hover" : "hover:bg-hover/60")}
+            onClick={() => openFilePreview(p.path, p.root ?? cwd)}
+            onContextMenu={(ev) => onMenu(ev, entry)}>
+            <FileIcon name={name} isDir={false} />
+            <span className="shrink-0 truncate text-fg/90">{name}</span>
+            {dir && dir !== "." && <span className="min-w-0 flex-1 truncate text-[11px] text-faint">{dir}</span>}
+            <button className="ml-auto shrink-0 text-faint opacity-0 group-hover:opacity-100 hover:text-fg" title="Unpin" aria-label={`Unpin ${name}`}
+              onClick={(ev) => { ev.stopPropagation(); unpin(p.path); }}>
+              <X className="size-3" />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const EntryRow = memo(function EntryRow({ row, selected, active, git, dirty, pinned, onActivate, onToggle, onMenu }: {
   row: Extract<Row, { type: "entry" }>;
   selected: boolean;
   active: boolean;
   git: string | null;
   dirty: boolean;
+  pinned: boolean;
   onActivate: (e: FileEntry) => void;
   onToggle: (dir: string) => void;
   onMenu: (ev: MouseEvent, e: FileEntry) => void;
@@ -399,6 +578,7 @@ const EntryRow = memo(function EntryRow({ row, selected, active, git, dirty, onA
       ) : <span className="size-4 shrink-0" />}
       <FileIcon name={e.name} isDir={e.isDir} open={row.expanded} />
       <span className={clsx("min-w-0 flex-1 truncate pl-0.5", tone ?? (e.isDir ? "text-fg/85" : "text-fg/90"), git?.includes("D") && "line-through")}>{e.name}</span>
+      {pinned && <span className="shrink-0 text-faint" title="Pinned"><Pin className="size-3" /></span>}
       {e.isRepo && <span className="shrink-0 text-accent/70" title="Git repository — right-click to open it"><GitBranch className="size-3" /></span>}
       {e.isDir
         ? dirty && <span className="size-1.5 shrink-0 rounded-full bg-warn/80" title="Contains changes" />

@@ -38,8 +38,47 @@ Claude Code / Codex / Cursor / Gemini configs. Keep one implementation: a new co
 project's `folders`). Each connection's AI access (`McpAccess`: off / read / full, `ConnectionConfig::agent_access`)
 decides the rest: off hides it from every agent, and over MCP data changes need full (connections without the
 setting follow the project's `mcp_writes`; a read-only connection is never full). `devcat mcp` logs every call in
-`mcp_audit.rs` (the UI's MCP activity). Sync MCP edits files on the
+`mcp_audit.rs` (the UI's MCP activity). One exception to "both get it": `db_drop_database` is for the DevCat Agent
+only, because dropping is confirmed by the user typing the database's name (`Tool::confirm`, which the harness asks
+for whatever the policy, hooks or "always allow"), and over MCP DevCat can't ask; the phone dispatcher refuses that
+confirmation too. Keep any new tool that can't be undone the same way. A chat opened from a connection
+(`agent_open` with `connection_id`, "Ask DevCat Agent") starts with `agent_tools::brief`: that connection's
+structure, never its rows. Sync MCP edits files on the
 computer, so it stays out of the phone dispatcher, like the SSH workbench above.
+
+## Ghost chats
+
+A ghost chat (`agent_open` with `ghost_window`, `features/agent/ghost.ts`, a window with only the chat:
+`GhostWindow.tsx`) starts from nothing: it ignores the folder it's given and works in an empty scratch folder of its
+own, without rule files or skills (`system_prompt_with_home(…, None)`), MCP servers, hooks or DevCat connections. It
+keeps nothing once it closes: its session and scratch folder live in a temporary folder (`agent.rs` `ghost_dir`) that's deleted when its tab or window closes
+(`windows::on_destroyed` → `agent::close_ghosts_of`), when the app quits, and at the next start after a crash. It has
+no memory, notes or rooms tools and no memory brief, isn't in `agent::list` or the Sessions list, saves no sandbox
+choice and no ↑ history, and the phone dispatcher refuses every `agent_*` call on it. Anything new that records a
+chat (titles, logs, notifications with its text) must skip ghost chats too.
+
+## Agent bots and notification channels (`integrations/`)
+
+`src-tauri/src/integrations/` puts DevCat in the user's chat apps: notification webhooks (Discord, Slack, plain) next
+to ntfy, and bots (Telegram long polling, Discord gateway) that run from this computer. A chat is *linked* to a
+folder (its project and memory), a DevCat Agent connection and `Perms` (notify, approve, requests, files,
+connections, auto-edit), with a one-time code from DevCat (`/link CODE`) **and** the user's OK in DevCat
+(`LinkPrompt`). What comes from a chat app is someone on another device, so keep these rules:
+
+- **Only a linked chat, and in it only the people its link lists** (`bridge::linked`, and the same check on every
+  button press). Strangers get no answer beyond the `/start` hint in a private chat.
+- **Decided per message, from the link as it is now** (`Perms`): a button made earlier re-checks the link and, for
+  files, the folder, size and secrets again (`text::sendable`). Files leave only from the link's folder, never key
+  / password files (`text::secret_like`).
+- **What can't be undone is confirmed on the computer**: a call with `Tool::confirm` (dropping a database) gets a
+  message, never buttons; the harness refuses a plain allow for it anyway.
+- **Ghost chats are never sent** (`bridge::on_agent`), and **DevCat connections are off for a link** unless the user
+  turns them on (their rows would go to the chat app): `agent::open(…, connections)`.
+- **The "Open in DevCat" link never pairs anything** (`remote::chat_link`): it opens a chat only on a phone or browser
+  already paired with this computer. Never send a pairing link or code to a chat app.
+- Tokens and webhook URLs live in the keychain (`secrets`), not in `integrations.json`. Integration commands are
+  desktop-only: keep them out of the phone dispatcher. A link's folder is on this computer (no `ssh://`), like the
+  phone: no SSH workbench, rooms or memory sync through a chat app.
 
 ## Shared memory
 

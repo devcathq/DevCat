@@ -46,6 +46,17 @@ export function takeLaunchTab(): TabTransfer | null {
   }
 }
 
+/** Whether this window was opened for a ghost chat (it then shows only that chat). */
+export function isGhostWindow(): boolean {
+  if (!launchTabRaw) return false;
+  try {
+    const t = JSON.parse(launchTabRaw) as { type?: string; ghost?: boolean };
+    return t.type === "claude" && t.ghost === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Open another app window, optionally focused on a project and/or with a tab open. */
 export async function openNewWindow(projectId?: string | null, tab?: TabTransfer | null): Promise<boolean> {
   try {
