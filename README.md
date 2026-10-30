@@ -368,9 +368,7 @@ pnpm dev:bridge                                 # http://localhost:1425
 
 `pnpm dev:demo` runs the UI in the browser with made-up data: databases, VPNs, a cluster, a Claude Code session, a
 DevCat Agent chat and agent bots (`src/dev/demo.ts`); git and file screens use a sample repository. `promo/`
-captures the screens, and `promo/film/` turns them into the README GIF and a one-minute video for social media with
-[HyperFrames](https://hyperframes.heygen.com) (HTML + GSAP rendered to MP4; Rooms and the chat-app scenes are
-animated HTML there):
+captures the screens for the README, and turns a demo video into the README GIF:
 
 ```bash
 cd src-tauri && cargo run --example devbridge   # git / files for the sample repo
@@ -379,9 +377,7 @@ cd promo && pnpm install
 pnpm demo-repo            # sample repository in /tmp/devcat-demo
 pnpm capture              # public/shots/*.png (headless Chrome)
 pnpm stills               # → assets/readme/*.png (macOS sips)
-cp public/shots/*.png film/assets/
-pnpm film                 # film/out/devcat-readme.mp4 + devcat-social.mp4 (HyperFrames; Node 22+, FFmpeg)
-pnpm gif                  # → assets/readme/demo.gif
+pnpm gif path/to/demo.mp4 # → assets/readme/demo.gif (FFmpeg)
 ```
 
 Local test services for every supported backend:
@@ -519,6 +515,6 @@ crates/harness/           DevCat Agent's harness: model APIs, tools, approvals, 
 crates/rooms/             Rooms: the shared document, membership and transport
 crates/remote-proto/      wire protocol shared by the desktop app and DevCat Mobile
 mobile/                   DevCat Mobile (Tauri 2 for Android / iOS): src = React UI, src-tauri = client
-promo/                    README screenshots (demo mode capture); promo/film = README GIF + social video (HyperFrames)
+promo/                    README screenshots (demo mode capture) and the GIF made from a demo video
 site/                     landing page; site/docs = docs (Markdown → HTML), both on GitHub Pages
 ```

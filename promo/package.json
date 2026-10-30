@@ -2,13 +2,12 @@
   "name": "devcat-promo",
   "private": true,
   "type": "module",
-  "description": "README screenshots (capture the demo-mode UI); film/ turns them into the README GIF and the social video with HyperFrames.",
+  "description": "README screenshots: capture the demo-mode UI, and turn a demo video into the README GIF.",
   "scripts": {
     "demo-repo": "./setup-demo.sh",
     "capture": "node capture.mjs",
     "stills": "mkdir -p ../assets/readme && for f in ai diff table query git k8s network notes agent bots ghost memory welcome; do sips -Z 1600 public/shots/$f.png --out ../assets/readme/$f.png >/dev/null; done",
-    "gif": "./make-gif.sh",
-    "film": "cd film && npx --yes hyperframes@0.8.221 render -c ./readme.html -o out/devcat-readme.mp4 && npx --yes hyperframes@0.8.221 render -o out/devcat-social.mp4"
+    "gif": "./make-gif.sh"
   },
   "dependencies": {
     "playwright-core": "^1.64.1"

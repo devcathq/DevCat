@@ -2,8 +2,5 @@ node_modules/
 out/
 public/shots/
 public/mobile
-film/.hyperframes/
-# copies of public/shots (cp public/shots/*.png film/assets/); only these two are kept
-film/assets/*
-!film/assets/icon.png
-!film/assets/mobile-agents.png
+# the demo film's project is kept outside the repo
+film/
