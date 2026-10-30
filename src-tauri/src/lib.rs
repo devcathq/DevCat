@@ -416,6 +416,7 @@ pub fn run() {
             tickets::tickets_columns,
             tickets::tickets_list,
             tickets::tickets_fix,
+            tickets::tickets_reply,
             tickets::tickets_stop,
             tickets::tickets_jobs,
             tickets::tickets_history,

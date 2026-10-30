@@ -238,6 +238,9 @@ pub struct RunRecord {
     pub provider_id: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The person's answer to the agent's questions (from the Tickets chat) that started this run.
+    #[serde(default)]
+    pub reply: Option<String>,
 }
 
 pub fn init(data_dir: PathBuf) {
@@ -418,6 +421,13 @@ pub async fn tickets_list(board_id: String, column: String) -> AppResult<Vec<Tic
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn tickets_fix(board_id: String, ticket_ids: Vec<String>, prompt: Option<String>) -> AppResult<()> {
     worker::enqueue(board(&board_id)?, ticket_ids, prompt)
+}
+
+/// Answer the agent's questions about a ticket (its last run): the agent goes on with the ticket
+/// in the same chat, on the branch that run left.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn tickets_reply(board_id: String, ticket_id: String, text: String) -> AppResult<()> {
+    worker::reply(board(&board_id)?, ticket_id, text)
 }
 
 /// Stop the ticket being worked on and drop the queue.
