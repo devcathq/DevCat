@@ -71,6 +71,8 @@ export interface RunRecord {
   prompt?: string | null;
   /** The agent's chat (open it in the AI workspace): session id, AI connection, folder. */
   sessionId?: string | null; providerId?: string | null; cwd?: string | null;
+  /** The person's answer to the agent's questions (from the Tickets chat) that started this run. */
+  reply?: string | null;
 }
 
 export const ASSIGNED: Record<Assigned, string> = { anyone: "Anyone", me: "Me", meOrNobody: "Me, or nobody yet" };
@@ -91,6 +93,8 @@ export const tickets = {
   list: (boardId: string, column: string) => invoke<Ticket[]>("tickets_list", { boardId, column }),
   /** `prompt`: what the agent is told for these tickets instead of the board's default prompt. */
   fix: (boardId: string, ticketIds: string[], prompt?: string | null) => invoke<void>("tickets_fix", { boardId, ticketIds, prompt: prompt ?? null }),
+  /** Answer the agent's questions about a ticket: it goes on from its last run (same chat, same branch). */
+  reply: (boardId: string, ticketId: string, text: string) => invoke<void>("tickets_reply", { boardId, ticketId, text }),
   stop: (boardId: string) => invoke<void>("tickets_stop", { boardId }),
   jobs: () => invoke<Record<string, JobView>>("tickets_jobs"),
   history: (boardId: string) => invoke<RunRecord[]>("tickets_history", { boardId }),

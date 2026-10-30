@@ -28,6 +28,8 @@ pub struct Job {
     /// Set to Claude's session id as soon as it's known (kept when the run fails or is stopped,
     /// so the chat can still be opened).
     pub session: Arc<parking_lot::Mutex<Option<String>>>,
+    /// Go on with this Claude session instead of starting one.
+    pub resume: Option<String>,
 }
 
 pub struct Outcome {
@@ -56,7 +58,7 @@ pub async fn run(job: Job, activity: Arc<dyn Fn(String) + Send + Sync>, cancelle
     }
     let mode = if job.allow_commands { "bypassPermissions" } else { "acceptEdits" };
     let spec = Spawn {
-        opts: StartOptions { model: job.model.clone(), permission_mode: Some(mode.into()), ..Default::default() },
+        opts: StartOptions { model: job.model.clone(), permission_mode: Some(mode.into()), resume: job.resume.clone(), ..Default::default() },
         prompt_tool: false,
         extra_args: extra,
         close_after_result: true,

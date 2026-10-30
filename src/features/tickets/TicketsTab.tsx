@@ -2,7 +2,7 @@
 // fix them), what the agent is doing now, and what it did.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
-import { Bot, Brain, Eye, ExternalLink, GitBranch, ListTodo, MessageSquare, MessageSquareText, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
+import { ArrowLeft, Bot, Brain, ChevronDown, ChevronRight, Eye, ExternalLink, GitBranch, ListTodo, MessageSquare, MessageSquareText, Pencil, Play, Plus, RefreshCw, Send, Square, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge, Button, Dialog, Empty, ErrorBox, IconButton, Select, Spinner, Textarea, Toolbar } from "../../components/ui";
@@ -21,6 +21,26 @@ const OUTCOME: Record<Outcome, { label: string; tone: "ok" | "warn" | "danger" |
   error: { label: "error", tone: "danger" },
   stopped: { label: "stopped", tone: "default" },
 };
+
+/** Outcomes where the agent waits on a person: their ticket gets a thread in the chat. */
+const ASKS: Outcome[] = ["needs_info", "failed"];
+
+/** Threads closed in the chat: board → ticket → the run it was closed at (a newer run opens it again). */
+const DISMISSED = "devcat.tickets.dismissed";
+const readDismissed = (board: string): Record<string, number> => {
+  try { return JSON.parse(localStorage.getItem(DISMISSED) ?? "{}")[board] ?? {}; } catch { return {}; }
+};
+const writeDismissed = (board: string, m: Record<string, number>) => {
+  let all: Record<string, Record<string, number>> = {};
+  try { all = JSON.parse(localStorage.getItem(DISMISSED) ?? "{}"); } catch { /* start over */ }
+  localStorage.setItem(DISMISSED, JSON.stringify({ ...all, [board]: m }));
+};
+
+type Panel = "working" | "chat" | "history";
+
+/** Open a run's chat in the AI workspace (it can be continued there). */
+const openRun = (r: RunRecord) =>
+  r.sessionId && r.cwd && openClaudeWorkspace(r.cwd, { sessionId: r.sessionId, providerId: r.providerId, title: `${r.key} ${r.title}` });
 
 const when = (ms: number) => new Date(ms).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 
@@ -111,6 +131,28 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
     for (const r of history) if (!m.has(r.ticketId)) m.set(r.ticketId, r);
     return m;
   }, [history]);
+
+  // The chat: a thread per ticket the agent asked about (its last run needs a person), or that it
+  // works on after an answer; closed threads stay closed until the agent asks again.
+  const [dismissed, setDismissed] = useState(() => readDismissed(board.id));
+  const busyOn = (id: string) => !!job && (job.key === id || job.key === last.get(id)?.key || job.queue.includes(id));
+  const threads = useMemo(
+    () => [...last.values()].filter((r) => (ASKS.includes(r.outcome) && dismissed[r.ticketId] !== r.finished) || (r.reply && busyOn(r.ticketId))),
+    [last, dismissed, job], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const waiting = threads.filter((r) => !busyOn(r.ticketId)).length;
+  const [panel, setPanel] = useState<Panel>(() => (job ? "working" : "chat"));
+  const [thread, setThread] = useState<string | null>(null);
+  const openThread = (ticketId: string) => { setThread(ticketId); setPanel("chat"); };
+  const dismiss = (r: RunRecord) => {
+    const m = { ...dismissed, [r.ticketId]: r.finished };
+    setDismissed(m);
+    writeDismissed(board.id, m);
+    if (thread === r.ticketId) setThread(null);
+  };
+  // Work started (a fix or an answer): show it, unless the person is in a thread.
+  const working = !!job;
+  useEffect(() => { if (working && !thread) setPanel("working"); }, [working]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Tickets to fix with a prompt of their own (the dialog is open).
   const [asking, setAsking] = useState<Ticket[] | null>(null);
@@ -209,7 +251,14 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
                       {t.labels.map((l) => <Badge key={l}>{l}</Badge>)}
                       {t.assignees.length > 0 && <span className="text-[11px] text-muted">{t.assignees.join(", ")}</span>}
                       {busy && <Badge tone="accent">{job?.key === t.key ? "agent working" : "queued"}</Badge>}
-                      {!busy && r && <Badge tone={OUTCOME[r.outcome].tone}>last try: {OUTCOME[r.outcome].label}</Badge>}
+                      {!busy && r && (
+                        <button
+                          title={ASKS.includes(r.outcome) ? "Answer the agent in the chat" : "See what the agent did"}
+                          onClick={() => (ASKS.includes(r.outcome) ? openThread(t.id) : setPanel("history"))}
+                        >
+                          <Badge tone={OUTCOME[r.outcome].tone}>last try: {OUTCOME[r.outcome].label}{ASKS.includes(r.outcome) ? " · answer" : ""}</Badge>
+                        </button>
+                      )}
                     </div>
                   </div>
                   {t.url && <IconButton title="Open in the tracker" onClick={() => void openUrl(t.url)}><ExternalLink className="size-3.5" /></IconButton>}
@@ -221,12 +270,41 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
           </div>
         </section>
         <section className="flex w-[420px] shrink-0 flex-col">
-          {job && <JobPanel board={board} job={job} />}
-          <div className="flex h-8 shrink-0 items-center border-b border-line px-3 text-xs font-semibold tracking-wide text-muted uppercase">History</div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            {history.length === 0 && <div className="p-4 text-[12px] text-faint">What the agent does shows up here.</div>}
-            {history.map((r, i) => <HistoryItem key={`${r.ticketId}-${r.started}-${i}`} r={r} />)}
+          <div className="flex h-9 shrink-0 items-end gap-1 border-b border-line px-2">
+            {([
+              ["working", "Working", job ? <Spinner key="s" className="size-3 text-accent" /> : null],
+              ["chat", "Chat", waiting ? <Badge key="b" tone="warn">{waiting}</Badge> : null],
+              ["history", "History", null],
+            ] as const).map(([id, label, extra]) => (
+              <button
+                key={id}
+                onClick={() => { setPanel(id); if (id === "chat") setThread(null); }}
+                className={clsx("-mb-px flex h-8 items-center gap-1.5 border-b-2 px-2.5 text-[12px]", panel === id ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg")}
+              >
+                {label}{extra}
+              </button>
+            ))}
           </div>
+          {panel === "working" && (job
+            ? <JobPanel board={board} job={job} />
+            : <div className="p-4 text-[12px] text-faint">The agent isn't working on anything. Pick tickets and fix them with the agent, or answer its questions in the chat.</div>)}
+          {panel === "chat" && (thread
+            ? <Thread
+                key={thread}
+                board={board}
+                runs={history.filter((r) => r.ticketId === thread).reverse()}
+                busy={busyOn(thread)}
+                ready={ready}
+                onBack={() => setThread(null)}
+                onSent={() => setPanel("working")}
+              />
+            : <ThreadList threads={threads} busyOn={busyOn} onOpen={setThread} onDismiss={dismiss} />)}
+          {panel === "history" && (
+            <div className="min-h-0 flex-1 overflow-auto">
+              {history.length === 0 && <div className="p-4 text-[12px] text-faint">What the agent does shows up here.</div>}
+              {history.map((r, i) => <HistoryItem key={`${r.ticketId}-${r.started}-${i}`} r={r} onAnswer={ASKS.includes(r.outcome) && last.get(r.ticketId) === r ? () => openThread(r.ticketId) : undefined} />)}
+            </div>
+          )}
         </section>
       </div>
       {asking && (
@@ -287,7 +365,7 @@ function JobPanel({ board, job }: { board: Board; job: JobView }) {
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [job.log.length]);
   return (
-    <div className="flex max-h-[55%] min-h-40 flex-col border-b border-line bg-accent/5">
+    <div className="flex min-h-0 flex-1 flex-col bg-accent/5">
       <div className="flex items-center gap-2 px-3 pt-2">
         <Spinner className="size-3.5 text-accent" />
         <span className="min-w-0 flex-1 truncate text-[13px]">
@@ -307,37 +385,166 @@ function JobPanel({ board, job }: { board: Board; job: JobView }) {
   );
 }
 
-function HistoryItem({ r }: { r: RunRecord }) {
-  const [open, setOpen] = useState(false);
-  const o = OUTCOME[r.outcome] ?? OUTCOME.error;
+/** The tickets the agent asked about, newest first. */
+function ThreadList({ threads, busyOn, onOpen, onDismiss }: {
+  threads: RunRecord[]; busyOn: (id: string) => boolean; onOpen: (id: string) => void; onDismiss: (r: RunRecord) => void;
+}) {
+  if (threads.length === 0) {
+    return <div className="p-4 text-[12px] text-faint">When the agent needs a person (a question, a decision, something it couldn't do), the ticket shows up here and you can answer it.</div>;
+  }
   return (
-    <div className="border-b border-line/60 px-3 py-2">
-      <button className="flex w-full items-center gap-2 text-left" onClick={() => setOpen(!open)}>
-        <Badge tone={o.tone}>{o.label}</Badge>
+    <div className="min-h-0 flex-1 overflow-auto">
+      {threads.map((r) => {
+        const busy = busyOn(r.ticketId);
+        return (
+          <div key={r.ticketId} className="group flex items-start gap-2 border-b border-line/60 px-3 py-2 hover:bg-hover/40">
+            <button className="min-w-0 flex-1 text-left" onClick={() => onOpen(r.ticketId)}>
+              <div className="flex items-center gap-2">
+                {busy ? <Badge tone="accent">agent working</Badge> : <Badge tone={OUTCOME[r.outcome].tone}>{OUTCOME[r.outcome].label}</Badge>}
+                <span className="shrink-0 font-mono text-[11px] text-muted">{r.key}</span>
+                <span className="min-w-0 flex-1 truncate text-[12px]">{r.title}</span>
+                <span className="shrink-0 text-[10px] text-faint">{when(r.finished)}</span>
+              </div>
+              {r.summary && <div className="mt-1 line-clamp-2 text-[12px] text-muted">{r.summary}</div>}
+            </button>
+            <IconButton className="opacity-0 group-hover:opacity-100" title="Close this thread (it opens again if the agent asks again)" onClick={() => onDismiss(r)}><X className="size-3.5" /></IconButton>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One ticket's conversation: each run's answer from the agent, and the person's answers that
+ *  started the next ones. Answering sends the agent back to the ticket, in the same chat. */
+function Thread({ board, runs, busy, ready, onBack, onSent }: {
+  board: Board; runs: RunRecord[]; busy: boolean; ready: boolean; onBack: () => void; onSent: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [runs.length, busy]);
+  const r = runs[runs.length - 1];
+  if (!r) return null;
+  const send = async () => {
+    if (!text.trim() || sending) return;
+    setSending(true);
+    try {
+      await tickets.reply(board.id, r.ticketId, text);
+      setText("");
+      toast.success("The agent goes on with your answer");
+      onSent();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-line px-2 py-1.5">
+        <IconButton title="All threads" onClick={onBack}><ArrowLeft className="size-3.5" /></IconButton>
         <span className="shrink-0 font-mono text-[11px] text-muted">{r.key}</span>
         <span className="min-w-0 flex-1 truncate text-[12px]">{r.title}</span>
-        <span className="shrink-0 text-[10px] text-faint">{when(r.finished)}</span>
-      </button>
+        {r.url && <IconButton title="Open in the tracker" onClick={() => void openUrl(r.url)}><ExternalLink className="size-3.5" /></IconButton>}
+      </div>
+      <div className="selectable min-h-0 flex-1 space-y-2.5 overflow-auto p-3">
+        {runs.map((x, i) => (
+          <div key={`${x.started}-${i}`} className="space-y-2.5">
+            {x.reply && (
+              <div className="ml-8 rounded-lg bg-accent/10 px-3 py-2 text-[12px] whitespace-pre-wrap">{x.reply}</div>
+            )}
+            <div className="mr-4 rounded-lg border border-line bg-panel px-3 py-2">
+              <div className="mb-1 flex items-center gap-2 text-[11px] text-faint">
+                <Bot className="size-3" />
+                <Badge tone={(OUTCOME[x.outcome] ?? OUTCOME.error).tone}>{(OUTCOME[x.outcome] ?? OUTCOME.error).label}</Badge>
+                <span className="ml-auto">{when(x.finished)}</span>
+              </div>
+              {x.summary && <div className="text-[12px] whitespace-pre-wrap text-fg/85">{x.summary}</div>}
+              {x.testing && <div className="mt-1.5 text-[12px] whitespace-pre-wrap text-muted"><span className="font-medium text-fg/80">How to test: </span>{x.testing}</div>}
+              {x.notes.map((n, j) => <div key={j} className="mt-1 text-[11px] text-warn">{n}</div>)}
+              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-faint">
+                {x.movedTo && <span>Moved to {x.movedTo}</span>}
+                {x.branch && <span className="flex items-center gap-1 font-mono"><GitBranch className="size-3" />{x.branch}</span>}
+                {x.sessionId && x.cwd && (
+                  <button className="flex items-center gap-1 hover:text-fg" title="Open the agent's chat in the AI workspace" onClick={() => openRun(x)}>
+                    <MessageSquare className="size-3" />open in AI workspace
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+        {busy && (
+          <div className="mr-4 flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-[12px] text-muted">
+            <Spinner className="size-3 text-accent" />The agent is working on it…
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+      <div className="shrink-0 border-t border-line p-2">
+        <Textarea
+          rows={3}
+          className="w-full"
+          value={text}
+          disabled={busy || !ready}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(); } }}
+          placeholder={busy ? "The agent is working on this ticket…" : "Answer the agent: it goes on with the ticket in the same chat, on its branch"}
+        />
+        <div className="mt-1.5 flex items-center gap-2">
+          <span className="text-[11px] text-faint">⌘↵ to send · stays in DevCat, not posted to the tracker</span>
+          <Button size="sm" variant="primary" className="ml-auto" disabled={!text.trim() || busy || sending || !ready} onClick={() => void send()}>
+            <Send className="size-3" />Send
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A run: clicking it opens the agent's chat in the AI workspace (the chevron shows the details). */
+function HistoryItem({ r, onAnswer }: { r: RunRecord; onAnswer?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const o = OUTCOME[r.outcome] ?? OUTCOME.error;
+  const canOpen = !!(r.sessionId && r.cwd);
+  return (
+    <div className="border-b border-line/60 px-3 py-2 hover:bg-hover/40">
+      <div className="flex w-full items-center gap-2">
+        <button className="shrink-0 text-faint hover:text-fg" title={open ? "Hide details" : "Show details"} onClick={() => setOpen(!open)}>
+          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </button>
+        <button
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          title={canOpen ? "Open the agent's chat in the AI workspace" : "Show details"}
+          onClick={() => (canOpen ? openRun(r) : setOpen(!open))}
+        >
+          <Badge tone={o.tone}>{o.label}</Badge>
+          <span className="shrink-0 font-mono text-[11px] text-muted">{r.key}</span>
+          <span className="min-w-0 flex-1 truncate text-[12px]">{r.title}</span>
+          <span className="shrink-0 text-[10px] text-faint">{when(r.finished)}</span>
+        </button>
+      </div>
       {r.movedTo && <div className="mt-0.5 text-[11px] text-muted">Moved to {r.movedTo}</div>}
+      {r.reply && <div className="mt-0.5 truncate text-[11px] text-muted" title={r.reply}><MessageSquareText className="mr-1 inline size-3" />Your answer: {r.reply}</div>}
       {r.prompt && (open
         ? <div className="selectable mt-1 text-[12px] whitespace-pre-wrap text-muted"><span className="font-medium text-fg/80">Prompt: </span>{r.prompt}</div>
         : <div className="mt-0.5 truncate text-[11px] text-muted" title={r.prompt}><MessageSquareText className="mr-1 inline size-3" />{r.prompt}</div>)}
-      {(open || r.outcome !== "fixed") && r.summary && <div className="selectable mt-1 text-[12px] whitespace-pre-wrap text-fg/80">{r.summary}</div>}
+      {r.summary && (open
+        ? <div className="selectable mt-1 text-[12px] whitespace-pre-wrap text-fg/80">{r.summary}</div>
+        : <div className="mt-0.5 line-clamp-2 text-[12px] text-fg/70">{r.summary}</div>)}
       {open && r.testing && <div className="selectable mt-1.5 text-[12px] whitespace-pre-wrap text-muted"><span className="font-medium text-fg/80">How to test: </span>{r.testing}</div>}
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-faint">
         {r.branch && <span className="flex items-center gap-1 font-mono"><GitBranch className="size-3" />{r.branch}</span>}
         {r.repos?.length ? <span>{r.repos.join(", ")}</span> : r.filesChanged > 0 && <span>{r.filesChanged} file{r.filesChanged === 1 ? "" : "s"}</span>}
         {r.costUsd != null && <span>${r.costUsd.toFixed(2)}</span>}
         {r.url && <button className="hover:text-fg" onClick={() => void openUrl(r.url)}>open ticket</button>}
-        {r.sessionId && r.cwd && (
-          <button
-            className="flex items-center gap-1 hover:text-fg"
-            title="Open the agent's chat in the AI workspace (you can continue it there)"
-            onClick={() => openClaudeWorkspace(r.cwd!, { sessionId: r.sessionId, providerId: r.providerId, title: `${r.key} ${r.title}` })}
-          >
+        {canOpen && (
+          <button className="flex items-center gap-1 hover:text-fg" title="Open the agent's chat in the AI workspace (you can continue it there)" onClick={() => openRun(r)}>
             <MessageSquare className="size-3" />open chat
           </button>
         )}
+        {onAnswer && <button className="flex items-center gap-1 text-warn hover:text-fg" onClick={onAnswer}><Send className="size-3" />answer</button>}
       </div>
       {r.notes.map((n, i) => <div key={i} className="mt-1 text-[11px] text-warn">{n}</div>)}
     </div>
