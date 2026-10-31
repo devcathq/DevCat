@@ -995,6 +995,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
             agent.model = Arc::new(Llm::new(devcat_harness::LlmConfig { model: m, ..run.cfg.clone() }));
         }
         agent.context_window = context_window.filter(|&w| w > 0);
+        agent.max_steps = crate::ai::agent_max_steps(&run.provider_id);
         if let Some(s) = sandbox {
             agent.sandbox = s;
             if run.ghost.is_none() {
