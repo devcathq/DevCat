@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { ArrowLeft, Bot, Brain, ChevronDown, ChevronRight, Eye, ExternalLink, GitBranch, ListTodo, MessageSquare, MessageSquareText, Pencil, Play, Plus, RefreshCw, Send, Square, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Badge, Button, Dialog, Empty, ErrorBox, IconButton, Select, Spinner, Textarea, Toolbar } from "../../components/ui";
+import { Badge, Button, Dialog, Empty, ErrorBox, IconButton, Select, Spinner, Textarea, Toolbar, Spin } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { useConnections } from "../../store/connections";
 import { openClaudeWorkspace } from "../claude/open";
@@ -221,7 +221,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
             <Select className="w-48" value={column} onChange={(e) => setColumn(e.target.value)}>
               {columns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </Select>
-            <IconButton title="Refresh" onClick={() => void load()}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+            <IconButton title="Refresh" onClick={() => void load()}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
             {board.assigned !== "anyone" && <Badge tone="info">assigned: {ASSIGNED[board.assigned].toLowerCase()}</Badge>}
             {board.label && <Badge tone="info">label: {board.label}</Badge>}
             <Button size="sm" className="ml-auto" disabled={!ready || picked.size === 0} onClick={() => setAsking((list ?? []).filter((t) => picked.has(t.id)))} title="Write what the agent should do for these tickets, instead of the board's default prompt">

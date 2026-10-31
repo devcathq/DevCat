@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { FileClock, GitCommitHorizontal, RefreshCw, Search, User, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { Empty, ErrorBox, IconButton, Spinner } from "../../components/ui";
+import { Empty, ErrorBox, IconButton, Spinner, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { GitCommit, GitRefs } from "../../lib/types";
 import { useTabs } from "../../store/tabs";
@@ -196,7 +196,7 @@ export function HistoryView({ tabId, repo, path, target, dlg }: {
         <div className="flex-1" />
         {filtered && commits.length > 0 && <span className="shrink-0 text-[11px] text-faint">graph hidden while filtering</span>}
         <span className="shrink-0 text-[11px] text-faint">{commits.length}{hasMore ? "+" : ""} commit{commits.length === 1 ? "" : "s"}</span>
-        <IconButton title="Reload" onClick={() => void fetchPage(true)}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+        <IconButton title="Reload" onClick={() => void fetchPage(true)}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
       </div>
       <Group orientation="vertical" className="min-h-0 flex-1">
         <Panel defaultSize="52%" minSize="15%">

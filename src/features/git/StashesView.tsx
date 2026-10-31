@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { Archive, ArchiveRestore, Copy, PackageOpen, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { Button, Empty, ErrorBox, IconButton, Spinner } from "../../components/ui";
+import { Button, Empty, ErrorBox, IconButton, Spinner, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { GitStash } from "../../lib/types";
 import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
@@ -90,7 +90,7 @@ export function StashesView({ repo, dlg, active }: { repo: string; dlg: Dialogs;
             <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
               <Button size="sm" onClick={() => void stashChanges(repo, dlg)}><Archive className="size-3.5" />Stash changes…</Button>
               <div className="flex-1" />
-              <IconButton title="Refresh" onClick={() => void load()}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+              <IconButton title="Refresh" onClick={() => void load()}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto py-1">
               {stashes.length === 0 && <div className="px-3 py-6 text-center text-xs text-muted">No stashes</div>}

@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { Columns2, ExternalLink, FileDiff, FolderGit2, GitCommitHorizontal, ListChecks, Minus, Plus, RefreshCw, Rows2, ScanSearch, Trash2, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Button, Checkbox, Dialog, Empty, ErrorBox, IconButton, Select, Spinner, Textarea } from "../../components/ui";
+import { Button, Checkbox, Dialog, Empty, ErrorBox, IconButton, Select, Spinner, Textarea, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { FileVersions, GitFile, GitStatus } from "../../lib/types";
 import { refreshGit, setRepo, useClaude } from "./store";
@@ -362,7 +362,7 @@ export function ChangesPanel({ cwd, git, gitError, gitLoading, gitTick, focus, a
     <div className="flex h-full min-h-0">
       <div className="flex w-72 shrink-0 flex-col border-r border-line bg-panel">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
-          <IconButton title="Refresh" onClick={() => void refresh()}><RefreshCw className={clsx("size-3.5", gitLoading && "animate-spin")} /></IconButton>
+          <IconButton title="Refresh" onClick={() => void refresh()}><Spin icon={RefreshCw} spinning={gitLoading} className="size-3.5" /></IconButton>
           <IconButton title="Stage all" disabled={!unstaged.length} onClick={() => void act(() => api.gitStage(cwd, unstaged.map((f) => f.path)))}><Plus className="size-3.5" /></IconButton>
           <IconButton title="Discard all changes…" disabled={!git.files.length} onClick={discardAll}><Undo2 className="size-3.5" /></IconButton>
           <IconButton

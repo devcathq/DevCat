@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { AtSign, Bot, Check, ChevronDown, ChevronRight, CornerDownRight, Loader2, Paperclip, Pin as PinIcon, Reply, RotateCcw, Send, SmilePlus, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Badge, Button, Textarea } from "../../components/ui";
+import { Badge, Button, Textarea, Spin } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { isFileDrag } from "../files/drop";
 import { label, REACTIONS, rooms, type Activity, type HistoryItem, type Message, type Pin, type Reaction, type RoomView, type Suggestion } from "./api";
@@ -190,7 +190,7 @@ export function ThreadPanel({ room, view, messages, pins, reactions, files, onOp
       </div>
       {running && (
         <div className="flex items-center gap-2 border-t border-line px-3 py-1.5 text-[12px] text-accent">
-          <Loader2 className="size-3.5 animate-spin" />Your agent is working…
+          <Spin icon={Loader2} className="size-3.5" />Your agent is working…
           <Button size="sm" variant="ghost" className="ml-auto" onClick={() => void rooms.agentStop(room)}><Square className="size-3" />Stop</Button>
         </div>
       )}

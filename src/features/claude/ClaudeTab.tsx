@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Button, Dialog, Empty, IconButton, Select, Spinner } from "../../components/ui";
+import { Button, Dialog, Empty, IconButton, Select, Spinner, Spin } from "../../components/ui";
 import type { AiProvider, ClaudePermissionMode } from "../../lib/types";
 import { useContextMenu } from "../connections/ContextMenu";
 import { providerMenu } from "./AiProviders";
@@ -347,7 +347,7 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
               onClick={() => setView(v.id)}
               className={clsx("flex h-6 items-center gap-1.5 rounded px-2.5 text-xs whitespace-nowrap", view === v.id ? "bg-raised text-fg shadow-sm" : "text-muted hover:text-fg")}
             >
-              {v.id === "chat" && activity.working && <Sparkle className="size-3 animate-spin text-accent [animation-duration:2.4s]" />}
+              {v.id === "chat" && activity.working && <Spin icon={Sparkle} className="size-3 text-accent [animation-duration:2.4s]" />}
               {v.label}
               <span className="text-[9px] text-faint @max-[104rem]:hidden">{IS_MAC ? `⌥⇧⌘${v.key}` : `^⌥⇧${v.key}`}</span>
             </button>
@@ -360,7 +360,7 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
         <BranchChip tabId={tabId} onClick={() => setView("diff")} />
         {isClaude && <ReviewBadge tabId={tabId} onClick={() => setView("review")} />}
         <div className="flex-1" />
-        {(isAgent ? agentBusy : activity.working) && <span className="shimmer-text shrink-0 text-[11px] font-medium whitespace-nowrap" title={`${agent} is working`}>working</span>}
+        {(isAgent ? agentBusy : activity.working) && <span className="working-text shrink-0 text-[11px] font-medium whitespace-nowrap" title={`${agent} is working`}>working</span>}
         {!isAgent && <span className={clsx("size-1.5 shrink-0 rounded-full", activity.working ? "bg-accent" : running ? "bg-ok" : "bg-faint")} title={activity.working ? `${agent} is working` : running ? `${agent} is running` : `${agent} is not running`} />}
         {isClaude && <SessionChip tabId={tabId} />}
         {isClaude && <LaunchOptions tabId={tabId} onBypass={() => setConfirmBypass(true)} />}

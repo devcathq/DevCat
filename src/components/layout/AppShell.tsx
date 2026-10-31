@@ -56,7 +56,7 @@ import { useUi, type SidebarView } from "../../store/ui";
 import { TabContent } from "../../tabs/registry";
 import { TabIcon, tabKindLabel } from "../../tabs/TabIcon";
 import { tabConnId, tabFolder, type Tab } from "../../tabs/types";
-import { IconButton } from "../ui";
+import { IconButton, Spin } from "../ui";
 import { AiTerminalIcon } from "../ui/AppIcons";
 import { SettingsMenu } from "./SettingsMenu";
 
@@ -395,15 +395,15 @@ async function ghostChat() {
   await openGhostChat(active?.type === "claude" ? active.providerId : null);
 }
 
-/** AI workspace tab title: shimmering "working" while the agent runs, a dot when it finished unseen. */
+/** AI workspace tab title: pulsing "working" while the agent runs, a dot when it finished unseen. */
 function AgentTabTitle({ tabId, title }: { tabId: string; title: string }) {
   const { working, done } = useTabActivity(tabId);
   return (
     <>
-      {working && <Sparkle className="size-3 shrink-0 animate-spin text-accent [animation-duration:2.4s]" />}
+      {working && <Spin icon={Sparkle} className="size-3 shrink-0 text-accent [animation-duration:2.4s]" />}
       <span className="flex min-w-0 flex-col leading-tight">
         <span className="truncate">{title}</span>
-        {working && <span className="shimmer-text text-[10px] font-medium">working</span>}
+        {working && <span className="working-text text-[10px] font-medium">working</span>}
       </span>
       {done && !working && <span className="size-1.5 shrink-0 rounded-full bg-ok" title="Finished" />}
     </>
