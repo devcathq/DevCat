@@ -15,12 +15,122 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Agents can do much more in DevCat:** Claude Code, Codex, Cursor, Gemini CLI (through Sync MCP) and the DevCat
   Agent can now connect your VPNs and tunnels, set up new ones from a `.ovpn` / WireGuard file, add connections (from
   a project's `.env`, say), work with Docker, RabbitMQ and more of Kubernetes (events, metrics, Helm, scale, restart,
-  apply), export, import, back up and restore databases, read your query history, schedule DevCat Agent jobs and read
-  your ticket boards. DevCat holds them to your settings: each connection's **AI / MCP access** as before, and now
-  one for each VPN and tunnel too (**Off**, **Read & connect**, **Full**). Connections an agent adds start at
-  read-only access, VPN configs from an agent can't run scripts, and secrets stay hidden. With DevCat open, these
-  calls run in DevCat, so a VPN it connects works for the agent. See **What agents can do** and the new
-  **walkthrough** in the docs.
+  apply), import into and restore databases, read your query history, schedule DevCat Agent jobs and read your ticket
+  boards. DevCat holds them to your settings: each connection's **AI / MCP access** as before, and now one for each
+  VPN and tunnel too (**Off**, **Read & connect**, **Full**). Connections an agent adds start at read-only access, VPN
+  configs from an agent can't run scripts, and secrets stay hidden. What can't be undone (deleting a Kubernetes
+  object, a container or image, a queue, a VPN profile, restoring over a database) is for the DevCat Agent only and
+  asks you to type its name, like dropping a database. With DevCat open, these calls run in DevCat, so a VPN it
+  connects works for the agent, and a new kind of connection brings its tools into the agent's session right away.
+  See **What agents can do** and the new **walkthrough** in the docs.
+
+## 0.18.0 - 2026-10-30
+
+- **Ask DevCat Agent about a connection:** right-click a database, Redis, MongoDB or Kubernetes connection (or use
+  **Ask agent** in a query tab, the robot in a cluster's sidebar) for a DevCat Agent chat about it. It starts out
+  knowing the connection: a database's tables and columns, a cluster's namespaces (structure only, never rows), so
+  you can ask right away. The agent can also **dump** a database to a .sql file (a folder of JSON lines for MongoDB),
+  **export** a table or a query's rows to CSV, TSV, JSON, SQL or Excel (to Downloads unless you say where), and
+  **drop a database**. Dropping asks twice, whatever the permission mode: click **Drop…**, then type the database's
+  name. It's confirmed on the computer only (not from a phone), never over MCP, and read-only connections and the
+  server's own databases can't be dropped.
+- **Agent bots (Telegram, Discord).** Settings → **Agent bots** adds a Telegram or Discord bot (it runs from
+  this computer: no server) and links a chat to a folder with a one-time code (`/link CODE` in the chat, then your OK
+  in DevCat). For agents working in that folder the chat gets **Allow / Deny** buttons and their questions, and the
+  result when they finish; it can send **new requests** (they run as a DevCat Agent chat in the folder, with its
+  project's memory), `/status`, `/stop`, `/summary`, `/files` and `/file <path>` to get files, and `/open` for a link
+  that opens the chat in DevCat Mobile on a phone already paired with the computer. Each link chooses what it may do
+  (notifications, approvals, requests, files, editing without asking, DevCat connections). Only the person who
+  linked a chat is listened to there; key and password files are never sent; dropping a database is confirmed on
+  the computer only; ghost chats are never sent.
+- **More notification channels:** Mobile → Notifications sends "finished" / "needs you" to Discord and Slack webhooks
+  (or any webhook) as well as ntfy, and DevCat Agent chats now notify too, not only Claude Code.
+- **Ghost chats:** the ghost icon in the top bar (or an AI workspace tab's header) opens a window with only a
+  DevCat Agent chat that starts from nothing and keeps nothing. No project: it works in an empty scratch folder of its
+  own, without rule files, skills, MCP servers, hooks, DevCat connections, memory, notes or rooms. It isn't listed in
+  Sessions or on your phone, and what you type isn't kept for ↑. Closing the window deletes the chat and its scratch
+  folder. (The model's provider still receives the conversation, as for any chat.)
+- **Setup guide and tour:** a fresh install opens a short guide: pick your coding agent (DevCat checks which ones are
+  installed and shows how to install the rest, or sets up the built-in DevCat Agent), a project folder, any
+  connections, and your phone, agent bots, Sync MCP and memory. Then a tour shows where everything is, one part at a
+  time. Skip either at any step; both are in Settings (Set up DevCat…, Take the tour) and on the Welcome tab.
+- **A new welcome page:** start an agent chat, a ghost chat or tickets; open Git, Rooms, VPNs, notes and the
+  database tools; connect a database, cluster or server; and set up your phone, agent bots, Sync MCP and the shared
+  memory, all from the first tab.
+- **AI workspace files: search the whole folder.** The search box above the file list finds files in folders you
+  haven't opened (with .gitignore respected), showing them with the folders leading to them; type a `/` to match the
+  path. Folders on SSH hosts still filter the folders you've opened.
+- **AI workspace files: Delete.** Right-click a file or folder → **Delete…** (or Delete, ⌘⌫ on macOS). On this
+  computer it goes to the Trash / Recycle Bin; in a folder on an SSH host it's deleted for good (there's no Trash
+  there), and the confirmation says so.
+- **AI workspace files: Pin.** Pin a file from the file list (right-click → **Pin**), its tab (right-click → **Pin
+  file**) or the pin button in the file's toolbar: it stays at the top of **Files** under **Pinned** for that
+  folder, to open again in one click. Pins are kept on this computer.
+- **Keep awake with the lid closed (macOS):** macOS sleeps when the lid closes whatever apps ask, so agents and
+  networks stopped. The cup's menu now has **Keep awake with the lid closed…**: DevCat turns system sleep off
+  (`pmset disablesleep`, which asks for your password) and turns it back on when keep awake ends: when you turn it
+  off, its time is up, DevCat quits, or at the next start after a crash. If sleep was already off, it's left alone.
+- **Title bar:** **Mobile pairing** (the phone) and **Keep awake** (the cup) are icons in the title bar, next to
+  Settings, instead of items in the Settings menu. The phone turns blue while phone access is on and shows a dot when
+  a phone wants to pair; the cup shows how long the computer is kept awake.
+
+## 0.17.0 - 2026-10-30
+
+- **Tickets: answer the agent** (#114): a board's panel has **Working**, **Chat** and **History** tabs. When the
+  agent needs a person (a question, a decision, something it couldn't do), the ticket gets a thread in **Chat**:
+  answer there and the agent goes on with the ticket in the same chat, on the branch its last try left. The answer
+  stays in DevCat (it isn't posted to the tracker). Clicking a run in **History** opens its chat in the AI workspace.
+- **Crash screen** (#112): when the window hits an error, it shows what went wrong (with **Copy details** and
+  **Reload**) and a **Report on GitHub** link that fills in an issue for you to check and send, instead of a blank
+  window. Nothing is sent by itself.
+- **Terminal:** right-clicking a terminal opens DevCat's own menu: **Copy** (the selection), **Paste**, **Select all**
+  and **Clear**. The webview's menu could never copy a terminal selection, so its Copy was always greyed out. When
+  a program like Claude Code or tmux has the mouse, the menu says how to select in the terminal instead
+  (Shift+drag, ⌥+drag on macOS).
+- **SSH sessions on Windows:** the tab no longer reads `C:\Windows\System32\OpenSSH\ssh.EXE`; it shows the
+  session's name until the host sets a title (a shell's prompt, Claude Code's task).
+- **SSH sessions on Windows:** no more console window flashing up for a moment when pasting an image, opening a
+  folder on an SSH session, starting a port forward or opening a terminal on a session with a saved password, nor
+  when a Kubernetes cluster logs in through its kubeconfig's helper (aws, gke-gcloud-auth-plugin, kubelogin).
+- **Tickets on Windows:** a repository two folders down in a board's folder is called `group/deep`, as on macOS and
+  Linux, not `group\deep`, in what the agent is told and in the run's notes.
+
+## 0.16.0 - 2026-10-29
+
+- **Rooms: a place to work together** (#108):
+  - **Files and folders:** the room's files are a tree. Share whole folders (dropped, or from this computer), rename
+    and move files and folders (right-click, or drag onto a folder), save a file or folder to your computer, and read
+    Markdown with a live preview next to the editor.
+  - **Whiteboards** to sketch ideas together (Excalidraw); agents read the text on them.
+  - **Thread:** replies, reactions, decisions pinned at the top, and `@name` / `@everyone` mentions that notify
+    people.
+  - **Tasks** for a person or an agent: giving one says so in the thread, and an agent takes it and marks it done.
+  - **Share from DevCat:** a note, memory, skill or a repository's changes. **Take out:** add a room's skill to your
+    skills, save a file to your memory, copy one to your notes. Nothing is written on your computer before you've
+    looked at it and confirmed.
+  - **Team memory:** the room's `memory/` folder, read by every member's agent; agents propose entries that a person
+    accepts.
+  - **Your coding agents in a room:** turn it on per room (Room settings) and Claude Code, Codex, Cursor (through
+    `devcat mcp`) and DevCat Agent chats can read the room, write in the thread, suggest changes and handle tasks, as
+    your agent. No tool copies your files into a room.
+  - Files in folders no longer crash the room tab or the document (Loro refuses `/` in a root container's name).
+  - **Removing someone deletes their copy:** their DevCat deletes the room (files, whiteboards, thread, tasks,
+    keys) as soon as it learns, at once if they're online, else the next time it reaches anyone in the room. Only
+    on proof (your signed member list), so nobody else can make a DevCat delete a room. What they saved outside
+    the room stays with them.
+  - **Who shared and edited it:** each file shows who shared it and from where; **Who edited it** lists who
+    shared, moved, took it out (to their computer, skills, memory, notes) and edited it, and when, from the room's
+    own document (peer to peer, no server). **History → Who shared what** shows the whole room's.
+  - A member you remove no longer receives what was written while DevCat was telling them they were removed.
+  - Typing in a room's file works on Windows: the editor used Windows line breaks for a file with plain ones, so
+    every keystroke landed in the wrong place, didn't reach the room, and was undone.
+
+## 0.15.0 - 2026-10-28
+
+- **Tickets:** choose the branch the agent works on in the board's settings: a new branch per ticket with your own
+  prefix (`devcat/` by default), or an existing branch such as `main` or `staging` that fixed tickets are committed
+  straight onto (unfinished work still goes on a branch of its own). Each history entry has **open chat**, which
+  opens the agent's conversation for that ticket in the AI workspace (#110).
 - **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
   project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like
@@ -316,5 +426,5 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Install from a terminal:**
   - `curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh` (macOS, Linux);
   - `irm https://devcathq.github.io/DevCat/install.ps1 | iex` (Windows);
-  - Homebrew: `brew install devileya/devcat/devcat-cli`, or `--cask devileya/devcat/devcat` for
+  - Homebrew: `brew install devcathq/devcat/devcat-cli`, or `--cask devcathq/devcat/devcat` for
     the app.

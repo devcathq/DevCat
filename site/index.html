@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DevCat: AI agents, Git, databases and clusters in one window</title>
-  <meta name="description" content="DevCat is a free desktop app for developers: run Claude Code, Codex or Gemini in a real terminal, review the diff, commit, and work with your databases, Kubernetes clusters, RabbitMQ and VPNs in the same window.">
+  <title>DevCat: your agents, repos, databases and clusters. One window.</title>
+  <meta name="description" content="DevCat is a free desktop app for coding with AI agents: run Claude Code, Codex, Gemini or the built-in DevCat Agent, review what they changed, and work with your databases, Kubernetes clusters and VPNs in the same window. Build with your team in Rooms, and keep your agents going from your phone or Telegram and Discord.">
   <meta name="theme-color" content="#0f1114">
   <meta property="og:title" content="DevCat">
-  <meta property="og:description" content="AI coding agents, Git, databases, Kubernetes, RabbitMQ and VPN / SSH tunnels in one desktop app.">
+  <meta property="og:description" content="Your agents, repos, databases and clusters. One window. Free for macOS, Windows and Linux.">
   <meta property="og:image" content="img/ai.png">
   <link rel="icon" href="img/icon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
@@ -27,7 +27,7 @@
 <main>
   <section class="hero wrap">
     <h1>Your agents, repos, databases and clusters. One window.</h1>
-    <p class="lede">DevCat runs Claude Code, Codex or Gemini in a real terminal next to the diff, the commit graph, your SQL editor and your Kubernetes pods. A free download for macOS, Windows and Linux.</p>
+    <p class="lede">Run Claude Code, Codex, Gemini or the built-in DevCat Agent next to the diff, the commit graph, your SQL editor and your Kubernetes pods. Build with your team in Rooms, give every agent one memory, and keep them going from your phone or a chat app. A free download for macOS, Windows and Linux.</p>
     <div class="cta">
       <a class="btn primary" id="dl-main" href="https://github.com/devcathq/DevCat/releases/latest">Download DevCat</a>
       <a class="btn" href="#install">Other platforms and the CLI</a>
@@ -87,7 +87,9 @@
 
     <div class="tabset">
       <input type="radio" name="tour" id="t-ai" checked>
+      <input type="radio" name="tour" id="t-agent">
       <input type="radio" name="tour" id="t-review">
+      <input type="radio" name="tour" id="t-rooms">
       <input type="radio" name="tour" id="t-git">
       <input type="radio" name="tour" id="t-db">
       <input type="radio" name="tour" id="t-k8s">
@@ -95,21 +97,31 @@
       <input type="radio" name="tour" id="t-mobile">
       <div class="tablist" role="presentation">
         <label for="t-ai">AI workspace</label>
-        <label for="t-review">Diff and review</label>
+        <label for="t-agent">DevCat Agent</label>
+        <label for="t-review">Review</label>
+        <label for="t-rooms">Rooms</label>
+        <label for="t-mobile">Phone &amp; chat apps</label>
         <label for="t-git">Git</label>
         <label for="t-db">Databases</label>
-        <label for="t-k8s">Kubernetes and RabbitMQ</label>
+        <label for="t-k8s">Clusters</label>
         <label for="t-net">VPN and tunnels</label>
-        <label for="t-mobile">Mobile</label>
       </div>
 
       <article class="panel p-ai">
         <div class="txt">
           <h3>Any coding agent, in a real terminal</h3>
           <p>Claude Code by default, or OpenAI Codex, Gemini CLI, GitHub Copilot, Aider, opencode or your own CLI. DevCat runs the one you installed, with your own login.</p>
-          <p>Sessions are listed per project, so you can pick up yesterday's conversation in a click.</p>
+          <p>Sessions are listed per project, so you can pick up yesterday's conversation in a click. Or start a ghost chat: a fresh window that keeps nothing.</p>
         </div>
         <img src="img/ai.png" width="1600" height="1000" alt="The AI workspace: a Claude Code session in a terminal, with sessions and the file tree on the left" loading="lazy">
+      </article>
+      <article class="panel p-agent">
+        <div class="txt">
+          <h3>A built-in agent that knows your connections</h3>
+          <p>The DevCat Agent runs on any OpenAI- or Anthropic-compatible model, asks before it edits or runs anything, follows your AGENTS.md and uses your MCP servers.</p>
+          <p>Right-click a database or cluster and ask: it already knows the tables. It queries, dumps and exports, and dropping a database takes your OK twice. Every agent shares one memory.</p>
+        </div>
+        <img src="img/agent.png" width="1600" height="1000" alt="A DevCat Agent chat about a database: it queries the refunds and dumps the database to a file" loading="lazy">
       </article>
       <article class="panel p-review">
         <div class="txt">
@@ -118,6 +130,14 @@
           <p>Ask for a code review before you commit.</p>
         </div>
         <img src="img/diff.png" width="1600" height="1000" alt="The Diff tab with changed files and a side-by-side diff" loading="lazy">
+      </article>
+      <article class="panel p-rooms">
+        <div class="txt">
+          <h3>Build it together</h3>
+          <p>Rooms share files and folders, docs you write side by side, whiteboards, a thread and tasks with your team, peer to peer and end-to-end encrypted. No account, no server.</p>
+          <p>Mention anyone's DevCat Agent: it reads the room, takes tasks and suggests changes people accept or reject.</p>
+        </div>
+        <img src="img/rooms.png" width="1600" height="900" alt="A room: a shared spec being edited by two people, the thread, the room's agent suggesting a change, and a task" loading="lazy">
       </article>
       <article class="panel p-git">
         <div class="txt">
@@ -151,11 +171,11 @@
       </article>
       <article class="panel p-mobile">
         <div class="txt">
-          <h3>Answer your agent from your phone</h3>
-          <p>DevCat Mobile for Android and iPhone gets a notification when an agent needs you, and lets you reply, run a query or check a pod.</p>
-          <p>It reaches your computer directly or through a relay that only passes encrypted traffic. There's no account to create.</p>
+          <h3>Keep your agents going from anywhere</h3>
+          <p>Link a Telegram or Discord chat to a project: Allow or Deny what the agent asks, send new requests, and get the answer and the files back.</p>
+          <p>DevCat Mobile for Android and iPhone does the same and more: reply, run a query or check a pod. It reaches your computer directly or through a relay that only passes encrypted traffic. No account to create.</p>
         </div>
-        <img class="phone" src="img/mobile-agents.png" width="585" height="1266" alt="DevCat Mobile listing the running agents" loading="lazy">
+        <img src="img/chat-bot.png" width="1600" height="900" alt="Approving an agent's command from a chat app, next to DevCat Mobile" loading="lazy">
       </article>
     </div>
   </section>
@@ -176,7 +196,7 @@
     <div class="cmds">
       <div>
         <h3>The app</h3>
-        <figure class="cmd"><figcaption>macOS, with Homebrew</figcaption><pre><code>brew install --cask devileya/devcat/devcat</code></pre></figure>
+        <figure class="cmd"><figcaption>macOS, with Homebrew</figcaption><pre><code>brew install --cask devcathq/devcat/devcat</code></pre></figure>
         <figure class="cmd"><figcaption>macOS, Linux</figcaption><pre><code>curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh -s -- --app</code></pre></figure>
         <figure class="cmd"><figcaption>Windows PowerShell</figcaption><pre><code>&amp; ([scriptblock]::Create((irm https://devcathq.github.io/DevCat/install.ps1))) -App</code></pre></figure>
       </div>

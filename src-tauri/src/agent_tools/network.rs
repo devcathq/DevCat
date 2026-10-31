@@ -3,8 +3,9 @@
 //! (`NetProfile::mcp_access`): off hides it from agents (a connection through it then works only
 //! once the user connected it), read (the default) shows its status and logs and lets agents
 //! connect it (what DevCat does by itself when a connection needs it), and full also lets them
-//! disconnect, edit and delete it. New profiles an agent adds start at read; agents never
-//! change a profile's access.
+//! disconnect and edit it. New profiles an agent adds start at read; agents never change a
+//! profile's access. Deleting a profile can't be undone, so `net_profile_delete` is the DevCat
+//! Agent's only, confirmed by typing its name (`Tool::confirm`).
 //!
 //! Networks live in the open DevCat (the app or `devcat serve`), so over MCP these tools run
 //! there (`agent_bridge.rs`); one DevCat connected works for every program on the computer. VPN
@@ -32,6 +33,8 @@ pub(super) fn add(out: &mut Vec<Arc<dyn Tool>>, s: &Arc<Scope>) {
     out.push(Arc::new(NetSave(s.clone())));
     if any {
         out.push(Arc::new(NetDisconnect(s.clone())));
+    }
+    if any && !s.mcp {
         out.push(Arc::new(NetDelete(s.clone())));
     }
 }
@@ -101,11 +104,11 @@ fn needs_app() -> Result<(), ToolOutput> {
     Ok(())
 }
 
-/// Over MCP, disconnecting, editing and deleting need the profile's AI access at Full.
+/// Over MCP, disconnecting and editing need the profile's AI access at Full.
 fn may_manage(scope: &Scope, p: &NetProfile) -> Result<(), ToolOutput> {
     if scope.mcp && p.agent_access() != McpAccess::Full {
         return Err(ToolOutput::err(format!(
-            "Agents over MCP may see and connect {} but not disconnect, edit or delete it. To allow that, the user sets the profile's AI / MCP access to \"Full\" in DevCat's Network panel (edit the profile).",
+            "Agents over MCP may see and connect {} but not disconnect or edit it. To allow that, the user sets the profile's AI / MCP access to \"Full\" in DevCat's Network panel (edit the profile).",
             p.name
         )));
     }
@@ -534,7 +537,7 @@ impl Tool for NetDelete {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "net_profile_delete".into(),
-            description: "Delete one of the user's DevCat network profiles (it's disconnected first). Connections that went through it then connect directly. Only when the user asks.".into(),
+            description: "Delete one of the user's DevCat network profiles (it's disconnected first; its config and saved password are gone). Connections that went through it then connect directly. It can't be undone: only when the user asked to delete that profile. DevCat asks the user to confirm by typing its name.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": { "profile": { "type": "string", "description": "Profile name or id" } },
@@ -548,8 +551,16 @@ impl Tool for NetDelete {
     fn summary(&self, input: &Value) -> String {
         format!("delete {}", arg(input, "profile").unwrap_or_default())
     }
+    fn confirm(&self, input: &Value) -> Option<String> {
+        // the profile's own name, whatever the model called it by
+        let named = find_profile(&self.0, input).ok().map(|p| p.name);
+        Some(named.or_else(|| arg(input, "profile")).unwrap_or_else(|| "(no profile)".into()))
+    }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
-        let p = match find_profile(&self.0, &input).and_then(|p| may_manage(&self.0, &p).map(|_| p)) {
+        if self.0.mcp {
+            return ToolOutput::err("Network profiles are deleted from the DevCat Agent in DevCat only, where the user confirms it.");
+        }
+        let p = match find_profile(&self.0, &input) {
             Ok(p) => p,
             Err(e) => return e,
         };
@@ -586,6 +597,7 @@ mod tests {
         let off = p(json!({ "id": "a", "name": "a", "kind": "ssh", "mcpAccess": "off" }));
         assert_eq!(off.agent_access(), McpAccess::Off);
         assert!(may_manage(&Scope { mcp: true, ..Scope::default() }, &p(json!({ "id": "a", "name": "VPN", "kind": "openvpn" }))).is_err(), "read: no disconnect over MCP");
+        assert_eq!(NetDelete(Arc::new(Scope::default())).confirm(&json!({ "profile": "Office" })).as_deref(), Some("Office"), "deleting asks for the name");
         assert!(may_manage(&Scope::default(), &p(json!({ "id": "a", "name": "VPN", "kind": "openvpn" }))).is_ok(), "the DevCat Agent asks instead");
     }
 }

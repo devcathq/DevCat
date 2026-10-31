@@ -87,8 +87,8 @@ pub struct NetProfile {
     #[serde(default)]
     pub options: HashMap<String, String>,
     /// What agents may do with it (see `agent_tools/network.rs`): off hides it, read (the
-    /// default) shows its status and logs and lets them connect it, full also disconnect, edit
-    /// and delete it.
+    /// default) shows its status and logs and lets them connect it, full also disconnect and edit
+    /// it (deleting is the DevCat Agent's, confirmed by typing the name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_access: Option<McpAccess>,
 }

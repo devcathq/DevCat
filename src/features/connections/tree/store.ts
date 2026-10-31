@@ -1,5 +1,6 @@
 // Connection tree state: lazily loaded children per (connection, path), expansion,
 // selection and collapsed projects.
+import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, errMsg } from "../../../lib/api";
 import type { TreeNode } from "../../../lib/types";
@@ -172,3 +173,6 @@ export const useTree = create<TreeState>((set, get) => {
       }),
   };
 });
+
+// The DevCat Agent dropped a database (agent_tools.rs `drop_database`): show the connection as it is now.
+void listen<{ id: string }>("connection-changed", (e) => useTree.getState().refresh(e.payload.id, [])).catch(() => {});

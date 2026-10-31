@@ -170,13 +170,14 @@ h3 { font: 700 22px/1.25 var(--sans); letter-spacing: -.01em; margin: 0 0 14px; 
 .panel img { border: 1px solid var(--line); border-radius: 10px; }
 .panel img.phone { max-width: 300px; justify-self: center; border-radius: 28px; }
 #t-ai:checked ~ .p-ai, #t-review:checked ~ .p-review, #t-git:checked ~ .p-git, #t-db:checked ~ .p-db,
-#t-k8s:checked ~ .p-k8s, #t-net:checked ~ .p-net, #t-mobile:checked ~ .p-mobile { display: grid; }
+#t-k8s:checked ~ .p-k8s, #t-net:checked ~ .p-net, #t-mobile:checked ~ .p-mobile,
+#t-agent:checked ~ .p-agent, #t-rooms:checked ~ .p-rooms { display: grid; }
 #t-ai:checked ~ .tablist [for="t-ai"], #t-review:checked ~ .tablist [for="t-review"], #t-git:checked ~ .tablist [for="t-git"],
 #t-db:checked ~ .tablist [for="t-db"], #t-k8s:checked ~ .tablist [for="t-k8s"], #t-net:checked ~ .tablist [for="t-net"],
-#t-mobile:checked ~ .tablist [for="t-mobile"] { color: var(--fg); border-bottom-color: var(--accent); }
+#t-mobile:checked ~ .tablist [for="t-mobile"], #t-agent:checked ~ .tablist [for="t-agent"], #t-rooms:checked ~ .tablist [for="t-rooms"] { color: var(--fg); border-bottom-color: var(--accent); }
 #t-ai:focus-visible ~ .tablist [for="t-ai"], #t-review:focus-visible ~ .tablist [for="t-review"], #t-git:focus-visible ~ .tablist [for="t-git"],
 #t-db:focus-visible ~ .tablist [for="t-db"], #t-k8s:focus-visible ~ .tablist [for="t-k8s"], #t-net:focus-visible ~ .tablist [for="t-net"],
-#t-mobile:focus-visible ~ .tablist [for="t-mobile"] { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px 6px 0 0; }
+#t-mobile:focus-visible ~ .tablist [for="t-mobile"], #t-agent:focus-visible ~ .tablist [for="t-agent"], #t-rooms:focus-visible ~ .tablist [for="t-rooms"] { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px 6px 0 0; }
 
 /* ---- install ---- */
 .install { margin-bottom: 120px; }

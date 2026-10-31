@@ -2,7 +2,8 @@
 // Toolbar: project (or General), pin, Edit / Preview, save state, delete.
 import Editor, { type OnMount } from "@monaco-editor/react";
 import clsx from "clsx";
-import { Check, Code, Eye, Pin, PinOff, Trash2, TriangleAlert } from "lucide-react";
+import { Check, Code, Eye, Pin, PinOff, Trash2, TriangleAlert, Users } from "lucide-react";
+import { useShareToRoom } from "../rooms/Exchange";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button, IconButton, Spinner, Toolbar } from "../../components/ui";
@@ -160,6 +161,7 @@ export default function NoteTab({ tab }: { tab: Extract<Tab, { type: "note" }> }
             </button>
           ))}
         </div>
+        <IconButton title="Share with a room" onClick={() => useShareToRoom.getState().share({ name: `${(title || "note").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80)}.md`, text: draft, folder: "notes", what: "this note", from: "a note" })}><Users className="size-3.5" /></IconButton>
         <IconButton title="Delete note" onClick={() => void remove()}><Trash2 className="size-3.5" /></IconButton>
       </Toolbar>
       {mode === "preview" && (

@@ -40,9 +40,10 @@ they go:
 | --- | --- |
 | **Off** | Nothing: the profile is hidden from them. A connection through it works for them only once you've connected it |
 | **Read & connect** | See its status and log, and connect it (DevCat also does when a connection needs it). The default |
-| **Full** | Also disconnect it, edit it and delete it |
+| **Full** | Also disconnect it and edit it |
 
-Profiles an agent adds start at **Read & connect**, and agents never change a profile's access. A config an agent
+Profiles an agent adds start at **Read & connect**, and agents never change a profile's access. Deleting a profile
+can't be undone, so only the DevCat Agent can, after you type the profile's name. A config an agent
 writes may not run scripts or programs (OpenVPN `up`, `down`, `plugin`, `script-security`…; WireGuard `PostUp`,
 `PreDown`…). See [What agents can do](agent-tools.md).
 

@@ -109,6 +109,9 @@ fn ten() -> u32 {
 fn three() -> u32 {
     3
 }
+fn devcat_prefix() -> String {
+    "devcat/".into()
+}
 
 /// A connected board and what the agent does with it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +179,13 @@ pub struct Board {
     /// Push the ticket's branch to origin.
     #[serde(default)]
     pub push: bool,
+    /// Each ticket gets a new branch `<prefix><key>-<title>`.
+    #[serde(default = "devcat_prefix")]
+    pub branch_prefix: String,
+    /// Commit fixed tickets straight onto this existing branch (main, staging…) instead of a new
+    /// one ("": a new branch per ticket). Unfinished work still goes on a new branch.
+    #[serde(default)]
+    pub target_branch: String,
     /// The agent may run commands (builds, tests) without asking.
     #[serde(default)]
     pub allow_commands: bool,
@@ -220,6 +230,17 @@ pub struct RunRecord {
     /// The user's prompt for this ticket, when it replaced the board's default one.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// The agent's chat, to open it in the AI workspace: its session id, the AI connection and the
+    /// folder it ran in.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// The person's answer to the agent's questions (from the Tickets chat) that started this run.
+    #[serde(default)]
+    pub reply: Option<String>,
 }
 
 /// Whether boards can be read here (the app and `devcat serve` also work them; `devcat mcp` only
@@ -313,6 +334,20 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
+/// A branch name git takes (a stricter subset of `git check-ref-format --branch`).
+fn valid_branch(b: &str) -> bool {
+    !b.is_empty()
+        && b.len() <= 200
+        && !b.starts_with(['-', '/', '.'])
+        && !b.ends_with(['/', '.'])
+        && !b.ends_with(".lock")
+        && !b.contains("..")
+        && !b.contains("//")
+        && !b.contains("@{")
+        && !b.contains("/.")
+        && b.chars().all(|c| c.is_ascii_alphanumeric() || "-_./+".contains(c))
+}
+
 // ---------------------------------------------------------------- commands
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -331,6 +366,14 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     }
     if b.name.trim().is_empty() {
         b.name = format!("{} {}", b.kind.label(), b.project.trim());
+    }
+    b.branch_prefix = b.branch_prefix.trim().to_string();
+    b.target_branch = b.target_branch.trim().to_string();
+    if !b.branch_prefix.is_empty() && !valid_branch(&format!("{}x", b.branch_prefix)) {
+        return Err(AppError::msg(format!("\"{}\" can't start a git branch name", b.branch_prefix)));
+    }
+    if !b.target_branch.is_empty() && !valid_branch(&b.target_branch) {
+        return Err(AppError::msg(format!("\"{}\" isn't a git branch name", b.target_branch)));
     }
     b.interval_min = b.interval_min.clamp(1, 24 * 60);
     b.max_per_run = b.max_per_run.clamp(1, 20);
@@ -392,6 +435,13 @@ pub async fn tickets_fix(board_id: String, ticket_ids: Vec<String>, prompt: Opti
     worker::enqueue(board(&board_id)?, ticket_ids, prompt)
 }
 
+/// Answer the agent's questions about a ticket (its last run): the agent goes on with the ticket
+/// in the same chat, on the branch that run left.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn tickets_reply(board_id: String, ticket_id: String, text: String) -> AppResult<()> {
+    worker::reply(board(&board_id)?, ticket_id, text)
+}
+
 /// Stop the ticket being worked on and drop the queue.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn tickets_stop(board_id: String) -> AppResult<()> {
@@ -414,4 +464,19 @@ pub async fn tickets_history(board_id: String) -> AppResult<Vec<RunRecord>> {
 pub async fn tickets_webhook_test(board: Board) -> AppResult<()> {
     let url = webhook(&board).ok_or_else(|| AppError::msg("No webhook set"))?;
     trackers::post_webhook(&url, &format!("DevCat is connected: updates from \"{}\" will be posted here.", board.name)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branch_names() {
+        for ok in ["main", "staging", "release/1.2", "devcat/x", "feat_a+b"] {
+            assert!(valid_branch(ok), "{ok}");
+        }
+        for bad in ["", "-x", "/x", "x/", "a..b", "a b", "x.lock", "a//b", "a@{b", "a/.b", "a~1", "a:b"] {
+            assert!(!valid_branch(bad), "{bad}");
+        }
+    }
 }

@@ -7,6 +7,7 @@ import { api, errMsg } from "../../lib/api";
 import { useProviders } from "../claude/providers";
 import { chatTabTitle } from "../claude/open";
 import { useTabs } from "../../store/tabs";
+import { WINDOW_LABEL } from "../../lib/windows";
 import type { AiProvider, AgentModel, AgentDecision, AgentLiveEvent, AgentPolicy } from "../../lib/types";
 import { ZERO, applyAll, contextWindow, itemsFromLog, lastContext, type ChatView } from "./model";
 
@@ -110,14 +111,16 @@ function ensureListening() {
   return listening;
 }
 
-/** Open the chat of a tab: resume `sessionId` (running or saved) or start a new session. */
-export async function openChat(tabId: string, cwd: string, providerId: string, sessionId: string | null): Promise<string | null> {
+/** Open the chat of a tab: resume `sessionId` (running or saved) or start a new session.
+ *  `connId`: the connection the chat is about (opened from it). `ghost`: a ghost chat, tied to this
+ *  window (closing it deletes the chat). */
+export async function openChat(tabId: string, cwd: string, providerId: string, sessionId: string | null, connId: string | null = null, ghost = false): Promise<string | null> {
   await ensureListening();
   patch(tabId, () => ({ opening: true, error: null }));
   const early: Numbered[] = [];
   if (sessionId) opening.set(sessionId, early);
   try {
-    const o = await api.agentOpen(cwd, providerId, sessionId);
+    const o = await api.agentOpen(cwd, providerId, sessionId, connId, ghost ? WINDOW_LABEL : null);
     lastSeq.set(o.sessionId, o.seq ?? 0);
     // A turn still running: its events so far come after the log.
     patch(tabId, (c) => applyAll({
@@ -165,8 +168,9 @@ export async function send(tabId: string, text: string): Promise<boolean> {
     } catch (e) {
       // ended elsewhere (a phone, or a scheduled job's next run): open it again and send
       const tab = useTabs.getState().tabs.find((t) => t.id === tabId);
-      if (!errMsg(e).startsWith("This chat is closed") || !tab || tab.type !== "claude") throw e;
-      if (!(await openChat(tabId, tab.cwd, c.providerId, c.sessionId))) throw e;
+      // (a closed ghost chat is gone for good)
+      if (!errMsg(e).startsWith("This chat is closed") || !tab || tab.type !== "claude" || tab.ghost) throw e;
+      if (!(await openChat(tabId, tab.cwd, c.providerId, c.sessionId, tab.connId ?? null))) throw e;
       await sendIt();
     }
     patch(tabId, () => ({ attachments: [] }));
@@ -285,7 +289,8 @@ export async function renameChat(sessionId: string, title: string) {
   const tabs = useTabs.getState();
   for (const t of tabs.tabs) {
     if (t.type !== "claude" || (t.sessionId !== sessionId && chats[t.id]?.sessionId !== sessionId)) continue;
-    tabs.update(t.id, { title: chatTabTitle(t.cwd, name) } as never);
+    const focus = t.connId ? chats[t.id]?.context?.focus : null;
+    tabs.update(t.id, { title: focus ? `${focus} · ${name.slice(0, 28)}${name.length > 28 ? "…" : ""}` : chatTabTitle(t.cwd, name) } as never);
     if (chats[t.id]) patch(t.id, () => ({ title: name }));
   }
 }

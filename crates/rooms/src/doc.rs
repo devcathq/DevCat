@@ -5,17 +5,27 @@
 //! Layout (records are JSON strings, so every copy can read them without a schema):
 //! - `files` (map): path → [`FileMeta`]; each text file's content is the root text `file:<path>`,
 //!   so two people creating the same file at once share one text instead of overwriting each other.
+//!   A whiteboard's shapes are the root map `board:<path>` (shape id → its JSON, Excalidraw's).
+//!   Folders are only the `/` in paths.
 //! - `thread` (list): [`Message`]s.
 //! - `claims` (map): id → [`ClaimRecord`]: an agent's lease on a range it is about to edit.
 //! - `suggestions` (map): id → [`SuggestionRecord`]: a change waiting for a person.
 //! - `history` (list): [`ChangeRecord`]s of applied suggestions, agent edits and reverts.
 //! - `peers` (map): Loro peer id → member id, to attribute typing.
+//! - `tasks` (map): id → [`Task`]: work for a person or an agent.
+//! - `pins` (map): message id → [`Pin`]: the thread's decisions.
+//! - `reactions` (map): `message|member|emoji` → [`Reaction`].
+//! - `activity` (list): [`Activity`]: who shared, made, moved, deleted or took out what.
+//!
+//! Who *edited* a file comes from the document's own history: each change belongs to a Loro peer,
+//! and `peers` says whose DevCat (or window) that is; agents' changes carry their author as the
+//! change's message (`commit_by`). See [`RoomDoc::edits`].
 //!
 //! Ranges are kept as Loro cursors on their first and last character, so they follow the text as
 //! others type, and text typed just outside a range stays outside it. A change is applied only if
 //! its range still holds exactly what its author saw; otherwise it is *out of date*.
 use loro::cursor::{Cursor, Side};
-use loro::{ExportMode, LoroDoc, LoroText, LoroValue, VersionVector};
+use loro::{ContainerID, ContainerTrait, ExportMode, JsonOpContent, JsonTextOp, LoroDoc, LoroMap, LoroText, LoroValue, VersionVector};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +35,22 @@ const CLAIMS: &str = "claims";
 const SUGGESTIONS: &str = "suggestions";
 const HISTORY: &str = "history";
 const PEERS: &str = "peers";
+const TASKS: &str = "tasks";
+const PINS: &str = "pins";
+const REACTIONS: &str = "reactions";
+const ACTIVITY: &str = "activity";
+/// Changes made within this many seconds of each other merge into one (Loro's default is 1000):
+/// short enough for the edit history to say when.
+pub const CHANGE_MERGE_SECS: i64 = 60;
+/// Edits by the same person less than this far apart count as one stretch of editing.
+const EDIT_GAP_MS: i64 = 10 * 60 * 1000;
+
+/// Reactions people can put on a message.
+pub const REACTION_EMOJI: &[&str] = &["👍", "❤️", "🎉", "😄", "🤔", "👀", "✅"];
+/// Longest task title, in characters.
+pub const MAX_TASK_TITLE: usize = 300;
+/// Most shapes on one whiteboard.
+pub const MAX_BOARD_SHAPES: usize = 5_000;
 
 /// How long a claim lasts unless renewed.
 pub const CLAIM_TTL_MS: i64 = 5 * 60 * 1000;
@@ -35,8 +61,19 @@ pub const MAX_FILE_CHARS: usize = 200_000;
 /// Longest thread message, in characters.
 pub const MAX_MESSAGE_CHARS: usize = 20_000;
 
+/// A path inside a root container's name. Loro refuses "/" in root names when it imports changes
+/// (a panic, in the window and here), so "/" is written `%2F` and "%" `%25`; a name with neither
+/// (every file before folders) stays as it was. The window does the same (replica.ts `rootPart`).
+fn root_part(path: &str) -> String {
+    path.replace('%', "%25").replace('/', "%2F")
+}
+
 fn text_root(path: &str) -> String {
-    format!("file:{path}")
+    format!("file:{}", root_part(path))
+}
+
+fn board_root(path: &str) -> String {
+    format!("board:{}", root_part(path))
 }
 
 fn new_id() -> String {
@@ -51,11 +88,19 @@ pub struct Author {
     pub name: String,
     #[serde(default)]
     pub agent: bool,
+    /// The person's coding agent that acted from outside the room (Claude Code, Codex, a DevCat
+    /// Agent chat); none for the person, and for their agent in the room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 impl Author {
     pub fn label(&self) -> String {
-        if self.agent { format!("{}'s agent", self.name) } else { self.name.clone() }
+        match (self.agent, &self.via) {
+            (true, Some(v)) => format!("{}'s agent ({v})", self.name),
+            (true, None) => format!("{}'s agent", self.name),
+            _ => self.name.clone(),
+        }
     }
 }
 
@@ -65,6 +110,9 @@ pub enum FileKind {
     Text,
     /// A binary file (image, PDF, …) shared as a blob; the record names it, members fetch it.
     Blob,
+    /// A whiteboard: its shapes are the root map `board:<path>`. DevCats from before boards don't
+    /// read this kind, so they don't list the file.
+    Board,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,7 +141,7 @@ pub struct FileInfo {
     pub path: String,
     #[serde(flatten)]
     pub meta: FileMeta,
-    /// Characters, for text files.
+    /// Characters, for text files; shapes, for whiteboards.
     pub chars: usize,
 }
 
@@ -225,6 +273,149 @@ pub struct ChangeRecord {
     pub reverts: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskState {
+    Open,
+    Doing,
+    Done,
+}
+
+/// Who a task is for: a member, or that member's agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Assignee {
+    pub member: String,
+    #[serde(default)]
+    pub agent: bool,
+}
+
+/// Work for someone in the room. The record is replaced whole on each change (the latest change
+/// wins when two are made at once).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Task {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// None: anyone may take it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<Assignee>,
+    pub state: TaskState,
+    pub created_by: Author,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<Author>,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+/// A change to a task; fields left out stay as they are.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPatch {
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Some(None) clears the notes.
+    #[serde(default, with = "double_option")]
+    pub notes: Option<Option<String>>,
+    /// Some(None): for anyone.
+    #[serde(default, with = "double_option")]
+    pub assignee: Option<Option<Assignee>>,
+    #[serde(default)]
+    pub state: Option<TaskState>,
+}
+
+/// `null` and a missing field differ: `null` clears, missing keeps.
+mod double_option {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<T: Serialize, S: Serializer>(v: &Option<Option<T>>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            None => s.serialize_none(),
+            Some(inner) => inner.serialize(s),
+        }
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+        Option::<T>::deserialize(d).map(Some)
+    }
+}
+
+/// A thread message pinned as a decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pin {
+    pub message: String,
+    pub by: Author,
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reaction {
+    pub message: String,
+    pub emoji: String,
+    pub by: Author,
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityKind {
+    /// Brought in from outside the room (`from`: this computer, a note, a memory, a skill…).
+    Shared,
+    /// Made in the room (a new file or whiteboard).
+    Created,
+    /// Renamed or moved (`to`: its new name).
+    Moved,
+    Deleted,
+    /// Taken out of the room by someone (`to`: their computer, skills, memory or notes).
+    TookOut,
+}
+
+/// Something someone did with a file or folder. Records from a newer DevCat this one doesn't
+/// know are left out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    pub id: String,
+    pub kind: ActivityKind,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// For a folder: how many files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
+    pub by: Author,
+    pub at: i64,
+}
+
+/// One change to a file: (time, member, agent, via, inserted, deleted).
+type EditEvent = (i64, Option<String>, bool, Option<String>, usize, usize);
+
+/// A stretch of one person's (or agent's) edits to a file: changes less than 10 minutes apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditSpan {
+    /// The member whose DevCat made them (none: a DevCat the room doesn't know).
+    pub member: Option<String>,
+    /// Their agent's, and through what (Claude Code…), when an agent made them.
+    pub agent: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// Milliseconds; 0 when the change didn't record its time.
+    pub from: i64,
+    pub to: i64,
+    /// Characters added and removed (a whiteboard: shapes changed, in `inserted`).
+    pub inserted: usize,
+    pub deleted: usize,
+    pub changes: usize,
+}
+
 pub type DocResult<T> = Result<T, String>;
 
 pub struct RoomDoc {
@@ -237,6 +428,7 @@ impl RoomDoc {
     pub fn new() -> RoomDoc {
         let doc = LoroDoc::new();
         doc.set_record_timestamp(true);
+        doc.set_change_merge_interval(CHANGE_MERGE_SECS);
         RoomDoc { doc }
     }
 
@@ -296,6 +488,13 @@ impl RoomDoc {
         self.doc.commit();
     }
 
+    /// Commit, saying who made the change (an agent, or a suggestion's author): the edit history
+    /// shows them instead of the DevCat that applied it.
+    fn commit_by(&self, by: &Author) {
+        self.doc.set_next_commit_message(&json(by));
+        self.doc.commit();
+    }
+
     /// Record which member a Loro peer (a DevCat, or one of its editor windows) types for.
     pub fn set_peer(&self, peer: u64, member: &str) {
         let peers = self.doc.get_map(PEERS);
@@ -322,16 +521,66 @@ impl RoomDoc {
         self.doc.get_text(text_root(path))
     }
 
+    fn board(&self, path: &str) -> LoroMap {
+        self.doc.get_map(board_root(path))
+    }
+
     pub fn files(&self) -> Vec<FileInfo> {
         let mut out = Vec::new();
         self.doc.get_map(FILES).for_each(|path, v| {
             if let Some(meta) = v.into_value().ok().and_then(record::<FileMeta>) {
-                let chars = if meta.kind == FileKind::Text { self.text(path).len_unicode() } else { 0 };
+                let chars = match meta.kind {
+                    FileKind::Text => self.text(path).len_unicode(),
+                    FileKind::Board => self.board_shapes(path).len(),
+                    FileKind::Blob => 0,
+                };
                 out.push(FileInfo { path: path.to_string(), meta, chars });
             }
         });
         out.sort_by(|a, b| a.path.cmp(&b.path));
         out
+    }
+
+    /// Files in folders from before `root_part` kept their text under the raw path, which the
+    /// window can't change without breaking the room: copy it to the new name. Only the room's
+    /// owner does it (once), so two members can't both copy it and double the text. Returns
+    /// whether anything moved.
+    pub fn move_old_roots(&self) -> bool {
+        let mut moved = false;
+        for f in self.files().into_iter().filter(|f| f.path.contains(['/', '%'])) {
+            match f.meta.kind {
+                FileKind::Text => {
+                    let new = self.text(&f.path);
+                    let old = self.doc.get_text(format!("file:{}", f.path));
+                    let content = old.to_string();
+                    if new.len_unicode() == 0 && !content.is_empty() && new.insert(0, &content).is_ok() {
+                        moved = true;
+                    }
+                }
+                FileKind::Board => {
+                    let (new, old) = (self.board(&f.path), self.doc.get_map(format!("board:{}", f.path)));
+                    if new.is_empty() && !old.is_empty() {
+                        old.for_each(|k, v| {
+                            if let Ok(v) = v.into_value() {
+                                let _ = new.insert(k, v);
+                            }
+                        });
+                        moved = true;
+                    }
+                }
+                FileKind::Blob => {}
+            }
+        }
+        if moved {
+            self.commit();
+        }
+        moved
+    }
+
+    /// The files in folder `dir` (and its folders).
+    pub fn files_in(&self, dir: &str) -> Vec<FileInfo> {
+        let prefix = format!("{}/", dir.trim_end_matches('/'));
+        self.files().into_iter().filter(|f| f.path.starts_with(&prefix)).collect()
     }
 
     pub fn exists(&self, path: &str) -> bool {
@@ -374,15 +623,152 @@ impl RoomDoc {
         Ok(())
     }
 
+    /// A new, empty whiteboard.
+    pub fn create_board(&self, path: &str, by: &Author, now: i64) -> DocResult<()> {
+        let path = clean_path(path)?;
+        if self.exists(&path) {
+            return Err(format!("{path} already exists in the room."));
+        }
+        let meta = FileMeta { kind: FileKind::Board, created_by: by.clone(), created_at: now, blob: None };
+        self.doc.get_map(FILES).insert(&path, json(&meta)).map_err(err)?;
+        // A board deleted and made again starts empty.
+        clear_map(&self.board(&path))?;
+        self.commit();
+        Ok(())
+    }
+
+    /// A whiteboard's shapes (Excalidraw elements), deleted ones left out.
+    pub fn board_shapes(&self, path: &str) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        self.board(path).for_each(|_, v| {
+            if let Some(el) = v.into_value().ok().and_then(record::<serde_json::Value>)
+                && !el.get("isDeleted").and_then(serde_json::Value::as_bool).unwrap_or(false)
+            {
+                out.push(el);
+            }
+        });
+        out
+    }
+
+    /// What a whiteboard says, for agents: its text (top to bottom, then left to right) and how
+    /// many shapes of each kind it has.
+    pub fn board_text(&self, path: &str) -> Option<String> {
+        if self.meta(path)?.kind != FileKind::Board {
+            return None;
+        }
+        let shapes = self.board_shapes(path);
+        let num = |el: &serde_json::Value, k: &str| el.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let mut texts: Vec<(f64, f64, String)> = shapes
+            .iter()
+            .filter_map(|el| {
+                let t = el.get("text").and_then(serde_json::Value::as_str)?.trim();
+                (!t.is_empty()).then(|| (num(el, "y"), num(el, "x"), t.replace('\n', " ")))
+            })
+            .collect();
+        texts.sort_by(|a, b| (a.0 / 40.0).floor().total_cmp(&(b.0 / 40.0).floor()).then(a.1.total_cmp(&b.1)));
+        let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+        for el in &shapes {
+            *kinds.entry(el.get("type").and_then(serde_json::Value::as_str).unwrap_or("shape").to_string()).or_default() += 1;
+        }
+        let kinds: Vec<String> = kinds.into_iter().map(|(k, n)| format!("{n} {k}")).collect();
+        let mut out = format!("Whiteboard {path}: {} shape(s) ({}).", shapes.len(), if kinds.is_empty() { "empty".into() } else { kinds.join(", ") });
+        if !texts.is_empty() {
+            out.push_str("\nText on it, top to bottom:\n");
+            out.push_str(&texts.into_iter().map(|(_, _, t)| format!("- {t}")).collect::<Vec<_>>().join("\n"));
+        }
+        Some(out)
+    }
+
     pub fn delete_file(&self, path: &str) -> DocResult<()> {
         let meta = self.meta(path).ok_or_else(|| format!("{path} isn't in the room."))?;
         self.doc.get_map(FILES).delete(path).map_err(err)?;
-        if meta.kind == FileKind::Text {
-            let t = self.text(path);
-            t.delete(0, t.len_unicode()).map_err(err)?;
+        match meta.kind {
+            FileKind::Text => {
+                let t = self.text(path);
+                t.delete(0, t.len_unicode()).map_err(err)?;
+            }
+            FileKind::Board => clear_map(&self.board(path))?,
+            FileKind::Blob => {}
         }
         self.commit();
         Ok(())
+    }
+
+    /// Delete every file in folder `dir`. Returns how many.
+    pub fn delete_folder(&self, dir: &str) -> DocResult<usize> {
+        let files = self.files_in(&clean_path(dir)?);
+        for f in &files {
+            self.delete_file(&f.path)?;
+        }
+        Ok(files.len())
+    }
+
+    /// Rename or move a file, or a folder with everything in it, to `to`. Refused while a file
+    /// that moves has open suggestions or an agent's claim on it (their anchors stay with the old
+    /// name). Returns each (old, new) path.
+    pub fn rename(&self, from: &str, to: &str, by: &Author, now: i64) -> DocResult<Vec<(String, String)>> {
+        let (from, to) = (clean_path(from)?, clean_path(to)?);
+        if from == to {
+            return Ok(vec![]);
+        }
+        let moves: Vec<(String, String)> = if self.exists(&from) {
+            vec![(from.clone(), to.clone())]
+        } else {
+            if to.starts_with(&format!("{from}/")) {
+                return Err("A folder can't move into itself.".into());
+            }
+            let n = from.len() + 1;
+            self.files_in(&from).into_iter().map(|f| (f.path.clone(), format!("{to}/{}", &f.path[n..]))).collect()
+        };
+        if moves.is_empty() {
+            return Err(format!("{from} isn't in the room."));
+        }
+        let (open, claims) = (self.suggestions(), self.claims(now));
+        for (a, b) in &moves {
+            if self.exists(b) {
+                return Err(format!("{b} already exists in the room."));
+            }
+            if open.iter().any(|s| s.record.path == *a && s.record.state == SuggestionState::Open) {
+                return Err(format!("{a} has suggestions waiting: accept or reject them first, then move it."));
+            }
+            if claims.iter().any(|c| c.path == *a) {
+                return Err(format!("{} is editing {a} right now: try again when it's done.", claims.iter().find(|c| c.path == *a).map(|c| c.holder.label()).unwrap_or_default()));
+            }
+        }
+        let files = self.doc.get_map(FILES);
+        for (a, b) in &moves {
+            let meta = self.meta(a).ok_or_else(|| format!("{a} isn't in the room."))?;
+            match meta.kind {
+                FileKind::Text => {
+                    let (old, new) = (self.text(a), self.text(b));
+                    let content = old.to_string();
+                    if new.len_unicode() > 0 {
+                        new.delete(0, new.len_unicode()).map_err(err)?;
+                    }
+                    new.insert(0, &content).map_err(err)?;
+                    old.delete(0, old.len_unicode()).map_err(err)?;
+                }
+                FileKind::Board => {
+                    let (old, new) = (self.board(a), self.board(b));
+                    clear_map(&new)?;
+                    let mut shapes = Vec::new();
+                    old.for_each(|k, v| shapes.push((k.to_string(), v.into_value().ok())));
+                    for (k, v) in shapes {
+                        if let Some(v) = v {
+                            new.insert(&k, v).map_err(err)?;
+                        }
+                    }
+                    clear_map(&old)?;
+                }
+                FileKind::Blob => {}
+            }
+            files.insert(b, json(&meta)).map_err(err)?;
+            files.delete(a).map_err(err)?;
+        }
+        let folder = !self.exists(&to) || moves.len() > 1 || moves[0].0 != from;
+        self.push_activity(ActivityKind::Moved, &from, None, Some(&to), folder.then_some(moves.len()), by, now)?;
+        self.commit();
+        Ok(moves)
     }
 
     // ---------------------------------------------------------------- thread
@@ -406,6 +792,252 @@ impl RoomDoc {
                 out.push(m);
             }
         });
+        out
+    }
+
+    fn message_exists(&self, id: &str) -> bool {
+        self.messages().iter().any(|m| m.id == id)
+    }
+
+    // ----------------------------------------------------------------- tasks
+
+    pub fn tasks(&self) -> Vec<Task> {
+        let mut out: Vec<Task> = Vec::new();
+        self.doc.get_map(TASKS).for_each(|_, v| {
+            if let Some(t) = v.into_value().ok().and_then(record::<Task>) {
+                out.push(t);
+            }
+        });
+        out.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        out
+    }
+
+    pub fn task(&self, id: &str) -> Option<Task> {
+        record(self.doc.get_map(TASKS).get(id)?.into_value().ok()?)
+    }
+
+    fn task_title(title: &str) -> DocResult<String> {
+        let t = title.trim();
+        if t.is_empty() {
+            return Err("Give the task a title.".into());
+        }
+        Ok(t.chars().take(MAX_TASK_TITLE).collect())
+    }
+
+    pub fn add_task(&self, title: &str, notes: Option<String>, assignee: Option<Assignee>, by: &Author, now: i64) -> DocResult<Task> {
+        let notes = notes.map(|n| n.trim().chars().take(MAX_MESSAGE_CHARS).collect::<String>()).filter(|n| !n.is_empty());
+        let t = Task { id: new_id(), title: Self::task_title(title)?, notes, assignee, state: TaskState::Open, created_by: by.clone(), created_at: now, updated_by: None, updated_at: now };
+        self.doc.get_map(TASKS).insert(&t.id, json(&t)).map_err(err)?;
+        self.commit();
+        Ok(t)
+    }
+
+    pub fn update_task(&self, id: &str, patch: TaskPatch, by: &Author, now: i64) -> DocResult<Task> {
+        let mut t = self.task(id).ok_or("No such task (it may have been deleted).")?;
+        if let Some(title) = patch.title {
+            t.title = Self::task_title(&title)?;
+        }
+        if let Some(notes) = patch.notes {
+            t.notes = notes.map(|n| n.trim().chars().take(MAX_MESSAGE_CHARS).collect::<String>()).filter(|n| !n.is_empty());
+        }
+        if let Some(a) = patch.assignee {
+            t.assignee = a;
+        }
+        if let Some(s) = patch.state {
+            t.state = s;
+        }
+        t.updated_by = Some(by.clone());
+        t.updated_at = now;
+        self.doc.get_map(TASKS).insert(&t.id, json(&t)).map_err(err)?;
+        self.commit();
+        Ok(t)
+    }
+
+    pub fn delete_task(&self, id: &str) -> DocResult<()> {
+        self.task(id).ok_or("No such task.")?;
+        self.doc.get_map(TASKS).delete(id).map_err(err)?;
+        self.commit();
+        Ok(())
+    }
+
+    // ------------------------------------------------------ pins, reactions
+
+    /// Decisions: pinned messages, oldest pin first.
+    pub fn pins(&self) -> Vec<Pin> {
+        let mut out: Vec<Pin> = Vec::new();
+        self.doc.get_map(PINS).for_each(|_, v| {
+            if let Some(p) = v.into_value().ok().and_then(record::<Pin>) {
+                out.push(p);
+            }
+        });
+        out.sort_by(|a, b| (a.at, &a.message).cmp(&(b.at, &b.message)));
+        out
+    }
+
+    /// Pin a message as a decision, or unpin it (`pin` false).
+    pub fn pin(&self, message: &str, pin: bool, by: &Author, now: i64) -> DocResult<()> {
+        if !self.message_exists(message) {
+            return Err("That message isn't in the thread.".into());
+        }
+        let pins = self.doc.get_map(PINS);
+        if pin {
+            pins.insert(message, json(&Pin { message: message.to_string(), by: by.clone(), at: now })).map_err(err)?;
+        } else {
+            pins.delete(message).map_err(err)?;
+        }
+        self.commit();
+        Ok(())
+    }
+
+    pub fn reactions(&self) -> Vec<Reaction> {
+        let mut out: Vec<Reaction> = Vec::new();
+        self.doc.get_map(REACTIONS).for_each(|_, v| {
+            if let Some(r) = v.into_value().ok().and_then(record::<Reaction>) {
+                out.push(r);
+            }
+        });
+        out.sort_by(|a, b| (a.at, &a.by.member).cmp(&(b.at, &b.by.member)));
+        out
+    }
+
+    /// Add `emoji` to a message, or take it back if `by` already put it there. Returns whether
+    /// it's on now.
+    pub fn react(&self, message: &str, emoji: &str, by: &Author, now: i64) -> DocResult<bool> {
+        if !REACTION_EMOJI.contains(&emoji) {
+            return Err("Not one of the room's reactions.".into());
+        }
+        if !self.message_exists(message) {
+            return Err("That message isn't in the thread.".into());
+        }
+        let key = format!("{message}|{}|{emoji}", by.member);
+        let map = self.doc.get_map(REACTIONS);
+        let on = map.get(&key).is_none();
+        if on {
+            map.insert(&key, json(&Reaction { message: message.to_string(), emoji: emoji.to_string(), by: Author { via: None, agent: false, ..by.clone() }, at: now })).map_err(err)?;
+        } else {
+            map.delete(&key).map_err(err)?;
+        }
+        self.commit();
+        Ok(on)
+    }
+
+    // -------------------------------------------------------------- activity
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_activity(&self, kind: ActivityKind, path: &str, from: Option<&str>, to: Option<&str>, files: Option<usize>, by: &Author, now: i64) -> DocResult<()> {
+        let a = Activity { id: new_id(), kind, path: path.to_string(), from: from.map(String::from), to: to.map(String::from), files, by: by.clone(), at: now };
+        self.doc.get_list(ACTIVITY).push(json(&a)).map_err(err)?;
+        Ok(())
+    }
+
+    /// Record that `by` did something with a file or folder (shared it in, made it, deleted it,
+    /// took it out of the room). Moves are recorded by [`Self::rename`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn log(&self, kind: ActivityKind, path: &str, from: Option<&str>, to: Option<&str>, files: Option<usize>, by: &Author, now: i64) -> DocResult<()> {
+        self.push_activity(kind, path, from, to, files, by, now)?;
+        self.commit();
+        Ok(())
+    }
+
+    /// Everything done with files, oldest first.
+    pub fn activity(&self) -> Vec<Activity> {
+        let mut out = Vec::new();
+        self.doc.get_list(ACTIVITY).for_each(|v| {
+            if let Some(a) = v.into_value().ok().and_then(record::<Activity>) {
+                out.push(a);
+            }
+        });
+        out
+    }
+
+    /// `path` and the names it had before (moves of it, or of a folder it was in), newest first.
+    pub fn names_of(&self, path: &str) -> Vec<String> {
+        let moves: Vec<Activity> = self.activity().into_iter().filter(|a| a.kind == ActivityKind::Moved).collect();
+        let mut names = vec![path.to_string()];
+        let mut cur = path.to_string();
+        for _ in 0..20 {
+            let earlier = moves.iter().rev().find_map(|m| {
+                let to = m.to.as_deref()?;
+                if cur == to {
+                    Some(m.path.clone())
+                } else {
+                    cur.strip_prefix(&format!("{to}/")).map(|rest| format!("{}/{rest}", m.path))
+                }
+            });
+            match earlier {
+                Some(e) if !names.contains(&e) => {
+                    names.push(e.clone());
+                    cur = e;
+                }
+                _ => break,
+            }
+        }
+        names
+    }
+
+    /// What was done with this file: under any of its names, or with a folder it was in.
+    pub fn activity_of(&self, path: &str) -> Vec<Activity> {
+        let names = self.names_of(path);
+        let about = |p: &str| names.iter().any(|n| n == p || n.starts_with(&format!("{p}/")));
+        self.activity().into_iter().filter(|a| about(&a.path) || a.to.as_deref().is_some_and(about)).collect()
+    }
+
+    /// Who edited a file, and when: its text's (or whiteboard's) history, under all its names, in
+    /// stretches of one person's edits, oldest first. A move (one change emptying the old name
+    /// and filling the new) isn't an edit.
+    pub fn edits(&self, path: &str) -> Vec<EditSpan> {
+        let Some(meta) = self.meta(path) else { return vec![] };
+        let names = self.names_of(path);
+        let roots: Vec<ContainerID> = match meta.kind {
+            FileKind::Text => names.iter().map(|n| self.text(n).id()).collect(),
+            FileKind::Board => names.iter().map(|n| self.board(n).id()).collect(),
+            FileKind::Blob => return vec![],
+        };
+        let history = self.doc.export_json_updates_without_peer_compression(&VersionVector::default(), &self.doc.oplog_vv());
+        let mut events: Vec<EditEvent> = Vec::new();
+        for ch in history.changes {
+            let ops: Vec<_> = ch.ops.iter().filter(|o| roots.contains(&o.container)).collect();
+            if ops.is_empty() {
+                continue;
+            }
+            let first = &ops[0].container;
+            if ops.iter().any(|o| o.container != *first) {
+                continue;
+            }
+            let (mut ins, mut del) = (0usize, 0usize);
+            for o in &ops {
+                match &o.content {
+                    JsonOpContent::Text(JsonTextOp::Insert { text, .. }) => ins += text.chars().count(),
+                    JsonOpContent::Text(JsonTextOp::Delete { len, .. }) => del += len.unsigned_abs() as usize,
+                    JsonOpContent::Map(_) => ins += 1,
+                    _ => {}
+                }
+            }
+            if ins == 0 && del == 0 {
+                continue;
+            }
+            let by: Option<Author> = ch.msg.as_deref().and_then(|m| serde_json::from_str(m).ok());
+            let member = by.as_ref().map(|a| a.member.clone()).or_else(|| self.peer_member(ch.id.peer));
+            let (agent, via) = by.map(|a| (a.agent, a.via)).unwrap_or((false, None));
+            events.push((ch.timestamp * 1000, member, agent, via, ins, del));
+        }
+        events.sort_by_key(|e| e.0);
+        let mut out: Vec<EditSpan> = Vec::new();
+        for (at, member, agent, via, ins, del) in events {
+            if let Some(last) = out.last_mut()
+                && last.member == member
+                && last.agent == agent
+                && last.via == via
+                && at - last.to <= EDIT_GAP_MS
+            {
+                last.to = last.to.max(at);
+                last.inserted += ins;
+                last.deleted += del;
+                last.changes += 1;
+                continue;
+            }
+            out.push(EditSpan { member, agent, via, from: at, to: at, inserted: ins, deleted: del, changes: 1 });
+        }
         out
     }
 
@@ -619,7 +1251,8 @@ impl RoomDoc {
         done.state = SuggestionState::Accepted;
         self.put_suggestion(&done)?;
         self.doc.get_list(HISTORY).push(json(&change)).map_err(err)?;
-        self.commit();
+        // the text is the suggestion's author's (approved by `by`, in the history)
+        self.commit_by(&s.author);
         Ok(Some(change))
     }
 
@@ -668,7 +1301,7 @@ impl RoomDoc {
             }
         }
         self.doc.get_list(HISTORY).push(json(&change)).map_err(err)?;
-        self.commit();
+        self.commit_by(by);
         Ok(change)
     }
 
@@ -774,6 +1407,13 @@ fn json<T: Serialize>(v: &T) -> String {
     serde_json::to_string(v).expect("serializes")
 }
 
+fn clear_map(m: &LoroMap) -> DocResult<()> {
+    for k in m.keys().map(|k| k.to_string()).collect::<Vec<_>>() {
+        m.delete(&k).map_err(err)?;
+    }
+    Ok(())
+}
+
 fn record<T: DeserializeOwned>(v: LoroValue) -> Option<T> {
     match v {
         LoroValue::String(s) => serde_json::from_str(&s).ok(),
@@ -790,7 +1430,7 @@ mod tests {
     use super::*;
 
     fn who(name: &str, agent: bool) -> Author {
-        Author { member: format!("{name}-id"), name: name.into(), agent }
+        Author { member: format!("{name}-id"), name: name.into(), agent, via: None }
     }
 
     /// Two copies that exchange everything both ways.
@@ -994,6 +1634,210 @@ mod tests {
         assert_eq!(a.catch_up(&b.version()), a.updates_since(&b.version()), "a copy with something gets updates");
         assert!(b.import(&a.catch_up(&b.version())).unwrap());
         assert_eq!(b.read("y.md").unwrap(), "y");
+    }
+
+    #[test]
+    fn rename_and_move_files_and_folders() {
+        let (a, b) = (RoomDoc::new(), RoomDoc::new());
+        let arif = who("Arif", false);
+        a.create_file("plan.md", "# Plan\n", &arif, 1).unwrap();
+        a.create_file("docs/a.md", "A", &arif, 1).unwrap();
+        a.create_file("docs/sub/b.md", "B", &arif, 1).unwrap();
+        a.create_board("docs/flow", &arif, 1).unwrap();
+        a.board("docs/flow").insert("s1", r#"{"id":"s1","type":"text","text":"Login","x":0,"y":0}"#).unwrap();
+        a.commit();
+        sync(&a, &b);
+
+        // a file
+        assert_eq!(a.rename("plan.md", "notes/plan.md", &arif, 2).unwrap(), vec![("plan.md".to_string(), "notes/plan.md".to_string())]);
+        assert!(!a.exists("plan.md"));
+        assert_eq!(a.read("notes/plan.md").unwrap(), "# Plan\n");
+        // a folder, with what's in it (a board too)
+        let moved = a.rename("docs", "spec", &arif, 3).unwrap();
+        assert_eq!(moved.len(), 3);
+        assert_eq!(a.read("spec/sub/b.md").unwrap(), "B");
+        assert!(a.files_in("docs").is_empty());
+        assert!(a.board_text("spec/flow").unwrap().contains("- Login"));
+        assert_eq!(a.files().iter().find(|f| f.path == "spec/flow").unwrap().chars, 1);
+        sync(&a, &b);
+        assert_eq!(b.read("spec/a.md").unwrap(), "A", "the others see it moved");
+        assert!(!b.exists("docs/a.md"));
+
+        // refused: onto a file, into itself, while a suggestion waits, a missing name
+        assert!(a.rename("spec/a.md", "notes/plan.md", &arif, 4).unwrap_err().contains("already exists"));
+        assert!(a.rename("spec", "spec/inner", &arif, 4).unwrap_err().contains("into itself"));
+        a.suggest("spec/a.md", "A", "AA", &who("Akbar", true), None, 4).unwrap();
+        assert!(a.rename("spec/a.md", "spec/c.md", &arif, 5).unwrap_err().contains("suggestions waiting"));
+        assert!(a.rename("nothing", "x", &arif, 5).is_err());
+
+        // delete a folder
+        assert_eq!(a.delete_folder("spec/sub").unwrap(), 1);
+        assert!(!a.exists("spec/sub/b.md"));
+    }
+
+    /// Typed in the window's copy (loro-crdt 1.16.2, replica.ts naming): "typed in the window" in
+    /// spec/a.md, and a shape on the board ideas/x. Loro refuses "/" in root names when it imports
+    /// (a panic that took the room down), so the window and this side encode it.
+    const WINDOW_UPDATE: &str = "6c6f726f000000000000000000000000e081ceda0004a901001400140110010700000000000000010100000000000501000001000b0204010200020401000004240273311066696c653a73706563253246612e6d640f626f6172643a69646561732532467800110104030300020204000303050b03031301004713747970656420696e207468652077696e646f7705317b226964223a227331222c2274797065223a2274657874222c2274657874223a224869222c2278223a302c2279223a307d";
+
+    #[test]
+    fn the_windows_changes_to_files_in_folders_merge() {
+        let a = RoomDoc::new();
+        let arif = who("Arif", false);
+        a.create_file("spec/a.md", "", &arif, 1).unwrap();
+        a.create_board("ideas/x", &arif, 1).unwrap();
+        assert!(a.import(&hex::decode(WINDOW_UPDATE).unwrap()).unwrap());
+        assert_eq!(a.read("spec/a.md").unwrap(), "typed in the window");
+        assert!(a.board_text("ideas/x").unwrap().contains("- Hi"));
+        // and they travel on to the others as usual
+        let b = RoomDoc::new();
+        b.import(&a.updates_since(&b.version())).unwrap();
+        assert_eq!(b.read("spec/a.md").unwrap(), "typed in the window");
+        assert_eq!(root_part("a%b/c.md"), "a%25b%2Fc.md");
+        assert_eq!(text_root("plan.md"), "file:plan.md", "names without / stay as they were");
+    }
+
+    #[test]
+    fn old_files_in_folders_move_to_their_new_name_once() {
+        let a = RoomDoc::new();
+        let arif = who("Arif", false);
+        a.create_file("docs/old.md", "", &arif, 1).unwrap();
+        // what a DevCat before root_part wrote: the raw path
+        a.doc.get_text("file:docs/old.md").insert(0, "kept").unwrap();
+        a.commit();
+        assert_eq!(a.read("docs/old.md").unwrap(), "");
+        assert!(a.move_old_roots());
+        assert_eq!(a.read("docs/old.md").unwrap(), "kept");
+        assert!(!a.move_old_roots(), "once");
+    }
+
+    #[test]
+    fn who_shared_moved_and_took_out_a_file() {
+        let a = RoomDoc::new();
+        let (arif, akbar) = (who("Arif", false), who("Akbar", false));
+        a.create_file("docs/spec.md", "x", &arif, 1).unwrap();
+        a.log(ActivityKind::Shared, "docs/spec.md", Some("this computer"), None, None, &arif, 1).unwrap();
+        a.create_file("other.md", "y", &arif, 1).unwrap();
+        a.log(ActivityKind::Created, "other.md", None, None, None, &arif, 1).unwrap();
+        a.rename("docs/spec.md", "docs/proposal.md", &akbar, 2).unwrap();
+        a.rename("docs", "spec", &akbar, 3).unwrap();
+        a.log(ActivityKind::TookOut, "spec/proposal.md", None, Some("their computer"), None, &akbar, 4).unwrap();
+        assert_eq!(a.names_of("spec/proposal.md"), vec!["spec/proposal.md", "docs/proposal.md", "docs/spec.md"]);
+        let mine: Vec<(ActivityKind, String)> = a.activity_of("spec/proposal.md").into_iter().map(|x| (x.kind, x.by.name)).collect();
+        assert_eq!(mine, vec![(ActivityKind::Shared, "Arif".into()), (ActivityKind::Moved, "Akbar".into()), (ActivityKind::Moved, "Akbar".into()), (ActivityKind::TookOut, "Akbar".into())]);
+        let folder = a.activity().into_iter().find(|x| x.path == "docs").unwrap();
+        assert_eq!((folder.to.as_deref(), folder.files), (Some("spec"), Some(1)), "a folder's move says how many files");
+        // a record from a newer DevCat this one doesn't know is left out
+        a.doc.get_list(ACTIVITY).push(r#"{"id":"z","kind":"teleported","path":"x","by":{"member":"m","name":"N"},"at":5}"#).unwrap();
+        a.commit();
+        assert_eq!(a.activity().len(), 5);
+    }
+
+    #[test]
+    fn who_edited_a_file_comes_from_the_documents_history() {
+        let (a, b) = (RoomDoc::new(), RoomDoc::new());
+        let (arif, akbar) = (who("Arif", false), who("Akbar", false));
+        a.set_peer(a.peer(), &arif.member);
+        b.set_peer(b.peer(), &akbar.member);
+        a.create_file("plan.md", "Ship in March.", &arif, 1).unwrap();
+        sync(&a, &b);
+        // Akbar types (in his copy, as his window would)
+        b.text("plan.md").insert(0, "# Plan\n").unwrap();
+        b.commit();
+        sync(&a, &b);
+        // Akbar's agent, through Claude Code, edits inside a claim
+        let agent = Author { via: Some("Claude Code".into()), ..who("Akbar", true) };
+        b.claim("plan.md", "March", &agent, None, 2).unwrap();
+        b.edit("plan.md", "March", "April", &agent, 2).unwrap();
+        b.release_all(&agent);
+        // a suggestion by Arif's agent, accepted by Akbar: the text is the agent's
+        let arifs_agent = who("Arif", true);
+        sync(&a, &b);
+        let s = a.suggest("plan.md", "Ship", "Ship v2", &arifs_agent, None, 3).unwrap();
+        sync(&a, &b);
+        b.decide(&s.id, true, &akbar, None, 3).unwrap();
+        // a move isn't an edit, and the history follows the new name
+        b.rename("plan.md", "docs/plan.md", &akbar, 4).unwrap();
+        sync(&a, &b);
+        let e = a.edits("docs/plan.md");
+        let who_did: Vec<(Option<&str>, bool, Option<&str>)> = e.iter().map(|x| (x.member.as_deref(), x.agent, x.via.as_deref())).collect();
+        assert_eq!(who_did, vec![
+            (Some("Arif-id"), false, None),
+            (Some("Akbar-id"), false, None),
+            (Some("Akbar-id"), true, Some("Claude Code")),
+            (Some("Arif-id"), true, None),
+        ], "{e:?}");
+        assert_eq!((e[0].inserted, e[1].inserted), (14, 7), "Arif's text, then Akbar's heading");
+        assert_eq!(b.edits("docs/plan.md"), e, "every copy tells the same history");
+        assert!(a.edits("nope.md").is_empty());
+    }
+
+    #[test]
+    fn boards_read_as_text_for_agents() {
+        let a = RoomDoc::new();
+        a.create_board("ideas", &who("Arif", false), 1).unwrap();
+        let m = a.board("ideas");
+        m.insert("1", r#"{"id":"1","type":"text","text":"Second row","x":5,"y":200}"#).unwrap();
+        m.insert("2", r#"{"id":"2","type":"rectangle","x":0,"y":0}"#).unwrap();
+        m.insert("3", r#"{"id":"3","type":"text","text":"Top right","x":300,"y":10}"#).unwrap();
+        m.insert("4", r#"{"id":"4","type":"text","text":"Top left","x":0,"y":12}"#).unwrap();
+        m.insert("5", r#"{"id":"5","type":"text","text":"gone","x":0,"y":0,"isDeleted":true}"#).unwrap();
+        a.commit();
+        let t = a.board_text("ideas").unwrap();
+        assert!(t.starts_with("Whiteboard ideas: 4 shape(s) (1 rectangle, 3 text)."), "{t}");
+        assert!(t.ends_with("- Top left\n- Top right\n- Second row"), "{t}");
+        assert!(a.board_text("nope").is_none());
+        assert!(a.read("ideas").is_none(), "not a text file");
+        a.delete_file("ideas").unwrap();
+        a.create_board("ideas", &who("Arif", false), 2).unwrap();
+        assert!(a.board_shapes("ideas").is_empty(), "made again, it starts empty");
+    }
+
+    #[test]
+    fn tasks_pins_and_reactions() {
+        let (a, b) = (RoomDoc::new(), RoomDoc::new());
+        let (arif, akbar) = (who("Arif", false), who("Akbar", false));
+        let t = a.add_task("  Draft the intro ", None, Some(Assignee { member: akbar.member.clone(), agent: true }), &arif, 1).unwrap();
+        assert_eq!((t.title.as_str(), t.state), ("Draft the intro", TaskState::Open));
+        assert!(a.add_task(" ", None, None, &arif, 1).is_err());
+        sync(&a, &b);
+        let t2 = b.update_task(&t.id, TaskPatch { state: Some(TaskState::Doing), notes: Some(Some("on it".into())), ..Default::default() }, &akbar, 2).unwrap();
+        assert_eq!(t2.assignee.as_ref().unwrap().member, akbar.member, "untouched fields stay");
+        sync(&a, &b);
+        assert_eq!(a.task(&t.id).unwrap().state, TaskState::Doing);
+        let t3 = a.update_task(&t.id, TaskPatch { assignee: Some(None), notes: Some(None), ..Default::default() }, &arif, 3).unwrap();
+        assert!(t3.assignee.is_none() && t3.notes.is_none(), "null clears");
+        // a patch as the window sends it: a missing field keeps, null clears
+        let p: TaskPatch = serde_json::from_str(r#"{"state":"done","assignee":null}"#).unwrap();
+        assert_eq!((p.state, p.assignee.clone(), p.notes.clone()), (Some(TaskState::Done), Some(None), None));
+        a.delete_task(&t.id).unwrap();
+        assert!(a.tasks().is_empty());
+
+        let m = a.post(&arif, "We ship on Friday.", 0, None, 4).unwrap();
+        a.pin(&m.id, true, &arif, 5).unwrap();
+        assert!(a.pin("nope", true, &arif, 5).is_err());
+        sync(&a, &b);
+        assert_eq!(b.pins().len(), 1);
+        assert!(b.react(&m.id, "👍", &akbar, 6).unwrap(), "on");
+        assert!(a.react(&m.id, "👍", &arif, 6).unwrap());
+        assert!(a.react(&m.id, "💣", &arif, 6).is_err(), "only the room's reactions");
+        sync(&a, &b);
+        assert_eq!(a.reactions().len(), 2);
+        assert!(!a.react(&m.id, "👍", &arif, 7).unwrap(), "a second click takes it back");
+        a.pin(&m.id, false, &arif, 8).unwrap();
+        sync(&a, &b);
+        assert_eq!((b.reactions().len(), b.pins().len()), (1, 0));
+    }
+
+    #[test]
+    fn authors_through_a_coding_agent() {
+        let a = Author { via: Some("Claude Code".into()), ..who("Akbar", true) };
+        assert_eq!(a.label(), "Akbar's agent (Claude Code)");
+        assert_eq!(who("Akbar", true).label(), "Akbar's agent");
+        // older records (no `via`) still read, and new ones don't write it when empty
+        let old: Author = serde_json::from_str(r#"{"member":"m","name":"Arif","agent":true}"#).unwrap();
+        assert_eq!(old.via, None);
+        assert!(!serde_json::to_string(&who("Arif", false)).unwrap().contains("via"));
     }
 
     #[test]

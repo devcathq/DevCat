@@ -66,7 +66,7 @@ yourself.
 More things to try:
 
 - *"Export today's orders to orders.csv"*: `db_export` writes the file without the rows going through the model.
-- *"Back up the staging schema to backups/staging.sql"*: `db_backup`.
+- *"Back up the staging database"*: `db_dump` writes a `.sql` file (to Downloads unless you say where).
 - *"What did I run against staging yesterday?"*: `db_history`.
 - *"Save that query as Daily orders"*: `db_saved_query_save`; it's in **Saved queries**.
 
@@ -79,7 +79,7 @@ With a Kubernetes connection:
 The agent lists the pods (`k8s_get`), reads the failing pod's events (`k8s_events`) and logs (`k8s_logs`), and
 tells you, for example, that the image tag doesn't exist. Asking it to *"restart the api deployment"*
 (`k8s_action`) needs that connection's access at **Full**; otherwise DevCat refuses and the agent says how to allow
-it.
+it. Deleting an object can't be undone, so only the DevCat Agent can (`k8s_delete`), after you type its name.
 
 With a Docker connection:
 
@@ -92,6 +92,9 @@ With a RabbitMQ connection:
 > Which queues are backing up? Show me a message from the biggest one.
 
 `rmq_list` sorted by messages, then `rmq_peek`: the messages go back on the queue.
+
+If this was your first Docker, Kubernetes or RabbitMQ connection, its tools appear in the same Claude Code session:
+DevCat tells the agent its tool list changed.
 
 ## 6. Schedule a daily check
 
@@ -113,5 +116,5 @@ the connection, what it ran, whether it worked and how long it took, refused one
 | --- | --- |
 | Hide a connection from agents | Edit connection → **Advanced** → **AI / MCP access** → **Off** |
 | Keep agents from connecting a VPN | Edit the profile → **AI / MCP access** → **Off** |
-| Let agents disconnect, edit or delete a VPN | Edit the profile → **AI / MCP access** → **Full** |
+| Let agents disconnect or edit a VPN | Edit the profile → **AI / MCP access** → **Full** |
 | Stop Claude Code using DevCat | Remove the `devcat` MCP server from Claude Code's config (`~/.claude.json`) |

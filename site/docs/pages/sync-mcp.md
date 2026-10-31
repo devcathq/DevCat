@@ -28,6 +28,12 @@ agents right away, without syncing again.
 | Cursor | `~/.cursor/mcp.json` |
 | Gemini CLI | `~/.gemini/settings.json` |
 
+## Rooms
+
+The same server gives agents the [rooms](rooms.md) you let them use (**Room settings → Let my coding agents use
+this room**): `rooms_list`, then reading a room's files, thread and tasks, writing in its thread, suggesting changes,
+and proposing team memory, as your agent. They need the DevCat app open; with it closed, the tools say so.
+
 ## Which connections an agent sees
 
 Give a project its **code folders** (project menu → **Code folders & MCP…**). Its connections then go only to
@@ -54,8 +60,8 @@ Each connection has an **AI / MCP access** setting (Edit connection → **Advanc
 The DevCat Agent in the AI workspace asks you before each change, so for it only **Off** makes a difference.
 
 VPNs and tunnels have the same setting (edit the profile in **VPN & SSH tunnels**): **Off** hides the profile,
-**Read & connect** (the default) lets agents see its status and connect it, **Full** also lets them disconnect, edit
-and delete it. See [VPN and tunnels](vpn-tunnels.md#ai-mcp-access).
+**Read & connect** (the default) lets agents see its status and connect it, **Full** also lets them disconnect and
+edit it. See [VPN and tunnels](vpn-tunnels.md#ai-mcp-access).
 
 ## DevCat open or closed
 

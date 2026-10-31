@@ -2,11 +2,15 @@
 // with the backend's copy by exchanging updates. Typing goes into this copy and its updates go to
 // the backend, which merges and passes them on; changes from others come back as updates. Both
 // copies merge whatever arrives in whatever order, so no edit overwrites another.
-import { LoroDoc, UndoManager, type LoroText } from "loro-crdt/base64";
+import { LoroDoc, UndoManager, type LoroMap, type LoroText } from "loro-crdt/base64";
 import type * as Monaco from "monaco-editor";
 import { toast } from "sonner";
 import { errMsg } from "../../lib/api";
 import { fromB64, rooms, toB64 } from "./api";
+
+/** A path inside a root container's name: Loro refuses "/" there (a file in a folder), so "/" is
+ *  written %2F and "%" %25, as the backend does (crates/rooms doc.rs `root_part`). */
+export const rootPart = (path: string) => path.replace(/%/g, "%25").replace(/\//g, "%2F");
 
 export class Replica {
   readonly doc = new LoroDoc();
@@ -15,7 +19,12 @@ export class Replica {
   private again = false;
   private listeners = new Set<() => void>();
 
-  constructor(readonly room: string) {}
+  constructor(readonly room: string) {
+    // each change says when it was made, a minute apart at most: the file's edit history
+    // (crates/rooms doc.rs `edits`, CHANGE_MERGE_SECS)
+    this.doc.setRecordTimestamp(true);
+    this.doc.setChangeMergeInterval(60);
+  }
 
   /** Start sending this copy's changes to the backend; returns the stop (for an effect). */
   attach(): () => void {
@@ -50,7 +59,12 @@ export class Replica {
   }
 
   text(path: string): LoroText {
-    return this.doc.getText(`file:${path}`);
+    return this.doc.getText(`file:${rootPart(path)}`);
+  }
+
+  /** A whiteboard's shapes (shape id → its JSON): the backend's root map `board:<path>`. */
+  board(path: string): LoroMap {
+    return this.doc.getMap(`board:${rootPart(path)}`);
   }
 
   onChange(f: () => void): () => void {
@@ -88,7 +102,12 @@ export function bind(monaco: typeof Monaco, editor: Monaco.editor.IStandaloneCod
   const model = editor.getModel();
   if (!model) return () => {};
   const text = replica.text(path);
-  reconcile(model, text.toString());
+  // The editor's line breaks must be the document's, or positions drift by one per line: a new
+  // model on Windows writes "\r\n", so a "\n" document got "\r\n" in the editor and every
+  // keystroke landed past the end of the text (Loro: "Index out of bound"), and nothing synced.
+  const content = text.toString();
+  model.setEOL(content.includes("\r\n") ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+  reconcile(model, content);
   const undo = new UndoManager(replica.doc, { mergeInterval: 800, maxUndoSteps: 200 });
   let fromRemote = false;
 

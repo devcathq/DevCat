@@ -241,7 +241,7 @@ fn tick() {
 /// until the turn ends. The chat is the scheduler's: a tab that shows it doesn't end it.
 async fn run(job: Job) {
     let started_ms = now_ms();
-    let opened = crate::agent::open(job.cwd.clone(), job.provider_id.clone(), None, "schedule", crate::agent::SCHEDULE).await;
+    let opened = crate::agent::open(job.cwd.clone(), job.provider_id.clone(), None, "schedule", crate::agent::SCHEDULE, None, None, true).await;
     let session_id = match opened {
         Ok(o) => o.session_id,
         Err(e) => {

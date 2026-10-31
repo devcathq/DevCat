@@ -485,6 +485,29 @@ pub async fn remote_pair_start(addr: Option<String>) -> AppResult<PairInfo> {
     Ok(PairInfo { link, app_link, web_link, hosted_link, code, svg, expires_at })
 }
 
+/// A link that opens a DevCat Agent chat in DevCat Mobile (the app, or the browser version) on a
+/// phone already paired with this computer: `<page>#chat=<session>&host=<id>&cwd=…&provider=…`. It
+/// carries no pairing code or secret, so it opens nothing elsewhere (integrations.rs sends it to
+/// chat apps). The hosted page when relays and browsers are on, else this computer's browser
+/// address; None when phones can't reach DevCat that way.
+pub fn chat_link(session_id: &str, cwd: &str, provider_id: &str) -> Option<String> {
+    let r = remote().ok()?;
+    let id = r.host.endpoint_id()?;
+    let s = r.host.store.settings();
+    if !s.web {
+        return None;
+    }
+    let base = if s.relay_value().is_some() {
+        HOSTED_PAGE.to_string()
+    } else if r.host.web_running() {
+        format!("http://{}/", phone_addrs(&s).first()?)
+    } else {
+        return None;
+    };
+    let e = |v: &str| v.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
+    Some(format!("{base}#chat={}&host={}&cwd={}&provider={}", e(session_id), e(&id), e(cwd), e(provider_id)))
+}
+
 fn qr_svg(text: &str) -> AppResult<String> {
     Ok(qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::M)
         .map_err(|e| AppError::msg(format!("QR code: {e}")))?

@@ -17,7 +17,7 @@ Get the installer for your system from the [latest release](https://github.com/d
 Or install from a terminal:
 
 ```sh
-brew install --cask devileya/devcat/devcat                                          # macOS (Homebrew)
+brew install --cask devcathq/devcat/devcat                                          # macOS (Homebrew)
 curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh -s -- --app            # macOS, Linux (AppImage)
 & ([scriptblock]::Create((irm https://devcathq.github.io/DevCat/install.ps1))) -App   # Windows (PowerShell)
 ```
@@ -39,7 +39,7 @@ Or run `xattr -dr com.apple.quarantine /Applications/DevCat.app` once.
 The CLI runs [`devcat serve`](devcat-serve.md) without a window, for servers and SSH sessions:
 
 ```sh
-brew install devileya/devcat/devcat-cli                          # macOS, Linux (Homebrew)
+brew install devcathq/devcat/devcat-cli                          # macOS, Linux (Homebrew)
 curl -fsSL https://devcathq.github.io/DevCat/install.sh | sh     # macOS, Linux → ~/.local/bin
 irm https://devcathq.github.io/DevCat/install.ps1 | iex          # Windows (PowerShell)
 ```

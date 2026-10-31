@@ -2,10 +2,12 @@
 //! at a time, each on its own branch made from the branch the repository was on:
 //!
 //! 1. the repository must be clean (the agent's work never mixes with the user's);
-//! 2. `devcat/<key>-<title>` is created, the ticket moves to the board's "working" column;
+//! 2. `devcat/<key>-<title>` is created (the prefix is the board's; or the board's existing
+//!    branch, e.g. main, is checked out), the ticket moves to the board's "working" column;
 //! 3. the agent (Claude Code or DevCat Agent) fixes it and answers fixed / needs_info / failed
 //!    with a summary and how to test;
-//! 4. DevCat commits what changed (unfinished work too, marked WIP), goes back to the original
+//! 4. DevCat commits what changed (unfinished work too, marked WIP, and on a new branch when the
+//!    board commits to an existing one), goes back to the original
 //!    branch, pushes if the board says so, comments on the ticket and moves it to "done" (fixed)
 //!    or "failed" (else back where it was).
 use super::trackers::Tracker;
@@ -16,7 +18,7 @@ use crate::error::{AppError, AppResult};
 use devcat_harness::approval::DenyAll;
 use devcat_harness::prompt::{Environment, system_prompt};
 use devcat_harness::tools::Registry;
-use devcat_harness::{Agent, AgentEvent, Block, Cancel, Llm, Policy, Session, TurnEnd};
+use devcat_harness::{Agent, AgentEvent, Block, Cancel, Llm, Policy, Session, SessionEvent, TurnEnd};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -56,8 +58,22 @@ struct Job {
     queue: VecDeque<String>,
     /// Queued tickets fixed with a prompt of their own (instead of the board's default prompt).
     prompts: HashMap<String, String>,
+    /// Queued tickets the person answered the agent's questions about.
+    replies: HashMap<String, Reply>,
     repo: std::path::PathBuf,
     view: JobView,
+}
+
+/// The person's answer to the agent's questions, and where the last run left the ticket: the agent
+/// goes on in that chat (same AI connection) on that branch.
+#[derive(Debug, Clone, Default)]
+pub struct Reply {
+    pub text: String,
+    /// The last run's answer (its questions).
+    pub asked: String,
+    pub session_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub branch: Option<String>,
 }
 
 static JOBS: Lazy<Mutex<HashMap<String, Job>>> = Lazy::new(Default::default);
@@ -106,6 +122,7 @@ pub fn stop(board: &str) {
         let Some(j) = jobs.get_mut(board) else { return };
         j.queue.clear();
         j.prompts.clear();
+        j.replies.clear();
         j.cancel.cancel();
         view_of(j)
     };
@@ -133,12 +150,32 @@ fn check_board(b: &Board) -> AppResult<()> {
 /// Queue tickets on the board's job, starting it if needed. `prompt`: what the agent is told for
 /// these tickets instead of the board's default prompt (None: the default).
 pub fn enqueue(b: Board, ids: Vec<String>, prompt: Option<String>) -> AppResult<()> {
+    queue(b, ids, prompt, None)
+}
+
+/// Answer the agent's questions about a ticket: queue it again, going on from its last run (with
+/// that run's prompt, when it had one of its own).
+pub fn reply(b: Board, ticket_id: String, text: String) -> AppResult<()> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err(AppError::msg("Write your answer first"));
+    }
+    let last = super::history(&b.id).into_iter().find(|r| r.ticket_id == ticket_id).ok_or_else(|| AppError::msg("The agent hasn't worked on this ticket yet"))?;
+    let r = Reply { text, asked: last.summary, session_id: last.session_id, provider_id: last.provider_id, branch: last.branch };
+    queue(b, vec![ticket_id], last.prompt, Some(r))
+}
+
+fn queue(b: Board, ids: Vec<String>, prompt: Option<String>, reply: Option<Reply>) -> AppResult<()> {
     let prompt = prompt.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
-    let with_prompt = |prompts: &mut HashMap<String, String>, ids: &[String]| {
+    let with_prompt = |prompts: &mut HashMap<String, String>, replies: &mut HashMap<String, Reply>, ids: &[String]| {
         for id in ids {
             match &prompt {
                 Some(p) => prompts.insert(id.clone(), p.clone()),
                 None => prompts.remove(id),
+            };
+            match &reply {
+                Some(r) => replies.insert(id.clone(), r.clone()),
+                None => replies.remove(id),
             };
         }
     };
@@ -150,7 +187,7 @@ pub fn enqueue(b: Board, ids: Vec<String>, prompt: Option<String>) -> AppResult<
             if j.cancel.is_cancelled() {
                 return Err(AppError::msg("This board is stopping; try again in a moment"));
             }
-            with_prompt(&mut j.prompts, &ids);
+            with_prompt(&mut j.prompts, &mut j.replies, &ids);
             for id in ids {
                 if !j.queue.contains(&id) {
                     j.queue.push_back(id);
@@ -162,15 +199,15 @@ pub fn enqueue(b: Board, ids: Vec<String>, prompt: Option<String>) -> AppResult<
                 let name = super::board(other).map(|o| o.name).unwrap_or_default();
                 return Err(AppError::msg(format!("The agent is already working in this repository (board \"{name}\"); wait for it or stop it")));
             }
-            let mut prompts = HashMap::new();
-            with_prompt(&mut prompts, &ids);
+            let (mut prompts, mut replies) = (HashMap::new(), HashMap::new());
+            with_prompt(&mut prompts, &mut replies, &ids);
             let queue: VecDeque<String> = ids.into_iter().fold(VecDeque::new(), |mut q, id| {
                 if !q.contains(&id) {
                     q.push_back(id);
                 }
                 q
             });
-            jobs.insert(b.id.clone(), Job { cancel: Cancel::default(), queue, prompts, repo, view: JobView { stage: "Starting".into(), started: now_ms(), ..Default::default() } });
+            jobs.insert(b.id.clone(), Job { cancel: Cancel::default(), queue, prompts, replies, repo, view: JobView { stage: "Starting".into(), started: now_ms(), ..Default::default() } });
             true
         }
     };
@@ -183,7 +220,7 @@ pub fn enqueue(b: Board, ids: Vec<String>, prompt: Option<String>) -> AppResult<
 
 async fn run_job(board_id: String) {
     loop {
-        let (next, prompt, cancel) = {
+        let (next, prompt, reply, cancel) = {
             let mut jobs = JOBS.lock();
             let Some(j) = jobs.get_mut(&board_id) else { break };
             if j.cancel.is_cancelled() {
@@ -191,7 +228,8 @@ async fn run_job(board_id: String) {
             }
             let next = j.queue.pop_front();
             let prompt = next.as_ref().and_then(|id| j.prompts.remove(id));
-            (next, prompt, j.cancel.clone())
+            let reply = next.as_ref().and_then(|id| j.replies.remove(id));
+            (next, prompt, reply, j.cancel.clone())
         };
         let Some(ticket_id) = next else { break };
         update(&board_id, |v| {
@@ -199,7 +237,7 @@ async fn run_job(board_id: String) {
         });
         let rec = match super::board(&board_id) {
             Ok(b) => {
-                let rec = fix_one(&b, &ticket_id, prompt.as_deref(), &cancel).await;
+                let rec = fix_one(&b, &ticket_id, prompt.as_deref(), reply.as_ref(), &cancel).await;
                 if let Some(url) = super::webhook(&b) {
                     if let Err(e) = super::trackers::post_webhook(&url, &chat_text(&b, &rec)).await {
                         log(&board_id, format!("Webhook: {e}"));
@@ -233,15 +271,21 @@ fn error_record(ticket_id: &str, why: String) -> RunRecord {
         finished: now_ms(),
         cost_usd: None,
         prompt: None,
+        session_id: None,
+        provider_id: None,
+        cwd: None,
+        reply: None,
     }
 }
 
-/// `prompt`: the user's prompt for this ticket, instead of the board's default one.
-async fn fix_one(b: &Board, ticket_id: &str, prompt: Option<&str>, cancel: &Cancel) -> RunRecord {
+/// `prompt`: the user's prompt for this ticket, instead of the board's default one. `reply`: the
+/// person's answer to the agent's questions from its last run.
+async fn fix_one(b: &Board, ticket_id: &str, prompt: Option<&str>, reply: Option<&Reply>, cancel: &Cancel) -> RunRecord {
     let mut rec = error_record(ticket_id, String::new());
     rec.prompt = prompt.map(str::to_string);
+    rec.reply = reply.map(|r| r.text.clone());
     let res = match Tracker::new(b, super::token(b)) {
-        Ok(tr) => work(b, &tr, ticket_id, prompt, cancel, &mut rec).await,
+        Ok(tr) => work(b, &tr, ticket_id, prompt, reply, cancel, &mut rec).await,
         Err(e) => Err(e),
     };
     if let Err(e) = res {
@@ -262,7 +306,7 @@ pub struct Answer {
     pub cost_usd: Option<f64>,
 }
 
-async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<()> {
+async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, reply: Option<&Reply>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<()> {
     let mut t = tr.get(ticket_id).await?;
     rec.key = t.key.clone();
     rec.title = t.title.clone();
@@ -273,22 +317,54 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, ca
         v.url = Some(t.url.clone());
     });
 
-    // The repositories: on a branch, without the user's changes (those are left alone).
-    let (repos, skipped) = prepare(&b.repo).await?;
-    let branch = free_branch(&repos, &branch_name(&t)).await;
+    // The repositories: on a branch, without the user's changes (those are left alone). `own`: a
+    // new branch per ticket, else the board's existing branch. An answer to the agent goes on
+    // where its last run left the work (`cont`, the branch it committed on).
+    let (mut repos, mut skipped) = prepare(&b.repo).await?;
+    let target = b.target_branch.trim();
+    let cont = reply.and_then(|r| r.branch.clone()).filter(|br| br.as_str() != target);
+    let own = target.is_empty() || cont.is_some();
+    if !own {
+        with_branch(&mut repos, &mut skipped, target).await?;
+    }
+    let new_branch = match &cont {
+        Some(br) => br.clone(),
+        None => free_branch(&repos, &branch_name(&b.branch_prefix, &t)).await,
+    };
+    let branch = if own { new_branch.clone() } else { target.to_string() };
+    // Repositories where the branch was there already (the last run's work): never deleted.
+    let mut existed = vec![false; repos.len()];
     for (n, r) in repos.iter().enumerate() {
-        if let Err(e) = git(&r.path, &["checkout", "-q", "-b", &branch]).await {
-            for done in &repos[..n] {
+        if cont.is_some() {
+            existed[n] = git(&r.path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.is_ok();
+        }
+        let res = if own && !existed[n] { git(&r.path, &["checkout", "-q", "-b", &branch]).await } else { git(&r.path, &["checkout", "-q", &branch]).await };
+        if let Err(e) = res {
+            for (i, done) in repos[..n].iter().enumerate() {
                 let _ = git(&done.path, &["checkout", "-q", &done.original]).await;
-                let _ = git(&done.path, &["branch", "-q", "-D", &branch]).await;
+                if own && !existed[i] {
+                    let _ = git(&done.path, &["branch", "-q", "-D", &branch]).await;
+                }
             }
-            return Err(AppError::msg(format!("Couldn't make the branch {branch} in {}: {e}", r.name)));
+            return Err(AppError::msg(format!("Couldn't {} the branch {branch} in {}: {e}", if own { "make" } else { "check out" }, r.label())));
         }
     }
+    if cont.is_some() && !target.is_empty() {
+        rec.notes.push(format!("Went on with the earlier work on {branch}: merge it into {target} when it's done"));
+    }
+    let what = if own && cont.is_none() { "Branch" } else { "On" };
     stage(&b.id, &match repos.as_slice() {
-        [r] if skipped.is_empty() && r.name.is_empty() => format!("Branch {branch} (from {})", r.original),
-        _ => format!("Branch {branch} in {}", repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")),
+        [r] if skipped.is_empty() && r.name.is_empty() => format!("{what} {branch} (from {})", r.original),
+        _ => format!("{what} {branch} in {}", repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")),
     });
+    if !own && b.push {
+        // It's pushed when fixed: start from what origin has.
+        for r in &repos {
+            if let Err(e) = git(&r.path, &["pull", "-q", "--ff-only", "origin", &branch]).await {
+                rec.notes.push(format!("Couldn't update {branch} in {} from origin: {e}", r.label()));
+            }
+        }
+    }
     for (name, why, _) in &skipped {
         rec.notes.push(format!("Left {name} alone: {why}"));
     }
@@ -310,22 +386,36 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, ca
     if custom.is_some() {
         log(&b.id, "With your prompt for this ticket (instead of the board's default)".into());
     }
-    let answer = run_agent(b, &t, &where_text(&branch, &repos, &skipped), &images, custom, cancel).await;
+    let session = Arc::new(Mutex::new(None));
+    let answer = run_agent(b, &t, &where_text(&branch, own && cont.is_none(), &repos, &skipped), &images, custom, reply, cancel, &session).await;
+    rec.session_id = session.lock().clone();
+    rec.provider_id = Some(provider_of(b).to_string());
+    rec.cwd = Some(b.repo.clone());
 
     // Whatever happened: keep the work on the branch and give each repository back as it was.
     stage(&b.id, "Saving the work");
     let summary = answer.as_ref().map(|a| a.summary.clone()).unwrap_or_default();
     let said_fixed = matches!(&answer, Ok(a) if a.status == "fixed");
+    // Unfinished work doesn't go onto the board's existing branch: on a new one instead.
+    let wip = !own && !said_fixed;
+    let saved_on = if wip { new_branch.as_str() } else { branch.as_str() };
     let mut changed: Vec<&Repo> = vec![];
     let mut saved = true;
-    for r in &repos {
+    for (n, r) in repos.iter().enumerate() {
         let files = changed_files(&r.path).await.unwrap_or(0);
         if files > 0 {
+            if wip
+                && let Err(e) = git(&r.path, &["checkout", "-q", "-b", saved_on]).await
+            {
+                saved = false;
+                rec.notes.push(format!("Couldn't make the branch {saved_on} for the unfinished work in {} (left uncommitted on {branch}): {e}", r.label()));
+                continue;
+            }
             let head = if said_fixed { format!("{}: {}", t.key, t.title) } else { format!("WIP {}: {} (unfinished)", t.key, t.title) };
             let msg = format!("{head}\n\n{summary}\n\n{}\nWorked on by the DevCat agent.", t.url).trim().to_string();
             if let Err(e) = commit(&r.path, &msg, rec).await {
                 saved = false;
-                rec.notes.push(format!("Couldn't commit the agent's work in {} (left uncommitted on {branch}): {e}", r.label()));
+                rec.notes.push(format!("Couldn't commit the agent's work in {} (left uncommitted on {saved_on}): {e}", r.label()));
                 continue;
             }
             rec.files_changed += files;
@@ -333,13 +423,16 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, ca
                 rec.repos.push(format!("{} ({files} file{})", r.name, if files == 1 { "" } else { "s" }));
             }
             changed.push(r);
+        } else if existed[n] {
+            // The last run's work is on the branch: pushed with the rest when fixed.
+            changed.push(r);
         }
         if let Err(e) = git(&r.path, &["checkout", "-q", &r.original]).await {
             saved = false;
             rec.notes.push(format!("Couldn't go back to {} in {}: {e}", r.original, r.label()));
             continue;
         }
-        if files == 0 {
+        if files == 0 && own && !existed[n] {
             let _ = git(&r.path, &["branch", "-q", "-D", &branch]).await;
         }
     }
@@ -351,10 +444,14 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, ca
         }
     }
     let files = rec.files_changed;
-    let fixed = said_fixed && files > 0 && saved;
+    // Going on from the last run: its committed work counts too.
+    let earlier = existed.iter().any(|e| *e);
+    let fixed = said_fixed && (files > 0 || earlier) && saved;
     if files > 0 {
+        rec.branch = Some(saved_on.to_string());
+        log(&b.id, format!("{files} file{} changed, committed on {saved_on}", if files == 1 { "" } else { "s" }));
+    } else if earlier {
         rec.branch = Some(branch.clone());
-        log(&b.id, format!("{files} file{} changed, committed on {branch}", if files == 1 { "" } else { "s" }));
     }
     let mut pushed = false;
     if fixed && b.push {
@@ -384,7 +481,7 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, ca
     rec.summary = a.summary.clone();
     rec.testing = a.testing.clone();
     rec.outcome = if fixed { "fixed".into() } else if a.status == "fixed" && saved { "needs_info".into() } else if a.status == "fixed" { "failed".into() } else { a.status.clone() };
-    if a.status == "fixed" && files == 0 {
+    if a.status == "fixed" && files == 0 && !earlier {
         rec.summary = format!("The agent changed no files. {}", a.summary);
     }
 
@@ -536,6 +633,25 @@ pub fn prompt(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom: Opt
     p
 }
 
+/// After the person answered the agent's questions: what the agent is told. `resumed`: it goes on
+/// in its earlier chat (else it starts over, so it gets the whole ticket and its earlier questions).
+pub fn follow_up(full: &str, where_: &str, r: &Reply, resumed: bool, json_tail: bool) -> String {
+    let answer = format!("The person answered you in DevCat (not the tracker):\n<answer>\n{}\n</answer>\n\n", r.text.trim());
+    if !resumed {
+        let asked = r.asked.trim();
+        let asked = if asked.is_empty() { String::new() } else { format!("An earlier try at this ticket stopped with this answer:\n<earlier>\n{asked}\n</earlier>\n\n") };
+        return format!("{full}\n{asked}{answer}Go on with the ticket with that in mind.");
+    }
+    let mut p = format!(
+        "{answer}{where_}\n\nGo on with the ticket with that in mind (your earlier work, if any, is committed on this branch). \
+         When you finish, answer again with status, summary (all you changed for the ticket, not only since the answer) and testing, as before.\n"
+    );
+    if json_tail {
+        p.push_str("\nEnd your final answer with exactly one JSON object with these keys, e.g. {\"status\": \"fixed\", \"summary\": \"…\", \"testing\": \"…\"}.\n");
+    }
+    p
+}
+
 /// The last JSON object with a `status` in the agent's final text (else the text as a summary).
 pub fn parse_answer(text: &str) -> Answer {
     for (i, _) in text.match_indices('{').collect::<Vec<_>>().into_iter().rev() {
@@ -565,10 +681,39 @@ pub fn scope_of(b: &Board) -> Scope {
     Scope { project: b.project_id.clone().filter(|p| !p.trim().is_empty()), folder: Some(b.repo.clone().into()), mcp: true, unattended: true }
 }
 
-async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom: Option<&str>, cancel: &Cancel) -> AppResult<Answer> {
+/// The board's AI connection.
+fn provider_of(b: &Board) -> &str {
+    if b.provider_id.is_empty() { crate::ai::BUILTIN_ID } else { b.provider_id.as_str() }
+}
+
+/// `session`: set to the chat's session id (Claude's, or the DevCat Agent's), to open it later in
+/// the AI workspace.
+/// `reply`: the person's answer to the agent's last run, which it goes on from (in that chat, when
+/// it was with the same AI connection).
+#[allow(clippy::too_many_arguments)]
+async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom: Option<&str>, reply: Option<&Reply>, cancel: &Cancel, session: &Arc<Mutex<Option<String>>>) -> AppResult<Answer> {
     let providers = crate::ai::ai_providers_list().await?;
-    let id = if b.provider_id.is_empty() { crate::ai::BUILTIN_ID } else { b.provider_id.as_str() };
+    let id = provider_of(b);
     let p = providers.into_iter().find(|p| p.id == id).ok_or_else(|| AppError::msg("The board's AI connection is gone: choose another one"))?;
+    let resume = reply.filter(|r| r.provider_id.as_deref() == Some(id)).and_then(|r| r.session_id.clone()).filter(|s| !s.is_empty()).filter(|s| match p.kind {
+        // The DevCat Agent's chat must still be there (Claude's is Claude's to find).
+        crate::ai::AiKind::Agent => agent_session(s).is_some(),
+        _ => true,
+    });
+    // The message, and the ticket's images (only when the agent starts over).
+    let message = |json_tail: bool| -> (String, bool) {
+        let full = || prompt(b, t, where_, images, custom, json_tail);
+        match reply {
+            Some(r) if resume.is_some() => (follow_up("", where_, r, true, json_tail), false),
+            Some(r) => (follow_up(&full(), where_, r, false, json_tail), true),
+            None => (full(), true),
+        }
+    };
+    if resume.is_some() {
+        log(&b.id, "Going on in the earlier chat, with your answer".into());
+    } else if reply.is_some() {
+        log(&b.id, "Starting over with your answer (the earlier chat was with another AI connection)".into());
+    }
     let board = b.id.clone();
     let activity: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |l| log(&board, l));
     let model = b.model.clone().filter(|m| !m.trim().is_empty());
@@ -584,9 +729,10 @@ async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom
                     None
                 }
             };
+            let (text, with_images) = message(false);
             let job = crate::claude::headless::Job {
                 cwd: b.repo.clone(),
-                prompt: prompt(b, t, where_, images, custom, false),
+                prompt: text,
                 model,
                 allow_commands: b.allow_commands,
                 schema: Some(answer_schema()),
@@ -594,8 +740,10 @@ async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom
                 program: Some(l.program.into()),
                 env: l.env,
                 timeout: TICKET_TIMEOUT,
-                images: images.iter().map(|i| (i.media_type.clone(), i.data.clone())).collect(),
+                images: if with_images { images.iter().map(|i| (i.media_type.clone(), i.data.clone())).collect() } else { vec![] },
                 mcp,
+                session: session.clone(),
+                resume,
             };
             let c = cancel.clone();
             let o = crate::claude::headless::run(job, activity, move || c.is_cancelled()).await?;
@@ -605,14 +753,36 @@ async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom
         }
         crate::ai::AiKind::Agent => {
             log(&b.id, format!("DevCat Agent ({})", p.name));
-            let blocks = images.iter().map(|i| Block::Image { media_type: i.media_type.clone(), data: i.data.clone() }).collect();
-            run_devcat_agent(b, &p.id, model, &prompt(b, t, where_, images, custom, true), blocks, cancel, activity).await
+            let (text, with_images) = message(true);
+            let blocks = if with_images { images.iter().map(|i| Block::Image { media_type: i.media_type.clone(), data: i.data.clone() }).collect() } else { vec![] };
+            let title = format!("{}: {}", t.key, t.title);
+            run_devcat_agent(b, &p.id, model, &text, blocks, cancel, activity, session, &title, resume).await
         }
         k => Err(AppError::msg(format!("Tickets are worked on by Claude Code or DevCat Agent; \"{}\" is {}", p.name, k.label()))),
     }
 }
 
-async fn run_devcat_agent(b: &Board, provider: &str, model: Option<String>, prompt: &str, images: Vec<Block>, cancel: &Cancel, activity: Arc<dyn Fn(String) + Send + Sync>) -> AppResult<Answer> {
+/// A DevCat Agent chat's file, when it's there.
+fn agent_session(id: &str) -> Option<std::path::PathBuf> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    crate::agent::sessions_dir().ok().map(|d| d.join(format!("{id}.jsonl"))).filter(|p| p.exists())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_devcat_agent(
+    b: &Board,
+    provider: &str,
+    model: Option<String>,
+    prompt: &str,
+    images: Vec<Block>,
+    cancel: &Cancel,
+    activity: Arc<dyn Fn(String) + Send + Sync>,
+    slot: &Mutex<Option<String>>,
+    title: &str,
+    resume: Option<String>,
+) -> AppResult<Answer> {
     let (_, mut cfg) = crate::ai::agent_config(provider)?;
     if let Some(m) = model {
         cfg.model = m;
@@ -634,8 +804,17 @@ async fn run_devcat_agent(b: &Board, provider: &str, model: Option<String>, prom
     let policy = if b.allow_commands { Policy::Bypass } else { Policy::AutoEdit };
     let mut agent = Agent::new(Arc::new(Llm::new(cfg)), tools, policy, Arc::new(DenyAll), system);
     agent.context_window = Some(128_000);
-    let sessions = super::dir()?.join("sessions");
-    let mut session = Session::create(&sessions, &b.repo).await.map_err(|e| AppError::msg(e.to_string()))?;
+    // With the AI workspace's chats, so it can be opened (and continued) there.
+    // Going on in the earlier chat when it's still there.
+    let mut session = match resume.as_deref().and_then(agent_session) {
+        Some(p) => Session::open(&p).await.map_err(|e| AppError::msg(e.to_string()))?,
+        None => {
+            let mut s = Session::create(crate::agent::sessions_dir()?, &b.repo).await.map_err(|e| AppError::msg(e.to_string()))?;
+            let _ = s.append(SessionEvent::Title { title: format!("Ticket {title}") }).await;
+            s
+        }
+    };
+    *slot.lock() = Some(session.id.clone());
     let mut last_text = String::new();
     let mut on = |e: AgentEvent| match e {
         AgentEvent::ToolCall { name, summary, .. } => activity(format!("{name} {}", summary.lines().next().unwrap_or("")).trim().to_string()),
@@ -748,8 +927,8 @@ async fn git_push(repo: &str, branch: &str) -> AppResult<()> {
     git(repo, &["push", "-q", "-u", "origin", branch]).await.map(drop)
 }
 
-/// `devcat/abc-12-fix-the-login-redirect`
-pub fn branch_name(t: &Ticket) -> String {
+/// `<prefix>abc-12-fix-the-login-redirect` (prefix e.g. `devcat/`).
+pub fn branch_name(prefix: &str, t: &Ticket) -> String {
     let raw = format!("{} {}", t.key.trim_start_matches('#'), t.title).to_lowercase();
     let mut slug = String::new();
     for c in raw.chars() {
@@ -761,7 +940,7 @@ pub fn branch_name(t: &Ticket) -> String {
     }
     let slug: String = slug.chars().take(48).collect();
     let slug = slug.trim_matches('-');
-    format!("devcat/{}", if slug.is_empty() { "ticket" } else { slug })
+    format!("{}{}", prefix.trim(), if slug.is_empty() { "ticket" } else { slug })
 }
 
 /// A branch name no repository has yet.
@@ -825,6 +1004,14 @@ pub fn repos_in(folder: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+/// A repository's name: its path below the board's folder, with `/` between folders on every system.
+fn repo_name(folder: &Path, p: &Path) -> String {
+    match p.strip_prefix(folder) {
+        Ok(rel) => rel.iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>().join("/"),
+        Err(_) => p.to_string_lossy().into_owned(),
+    }
+}
+
 fn repos_dir(folder: &str, name: &str) -> Option<String> {
     (!name.is_empty()).then(|| Path::new(folder).join(name).to_string_lossy().into_owned())
 }
@@ -854,7 +1041,7 @@ pub async fn prepare(folder: &str) -> AppResult<(Vec<Repo>, Vec<(String, String,
     }
     let (mut repos, mut skipped) = (vec![], vec![]);
     for p in found {
-        let name = p.strip_prefix(folder).unwrap_or(&p).to_string_lossy().trim_start_matches('/').to_string();
+        let name = repo_name(Path::new(folder), &p);
         let path = p.to_string_lossy().into_owned();
         let original = git(&path, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map(|s| s.trim().to_string()).unwrap_or_default();
         if changed_files(&path).await.unwrap_or(1) > 0 {
@@ -874,14 +1061,43 @@ pub async fn prepare(folder: &str) -> AppResult<(Vec<Repo>, Vec<(String, String,
     Ok((repos, skipped))
 }
 
-/// What the agent is told about where it works.
-pub fn where_text(branch: &str, repos: &[Repo], skipped: &[(String, String, String)]) -> String {
+/// Keep the repositories that have `branch` (locally or on origin); the others are left alone.
+async fn with_branch(repos: &mut Vec<Repo>, skipped: &mut Vec<(String, String, String)>, branch: &str) -> AppResult<()> {
+    let mut keep = vec![];
+    for r in repos.drain(..) {
+        let mut has = false;
+        for refname in [format!("refs/heads/{branch}"), format!("refs/remotes/origin/{branch}")] {
+            if git(&r.path, &["rev-parse", "--verify", "--quiet", &refname]).await.is_ok() {
+                has = true;
+                break;
+            }
+        }
+        if has {
+            keep.push(r);
+        } else if r.name.is_empty() {
+            return Err(AppError::msg(format!("{} has no branch {branch}: make it, or choose another branch in the board settings", r.path)));
+        } else {
+            let f = fingerprint(&r.path).await;
+            skipped.push((r.name, format!("it has no branch {branch}"), f));
+        }
+    }
+    if keep.is_empty() {
+        return Err(AppError::msg(format!("No repository here has the branch {branch}")));
+    }
+    *repos = keep;
+    Ok(())
+}
+
+/// What the agent is told about where it works. `made`: DevCat created `branch` (else it's the
+/// board's existing branch, checked out).
+pub fn where_text(branch: &str, made: bool, repos: &[Repo], skipped: &[(String, String, String)]) -> String {
+    let did = if made { "created" } else { "checked out" };
     let rules = "stay on it, and don't commit, push or switch branches (DevCat commits your changes when you finish)";
     match repos {
-        [r] if r.name.is_empty() => format!("You work in this git repository. DevCat created the branch `{branch}` for it: {rules}."),
+        [r] if r.name.is_empty() => format!("You work in this git repository. DevCat {did} the branch `{branch}` for it: {rules}."),
         _ => {
             let mut s = format!(
-                "This folder holds several git repositories; the ticket may need changes in one or more of them. DevCat created the branch `{branch}` in each of these: {}. Change files only inside them: {rules}. Changes anywhere else in the folder aren't saved.",
+                "This folder holds several git repositories; the ticket may need changes in one or more of them. DevCat {did} the branch `{branch}` in each of these: {}. Change files only inside them: {rules}. Changes anywhere else in the folder aren't saved.",
                 repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
             );
             if !skipped.is_empty() {
@@ -949,11 +1165,11 @@ mod tests {
 
     #[test]
     fn branch_names() {
-        assert_eq!(branch_name(&ticket()), "devcat/abc-12-fix-the-login-redirect");
+        assert_eq!(branch_name("devcat/", &ticket()), "devcat/abc-12-fix-the-login-redirect");
         let t = Ticket { key: "#7".into(), title: "  ".into(), ..ticket() };
-        assert_eq!(branch_name(&t), "devcat/7");
+        assert_eq!(branch_name("devcat/", &t), "devcat/7");
         let t = Ticket { title: "x".repeat(100), ..ticket() };
-        assert!(branch_name(&t).len() <= "devcat/".len() + 48);
+        assert!(branch_name("devcat/", &t).len() <= "devcat/".len() + 48);
     }
 
     #[test]
@@ -977,6 +1193,16 @@ mod tests {
         assert!(!p.contains("Run pnpm test."), "the ticket's prompt replaces the default one");
         assert!(p.contains("<ticket>\nKey: ABC-12"), "the ticket itself is still given");
         assert!(prompt(&b, &ticket(), "", &[], Some("  "), false).contains("Run pnpm test."), "an empty prompt keeps the default");
+    }
+
+    #[test]
+    fn follow_ups() {
+        let r = Reply { text: "Yes, add the endpoint.".into(), asked: "May I add an endpoint?".into(), ..Default::default() };
+        let resumed = follow_up("", "On the branch x.", &r, true, true);
+        assert!(resumed.contains("Yes, add the endpoint.") && resumed.contains("On the branch x.") && resumed.contains("JSON object"));
+        assert!(!resumed.contains("May I add"));
+        let over = follow_up("FULL PROMPT", "On the branch x.", &r, false, false);
+        assert!(over.starts_with("FULL PROMPT") && over.contains("May I add an endpoint?") && over.contains("Yes, add the endpoint."));
     }
 
     #[test]
@@ -1133,7 +1359,7 @@ mod tests {
         let col = |id: &str, name: &str| Some(super::super::Column { id: id.into(), name: name.into() });
         let b: Board = serde_json::from_value(json!({ "id": "test", "name": "Test", "kind": "jira", "site": site, "project": "ABC", "token": "t", "repo": cwd, "providerId": "claude", "model": "haiku" })).unwrap();
         let b = Board { pick_from: col("1", "To Do"), done_to: col("3", "Testing"), ..b };
-        let rec = fix_one(&b, "ABC-2", None, &Cancel::default()).await;
+        let rec = fix_one(&b, "ABC-2", None, None, &Cancel::default()).await;
         println!("{}", serde_json::to_string_pretty(&rec).unwrap());
         assert_eq!(rec.outcome, "fixed", "{}", rec.summary);
         let css = git(cwd, &["show", &format!("{}:style.css", rec.branch.clone().unwrap())]).await.unwrap().to_lowercase();
@@ -1165,7 +1391,7 @@ mod tests {
         let col = |id: &str, name: &str| Some(super::super::Column { id: id.into(), name: name.into() });
         let b: Board = serde_json::from_value(json!({ "id": "test", "name": "Test", "kind": "jira", "site": site, "user": "me@example.com", "project": "ABC", "token": "t", "repo": cwd, "providerId": "claude", "model": "haiku" })).unwrap();
         let b = Board { pick_from: col("1", "To Do"), working: col("2", "In Progress"), done_to: col("3", "Testing"), ..b };
-        let rec = fix_one(&b, "ABC-1", None, &Cancel::default()).await;
+        let rec = fix_one(&b, "ABC-1", None, None, &Cancel::default()).await;
         println!("{}", serde_json::to_string_pretty(&rec).unwrap());
         for r in seen.lock().iter() {
             println!("jira: {r}");
@@ -1210,25 +1436,46 @@ mod tests {
         std::fs::write(root.join("web").join("w.txt"), "mine\n").unwrap();
         let folder = root.to_str().unwrap();
 
-        let names: Vec<String> = repos_in(&root).iter().map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = repos_in(&root).iter().map(|p| repo_name(&root, p)).collect();
         assert_eq!(names, vec!["api", "group/deep", "web"]);
         let (repos, skipped) = prepare(folder).await.unwrap();
         assert_eq!(repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["api", "group/deep"]);
         assert_eq!((skipped[0].0.as_str(), skipped[0].1.as_str()), ("web", "it has uncommitted changes"));
-        let w = where_text("devcat/x", &repos, &skipped);
+        let w = where_text("devcat/x", true, &repos, &skipped);
         assert!(w.contains("in each of these: api, group/deep") && w.contains("Don't change these (you may read them): web (it has uncommitted changes)"));
 
         // One repository: its own wording; dirty: refused.
         let api = root.join("api");
         let (one, none) = prepare(api.to_str().unwrap()).await.unwrap();
         assert!(none.is_empty() && one[0].name.is_empty());
-        assert!(where_text("devcat/x", &one, &none).starts_with("You work in this git repository."));
+        assert!(where_text("devcat/x", true, &one, &none).starts_with("You work in this git repository."));
         assert!(prepare(root.join("web").to_str().unwrap()).await.unwrap_err().to_string().contains("uncommitted changes"));
         // Nothing ready, nothing there.
         std::fs::write(api.join("a.txt"), "x\n").unwrap();
         std::fs::write(root.join("group/deep/d.txt"), "x\n").unwrap();
         assert!(prepare(folder).await.unwrap_err().to_string().starts_with("No repository in"));
         assert!(prepare(root.join("notes").to_str().unwrap()).await.unwrap_err().to_string().contains("has none inside"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn existing_branch() {
+        let root = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("devcat-tickets-target-{}", uuid::Uuid::new_v4()));
+        repo_at(&root.join("api"), &[("a.txt", "a\n")]).await;
+        repo_at(&root.join("web"), &[("w.txt", "w\n")]).await;
+        let api = root.join("api");
+        git(api.to_str().unwrap(), &["branch", "staging"]).await.unwrap();
+        let (mut repos, mut skipped) = prepare(root.to_str().unwrap()).await.unwrap();
+        with_branch(&mut repos, &mut skipped, "staging").await.unwrap();
+        assert_eq!(repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["api"]);
+        assert_eq!((skipped[0].0.as_str(), skipped[0].1.as_str()), ("web", "it has no branch staging"));
+        assert!(where_text("staging", false, &repos, &skipped).contains("DevCat checked out the branch `staging`"));
+        // One repository without it: refused.
+        let (mut one, mut none) = prepare(root.join("web").to_str().unwrap()).await.unwrap();
+        assert!(with_branch(&mut one, &mut none, "staging").await.unwrap_err().to_string().contains("has no branch staging"));
+        let (mut nothing, mut none) = prepare(root.to_str().unwrap()).await.unwrap();
+        assert!(with_branch(&mut nothing, &mut none, "prod").await.is_err());
+        assert_eq!(branch_name("fix/", &ticket()), "fix/abc-12-fix-the-login-redirect");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1248,7 +1495,7 @@ mod tests {
         let col = |id: &str, name: &str| Some(super::super::Column { id: id.into(), name: name.into() });
         let b: Board = serde_json::from_value(json!({ "id": "test", "name": "Test", "kind": "jira", "site": site, "project": "ABC", "token": "t", "repo": root.to_str().unwrap(), "providerId": "claude", "model": "haiku" })).unwrap();
         let b = Board { pick_from: col("1", "To Do"), working: col("2", "In Progress"), done_to: col("3", "Testing"), ..b };
-        let rec = fix_one(&b, "ABC-1", None, &Cancel::default()).await;
+        let rec = fix_one(&b, "ABC-1", None, None, &Cancel::default()).await;
         println!("{}", serde_json::to_string_pretty(&rec).unwrap());
         assert_eq!(rec.outcome, "fixed", "{}", rec.summary);
         assert_eq!(rec.repos, vec!["calc-lib (1 file)".to_string()]);
@@ -1281,6 +1528,6 @@ mod tests {
         let c = comment_text(&b, &r, false);
         assert!(c.starts_with("DevCat agent fixed this. Moved to Testing."));
         assert!(c.contains("Changed x.") && c.contains("How to test:\nLog in") && c.contains("2 files changed"));
-        assert!(b.comment && b.interval_min == 10, "defaults");
+        assert!(b.comment && b.interval_min == 10 && b.branch_prefix == "devcat/" && b.target_branch.is_empty(), "defaults");
     }
 }

@@ -127,7 +127,7 @@ function AiAccessRow({ p, set }: { p: NetProfile; set: (patch: Partial<NetProfil
     ? "Hidden from every agent; connections through it work for them only once you've connected it."
     : value === "read"
       ? "Agents see its status and logs and may connect it (DevCat also does when a connection needs it)."
-      : "Agents may also disconnect it, edit it and delete it.";
+      : "Agents may also disconnect it and edit it.";
   return (
     <Row label="AI / MCP access" hint={<>{hint} Every call is logged under Sync MCP → Activity.</>}>
       <div><Segmented value={value} options={AI_ACCESS} onChange={(v) => set({ mcpAccess: v })} /></div>

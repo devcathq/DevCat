@@ -2,3 +2,5 @@ node_modules/
 out/
 public/shots/
 public/mobile
+# the demo film's project is kept outside the repo
+film/

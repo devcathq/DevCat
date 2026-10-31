@@ -12,7 +12,8 @@ For a step-by-step example, see the [walkthrough](agent-walkthrough.md).
 ## The tools
 
 An agent only gets the tools it can use in its folder: no Docker tools without a Docker connection, no ticket tools
-without a ticket board, and so on.
+without a ticket board, and so on. When that changes (the agent adds your first Docker connection, say), DevCat tells
+the agent, and the new tools appear in the same session.
 
 ### Connections and setup
 
@@ -29,10 +30,11 @@ without a ticket board, and so on.
 | `db_schema` | Tables and columns, or one table's columns, indexes and foreign keys |
 | `db_query` | Runs SQL, MongoDB shell or Redis commands and returns the rows |
 | `db_ddl` | The CREATE statement of a table, view, function, procedure, trigger or sequence |
-| `db_export` | Writes a table or a query's result to a file: CSV, TSV, JSON, JSON lines, SQL inserts or Excel |
-| `db_import` | Loads a CSV or JSON file into a table |
-| `db_backup` | Dumps a database (or one schema) to a `.sql` file |
-| `db_restore` | Runs a `.sql` file against a database |
+| `db_export` | Writes a table or a query's rows to a file (to Downloads unless you say where): CSV, TSV, JSON, JSON lines, SQL inserts or Excel |
+| `db_dump` | Dumps a database to a `.sql` file (a folder of JSON lines for MongoDB) |
+| `db_import` | Adds the rows of a CSV or JSON file to a table |
+| `db_restore` | Runs a dump against a database. DevCat Agent only, after you type the database's name |
+| `db_drop_database` | Drops a database. DevCat Agent only, after you type its name |
 | `db_history` | The queries you ran in DevCat, or your saved queries |
 | `db_saved_query_save` | Saves a query in your **Saved queries** |
 
@@ -45,8 +47,9 @@ without a ticket board, and so on.
 | `k8s_events` | One object's events (why a pod is Pending or restarting) |
 | `k8s_overview` | The cluster at a glance, and pod or node CPU and memory from metrics-server |
 | `k8s_helm` | Helm releases, or one release's values (secret-looking keys hidden), notes and history |
-| `k8s_action` | Scale, restart, delete, suspend or resume |
+| `k8s_action` | Scale, restart, suspend or resume |
 | `k8s_apply` | Applies YAML, like `kubectl apply` |
+| `k8s_delete` | Deletes an object. DevCat Agent only, after you type its name |
 
 ### Docker
 
@@ -55,7 +58,8 @@ without a ticket board, and so on.
 | `docker_list` | Containers (with Compose project and service), stats, images, volumes, networks, or the engine's info |
 | `docker_inspect` | `docker inspect` of a container, image, volume or network (secret-looking environment variables hidden) |
 | `docker_logs` | A container's recent logs |
-| `docker_action` | Start, stop, restart, pause, unpause, kill or remove |
+| `docker_action` | Start, stop, restart, pause, unpause or kill a container |
+| `docker_remove` | Removes a container, image, volume or network. DevCat Agent only, after you type its name |
 
 ### RabbitMQ
 
@@ -65,7 +69,8 @@ without a ticket board, and so on.
 | `rmq_list` | Queues, exchanges, bindings, connections, channels, consumers, vhosts or policies (filtered, sorted, paged) |
 | `rmq_peek` | Looks at a queue's first messages; they go back on the queue |
 | `rmq_publish` | Publishes a message |
-| `rmq_manage` | Declares, deletes and purges queues and exchanges, binds and unbinds, closes connections |
+| `rmq_manage` | Declares queues and exchanges, binds and unbinds, closes connections |
+| `rmq_delete` | Deletes or purges a queue, deletes an exchange. DevCat Agent only, after you type its name |
 
 ### VPNs and tunnels
 
@@ -76,7 +81,7 @@ without a ticket board, and so on.
 | `net_connect` | Connects a profile and waits until it's up |
 | `net_disconnect` | Disconnects one |
 | `net_profile_save` | Adds a profile (from a `.ovpn` or `.conf` file, or an SSH tunnel or port-forward) or changes one, and can connect it |
-| `net_profile_delete` | Deletes one |
+| `net_profile_delete` | Deletes one. DevCat Agent only, after you type its name |
 
 An agent rarely needs `net_connect`: when it uses a connection that goes through a VPN or tunnel, DevCat connects
 that first, as it does when you open the connection.
@@ -100,9 +105,10 @@ DevCat enforces these rules itself, whatever the agent asks for.
 | What | The rule |
 | --- | --- |
 | A connection | Its **AI / MCP access** (Edit connection → **Advanced**): **Off** hides it, **Read-only** lets agents read, **Full** also lets them change things over MCP. A **Read-only connection** never changes. See [Sync MCP](sync-mcp.md#ai-mcp-access) |
-| Changes through a connection | `db_query` writes, `db_import`, `db_restore`, `k8s_action`, `k8s_apply`, `docker_action`, `rmq_publish` and `rmq_manage` need **Full** over MCP |
-| Exports and backups | Need only **Read-only** (they read the database and write a file on this computer) |
-| A VPN or tunnel | Its own **AI / MCP access** (edit the profile in **VPN & SSH tunnels**): **Off** hides it, **Read & connect** (the default) shows its status and lets agents connect it, **Full** also lets them disconnect, edit and delete it |
+| Changes through a connection | `db_query` writes, `db_import`, `k8s_action`, `k8s_apply`, `docker_action`, `rmq_publish` and `rmq_manage` need **Full** over MCP |
+| What can't be undone | Dropping or restoring a database, emptying a table before an import, deleting a Kubernetes object, a container, image, volume, network, queue, exchange or VPN profile, purging a queue: the DevCat Agent only, and DevCat asks you to type the name first, whatever the permission mode. Never over MCP, never from a phone |
+| Exports and dumps | Need only **Read-only** (they read the database and write a file on this computer) |
+| A VPN or tunnel | Its own **AI / MCP access** (edit the profile in **VPN & SSH tunnels**): **Off** hides it, **Read & connect** (the default) shows its status and lets agents connect it, **Full** also lets them disconnect and edit it |
 | A connection an agent adds | Starts at **Read-only** access. Agents can't add SSH sessions, or edit or delete connections |
 | A VPN config an agent writes | May not run scripts or programs (OpenVPN `up`, `down`, `plugin`, `script-security`…; WireGuard `PostUp`, `PreDown`…), whichever way it connects later |
 | Scheduled jobs | Only in the agent's own folder (or below). A job an agent makes asks you before commands and edits; only you can make one that doesn't (**Full access** mode) |
@@ -133,8 +139,9 @@ The two talk over `127.0.0.1` with a random port and token that only your accoun
 The agent gets the reason, and usually what you can change:
 
 - *"DevCat only lets agents read … over MCP"*: set the connection's **AI / MCP access** to **Full**.
-- *"Agents over MCP may see and connect … but not disconnect, edit or delete it"*: set the profile's access to
-  **Full**.
+- *"Agents over MCP may see and connect … but not disconnect or edit it"*: set the profile's access to **Full**.
+- *"… from the DevCat Agent in DevCat only, where the user confirms it"*: it can't be undone. Ask the DevCat Agent in
+  DevCat, and type the name when it asks.
 - *"DevCat isn't open"*: open DevCat (or run `devcat serve`) and ask again.
 - *"This config uses `up`…"*: the config runs a script. Import the file yourself in **VPN & SSH tunnels** if you
   trust it.

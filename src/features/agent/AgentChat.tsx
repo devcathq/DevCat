@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, Webhook, X,
+  ArrowUp, Ban, Ghost, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
@@ -14,13 +14,13 @@ import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { GHOST_SUGGESTIONS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, focusSuggestions, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { fmtCost } from "../claude/util";
 import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
 import { useClaude } from "../claude/store";
 import { historyFor, remember } from "./history";
 
-export default function AgentChat({ tabId, cwd, provider, visible, onReview }: { tabId: string; cwd: string; provider: AiProvider; visible: boolean; onReview: () => void }) {
+export default function AgentChat({ tabId, cwd, connId = null, ghost = false, provider, visible, onReview }: { tabId: string; cwd: string; connId?: string | null; ghost?: boolean; provider: AiProvider; visible: boolean; onReview: () => void }) {
   const chat = useAgent((s) => s.chats[tabId]);
   const sessionId = useTabs((s) => {
     const t = s.tabs.find((x) => x.id === tabId);
@@ -30,10 +30,10 @@ export default function AgentChat({ tabId, cwd, provider, visible, onReview }: {
   // Open (or resume) the session; remember it on the tab so it comes back after a restart.
   useEffect(() => {
     if (useAgent.getState().chats[tabId]?.sessionId === sessionId && sessionId) return;
-    void openChat(tabId, cwd, provider.id, sessionId).then((id) => {
+    void openChat(tabId, cwd, provider.id, sessionId, connId, ghost).then((id) => {
       if (id && id !== sessionId) useTabs.getState().update(tabId, { sessionId: id } as never);
     });
-  }, [tabId, cwd, provider.id, sessionId]);
+  }, [tabId, cwd, provider.id, sessionId, connId, ghost]);
   useEffect(() => () => void closeChat(tabId), [tabId]);
 
   if (!chat || (chat.opening && !chat.items.length)) {
@@ -92,6 +92,11 @@ function ChatBody({ tabId, cwd, visible, onReview, provider }: { tabId: string; 
           <Upload className="size-6 text-accent" />Drop files to attach them<span className="text-[11px] text-muted">Images are shown to the model; PDFs and other files it reads with its tools</span>
         </div>
       )}
+      {chat.context?.ghost && (
+        <div className="flex shrink-0 items-center justify-center gap-1.5 border-b border-line bg-raised/60 px-3 py-1 text-[11.5px] text-muted">
+          <Ghost className="size-3.5" />Ghost chat: no history, no memory. Everything here is deleted when you close it.
+        </div>
+      )}
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-[780px] flex-col gap-3 px-5 pt-6 pb-4">
           {chat.items.length === 0 ? (
@@ -123,16 +128,19 @@ function ChatBody({ tabId, cwd, visible, onReview, provider }: { tabId: string; 
 function Welcome({ tabId, cwd }: { tabId: string; cwd: string }) {
   const chat = useAgent((s) => s.chats[tabId])!;
   const policy = POLICIES.find((p) => p.id === chat.policy)!;
+  const focus = chat.context?.focus;
+  const ghost = !!chat.context?.ghost;
+  const suggestions = ghost ? GHOST_SUGGESTIONS : focus ? focusSuggestions(chat.context?.focusKind) : SUGGESTIONS;
   return (
     <div className="flex flex-col items-center gap-4 pt-[12vh] text-center">
-      <div className="flex size-11 items-center justify-center rounded-xl bg-accent/15 text-accent"><Bot className="size-6" /></div>
+      <div className="flex size-11 items-center justify-center rounded-xl bg-accent/15 text-accent">{ghost ? <Ghost className="size-6" /> : !focus ? <Bot className="size-6" /> : chat.context?.focusKind === "kubernetes" ? <Container className="size-6" /> : <Database className="size-6" />}</div>
       <div>
-        <h2 className="text-lg font-semibold text-fg">What should we do in {basename(cwd)}?</h2>
+        <h2 className="text-lg font-semibold text-fg">{ghost ? "What's on your mind?" : focus ? `What would you like to know about ${focus}?` : `What should we do in ${basename(cwd)}?`}</h2>
         <p className="mt-1 text-[12px] text-muted">{chat.providerName} · {chat.model} · {policy.hint.toLowerCase()}.</p>
       </div>
-      <ContextLine tabId={tabId} />
+      {!ghost && <ContextLine tabId={tabId} />}
       <div className="flex flex-wrap justify-center gap-2">
-        {SUGGESTIONS.map((s) => (
+        {suggestions.map((s) => (
           <button key={s} onClick={() => void send(tabId, s)} className="rounded-full border border-line px-3 py-1.5 text-[12px] text-muted hover:border-accent/50 hover:text-fg">{s}</button>
         ))}
       </div>
@@ -414,6 +422,7 @@ function Diff({ before, after, max = 200 }: { before: string; after: string; max
 /** A tool call waiting for the user: what it will do, and Allow / Always allow / Deny. */
 function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
   const req = item.request!;
+  if (req.confirm != null) return <ConfirmCard item={item} tabId={tabId} />;
   const i = item.input ?? {};
   const title = approvalTitle(item.name, req.kind, item.input);
   const deny = () => void answer(tabId, item.id, { decision: "deny" });
@@ -436,6 +445,40 @@ function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
         </Button>
         <Button size="sm" variant="ghost" onClick={deny}>Deny <kbd className="ml-1 opacity-60">Esc</kbd></Button>
       </div>
+    </div>
+  );
+}
+
+/** A call that can't be undone (dropping a database), confirmed twice: Drop…, then typing its name. */
+function ConfirmCard({ item, tabId }: { item: ToolItem; tabId: string }) {
+  const req = item.request!;
+  const want = req.confirm!;
+  const [typing, setTyping] = useState(false);
+  const [typed, setTyped] = useState("");
+  const deny = () => void answer(tabId, item.id, { decision: "deny" });
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); deny(); }
+  };
+  return (
+    <div onKeyDown={onKey} className="rounded-lg border border-danger/50 bg-danger/5 p-3">
+      <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-fg"><TriangleAlert className="size-4 text-danger" />{approvalTitle(item.name, req.kind, item.input)}</div>
+      <Code>{req.summary}</Code>
+      {!typing ? (
+        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="danger" onClick={() => setTyping(true)}>Drop…</Button>
+          <Button autoFocus size="sm" variant="ghost" onClick={deny}>Cancel <kbd className="ml-1 opacity-60">Esc</kbd></Button>
+        </div>
+      ) : (
+        <form className="mt-2.5 flex flex-col gap-2" onSubmit={(e) => { e.preventDefault(); if (typed.trim() === want) void answer(tabId, item.id, { decision: "confirm", text: typed }); }}>
+          <label className="text-[12.5px] text-muted">Everything in it is deleted for good. Type <span className="font-mono font-medium text-fg">{want}</span> to confirm.</label>
+          <div className="flex items-center gap-2">
+            <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus spellCheck={false} autoComplete="off" aria-label={`Type ${want} to confirm`}
+              className="h-8 min-w-0 flex-1 rounded-md border border-line bg-panel px-2.5 font-mono text-[12.5px] text-fg outline-none placeholder:text-faint focus:border-danger/60 focus-visible:outline-none" />
+            <Button size="sm" variant="danger" type="submit" disabled={typed.trim() !== want}>Drop for good</Button>
+            <Button size="sm" variant="ghost" type="button" onClick={deny}>Cancel</Button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -652,12 +695,14 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
     const t = text;
     setText("");
     setRecall(null);
-    if (await send(tabId, t)) remember(cwd, t);
+    // a ghost chat's messages aren't kept for ↑ either
+    if (await send(tabId, t)) { if (!chat.context?.ghost) remember(cwd, t); }
     else setText(t);
   };
   /** Step through what was sent in this folder; false when there's nowhere to go. */
   const step = (back: boolean, el: HTMLTextAreaElement) => {
-    const list = historyFor(cwd, chat.items.flatMap((i) => (i.kind === "user" && !i.queued ? [i.text] : [])));
+    const own = chat.items.flatMap((i) => (i.kind === "user" && !i.queued ? [i.text] : []));
+    const list = chat.context?.ghost ? own : historyFor(cwd, own);
     const at = recall?.at ?? list.length;
     const next = back ? at - 1 : at + 1;
     if (next < 0 || (!recall && !back)) return false;

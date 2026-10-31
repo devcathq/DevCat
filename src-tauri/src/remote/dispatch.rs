@@ -81,6 +81,10 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             arg(args, $n)?
         };
     }
+    // a ghost chat stays in its window on the computer (agent.rs `ghost_dir`)
+    if cmd.starts_with("agent_") && arg::<String>(args, "sessionId").is_ok_and(|id| crate::agent::is_ghost(&id)) {
+        return Err(json!("That chat is a ghost chat: it's only in its window on the computer."));
+    }
     match cmd {
         // ------------------------------------------------ host / agents / terminals
         "host_info" => Ok(super::host_summary()),
@@ -200,7 +204,7 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             if let Some(id) = &session_id {
                 client.attach(id);
             }
-            let opened = match crate::agent::open(expand_home(&arg::<String>(args, "cwd")?), a!("providerId"), session_id.clone(), &origin, &client.device.id).await {
+            let opened = match crate::agent::open(expand_home(&arg::<String>(args, "cwd")?), a!("providerId"), session_id.clone(), &origin, &client.device.id, None, None, true).await {
                 Ok(o) => o,
                 Err(e) => {
                     if let Some(id) = &session_id {
@@ -231,7 +235,14 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         }
         "agent_attach" => out(crate::agent::agent_attach(a!("sessionId"), a!("name"), a!("data")).await),
         "agent_stop" => out(crate::agent::agent_stop(a!("sessionId")).await),
-        "agent_approve" => out(crate::agent::agent_approve(a!("sessionId"), a!("toolUseId"), a!("decision")).await),
+        "agent_approve" => {
+            // What can't be undone (dropping a database) is confirmed on the computer, not a phone.
+            let decision: devcat_harness::Decision = a!("decision");
+            if matches!(decision, devcat_harness::Decision::Confirm { .. }) {
+                return Err(json!("This can't be undone, so it's confirmed in DevCat on the computer."));
+            }
+            out(crate::agent::agent_approve(a!("sessionId"), a!("toolUseId"), decision).await)
+        }
         "agent_answer" => out(crate::agent::agent_answer(a!("sessionId"), a!("toolUseId"), a!("answer")).await),
         "agent_close" => {
             // Only the phone that started the chat ends it: one in a desktop tab stays open there.
@@ -254,7 +265,8 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             out(crate::ai::ai_agent_models(settings, Some(pid), None).await)
         }
         "keep_awake_status" => Ok(json!(crate::keep_awake::keep_awake_status())),
-        "keep_awake_set" => out(crate::keep_awake::keep_awake_set(a!("on"), arg(args, "minutes").unwrap_or(None)).await),
+        // a phone can't turn on "with the lid closed": it needs the admin password on the computer
+        "keep_awake_set" => out(crate::keep_awake::keep_awake_set(a!("on"), arg(args, "minutes").unwrap_or(None), None).await),
 
         // ------------------------------------------------ connections & databases
         // Without SSH sessions: desktop only (AGENTS.md), and the app doesn't know the kind.

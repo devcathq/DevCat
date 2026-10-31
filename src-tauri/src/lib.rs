@@ -24,6 +24,7 @@ mod gitx;
 mod history;
 mod infra;
 mod instance;
+mod integrations;
 mod keep_awake;
 mod mcp_audit;
 mod mcp_server;
@@ -39,6 +40,7 @@ mod projects;
 mod remote;
 mod rooms;
 mod rooms_agent;
+mod rooms_tools;
 mod rt;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
@@ -106,6 +108,8 @@ fn init_backend(dir: std::path::PathBuf) {
     // after remote access: sync uses its relay choice
     memory::sync::init(dir.clone());
     tickets::init(dir.clone());
+    keep_awake::init(dir.clone());
+    integrations::init(dir.clone());
     // `devcat mcp` hands its tool calls to this DevCat while it's open
     agent_bridge::start(dir.clone());
     rooms::init(dir);
@@ -136,6 +140,14 @@ fn context() -> tauri::Context {
 #[cfg(feature = "gui")]
 pub fn run() {
     use tauri::Manager;
+    // A kubeconfig's login helper (aws, gke-gcloud-auth-plugin, kubelogin) started by the window
+    // flashes a console window, unless kube is told to hide it. Its prompts have no console to
+    // reach in the app anyway.
+    #[cfg(windows)]
+    // SAFETY: first thing in the process, before any other thread.
+    unsafe {
+        std::env::set_var("KUBE_RS_UNSTABLE_CREATE_NO_WINDOW", "1");
+    }
     init_process();
 
     tauri::Builder::default()
@@ -178,6 +190,20 @@ pub fn run() {
             keep_awake::keep_awake_status,
             fonts::fonts_list,
             keep_awake::keep_awake_set,
+            integrations::integrations_status,
+            integrations::integrations_bot_add,
+            integrations::integrations_bot_enable,
+            integrations::integrations_bot_remove,
+            integrations::integrations_link_code,
+            integrations::integrations_link_cancel_code,
+            integrations::integrations_link_answer,
+            integrations::integrations_link_update,
+            integrations::integrations_link_remove,
+            integrations::integrations_link_test,
+            integrations::integrations_channel_add,
+            integrations::integrations_channel_update,
+            integrations::integrations_channel_remove,
+            integrations::integrations_channel_test,
             // updates
             updater::update_check,
             updater::update_install,
@@ -334,7 +360,9 @@ pub fn run() {
             claude::open_external::fs_open_external,
             claude::clipboard::fs_copy_files,
             claude::clipboard::clipboard_write_text,
+            claude::clipboard::clipboard_read_text,
             claude::clipboard::fs_paste,
+            claude::files::fs_delete,
             claude::git::git_status,
             claude::git::git_file_versions,
             claude::git::git_diff_text,
@@ -379,6 +407,21 @@ pub fn run() {
             rooms::room_file_delete,
             rooms::room_file_add,
             rooms::room_file_add_bytes,
+            rooms::room_paths_add,
+            rooms::room_share_text,
+            rooms::room_file_rename,
+            rooms::room_folder_delete,
+            rooms::room_file_save,
+            rooms::room_folder_save,
+            rooms::room_board_new,
+            rooms::room_react,
+            rooms::room_pin,
+            rooms::room_task_add,
+            rooms::room_task_update,
+            rooms::room_task_delete,
+            rooms::skills_list,
+            rooms::room_took_out,
+            rooms::room_file_history,
             rooms::room_blob,
             rooms::room_blob_save,
             rooms::room_member_remove,
@@ -395,6 +438,7 @@ pub fn run() {
             tickets::tickets_columns,
             tickets::tickets_list,
             tickets::tickets_fix,
+            tickets::tickets_reply,
             tickets::tickets_stop,
             tickets::tickets_jobs,
             tickets::tickets_history,

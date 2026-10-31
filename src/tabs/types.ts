@@ -19,8 +19,11 @@ export type TabSpec =
   /** Network profile (VPN / SSH tunnel) details; profileId "" = new (kind preselected). */
   | { type: "network"; profileId: string; kind?: "ssh" | "openvpn" | "wireguard" | "k8s"; importPath?: string }
   /** AI workspace for a folder: Chat / Diff / Code Review. providerId = AI connection the chat runs
-   *  (absent = Claude Code); sessionId resumes a past Claude session. */
-  | { type: "claude"; cwd: string; sessionId?: string | null; view?: "chat" | "diff" | "review" | "trace"; providerId?: string | null }
+   *  (absent = Claude Code); sessionId resumes a past Claude session. connId: a DevCat Agent chat
+   *  opened from that connection, which it is about (see features/agent/connection.ts). */
+  | { type: "claude"; cwd: string; sessionId?: string | null; view?: "chat" | "diff" | "review" | "trace"; providerId?: string | null; connId?: string | null;
+      /** A ghost chat (DevCat Agent, in a window of its own): nothing of it is kept once it closes. */
+      ghost?: boolean }
   /** Preview of a file (code, markdown, pdf, image, spreadsheet, …). blame = show git blame instead. */
   | { type: "file"; path: string; root?: string | null; blame?: boolean }
   /** Git repository: history graph / working-tree changes / branches / stashes.

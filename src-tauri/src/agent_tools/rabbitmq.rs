@@ -1,9 +1,10 @@
 //! RabbitMQ tools over the user's DevCat RabbitMQ connections (the management API): the broker's
 //! overview and nodes, queues / exchanges / bindings / connections / channels / consumers /
 //! vhosts / policies (the fields that matter, filtered and paged), peeking at a queue's messages
-//! (they go back on the queue), publishing, and declaring, deleting, purging and binding.
-//! Users and permissions aren't offered (they carry password hashes). Changes need the
-//! connection's AI access at Full over MCP; the DevCat Agent asks first.
+//! (they go back on the queue), publishing, declaring and binding. Users and permissions aren't
+//! offered (they carry password hashes). Changes need the connection's AI access at Full over
+//! MCP; the DevCat Agent asks first. Deleting or purging loses messages for good, so `rmq_delete`
+//! is the DevCat Agent's only, confirmed by typing the name (`Tool::confirm`).
 use super::*;
 use crate::infra::rabbitmq as mq;
 
@@ -38,6 +39,9 @@ pub(super) fn add(out: &mut Vec<Arc<dyn Tool>>, s: &Arc<Scope>) {
     out.push(Arc::new(RmqPeek(s.clone())));
     out.push(Arc::new(RmqPublish(s.clone())));
     out.push(Arc::new(RmqManage(s.clone())));
+    if !s.mcp {
+        out.push(Arc::new(RmqDelete(s.clone())));
+    }
 }
 
 fn rmq_conn(scope: &Scope, input: &Value) -> Result<ConnectionConfig, ToolOutput> {
@@ -283,12 +287,12 @@ impl Tool for RmqManage {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "rmq_manage".into(),
-            description: "Change a DevCat RabbitMQ connection's broker: `op` = declare_queue (name, durable, auto_delete, arguments), delete_queue (name, if_empty, if_unused), purge_queue (name: drops every ready message), declare_exchange (name, type direct/fanout/topic/headers, durable, auto_delete, internal, arguments), delete_exchange (name, if_unused), bind (source exchange → destination queue or exchange, routing_key, arguments), unbind (source, destination, properties_key from `rmq_list` bindings) or close_connection (name, reason). Deleting and purging lose messages: only when the user asks.".into(),
+            description: "Change a DevCat RabbitMQ connection's broker: `op` = declare_queue (name, durable, auto_delete, arguments), declare_exchange (name, type direct/fanout/topic/headers, durable, auto_delete, internal, arguments), bind (source exchange → destination queue or exchange, routing_key, arguments), unbind (source, destination, properties_key from `rmq_list` bindings) or close_connection (name, reason; the client may reconnect). Deleting and purging are `rmq_delete`, in the DevCat Agent only.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "connection": { "type": "string", "description": "RabbitMQ connection name or id" },
-                    "op": { "type": "string", "enum": ["declare_queue", "delete_queue", "purge_queue", "declare_exchange", "delete_exchange", "bind", "unbind", "close_connection"] },
+                    "op": { "type": "string", "enum": ["declare_queue", "declare_exchange", "bind", "unbind", "close_connection"] },
                     "vhost": { "type": "string" },
                     "name": { "type": "string" },
                     "type": { "type": "string" },
@@ -296,8 +300,6 @@ impl Tool for RmqManage {
                     "auto_delete": { "type": "boolean" },
                     "internal": { "type": "boolean" },
                     "arguments": { "type": "object" },
-                    "if_empty": { "type": "boolean" },
-                    "if_unused": { "type": "boolean" },
                     "source": { "type": "string" },
                     "destination": { "type": "string" },
                     "destination_type": { "type": "string", "enum": ["queue", "exchange"] },
@@ -331,20 +333,8 @@ impl Tool for RmqManage {
                 Ok(n) => mq::rmq_declare_queue(st, id, vh, n, b("durable").unwrap_or(true), b("auto_delete").unwrap_or(false), args_of()).await,
                 Err(e) => return e,
             },
-            "delete_queue" => match need("name") {
-                Ok(n) => mq::rmq_delete_queue(st, id, vh, n, b("if_empty"), b("if_unused")).await,
-                Err(e) => return e,
-            },
-            "purge_queue" => match need("name") {
-                Ok(n) => mq::rmq_purge_queue(st, id, vh, n).await,
-                Err(e) => return e,
-            },
             "declare_exchange" => match need("name") {
                 Ok(n) => mq::rmq_declare_exchange(st, id, vh, n, arg(&input, "type").unwrap_or_else(|| "direct".into()), b("durable").unwrap_or(true), b("auto_delete").unwrap_or(false), b("internal").unwrap_or(false), args_of()).await,
-                Err(e) => return e,
-            },
-            "delete_exchange" => match need("name") {
-                Ok(n) => mq::rmq_delete_exchange(st, id, vh, n, b("if_unused")).await,
                 Err(e) => return e,
             },
             "bind" => match (need("source"), need("destination")) {
@@ -365,10 +355,68 @@ impl Tool for RmqManage {
                 Ok(n) => mq::rmq_close_connection(st, id, n, arg(&input, "reason")).await,
                 Err(e) => return e,
             },
+            "delete_queue" | "purge_queue" | "delete_exchange" => return ToolOutput::err("Deleting and purging are `rmq_delete` (DevCat Agent only: the user confirms it by typing the name)."),
             other => return ToolOutput::err(format!("Unknown `op` \"{other}\".")),
         };
         match res {
             Ok(()) => ToolOutput::ok(format!("Done: {op}.")),
+            Err(e) => ToolOutput::err(connect_error(&self.0, &c, &e.to_string())),
+        }
+    }
+}
+
+// ---------- rmq_delete
+
+struct RmqDelete(Arc<Scope>);
+
+#[async_trait]
+impl Tool for RmqDelete {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "rmq_delete".into(),
+            description: "On a DevCat RabbitMQ connection's broker: `op` = delete_queue (with its messages; `if_empty` / `if_unused` to refuse otherwise), purge_queue (drops every ready message, keeps the queue) or delete_exchange (`if_unused`). The messages are gone for good: only when the user asked, say which first. DevCat asks the user to confirm by typing the queue's or exchange's name.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "connection": { "type": "string", "description": "RabbitMQ connection name or id" },
+                    "op": { "type": "string", "enum": ["delete_queue", "purge_queue", "delete_exchange"] },
+                    "vhost": { "type": "string" },
+                    "name": { "type": "string" },
+                    "if_empty": { "type": "boolean" },
+                    "if_unused": { "type": "boolean" }
+                },
+                "required": ["connection", "op", "name"]
+            }),
+        }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Exec
+    }
+    fn summary(&self, input: &Value) -> String {
+        format!("{}: {} {}", conn_summary(input), arg(input, "op").unwrap_or_default(), arg(input, "name").unwrap_or_default())
+    }
+    fn confirm(&self, input: &Value) -> Option<String> {
+        Some(arg(input, "name").unwrap_or_else(|| "(no name)".into()))
+    }
+    async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        if self.0.mcp {
+            return ToolOutput::err("Queues and exchanges are deleted or purged from the DevCat Agent in DevCat only, where the user confirms it.");
+        }
+        let c = match rmq_conn(&self.0, &input).and_then(|c| may_change(&self.0, &c).map(|_| c)) {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
+        let Some(name) = arg(&input, "name") else { return ToolOutput::err("Missing `name`.") };
+        let (st, id, vh, b) = (St::get(), c.id.clone(), vhost(&c, &input), |k: &str| arg_bool(&input, k));
+        let op = arg(&input, "op").unwrap_or_default();
+        let res = match op.as_str() {
+            "delete_queue" => mq::rmq_delete_queue(st, id, vh, name.clone(), b("if_empty"), b("if_unused")).await,
+            "purge_queue" => mq::rmq_purge_queue(st, id, vh, name.clone()).await,
+            "delete_exchange" => mq::rmq_delete_exchange(st, id, vh, name.clone(), b("if_unused")).await,
+            other => return ToolOutput::err(format!("Unknown `op` {other}: delete_queue, purge_queue or delete_exchange.")),
+        };
+        match res {
+            Ok(()) => ToolOutput::ok(format!("Done: {op} {name}.")),
             Err(e) => ToolOutput::err(connect_error(&self.0, &c, &e.to_string())),
         }
     }

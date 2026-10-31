@@ -179,7 +179,10 @@ export const api = {
   /** Installed font families (Appearance → Fonts pickers). */
   fontsList: () => invoke<{ name: string; mono: boolean }[]>("fonts_list"),
   // DevCat Agent (crates/harness): chats report through the `agent-event` event.
-  agentOpen: (cwd: string, providerId: string, sessionId: string | null) => invoke<AgentOpened>("agent_open", { cwd, providerId, sessionId }),
+  /** `connectionId`: opened from that connection, which the chat is then about. `ghostWindow`: a ghost chat
+   *  in that window (its label): nothing of it is kept once it closes. */
+  agentOpen: (cwd: string, providerId: string, sessionId: string | null, connectionId: string | null = null, ghostWindow: string | null = null) =>
+    invoke<AgentOpened>("agent_open", { cwd, providerId, sessionId, connectionId, ghostWindow }),
   /** `sandbox`: run its commands in the OS sandbox from this message on (null = as the chat was). */
   agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[], contextWindow: number | null, sandbox: boolean | null = null) =>
     invoke<void>("agent_send", { sessionId, text, policy, model, attachments, contextWindow, sandbox }),
@@ -211,8 +214,13 @@ export const api = {
   fsCopyFiles: (paths: string[]) => invoke<void>("fs_copy_files", { paths }),
   /** Put text on the OS clipboard (when the webview refuses a copy no click or key started). */
   clipboardWriteText: (text: string) => invoke<void>("clipboard_write_text", { text }),
+  /** The OS clipboard's text ("" when none), read by the app so the webview asks no permission. */
+  clipboardReadText: () => invoke<string>("clipboard_read_text"),
   /** Paste the files / folders (or else the image) on the OS clipboard into `dir`, a folder of the workspace `root`; returns the new paths. */
   fsPaste: (dir: string, root: string) => invoke<string[]>("fs_paste", { dir, root }),
+  /** Delete files / folders of the workspace `root`: to the Trash (Recycle Bin) on this computer, for
+   *  good on an SSH host (there's no Trash there). */
+  fsDelete: (paths: string[], root: string) => invoke<void>("fs_delete", { paths, root }),
   gitStatus: (cwd: string) => invoke<GitStatus>("git_status", { cwd }),
   gitFileVersions: (cwd: string, path: string, staged: boolean) => invoke<FileVersions>("git_file_versions", { cwd, path, staged }),
   gitDiffText: (cwd: string, staged: boolean) => invoke<string>("git_diff_text", { cwd, staged }),
@@ -228,7 +236,8 @@ export const api = {
   // Keep the display/system awake (Caffeine-style). Event: "keep-awake" (KeepAwakeState) to all windows.
   keepAwakeStatus: () => invoke<KeepAwakeState>("keep_awake_status"),
   /** minutes null = until turned off. */
-  keepAwakeSet: (on: boolean, minutes?: number | null) => invoke<KeepAwakeState>("keep_awake_set", { on, minutes: minutes ?? null }),
+  /** `lid`: also with the lid closed (macOS; asks for the admin password); null keeps what's on. */
+  keepAwakeSet: (on: boolean, minutes?: number | null, lid?: boolean | null) => invoke<KeepAwakeState>("keep_awake_set", { on, minutes: minutes ?? null, lid: lid ?? null }),
 
   // App updates. Event: "update-progress" ({ downloaded, total? })
   /** null = up to date. */

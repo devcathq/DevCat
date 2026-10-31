@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { CrashBoundary } from "./components/CrashScreen";
 import "./index.css";
 import { startAppearance } from "./features/appearance/store";
 import { BUNDLED_MONO, startFonts } from "./features/appearance/fonts";
@@ -23,7 +24,9 @@ const fontReady = Promise.all([
 void Promise.race([fontReady, new Promise((r) => setTimeout(r, 800))]).catch(() => {}).finally(() => {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
-      <App />
+      <CrashBoundary>
+        <App />
+      </CrashBoundary>
     </React.StrictMode>,
   );
 });

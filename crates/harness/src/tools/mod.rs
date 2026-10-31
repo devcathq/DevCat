@@ -144,6 +144,12 @@ pub trait Tool: Send + Sync {
     fn timeout(&self, _input: &Value) -> Duration {
         Duration::from_secs(60)
     }
+    /// For calls that can't be undone (dropping a database): what the user types to allow it (its
+    /// name). Such a call always asks, whatever the policy, hooks or earlier answers, and only a
+    /// [`Decision::Confirm`](crate::approval::Decision::Confirm) with that text runs it.
+    fn confirm(&self, _input: &Value) -> Option<String> {
+        None
+    }
     async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput;
 }
 

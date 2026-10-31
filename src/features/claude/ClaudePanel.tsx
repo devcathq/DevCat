@@ -89,7 +89,7 @@ function NoFolder() {
       <div className="max-w-56 text-xs text-muted">
         Pick a project folder to chat with {provider.name} about it{provider.kind === "claude" ? ", browse its files and resume past sessions" : " and browse its files"}.
       </div>
-      <Button variant="primary" onClick={() => void pickFolder()}><FolderOpen className="size-3.5" /> Open folder…</Button>
+      <Button data-tour="new-chat" variant="primary" onClick={() => void pickFolder()}><FolderOpen className="size-3.5" /> Open folder…</Button>
       <Button variant="ghost" onClick={openRemoteFolderDialog}><Server className="size-3.5" /> Folder on SSH host…</Button>
     </div>
   );
@@ -181,7 +181,7 @@ function WorkspaceHeader() {
       </button>
       {cwd && (
         <div className="mt-1.5 flex gap-1.5">
-          <Button variant="primary" className="min-w-0 flex-1 justify-center" onClick={() => openClaudeWorkspace(cwd)}>
+          <Button data-tour="new-chat" variant="primary" className="min-w-0 flex-1 justify-center" onClick={() => openClaudeWorkspace(cwd)}>
             <Plus className="size-3.5" /> New {isClaude ? "" : `${provider.name} `}chat
           </Button>
           <Button className="shrink-0" title="Open a terminal in this folder, in its own tab" onClick={() => openTerminal(cwd)}>

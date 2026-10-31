@@ -159,7 +159,7 @@ async fn serve(stream: TcpStream, token: &str) {
 
 async fn run(call: Call) -> Reply {
     let scope = Scope { project: call.project, folder: call.folder, mcp: true, unattended: false };
-    let tool = crate::mcp_server::tools_for(&scope, &call.client).into_iter().find(|t| t.spec().name == call.tool);
+    let tool = crate::mcp_server::tools_for(&scope, &call.client, true).into_iter().find(|t| t.spec().name == call.tool);
     let Some(tool) = tool else { return Reply { content: String::new(), is_error: false, unknown: true } };
     let ctx = ToolCtx::at(call.cwd);
     let limit = tool.timeout(&call.input);

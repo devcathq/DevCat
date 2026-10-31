@@ -13,6 +13,8 @@ import {
   type Access, type AuditEntry, type Device, type NotifySettings, type PairInfo, type RelayChoice, type RemoteSettings,
 } from "./api";
 import { useMobile, type MobileTab } from "./store";
+import { integrationsApi, type ChannelKind } from "../integrations/api";
+import { openIntegrations, setIntegrations, startIntegrations, useIntegrations } from "../integrations/store";
 
 const TABS: { id: MobileTab; label: string; icon: ReactNode }[] = [
   { id: "remote", label: "Remote access", icon: <Smartphone className="size-3.5" /> },
@@ -330,7 +332,7 @@ function NotifyTab() {
       <div className="flex items-center gap-3">
         <Toggle on={s.enabled} onChange={(on) => void save({ ...s, enabled: on })} />
         <div className="flex-1">
-          <div className="font-semibold">Notify my phone when an agent finishes or needs me</div>
+          <div className="font-semibold">Notify my phone (ntfy) when an agent finishes or needs me</div>
           <div className="text-[12px] text-muted">Works even when the DevCat app on the phone is closed. Uses the free <b className="text-fg">ntfy</b> app; no account needed.</div>
         </div>
       </div>
@@ -354,6 +356,8 @@ function NotifyTab() {
         </div>
         <div className="text-[11px] text-faint">The topic name is the only key: anyone who knows it can read these notifications. They only contain the project name and the status, never code or data.</div>
       </Section>
+
+      <ChannelsSection />
 
       <Section title="Notify me when">
         <div className="flex flex-col items-start gap-2">
@@ -383,6 +387,61 @@ function NotifyTab() {
         <div className="text-[11px] text-faint">Agent status comes from Claude Code hooks DevCat adds to the terminals it starts (macOS and Linux). Agents started before turning this on report after their next restart.</div>
       </Section>
     </div>
+  );
+}
+
+/** Where else notifications go: Discord / Slack / plain webhooks, and the chats linked in Agent bots. */
+function ChannelsSection() {
+  useEffect(() => startIntegrations(), []);
+  const status = useIntegrations((s) => s.status);
+  const [kind, setKind] = useState<ChannelKind>("discord");
+  const [url, setUrl] = useState("");
+  const [adding, setAdding] = useState(false);
+  const run = async (f: () => Promise<Parameters<typeof setIntegrations>[0]>) => {
+    try { setIntegrations(await f()); return true; } catch (e) { toast.error(errMsg(e)); return false; }
+  };
+  const label: Record<ChannelKind, string> = { discord: "Discord webhook", slack: "Slack webhook", webhook: "Other webhook (JSON)" };
+  const hint: Record<ChannelKind, string> = {
+    discord: "Discord: channel settings → Integrations → Webhooks → New Webhook → Copy Webhook URL",
+    slack: "Slack: an app with Incoming Webhooks → Add New Webhook to Workspace → copy the URL",
+    webhook: "Gets a POST with { title, message, needsYou, url }",
+  };
+  const notifying = status?.links.filter((l) => l.perms.notify).length ?? 0;
+  return (
+    <Section title="Also send to" right={!adding && <Button size="sm" variant="ghost" onClick={() => setAdding(true)}>Add a channel</Button>}>
+      {status?.channels.map((c) => (
+        <div key={c.id} className="flex items-center gap-3 rounded-md border border-line px-3 py-2">
+          <Toggle on={c.enabled} onChange={(on) => void run(() => integrationsApi.channelUpdate(c.id, on, c.onDone, c.onInput))} />
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-medium">{c.name} <span className="text-[11px] font-normal text-muted">{label[c.kind]}</span></div>
+            <div className="flex gap-3 text-[11.5px] text-muted">
+              <Checkbox label="finished" checked={c.onDone} onChange={(v) => void run(() => integrationsApi.channelUpdate(c.id, c.enabled, v, c.onInput))} />
+              <Checkbox label="needs you" checked={c.onInput} onChange={(v) => void run(() => integrationsApi.channelUpdate(c.id, c.enabled, c.onDone, v))} />
+            </div>
+          </div>
+          <Button size="sm" variant="ghost" onClick={() => void integrationsApi.channelTest(c.id).then(() => toast.success("Test sent"), (e) => toast.error(errMsg(e)))}>Test</Button>
+          <Button size="sm" variant="ghost" title="Remove" onClick={() => void run(() => integrationsApi.channelRemove(c.id))}><Trash2 className="size-3.5" /></Button>
+        </div>
+      ))}
+      {adding && (
+        <div className="space-y-2 rounded-md border border-line bg-raised/40 p-3">
+          <div className="flex gap-2">
+            <Select className="w-52" value={kind} onChange={(e) => setKind(e.target.value as ChannelKind)}>
+              {(Object.keys(label) as ChannelKind[]).map((k) => <option key={k} value={k}>{label[k]}</option>)}
+            </Select>
+            <Input type="password" className="flex-1" placeholder="Webhook URL" value={url} onChange={(e) => setUrl(e.target.value)} />
+            <Button variant="primary" disabled={!url.trim()} onClick={() => void run(() => integrationsApi.channelAdd(kind, "", url)).then((ok) => { if (ok) { setUrl(""); setAdding(false); } })}>Add</Button>
+            <Button variant="ghost" onClick={() => setAdding(false)}>Cancel</Button>
+          </div>
+          <div className="text-[11px] text-faint">{hint[kind]}. The URL is kept in this computer's keychain.</div>
+        </div>
+      )}
+      <div className="text-[12px] text-muted">
+        {notifying ? `${notifying} linked chat${notifying === 1 ? "" : "s"} also get${notifying === 1 ? "s" : ""} these. ` : ""}
+        To answer approvals, send requests and get results from a chat app, link a chat in{" "}
+        <button className="text-accent hover:underline" onClick={() => { useMobile.getState().close(); openIntegrations(); }}>Agent bots</button>.
+      </div>
+    </Section>
   );
 }
 

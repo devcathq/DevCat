@@ -1,9 +1,10 @@
 //! Kubernetes tools beyond `k8s_get` / `k8s_logs` (in `mod.rs`): an object's events, the
-//! cluster's overview and pod / node metrics, Helm releases, and changes (scale, restart, delete,
-//! suspend or resume a CronJob, apply YAML). Helm values hide secret-looking keys, and the
-//! rendered manifest (which holds Secrets) isn't shown. Changes need the connection's AI access
-//! at Full over MCP; the DevCat Agent asks first. Port-forwards are network profiles
-//! (`net_profile_save` with kind k8s).
+//! cluster's overview and pod / node metrics, Helm releases, and changes (scale, restart, suspend
+//! or resume a CronJob, apply YAML). Helm values hide secret-looking keys, and the rendered
+//! manifest (which holds Secrets) isn't shown. Changes need the connection's AI access at Full
+//! over MCP; the DevCat Agent asks first. Deleting can't be undone, so `k8s_delete` is the DevCat
+//! Agent's only, confirmed by typing the name (`Tool::confirm`). Port-forwards are network
+//! profiles (`net_profile_save` with kind k8s).
 use super::*;
 use crate::infra::k8s::{self as kube_infra, helm};
 
@@ -13,6 +14,10 @@ pub(super) fn add(out: &mut Vec<Arc<dyn Tool>>, s: &Arc<Scope>) {
     out.push(Arc::new(K8sHelm(s.clone())));
     out.push(Arc::new(K8sAction(s.clone())));
     out.push(Arc::new(K8sApply(s.clone())));
+    // deleting can't be undone: the user types the name, which only the app can ask (not over MCP)
+    if !s.mcp {
+        out.push(Arc::new(K8sDelete(s.clone())));
+    }
 }
 
 fn ns_of(input: &Value) -> Option<String> {
@@ -185,17 +190,16 @@ impl Tool for K8sAction {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "k8s_action".into(),
-            description: "Change a Kubernetes object in a DevCat cluster connection: `action` = scale (a deployment / statefulset / replicaset to `replicas`), restart (a rollout restart of a deployment / statefulset / daemonset), delete (any object; `force` for a stuck pod), suspend or resume (a CronJob). Deleting can't be undone: only when the user asks.".into(),
+            description: "Change a Kubernetes object in a DevCat cluster connection: `action` = scale (a deployment / statefulset / replicaset to `replicas`), restart (a rollout restart of a deployment / statefulset / daemonset), suspend or resume (a CronJob). Deleting is `k8s_delete`, in the DevCat Agent only.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "connection": { "type": "string", "description": "Cluster connection name or id" },
-                    "action": { "type": "string", "enum": ["scale", "restart", "delete", "suspend", "resume"] },
-                    "kind": { "type": "string", "description": "e.g. deployments, pods, cronjobs" },
+                    "action": { "type": "string", "enum": ["scale", "restart", "suspend", "resume"] },
+                    "kind": { "type": "string", "description": "e.g. deployments, statefulsets, cronjobs" },
                     "namespace": { "type": "string" },
                     "name": { "type": "string" },
-                    "replicas": { "type": "integer" },
-                    "force": { "type": "boolean" }
+                    "replicas": { "type": "integer" }
                 },
                 "required": ["connection", "action", "kind", "name"]
             }),
@@ -223,15 +227,63 @@ impl Tool for K8sAction {
                 _ => return ToolOutput::err("`scale` needs `replicas` (0 or more)."),
             },
             "restart" => kube_infra::k8s_restart(st, id, kind.clone(), ns, name.clone()).await,
-            "delete" => kube_infra::k8s_delete(st, id, kind.clone(), ns, name.clone(), arg_bool(&input, "force")).await,
             "suspend" | "resume" => match ns {
                 Some(ns) => kube_infra::k8s_cronjob_suspend(st, id, ns, name.clone(), action == "suspend").await,
                 None => return ToolOutput::err("Give the CronJob's `namespace`."),
             },
-            other => return ToolOutput::err(format!("Unknown `action` \"{other}\": scale, restart, delete, suspend or resume.")),
+            "delete" => return ToolOutput::err("Deleting is `k8s_delete` (DevCat Agent only: the user confirms it by typing the name)."),
+            other => return ToolOutput::err(format!("Unknown `action` \"{other}\": scale, restart, suspend or resume.")),
         };
         match res {
             Ok(()) => ToolOutput::ok(format!("Done: {action} {kind} {name}.")),
+            Err(e) => ToolOutput::err(connect_error(&self.0, &c, &e.to_string())),
+        }
+    }
+}
+
+// ---------- k8s_delete
+
+struct K8sDelete(Arc<Scope>);
+
+#[async_trait]
+impl Tool for K8sDelete {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "k8s_delete".into(),
+            description: "Delete a Kubernetes object in a DevCat cluster connection (`force` for a pod stuck terminating). It can't be undone: only when the user asked to delete that object, say which one first. DevCat asks the user to confirm by typing its name.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "connection": { "type": "string", "description": "Cluster connection name or id" },
+                    "kind": { "type": "string", "description": "e.g. pods, deployments, jobs" },
+                    "namespace": { "type": "string" },
+                    "name": { "type": "string" },
+                    "force": { "type": "boolean" }
+                },
+                "required": ["connection", "kind", "name"]
+            }),
+        }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Exec
+    }
+    fn summary(&self, input: &Value) -> String {
+        format!("{}: delete {} {}", conn_summary(input), arg(input, "kind").unwrap_or_default(), arg(input, "name").unwrap_or_default())
+    }
+    fn confirm(&self, input: &Value) -> Option<String> {
+        Some(arg(input, "name").unwrap_or_else(|| "(no name)".into()))
+    }
+    async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        if self.0.mcp {
+            return ToolOutput::err("Kubernetes objects are deleted from the DevCat Agent in DevCat only, where the user confirms it.");
+        }
+        let c = match k8s_conn(&self.0, &input).and_then(|c| may_change(&self.0, &c).map(|_| c)) {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
+        let (Some(kind), Some(name)) = (arg(&input, "kind"), arg(&input, "name")) else { return ToolOutput::err("Missing `kind` or `name`.") };
+        match kube_infra::k8s_delete(St::get(), c.id.clone(), kind.clone(), ns_of(&input), name.clone(), arg_bool(&input, "force")).await {
+            Ok(()) => ToolOutput::ok(format!("Deleted {kind} {name}.")),
             Err(e) => ToolOutput::err(connect_error(&self.0, &c, &e.to_string())),
         }
     }

@@ -165,6 +165,7 @@ export function RoomJoinPrompt() {
 export function RoomsPanel() {
   const list = useRooms((s) => s.list);
   const agents = useRooms((s) => s.agents);
+  const mentions = useRooms((s) => s.mentions);
   useEffect(() => { void useRooms.getState().refresh(false).catch(() => {}); }, []);
   return (
     <div className="flex h-full flex-col">
@@ -186,6 +187,7 @@ export function RoomsPanel() {
                 <span className="block truncate text-[11px] text-faint">{r.members} member{r.members === 1 ? "" : "s"} · {r.online} here now</span>
               </span>
               {agents[r.id] && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent" title="Your agent is working here" />}
+              {(mentions[r.id] ?? 0) > 0 && <span className="shrink-0 rounded-full bg-accent px-1.5 text-[10px] font-semibold text-app" title="Messages naming you">@{mentions[r.id]}</span>}
               {r.removed ? <Badge tone="danger">removed</Badge> : r.role === "owner" && <Badge tone="accent">owner</Badge>}
             </button>
           ))}
