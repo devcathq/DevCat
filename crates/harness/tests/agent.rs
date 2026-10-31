@@ -411,6 +411,28 @@ async fn the_same_call_over_and_over_is_refused_after_three() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[tokio::test]
+async fn the_step_limit_is_a_setting_and_zero_means_none() {
+    // distinct calls, so the repeat guard stays out of it
+    let glob = |i: usize| vec![tool(&format!("g{i}"), "glob", json!({ "pattern": format!("*{i}") }))];
+    let (dir, mut session) = project().await;
+    let mut agent = Agent::new(Scripted::new((0..3).map(glob).collect()), Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.max_steps = 3;
+    let end = agent.turn(&mut session, "look around", &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert_eq!(end, TurnEnd::StepLimit);
+    let _ = std::fs::remove_dir_all(dir);
+
+    // 0: past the default of 60 and on to the answer
+    let (dir, mut session) = project().await;
+    let mut steps: Vec<Vec<Block>> = (0..70).map(glob).collect();
+    steps.push(vec![text("done")]);
+    let mut agent = Agent::new(Scripted::new(steps), Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.max_steps = 0;
+    let end = agent.turn(&mut session, "look around", &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A tool with more output than fits in one result.
 struct Big;
 

@@ -147,6 +147,8 @@ export function initNetwork() {
         return { traffic: { ...cur.traffic, [s.id]: next.length > TRAFFIC_CAP ? next.slice(-TRAFFIC_CAP) : next } };
       });
     }),
+    // an agent added, changed or deleted a profile
+    listen("net-profiles", () => void useNet.getState().load()),
     listen<{ id: string; lines: string[] }>("net-log", (e) => {
       const { id, lines } = e.payload;
       useNet.setState((cur) => {

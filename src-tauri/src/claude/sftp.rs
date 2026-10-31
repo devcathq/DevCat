@@ -516,6 +516,29 @@ async fn upload_file(t: &Target, src: &Path, dst: &str, p: &mut Progress<'_>, ca
     copied
 }
 
+/// Create `dst`, replacing a read-only file there like `cp -f` (git keeps its objects read-only,
+/// so downloading a repo over a clone of it would stop at the first object).
+async fn create_replacing(dst: &Path) -> std::io::Result<tokio::fs::File> {
+    let err = match tokio::fs::File::create(dst).await {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => e,
+        res => return res,
+    };
+    match tokio::fs::symlink_metadata(dst).await {
+        Ok(m) if m.is_file() && m.permissions().readonly() => {}
+        _ => return Err(err),
+    }
+    // Windows won't delete a read-only file either.
+    #[cfg(windows)]
+    {
+        let mut perm = tokio::fs::metadata(dst).await?.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perm.set_readonly(false);
+        tokio::fs::set_permissions(dst, perm).await?;
+    }
+    tokio::fs::remove_file(dst).await?;
+    tokio::fs::File::create(dst).await
+}
+
 async fn download_file(t: &Target, src: &str, dst: &Path, p: &mut Progress<'_>, cancel: &AtomicBool) -> AppResult<()> {
     let (mut cmd, _askpass) = remote::ssh_command(t, r#"cat -- "$1""#, &[src]);
     let mut child = cmd
@@ -531,7 +554,7 @@ async fn download_file(t: &Target, src: &str, dst: &Path, p: &mut Progress<'_>, 
         let _ = stderr.read_to_end(&mut b).await;
         b
     });
-    let mut file = tokio::fs::File::create(dst).await.map_err(|e| AppError::msg(format!("{}: {e}", dst.display())))?;
+    let mut file = create_replacing(dst).await.map_err(|e| AppError::msg(format!("{}: {e}", dst.display())))?;
     let mut buf = vec![0u8; CHUNK];
     let label = dst.to_string_lossy().into_owned();
     let copied: AppResult<()> = async {
@@ -619,6 +642,23 @@ mod tests {
         assert!(steps.contains(&Step::File { src: dir.join("sub").join("b.txt").to_string_lossy().into_owned(), dst: format!("~/up/{name}/sub/b.txt"), size: 2 }));
         let one = plan_upload(&dir.join("a.txt"), "/srv").unwrap();
         assert_eq!(one, vec![Step::File { src: dir.join("a.txt").to_string_lossy().into_owned(), dst: "/srv/a.txt".into(), size: 3 }]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn downloads_replace_read_only_files() {
+        // Downloading a repo over a clone of it: git keeps its objects read-only.
+        let dir = std::env::temp_dir().join(format!("devcat-sftp-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("obj");
+        std::fs::write(&f, "old").unwrap();
+        let mut perm = std::fs::metadata(&f).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&f, perm).unwrap();
+        let mut file = create_replacing(&f).await.unwrap();
+        file.write_all(b"new").await.unwrap();
+        drop(file);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

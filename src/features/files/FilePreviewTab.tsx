@@ -3,7 +3,7 @@
 // editor (.html also gets a rendered Preview); markdown, pdf, images, sheets, csv and docx stay preview-only.
 import { Copy, ExternalLink, Files, FolderSearch, History, Pin, RefreshCw, UserSearch } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { Badge, ErrorBox, IconButton, Spinner, Toolbar } from "../../components/ui";
+import { Badge, ErrorBox, IconButton, Spinner, Toolbar, Spin } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { FilePreview } from "../../lib/types";
 import { useTabs } from "../../store/tabs";
@@ -119,7 +119,7 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
           </>
         )}
         <PinButton path={tab.path} root={tab.root ?? null} />
-        <IconButton title="Refresh" onClick={() => { void load(); setReload((n) => n + 1); }}><RefreshCw className={loading ? "size-3.5 animate-spin" : "size-3.5"} /></IconButton>
+        <IconButton title="Refresh" onClick={() => { void load(); setReload((n) => n + 1); }}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
         <IconButton title="Copy path" onClick={() => void copyText(tab.path)}><Copy className="size-3.5" /></IconButton>
         {!isRemote(tab.path) && (
           <>

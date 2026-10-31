@@ -37,7 +37,7 @@ memory**, and keep your agents going from **your phone** or a **Telegram / Disco
 | AI | AI Workspace (terminal, diff, code review) running your installed coding agent: Claude Code (default), OpenAI Codex, Gemini CLI, GitHub Copilot, Aider, opencode or a custom CLI; or the built-in DevCat Agent (its own harness: tools, approvals, hooks, MCP, sandbox, helpers) with any OpenAI- or Anthropic-compatible model. Ask the agent about any connection, or start a ghost chat that keeps nothing |
 | Memory | One memory every agent shares (Claude Code, Codex, Cursor, Gemini, DevCat Agent), synced between your own computers |
 | Rooms | Work with other people, peer to peer and end-to-end encrypted: files, docs, whiteboards, a thread, tasks, and everyone's agents |
-| MCP | Sync MCP: DevCat's MCP server in Claude Code, Codex, Cursor and Gemini CLI, with off / read-only / full access per connection and an activity log |
+| MCP | Sync MCP: DevCat's MCP server in Claude Code, Codex, Cursor and Gemini CLI: databases, Kubernetes, Docker, RabbitMQ, VPNs and tunnels, adding connections, scheduled jobs and tickets, with off / read-only / full access per connection and per VPN, and an activity log |
 | Tickets | Jira, Trello and Linear: the agent fixes tickets from a column on their own branches, comments on them and moves them on (e.g. to Testing); results to Slack |
 | Git | Nested repo discovery, commit graph, blame, branches, tags, stashes, fetch/pull/push |
 | SQL databases | PostgreSQL, MySQL / MariaDB, SQLite, SQL Server |
@@ -308,10 +308,13 @@ of these step by step, with every keyboard shortcut on
   it between your own computers.
 - **Pinned files**: pin a file from the AI workspace's file list or its tab, and it stays at the top of **Files**.
 - **Sync MCP** (the plug button above the connections): adds DevCat's MCP server (`devcat mcp`) to Claude Code,
-  Codex, Cursor and Gemini CLI, so they read schemas, run queries and read clusters without seeing a password.
-  Each connection's **AI / MCP access** is off, read-only (the default for new connections) or full, enforced by
-  DevCat; a read-only connection is never full. Every call goes into **MCP activity**. See
-  [the docs](https://devcathq.github.io/DevCat/home/docs/sync-mcp.html).
+  Codex, Cursor and Gemini CLI, so they read schemas, run queries, work with clusters, containers and queues,
+  connect and set up your VPNs and tunnels, add connections and schedule DevCat Agent jobs, without seeing a
+  password. Each connection's **AI / MCP access** is off, read-only (the default for new connections) or full, and
+  each VPN's is off, read & connect or full, enforced by DevCat; a read-only connection is never full. Every call
+  goes into **MCP activity**. See [the docs](https://devcathq.github.io/DevCat/home/docs/sync-mcp.html),
+  [what agents can do](https://devcathq.github.io/DevCat/home/docs/agent-tools.html) and
+  [the walkthrough](https://devcathq.github.io/DevCat/home/docs/agent-walkthrough.html).
 - **Rooms** (two people in the left bar): work with other people, peer to peer and end-to-end encrypted, no
   account or server. Share files and folders (drag them in), edit text together with a Markdown preview, draw on
   whiteboards, talk in the thread (replies, reactions, decisions pinned, `@name` notifications), and hand out tasks.

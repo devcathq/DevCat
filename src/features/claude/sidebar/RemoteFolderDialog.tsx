@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { ArrowUp, Folder, FolderGit2, Loader2, Server, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
-import { Button, Dialog, Field, Input } from "../../../components/ui";
+import { Button, Dialog, Field, Input, Spin } from "../../../components/ui";
 import { api, errMsg } from "../../../lib/api";
 import { isRemote, remoteHost, remoteParts, remoteUri, sessionIdOf } from "../../../lib/remotePath";
 import type { ConnectionConfig, FileEntry, SshConfigHost } from "../../../lib/types";
@@ -171,7 +171,7 @@ export function RemoteFolderDialog() {
         )}
         <div className="h-64 overflow-y-auto rounded-md border border-line bg-app">
           {busy && !list ? (
-            <div className="flex h-full items-center justify-center gap-2 text-[12px] text-muted"><Loader2 className="size-4 animate-spin" />Connecting…</div>
+            <div className="flex h-full items-center justify-center gap-2 text-[12px] text-muted"><Spin icon={Loader2} className="size-4" />Connecting…</div>
           ) : !list ? (
             <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-[12px] text-faint">
               <Server className="size-6" />

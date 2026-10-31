@@ -2,6 +2,7 @@
 #![cfg_attr(not(feature = "gui"), allow(dead_code, unused_imports))]
 
 mod agent;
+mod agent_bridge;
 mod agent_jobs;
 mod agent_notes;
 mod agent_tools;
@@ -109,11 +110,14 @@ fn init_backend(dir: std::path::PathBuf) {
     tickets::init(dir.clone());
     keep_awake::init(dir.clone());
     integrations::init(dir.clone());
+    // `devcat mcp` hands its tool calls to this DevCat while it's open
+    agent_bridge::start(dir.clone());
     rooms::init(dir);
 }
 
 /// Stop what must not outlive DevCat (VPNs, the remote server, agent runs, keep-awake).
 fn shutdown_backend() {
+    agent_bridge::stop();
     network::shutdown();
     claude::ssh_forward::stop_all();
     crate::rt::block_on(remote::shutdown());

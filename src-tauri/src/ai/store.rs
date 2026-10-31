@@ -260,7 +260,7 @@ mod tests {
         let dir = tmp();
         let store = AiStore::new(dir.clone(), Box::new(MemSecrets::default()));
         let mut p = provider(AiKind::Agent);
-        p.agent = Some(crate::ai::AgentSettings { protocol: devcat_harness::Protocol::Anthropic, base_url: "https://api.anthropic.com/".into(), model: "claude-opus-5-5".into() });
+        p.agent = Some(crate::ai::AgentSettings { protocol: devcat_harness::Protocol::Anthropic, base_url: "https://api.anthropic.com/".into(), model: "claude-opus-5-5".into(), max_steps: None });
         p.api_key_env = Some("API Key".into());
         p.env = vec![AiEnvVar { key: "BAD-NAME".into(), value: "1".into() }];
         p.api_key = Some("sk-ant".into());

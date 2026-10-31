@@ -946,7 +946,7 @@ mod tests {
 
         let profile = |id: &str| NetProfile {
             id: id.into(), name: "t".into(), kind: NetKind::Openvpn, project_id: None, color: None, auto_connect: false,
-            ssh: None, forwards: vec![], vpn_user: None, vpn_password: None, summary: None, options: Default::default(),
+            ssh: None, forwards: vec![], vpn_user: None, vpn_password: None, summary: None, options: Default::default(), mcp_access: None,
         };
         let wait = |id: String, want: &'static str| async move {
             for _ in 0..100 {

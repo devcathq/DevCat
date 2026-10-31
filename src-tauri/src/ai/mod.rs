@@ -132,6 +132,10 @@ pub struct AgentSettings {
     pub protocol: devcat_harness::Protocol,
     pub base_url: String,
     pub model: String,
+    /// Steps per turn before the agent pauses and asks to continue; 0 = no limit, None = the
+    /// default ([`devcat_harness::MAX_STEPS`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u32>,
 }
 
 impl AiProvider {
@@ -193,6 +197,12 @@ pub fn agent_config(provider_id: &str) -> AppResult<(AiProvider, devcat_harness:
     let a = p.agent.clone().filter(|_| p.kind == AiKind::Agent).ok_or_else(|| AppError::msg(format!("{} is not a DevCat Agent connection", p.name)))?;
     let cfg = devcat_harness::LlmConfig { protocol: a.protocol, base_url: a.base_url, api_key: st.api_key(&p.id), model: a.model, max_tokens: 16_000 };
     Ok((p, cfg))
+}
+
+/// Steps per turn for a DevCat Agent connection (its setting, read fresh so a change applies to
+/// open chats on their next turn).
+pub fn agent_max_steps(provider_id: &str) -> u32 {
+    store().and_then(|st| st.get(provider_id)).ok().and_then(|p| p.agent).and_then(|a| a.max_steps).unwrap_or(devcat_harness::MAX_STEPS)
 }
 
 /// Models a DevCat Agent API offers, for the model picker. Uses `api_key` (typed in the form, not

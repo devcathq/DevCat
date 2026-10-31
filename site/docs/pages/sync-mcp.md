@@ -3,8 +3,10 @@
 Let Claude Code, Codex, Cursor and Gemini CLI use your DevCat connections, with the access you choose for each one.
 
 DevCat has its own MCP server, `devcat mcp`. Agents connected to it can list your connections, read schemas, run
-queries (SQL, MongoDB, Redis) and read Kubernetes objects and pod logs. Passwords, VPNs and tunnels stay in DevCat:
-the agent never sees a password or a connection string.
+queries (SQL, MongoDB, Redis), work with Kubernetes, Docker and RabbitMQ, connect and set up your VPNs and tunnels,
+add connections, and schedule DevCat Agent jobs: see [What agents can do](agent-tools.md) for every tool, and the
+[walkthrough](agent-walkthrough.md) for an example. Passwords stay in DevCat: the agent never sees a password or a
+connection string.
 
 ## Set it up
 
@@ -56,6 +58,17 @@ Each connection has an **AI / MCP access** setting (Edit connection → **Advanc
   MCP…) until you pick an access for them.
 
 The DevCat Agent in the AI workspace asks you before each change, so for it only **Off** makes a difference.
+
+VPNs and tunnels have the same setting (edit the profile in **VPN & SSH tunnels**): **Off** hides the profile,
+**Read & connect** (the default) lets agents see its status and connect it, **Full** also lets them disconnect and
+edit it. See [VPN and tunnels](vpn-tunnels.md#ai-mcp-access).
+
+## DevCat open or closed
+
+With DevCat open (the app, or `devcat serve`), `devcat mcp` hands each call to it: VPNs, tunnels, scheduled jobs
+and ticket runs live there, and a VPN DevCat connects works for every program on the computer. With DevCat closed,
+`devcat mcp` runs the call itself and never starts a VPN; the tools that need DevCat say so. See
+[Where the calls run](agent-tools.md#where-the-calls-run).
 
 ## Resources
 

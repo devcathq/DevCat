@@ -325,6 +325,33 @@ pub async fn docker_container_action(state: St, conn_id: String, id: String, act
     run(&engine, &args, SLOW).await.map(|_| ())
 }
 
+/// A container's last `tail` log lines at once (for agents; the app streams them instead): what
+/// it wrote to stdout, then what it wrote to stderr. `since`: e.g. "10m" or an RFC 3339 time.
+pub async fn docker_logs_tail(state: St, conn_id: String, id: String, tail: u32, timestamps: bool, since: Option<String>) -> AppResult<String> {
+    let engine = config(&state, &conn_id).await?;
+    let tail = tail.to_string();
+    let mut args = vec!["logs", "--tail", &tail];
+    if timestamps {
+        args.push("--timestamps");
+    }
+    let since = since.filter(|s| !s.trim().is_empty() && !s.starts_with('-'));
+    if let Some(s) = &since {
+        args.extend(["--since", s.as_str()]);
+    }
+    args.push(object(&id)?);
+    let mut cmd = command(&engine, &args).await?;
+    let out = tokio::time::timeout(SLOW, cmd.output()).await.map_err(|_| AppError::msg(format!("`docker logs` took longer than {} s", SLOW.as_secs())))??;
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        return Err(AppError::msg(explain(&stderr)));
+    }
+    Ok(match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
+        (_, true) => stdout.into_owned(),
+        (true, false) => stderr.into_owned(),
+        (false, false) => format!("{stdout}\n--- stderr ---\n{stderr}"),
+    })
+}
+
 /// Remove an image, volume or network (`force` for an image still tagged or used by a stopped container).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn docker_remove(state: St, conn_id: String, kind: String, id: String, force: Option<bool>) -> AppResult<()> {

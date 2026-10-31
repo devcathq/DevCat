@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Badge, Button, ErrorBox, IconButton, Spinner } from "../../components/ui";
+import { Badge, Button, ErrorBox, IconButton, Spinner, Spin } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { k8s, type K8sObject } from "./api";
 import { PortForwardDialog, ScaleDialog, useConfirm } from "./dialogs";
@@ -757,7 +757,7 @@ function ObjectEvents({ connId, kindKey, obj }: { connId: string; kindKey: strin
     <div className="flex h-full flex-col">
       <div className="flex h-8 shrink-0 items-center justify-between border-b border-line px-3 text-xs text-muted">
         <span>{evs.length} event{evs.length === 1 ? "" : "s"}</span>
-        <IconButton title="Refresh" onClick={reload}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+        <IconButton title="Refresh" onClick={reload}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {error && <ErrorBox error={error} />}

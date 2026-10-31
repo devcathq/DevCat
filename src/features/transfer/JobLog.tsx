@@ -2,7 +2,7 @@
 import clsx from "clsx";
 import { CheckCircle2, CircleAlert, Info, Loader2, Trash2, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { IconButton } from "../../components/ui";
+import { IconButton, Spin } from "../../components/ui";
 import { newJobId, useTransferProgress, type TransferProgress } from "./shared";
 
 export type LogTone = "info" | "ok" | "warn" | "error";
@@ -73,7 +73,7 @@ export function JobLog({ job }: { job: Job }) {
     <div className="flex h-full flex-col bg-panel">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3 text-xs">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">Progress</span>
-        {running && <Loader2 className="size-3.5 animate-spin text-accent" />}
+        {running && <Spin icon={Loader2} className="size-3.5 text-accent" />}
         {!running && result && (result.ok ? <CheckCircle2 className="size-3.5 text-ok" /> : <XCircle className="size-3.5 text-danger" />)}
         {(running || result) && (
           <span className="text-muted">
@@ -88,7 +88,7 @@ export function JobLog({ job }: { job: Job }) {
       </div>
       <div className="relative h-0.5 shrink-0 overflow-hidden bg-line">
         {running && frac !== null && <div className="absolute inset-y-0 left-0 bg-accent transition-[width]" style={{ width: `${Math.round(frac * 100)}%` }} />}
-        {running && frac === null && <div className="absolute inset-y-0 w-1/3 animate-[devcat-indeterminate_1.2s_ease-in-out_infinite] bg-accent" />}
+        {running && frac === null && <div className="absolute inset-y-0 left-0 w-1/3 animate-[devcat-indeterminate_1.2s_ease-in-out_infinite] bg-accent" />}
         {!running && result && <div className={clsx("absolute inset-0", result.ok ? "bg-ok" : "bg-danger")} />}
       </div>
       <div ref={ref} className="selectable min-h-0 flex-1 overflow-auto px-3 py-1.5 font-mono text-[11.5px] leading-5">
@@ -101,7 +101,9 @@ export function JobLog({ job }: { job: Job }) {
           </div>
         ))}
       </div>
-      <style>{`@keyframes devcat-indeterminate { 0% { left: -33% } 100% { left: 100% } }`}</style>
+      {/* Moved by transform (in steps of the bar's own width), not `left`: animating `left` lays
+          the page out again on every frame. */}
+      <style>{`@keyframes devcat-indeterminate { 0% { transform: translateX(-100%) } 100% { transform: translateX(300%) } }`}</style>
     </div>
   );
 }

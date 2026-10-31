@@ -351,6 +351,9 @@ export interface NetProfile {
   vpnPassword?: string | null;
   summary?: string | null;
   options: Record<string, string>;
+  /** What agents may do with it: off hides it, read (default) shows its status and lets them
+   *  connect it, full also disconnect and edit it. */
+  mcpAccess?: McpAccess | null;
 }
 
 export interface NetProfileFull { profile: NetProfile; configText?: string | null }
@@ -421,7 +424,7 @@ export type AiKind = "claude" | "codex" | "gemini" | "copilot" | "aider" | "open
 /** A model an agent connection offers; `price` is its list price in US dollars per million tokens. */
 export interface AgentModel { id: string; context: number | null; price?: { input: number; output: number; cacheRead: number | null } | null }
 
-export interface AgentSettings { protocol: "openai-chat" | "openai-responses" | "anthropic"; baseUrl: string; model: string }
+export interface AgentSettings { protocol: "openai-chat" | "openai-responses" | "anthropic"; baseUrl: string; model: string; /** Steps per turn before it pauses; 0 = no limit, absent = 60. */ maxSteps?: number | null }
 export interface AiEnvVar { key: string; value: string }
 /** Saved AI connection: the coding-agent CLI the AI workspace terminal runs. */
 export interface AiProvider {
