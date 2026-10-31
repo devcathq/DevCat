@@ -10,21 +10,19 @@
 //! to the room. Writes (posting, suggesting, tasks) ask in a DevCat Agent chat, like a web fetch:
 //! their text goes to other people.
 //!
-//! `devcat mcp` runs in its own process, and rooms live in the app (their network node). The app
-//! listens on 127.0.0.1 for these calls (`start_bridge`), with a fresh token in
-//! `<data>/rooms/agents.json` (in the user's own data folder), and `devcat mcp` forwards them
-//! there (`call_app`). With the app closed, the tools say to open it.
+//! `devcat mcp` runs in its own process, and rooms live in the app (their network node). With the
+//! app open, `devcat mcp` hands every tool call to it (`agent_bridge.rs`), and the app runs room
+//! tools here (`run_here`). With the app closed (or only `devcat serve` open, which leaves rooms to
+//! the app), the call stays in `devcat mcp` and the tools say to open DevCat.
 use devcat_harness::approval::Kind;
 use devcat_harness::message::ToolSpec;
 use devcat_harness::tools::{Tool, ToolCtx, ToolOutput};
 use devcat_rooms::{Author, Node, Room};
 use once_cell::sync::OnceCell;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::rooms_agent::{EDIT_TOOL, READ_TOOLS, WRITE_TOOLS};
 
@@ -35,11 +33,8 @@ pub fn set_dir(dir: PathBuf) {
     let _ = DIR.set(dir);
 }
 
-const BRIDGE_FILE: &str = "agents.json";
 /// A call waits this long for the app (reading a shared file may fetch it from a member first).
 const CALL: Duration = Duration::from_secs(170);
-/// The largest request or answer on the bridge.
-const MAX_LINE: usize = 8 * 1024 * 1024;
 
 /// Whether any room on this computer lets coding agents in (read from disk, so `devcat mcp` and
 /// chats only offer the tools to someone who turned it on somewhere).
@@ -140,7 +135,8 @@ impl Tool for RoomsTool {
         CALL
     }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
-        if self.remote { call_app(self.name, &self.client, input).await } else { run_here(self.name, &self.client, input).await }
+        // remote: the open app didn't take the call (`agent_bridge`), so there's no app to run it
+        if self.remote { ToolOutput::err(APP_CLOSED) } else { run_here(self.name, &self.client, input).await }
     }
 }
 
@@ -255,121 +251,7 @@ fn list(node: &Node) -> ToolOutput {
     ))
 }
 
-// --------------------------------------------------------------- the bridge
-
-#[derive(Serialize, Deserialize)]
-struct BridgeFile {
-    port: u16,
-    token: String,
-    pid: u32,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Request {
-    token: String,
-    tool: String,
-    client: String,
-    input: Value,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Answer {
-    content: String,
-    is_error: bool,
-}
-
-/// Listen for `devcat mcp`'s room calls (the app, once its rooms are running).
-pub fn start_bridge() {
-    let Some(dir) = DIR.get().cloned() else { return };
-    crate::rt::spawn(async move {
-        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
-            Ok(l) => l,
-            Err(e) => return eprintln!("rooms: coding agents' bridge: {e}"),
-        };
-        let Ok(port) = listener.local_addr().map(|a| a.port()) else { return };
-        let token = hex::encode(devcat_rooms::crypto::random32());
-        let file = BridgeFile { port, token: token.clone(), pid: std::process::id() };
-        if let Err(e) = write_private(&dir.join(BRIDGE_FILE), &serde_json::to_vec(&file).unwrap_or_default()) {
-            return eprintln!("rooms: coding agents' bridge: {e}");
-        }
-        let token = Arc::new(token);
-        while let Ok((conn, peer)) = listener.accept().await {
-            if !peer.ip().is_loopback() {
-                continue;
-            }
-            let token = token.clone();
-            crate::rt::spawn(async move {
-                let _ = answer(conn, &token).await;
-            });
-        }
-    });
-}
-
-/// Write `bytes` to `path` readable by this user only (on Unix; on Windows the data folder is
-/// already the user's own).
-fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    }
-    std::fs::rename(tmp, path)
-}
-
-async fn answer(conn: tokio::net::TcpStream, token: &str) -> std::io::Result<()> {
-    let (read, mut write) = conn.into_split();
-    let mut line = String::new();
-    let mut reader = BufReader::new(read).take(MAX_LINE as u64);
-    tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line)).await.map_err(|_| std::io::Error::other("timed out"))??;
-    let out = match serde_json::from_str::<Request>(&line) {
-        Ok(req) if same(&req.token, token) => {
-            let o = run_here(&req.tool, &req.client, req.input).await;
-            Answer { content: o.content, is_error: o.is_error }
-        }
-        Ok(_) => Answer { content: "Not allowed.".into(), is_error: true },
-        Err(e) => Answer { content: format!("Bad request: {e}"), is_error: true },
-    };
-    let mut bytes = serde_json::to_vec(&out).unwrap_or_default();
-    bytes.push(b'\n');
-    write.write_all(&bytes).await?;
-    write.shutdown().await
-}
-
-/// Compare tokens without leaking where they differ.
-fn same(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 const APP_CLOSED: &str = "DevCat rooms run in the DevCat app: open DevCat, then try again.";
-
-/// Run a room tool in the app (from `devcat mcp`).
-async fn call_app(name: &str, client: &str, input: Value) -> ToolOutput {
-    let Some(file) = DIR.get().and_then(|d| std::fs::read(d.join(BRIDGE_FILE)).ok()).and_then(|b| serde_json::from_slice::<BridgeFile>(&b).ok()) else {
-        return ToolOutput::err(APP_CLOSED);
-    };
-    let conn = match tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(("127.0.0.1", file.port))).await {
-        Ok(Ok(c)) => c,
-        _ => return ToolOutput::err(APP_CLOSED),
-    };
-    let req = Request { token: file.token, tool: name.to_string(), client: client.to_string(), input };
-    let res = tokio::time::timeout(CALL, async {
-        let (read, mut write) = conn.into_split();
-        let mut bytes = serde_json::to_vec(&req).map_err(std::io::Error::other)?;
-        bytes.push(b'\n');
-        write.write_all(&bytes).await?;
-        let mut line = String::new();
-        BufReader::new(read).take(MAX_LINE as u64).read_line(&mut line).await?;
-        serde_json::from_str::<Answer>(&line).map_err(std::io::Error::other)
-    })
-    .await;
-    match res {
-        Ok(Ok(a)) => ToolOutput { content: a.content, is_error: a.is_error, images: vec![] },
-        Ok(Err(_)) => ToolOutput::err(APP_CLOSED),
-        Err(_) => ToolOutput::err("DevCat didn't answer in time."),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -393,7 +275,6 @@ mod tests {
         assert!(matches!(kind("room_post"), Kind::Fetch));
         assert!(matches!(kind("room_suggest"), Kind::Fetch));
         assert_eq!(client_label("claude-code"), "Claude Code");
-        assert!(same("abc", "abc") && !same("abc", "abd") && !same("abc", "ab"));
     }
 
     struct Quiet;

@@ -2,6 +2,11 @@
 //! search and read them, and write one. Reading asks in "Ask first" like a query (the text goes to
 //! the model's provider, and notes can hold private things); writing asks like an edit outside the
 //! project. Open windows reload their notes after a write.
+//!
+//! Over MCP (`for_scope`) an agent sees the notes in General and in the projects whose
+//! connections it gets (`agent_tools::in_reach`): a project with code folders keeps its notes to
+//! them, like its connections.
+use crate::agent_tools::Scope;
 use crate::notes::Note;
 use crate::state::St;
 use async_trait::async_trait;
@@ -10,15 +15,34 @@ use devcat_harness::message::ToolSpec;
 use devcat_harness::tools::{Registry, Tool, ToolCtx, ToolOutput};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Notes listed per search; the model narrows the search for more.
 const MAX_LISTED: usize = 30;
 
+/// The DevCat Agent's notes tools: every note.
 pub fn add(tools: &mut Registry) {
     if St::try_get().is_some() {
-        tools.add(Notes);
-        tools.add(NoteWrite);
+        tools.add(Notes(None));
+        tools.add(NoteWrite(None));
     }
+}
+
+/// The notes tools for an agent over MCP working in `scope`: General and the projects in reach.
+pub fn for_scope(scope: &Scope) -> Vec<Arc<dyn Tool>> {
+    if St::try_get().is_none() {
+        return vec![];
+    }
+    let s = Arc::new(scope.clone());
+    vec![Arc::new(Notes(Some(s.clone()))), Arc::new(NoteWrite(Some(s)))]
+}
+
+/// Whether the agent (over MCP: in `scope`) may see notes of project `pid` (None: General).
+fn reaches(scope: &Option<Arc<Scope>>, st: &St, pid: Option<&str>) -> bool {
+    let Some(scope) = scope else { return true };
+    let projects = st.projects.list().unwrap_or_default();
+    let current = scope.current(&projects);
+    crate::agent_tools::in_reach(pid, &projects, current.as_ref())
 }
 
 /// First non-empty line without Markdown markers (as the Notes panel shows it).
@@ -65,7 +89,7 @@ fn arg<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
 
 // ---------- devcat_notes
 
-struct Notes;
+struct Notes(Option<Arc<Scope>>);
 
 #[async_trait]
 impl Tool for Notes {
@@ -96,7 +120,7 @@ impl Tool for Notes {
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
         let Some(st) = St::try_get() else { return ToolOutput::err("Notes need the DevCat app.") };
         let all = match st.notes.list() {
-            Ok(n) => n,
+            Ok(n) => n.into_iter().filter(|n| reaches(&self.0, &st, n.project_id.as_deref())).collect::<Vec<_>>(),
             Err(e) => return ToolOutput::err(format!("Couldn't read the notes: {e}")),
         };
         let names = projects(&st);
@@ -158,7 +182,7 @@ fn snippet(body: &str, word: &str) -> Option<String> {
 
 // ---------- devcat_note_write
 
-struct NoteWrite;
+struct NoteWrite(Option<Arc<Scope>>);
 
 #[async_trait]
 impl Tool for NoteWrite {
@@ -196,8 +220,13 @@ impl Tool for NoteWrite {
             Some(Err(e)) => return e,
             None => None,
         };
+        if let Some(Some(p)) = &project
+            && !reaches(&self.0, &st, Some(p))
+        {
+            return ToolOutput::err("That project's notes are kept to its own code folders.");
+        }
         let note = match arg(&input, "id") {
-            Some(id) => match st.notes.list().ok().and_then(|all| all.into_iter().find(|n| n.id == id)) {
+            Some(id) => match st.notes.list().ok().and_then(|all| all.into_iter().find(|n| n.id == id && reaches(&self.0, &st, n.project_id.as_deref()))) {
                 Some(old) => Note { body: body.to_string(), project_id: project.unwrap_or(old.project_id.clone()), ..old },
                 None => return ToolOutput::err(format!("There's no note with id {id}; leave `id` out to create one.")),
             },

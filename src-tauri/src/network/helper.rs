@@ -683,6 +683,59 @@ pub fn check_wg_text(text: &str) -> HResult<()> {
 }
 const WG_KEYS: &[&str] = &["PreUp", "PostUp", "PreDown", "PostDown", "SaveConfig"];
 
+/// The first thing in a config an agent wrote that the helper would refuse to run as root:
+/// OpenVPN directives that run programs, load code or write files (also inside `<connection>`
+/// blocks and through `setenv opt`), inline blocks OpenVPN clients don't need, WireGuard's
+/// PreUp / PostUp / PreDown / PostDown / SaveConfig. Nothing is read from disk.
+pub fn agent_config_problem(openvpn: bool, text: &str) -> Option<String> {
+    let msg = |e: HelperError| match e {
+        HelperError::Rejected(m) | HelperError::Failed(m) => m,
+    };
+    if !openvpn {
+        return check_wg_text(text).err().map(msg);
+    }
+    if text.contains('\0') {
+        return Some("The OpenVPN config contains NUL bytes".into());
+    }
+    let uses = |what: &str| Some(format!("This config uses `{what}`, which can run programs or write files with admin rights; DevCat doesn't take that from an agent. Remove it, or let the user import the file in DevCat."));
+    // the closing tag of the inline block we're in (its lines are data, not directives)
+    let mut block: Option<String> = None;
+    for line in text.split('\n') {
+        if let Some(close) = &block {
+            if line.trim_start_matches(ovpn_space).to_ascii_lowercase().starts_with(close.as_str()) {
+                block = None;
+            }
+            continue;
+        }
+        let toks = ovpn_tokens(line);
+        let Some(t0) = toks.first() else { continue };
+        if toks.len() == 1 && t0.len() > 2 && t0.starts_with('<') && t0.ends_with('>') {
+            let tag = t0[1..t0.len() - 1].to_ascii_lowercase();
+            if let Some(end) = tag.strip_prefix('/') {
+                if end == "connection" {
+                    continue;
+                }
+                return Some(format!("This config has a stray </{end}>"));
+            }
+            if !OVPN_INLINE.contains(&tag.as_str()) {
+                return uses(&format!("<{tag}>"));
+            }
+            if tag != "connection" {
+                block = Some(format!("</{tag}>"));
+            }
+            continue;
+        }
+        let mut name = norm_directive(t0);
+        if name == "setenv" && toks.len() > 2 && toks[1].eq_ignore_ascii_case("opt") {
+            name = norm_directive(&toks[2]);
+        }
+        if is_rejected(&name) {
+            return uses(&name);
+        }
+    }
+    block.map(|b| format!("This config has an unterminated <{}> block", b.trim_start_matches("</").trim_end_matches('>')))
+}
+
 /// Interface name from `<iface>.conf`.
 pub fn wg_iface_of(conf: &Path) -> HResult<String> {
     let name = conf.file_name().and_then(|n| n.to_str()).unwrap_or("");

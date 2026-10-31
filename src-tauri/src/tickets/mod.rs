@@ -243,6 +243,18 @@ pub struct RunRecord {
     pub reply: Option<String>,
 }
 
+/// Whether boards can be read here (the app and `devcat serve` also work them; `devcat mcp` only
+/// reads them, see `init_reading`).
+pub fn ready() -> bool {
+    DIR.get().is_some()
+}
+
+/// `devcat mcp`: read boards (for the agent's tools) without watching them: boards are worked
+/// in the open DevCat.
+pub fn init_reading(data_dir: PathBuf) {
+    let _ = DIR.set(data_dir.join("tickets"));
+}
+
 pub fn init(data_dir: PathBuf) {
     let _ = DIR.set(data_dir.join("tickets"));
     worker::start_watch();
@@ -274,7 +286,7 @@ fn write_json<T: Serialize>(path: &PathBuf, v: &T) -> AppResult<()> {
     Ok(())
 }
 
-fn load_boards() -> AppResult<Vec<Board>> {
+pub(crate) fn load_boards() -> AppResult<Vec<Board>> {
     let p = boards_path()?;
     if !p.exists() {
         return Ok(vec![]);

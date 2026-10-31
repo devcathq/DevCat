@@ -533,7 +533,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         None => None,
     };
     let scope = match &focus {
-        Some(c) => crate::agent_tools::Scope { project: c.project_id.clone(), folder: Some(dir.to_path_buf()), mcp: false },
+        Some(c) => crate::agent_tools::Scope { project: c.project_id.clone(), folder: Some(dir.to_path_buf()), ..Default::default() },
         None => crate::agent_tools::Scope::folder(dir),
     };
     if let Some(c) = &focus {

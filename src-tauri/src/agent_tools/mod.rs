@@ -1,15 +1,33 @@
-//! DevCat Agent tools over the user's DevCat connections: list them, read a database schema, run
-//! a query (SQL, MongoDB shell, Redis commands), dump a database or export rows to a file, drop a
-//! database, and read Kubernetes objects and pod logs. They use the same drivers as the app, so a
-//! connection marked read-only stays read-only for the agent. The same tools are served over MCP
-//! by `devcat mcp` (see `mcp_server.rs`) for Claude Code, Codex, Cursor and Gemini, except
-//! dropping a database: the user confirms that by typing its name, which only the app can ask.
-//! A chat opened from a connection starts with its [`brief`].
+//! DevCat Agent tools over what DevCat manages for the user: connections (databases, Redis,
+//! MongoDB, Kubernetes, Docker, RabbitMQ) and adding them, network profiles (VPNs, SSH tunnels,
+//! Kubernetes port-forwards), query history and saved queries, scheduled agent jobs and ticket
+//! boards; here: listing connections, reading a schema, running a query (SQL, MongoDB shell, Redis
+//! commands), dumping a database or exporting rows to a file, dropping a database, and reading
+//! Kubernetes objects and pod logs. They use the same code as the app, so a connection marked
+//! read-only stays read-only for the agent. The same tools are served over MCP by `devcat mcp`
+//! (see `mcp_server.rs`) for Claude Code, Codex, Cursor and Gemini, except what can't be undone
+//! (dropping a database, deleting a VPN profile, Kubernetes / Docker / RabbitMQ deletes): the user
+//! confirms that by typing its name (`Tool::confirm`), which only the app can ask. With DevCat
+//! open, `devcat mcp` runs the rest in the app (`agent_bridge.rs`), where VPNs, port forwards, jobs
+//! and ticket runs live. A chat opened from a connection starts with its [`brief`].
 //!
 //! Which connections an agent sees depends on the folder it works in ([`Scope`]): a project with
 //! code folders keeps its connections to those folders; connections in no project, or in a
 //! project without folders, are everyone's. SSH sessions are never offered (see AGENTS.md), nor
 //! connections whose AI access is off ([`McpAccess`]). Over MCP, changing data needs `Full`.
+//! Network profiles have the same AI access (see `network.rs`); ticket boards and notes follow
+//! the same folder rule. The DevCat Agent asks the user before anything that changes something.
+//!
+//! One file per area: `db.rs` (beyond schema and query), `k8s.rs` (beyond get and logs),
+//! `docker.rs`, `rabbitmq.rs`, `network.rs` and `workspace.rs` (connections, history, jobs,
+//! tickets).
+mod db;
+mod docker;
+mod k8s;
+mod network;
+mod rabbitmq;
+mod workspace;
+
 use crate::db::{ExecOptions, QueryResult, TableRef};
 use crate::models::{ConnectionConfig, ConnectionKind, McpAccess, Project};
 use crate::state::St;
@@ -39,6 +57,10 @@ pub struct Scope {
     /// Served over MCP: changing data needs the connection's AI access to be full (the DevCat
     /// Agent asks the user instead).
     pub mcp: bool,
+    /// A run nobody watches that works on text from outside (a ticket's agent): it gets the
+    /// connection tools, but none that reach ticket boards, schedule jobs, add connections or
+    /// add, change or delete network profiles.
+    pub unattended: bool,
 }
 
 impl Scope {
@@ -97,47 +119,166 @@ pub fn visible(c: &ConnectionConfig, projects: &[Project], current: Option<&Proj
     if c.kind == ConnectionKind::Ssh || access(c, projects) == McpAccess::Off {
         return false;
     }
-    let Some(pid) = c.project_id.as_deref() else { return true };
+    in_reach(c.project_id.as_deref(), projects, current)
+}
+
+/// Whether what belongs to project `pid` (a connection, network profile, note or ticket board)
+/// is for an agent working in `current`: a project with code folders keeps its things to them;
+/// no project, a project without folders or one that's gone, everyone's.
+pub(crate) fn in_reach(pid: Option<&str>, projects: &[Project], current: Option<&Project>) -> bool {
+    let Some(pid) = pid else { return true };
     match projects.iter().find(|p| p.id == pid) {
         Some(p) if !p.folders.is_empty() => current.is_some_and(|cur| cur.id == pid),
         _ => true,
     }
 }
 
-/// The connection tools, when the scope has any connections.
+/// The project the model names (by name or id) among those `v`'s agent may put things in:
+/// Ok(None) for "none" / "general".
+fn project_named(v: &View, want: &str) -> Result<Option<String>, ToolOutput> {
+    if ["none", "general", ""].contains(&want.trim().to_ascii_lowercase().as_str()) {
+        return Ok(None);
+    }
+    let open: Vec<&Project> = v.projects.iter().filter(|p| in_reach(Some(&p.id), &v.projects, v.project.as_ref())).collect();
+    match open.iter().find(|p| p.id == want || p.name.eq_ignore_ascii_case(want)) {
+        Some(p) => Ok(Some(p.id.clone())),
+        None => Err(ToolOutput::err(format!(
+            "There's no DevCat project called \"{want}\" here. Projects: {}.",
+            if open.is_empty() { "none".to_string() } else { open.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ") }
+        ))),
+    }
+}
+
+/// The DevCat tools for `scope`.
 pub fn add(tools: &mut Registry, scope: &Scope) {
     for t in for_scope(scope) {
         tools.add_arc(t);
     }
 }
 
-/// The tools for the connections `scope` sees (none without connections).
+/// The tools for what `scope` sees: always the ones that list and add connections and network
+/// profiles and manage scheduled jobs; per connection kind the ones that work with it (no
+/// Docker tools without a Docker connection, and so on), so agents get no tools they can't use.
 pub fn for_scope(scope: &Scope) -> Vec<Arc<dyn Tool>> {
-    let conns = view(scope).connections;
-    let s = Arc::new(scope.clone());
     let mut out: Vec<Arc<dyn Tool>> = Vec::new();
-    if conns.is_empty() {
+    if St::try_get().is_none() {
         return out;
     }
+    let v = view(scope);
+    let s = Arc::new(scope.clone());
+    let has = |k: ConnectionKind| v.connections.iter().any(|c| c.kind == k);
     out.push(Arc::new(Connections(s.clone())));
-    if conns.iter().any(|c| is_db(c.kind)) {
+    workspace::add(&mut out, &s, &v);
+    network::add(&mut out, &s);
+    if v.connections.iter().any(|c| is_db(c.kind)) {
         out.push(Arc::new(DbSchema(s.clone())));
         out.push(Arc::new(DbQuery(s.clone())));
+        db::add(&mut out, &s);
     }
-    if conns.iter().any(|c| has_schema(c.kind)) {
+    if v.connections.iter().any(|c| has_schema(c.kind)) {
         out.push(Arc::new(DbDump(s.clone())));
         out.push(Arc::new(DbExport(s.clone())));
     }
     // Over MCP DevCat can't ask the user to type the database's name, so dropping one is for the
     // DevCat Agent only (see `DbDrop`).
-    if !scope.mcp && conns.iter().any(|c| can_drop(c.kind) && !c.read_only) {
+    if !scope.mcp && v.connections.iter().any(|c| can_drop(c.kind) && !c.read_only) {
         out.push(Arc::new(DbDrop(s.clone())));
     }
-    if conns.iter().any(|c| c.kind == ConnectionKind::Kubernetes) {
+    if has(ConnectionKind::Kubernetes) {
         out.push(Arc::new(K8sGet(s.clone())));
-        out.push(Arc::new(K8sLogs(s)));
+        out.push(Arc::new(K8sLogs(s.clone())));
+        k8s::add(&mut out, &s);
+    }
+    if has(ConnectionKind::Docker) {
+        docker::add(&mut out, &s);
+    }
+    if has(ConnectionKind::Rabbitmq) {
+        rabbitmq::add(&mut out, &s);
     }
     out
+}
+
+// ---------- shared by the tool files
+
+/// A trimmed, non-empty string argument.
+fn arg(input: &Value, key: &str) -> Option<String> {
+    input.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(String::from)
+}
+
+fn arg_bool(input: &Value, key: &str) -> Option<bool> {
+    input.get(key).and_then(Value::as_bool)
+}
+
+/// The connection the model means, of `kind`.
+fn conn_of(scope: &Scope, input: &Value, kind: ConnectionKind) -> Result<ConnectionConfig, ToolOutput> {
+    let c = find(scope, input)?;
+    if c.kind != kind {
+        return Err(ToolOutput::err(format!("{} is a {} connection, not {}.", c.name, kind_name(c.kind), kind_name(kind))));
+    }
+    network::usable(scope, &c)?;
+    Ok(c)
+}
+
+/// Whether the agent may change something through `c`: never on a read-only connection, and
+/// over MCP only with the connection's AI access at Full (the DevCat Agent asks the user instead).
+fn may_change(scope: &Scope, c: &ConnectionConfig) -> Result<(), ToolOutput> {
+    if c.read_only {
+        return Err(ToolOutput::err(format!("{} is a read-only connection: DevCat doesn't change anything through it.", c.name)));
+    }
+    if scope.mcp && view(scope).access(c) != McpAccess::Full {
+        return Err(ToolOutput::err(format!(
+            "DevCat only lets agents read {} over MCP. To allow changes, the user sets the connection's AI / MCP access to \"Full\" in DevCat (Edit connection → Advanced).",
+            c.name
+        )));
+    }
+    Ok(())
+}
+
+/// A path the model gave, for the app: relative ones start in the agent's folder (over MCP the
+/// tool may run in DevCat, whose own folder is elsewhere); `~` stays for the callee to expand.
+fn local_path(ctx: &ToolCtx, p: &str) -> String {
+    let path = Path::new(p);
+    if path.is_absolute() || p.starts_with('~') || ctx.cwd.as_os_str().is_empty() {
+        return p.to_string();
+    }
+    ctx.cwd.join(path).to_string_lossy().into_owned()
+}
+
+/// A pretty JSON value, for tools that show an object as it is.
+fn pretty(v: &Value) -> String {
+    serde_json::to_string_pretty(v).unwrap_or_default()
+}
+
+/// Keys whose values agents don't get to see (environment variables, Helm values, ...).
+fn secret_name(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    ["password", "passwd", "secret", "token", "apikey", "api_key", "api-key", "private", "credential", "auth"].iter().any(|w| k.contains(w))
+}
+
+/// Replaces the values of secret-looking keys anywhere in `v` (and `NAME=value` strings with a
+/// secret-looking NAME) with a placeholder.
+fn redact_secrets(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            for (k, val) in m.iter_mut() {
+                if secret_name(k) && (val.is_string() || val.is_number()) {
+                    *val = Value::String("<hidden>".into());
+                } else {
+                    redact_secrets(val);
+                }
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(redact_secrets),
+        Value::String(s) => {
+            if let Some((name, _)) = s.split_once('=')
+                && !name.contains(char::is_whitespace)
+                && secret_name(name)
+            {
+                *s = format!("{name}=<hidden>");
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Names of the connections `scope` sees (for the chat's "Using" line).
@@ -153,6 +294,9 @@ pub fn describe(c: &ConnectionConfig) -> String {
     }
     if c.read_only {
         l.push_str(", read-only");
+    }
+    if let Some(n) = network::via(c) {
+        l.push_str(&format!(", through network profile {n}"));
     }
     l.push_str(&format!(") id {}", c.id));
     l
@@ -212,7 +356,7 @@ impl Tool for Connections {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "devcat_connections".into(),
-            description: "List the user's DevCat connections (databases, Redis, MongoDB, Kubernetes clusters): name, kind, default database, and whether it's read-only. Use the name with `db_schema`, `db_query`, `db_dump`, `db_export`, `k8s_get` and `k8s_logs`.".into(),
+            description: "List the user's DevCat connections (databases, Redis, MongoDB, Kubernetes clusters, Docker engines, RabbitMQ brokers): name, kind, default database, the VPN / tunnel it goes through, whether it's read-only and what agents may do with it. Use the name with the `db_*` (db_schema, db_query, db_dump, db_export…), `k8s_*`, `docker_*` and `rmq_*` tools.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
     }
@@ -225,7 +369,7 @@ impl Tool for Connections {
     async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
         let v = view(&self.0);
         if v.connections.is_empty() {
-            return ToolOutput::ok("The user has no DevCat connections for this folder.");
+            return ToolOutput::ok("The user has no DevCat connections for this folder (`devcat_connection_save` adds one).");
         }
         let mut lines: Vec<String> = v.connections.iter().map(|c| v.line(c, self.0.mcp)).collect();
         if let Some(p) = &v.project {
@@ -274,6 +418,9 @@ impl Tool for DbSchema {
         };
         if !has_schema(c.kind) {
             return ToolOutput::err(format!("{} is a {} connection; `db_schema` reads SQL databases and MongoDB.", c.name, kind_name(c.kind)));
+        }
+        if let Err(e) = network::usable(&self.0, &c) {
+            return e;
         }
         let arg = |k: &str| input.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
         let (database, schema) = (arg("database").or(c.database.clone().filter(|d| !d.is_empty())), arg("schema"));
@@ -339,12 +486,12 @@ async fn tables_text(driver: &crate::db::DynDriver, database: Option<&str>, sche
     Ok((!out.is_empty()).then(|| format!("{} tables, {} views:\n{}", s.tables.len(), s.views.len(), out.join("\n"))))
 }
 
-/// A failed connect; over MCP, a connection behind a VPN / tunnel needs it connected in DevCat
-/// (the MCP server doesn't start networks: the app owns them).
+/// A failed connect. A connection behind a VPN / tunnel connects it first, in the process that
+/// owns networks: `devcat mcp` doesn't start them itself (the app does, see `agent_bridge.rs`).
 fn connect_error(scope: &Scope, c: &ConnectionConfig, e: &str) -> String {
     let mut msg = format!("Couldn't connect to {}: {e}", c.name);
-    if scope.mcp && c.options.get("networkId").is_some_and(|n| !n.trim().is_empty()) {
-        msg.push_str(" (This connection goes through a VPN or tunnel profile: the user connects it in DevCat's Network panel first.)");
+    if scope.mcp && crate::network::passive() && network::via(c).is_some() {
+        msg.push_str(" (This connection goes through a VPN or tunnel profile, and DevCat isn't open to connect it: the user opens DevCat, or connects it in DevCat's Network panel.)");
     }
     msg
 }
@@ -398,7 +545,10 @@ impl Tool for DbQuery {
             Err(e) => return e,
         };
         if !is_db(c.kind) {
-            return ToolOutput::err(format!("{} is a {} connection; use `k8s_get` / `k8s_logs` for clusters.", c.name, kind_name(c.kind)));
+            return ToolOutput::err(format!("{} is a {} connection; `db_query` is for databases, Redis and MongoDB.", c.name, kind_name(c.kind)));
+        }
+        if let Err(e) = network::usable(&self.0, &c) {
+            return e;
         }
         let query = input.get("query").and_then(Value::as_str).unwrap_or("").trim();
         if query.is_empty() {
@@ -499,12 +649,14 @@ fn stamp() -> String {
     chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
-/// The connection a dump, export or drop works on, if it's a database with tables.
+/// The connection a dump, export, import, restore or drop works on, if it's a database with
+/// tables (and the agent may use the network it goes through).
 fn db_conn(scope: &Scope, input: &Value, what: &str) -> Result<ConnectionConfig, ToolOutput> {
     let c = find(scope, input)?;
     if !has_schema(c.kind) {
         return Err(ToolOutput::err(format!("{} is a {} connection; `{what}` works on SQL databases and MongoDB.", c.name, kind_name(c.kind))));
     }
+    network::usable(scope, &c)?;
     Ok(c)
 }
 
@@ -851,11 +1003,7 @@ pub async fn brief(scope: &Scope, c: &ConnectionConfig) -> String {
 // ---------- Kubernetes
 
 fn k8s_conn(scope: &Scope, input: &Value) -> Result<ConnectionConfig, ToolOutput> {
-    let c = find(scope, input)?;
-    if c.kind != ConnectionKind::Kubernetes {
-        return Err(ToolOutput::err(format!("{} is a {} connection, not a Kubernetes cluster.", c.name, kind_name(c.kind))));
-    }
-    Ok(c)
+    conn_of(scope, input, ConnectionKind::Kubernetes)
 }
 
 struct K8sGet(Arc<Scope>);

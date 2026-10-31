@@ -31,20 +31,39 @@ an SSH-session folder (`ssh://devcat-…`). Keep it that way unless the work abo
 
 ## Connections over MCP
 
-Agents get the user's connections through the tools in `src-tauri/src/agent_tools.rs`: built into the DevCat
-Agent, and served to other agents by `devcat mcp` (`mcp_server.rs`), which Sync MCP (`mcp_sync.rs`) writes into
-Claude Code / Codex / Cursor / Gemini configs. Keep one implementation: a new connection tool goes in
-`agent_tools.rs` and both get it. Which connections an agent sees follows its folder (`agent_tools::Scope`, a
-project's `folders`). Each connection's AI access (`McpAccess`: off / read / full, `ConnectionConfig::agent_access`)
-decides the rest: off hides it from every agent, and over MCP data changes need full (connections without the
-setting follow the project's `mcp_writes`; a read-only connection is never full). `devcat mcp` logs every call in
-`mcp_audit.rs` (the UI's MCP activity). One exception to "both get it": `db_drop_database` is for the DevCat Agent
-only, because dropping is confirmed by the user typing the database's name (`Tool::confirm`, which the harness asks
-for whatever the policy, hooks or "always allow"), and over MCP DevCat can't ask; the phone dispatcher refuses that
-confirmation too. Keep any new tool that can't be undone the same way. A chat opened from a connection
-(`agent_open` with `connection_id`, "Ask DevCat Agent") starts with `agent_tools::brief`: that connection's
-structure, never its rows. Sync MCP edits files on the
-computer, so it stays out of the phone dispatcher, like the SSH workbench above.
+Agents get what DevCat manages through the tools in `src-tauri/src/agent_tools/` (one file per area: `mod.rs`
+connections, schema, query, dump, export, drop, k8s get / logs, `brief`; `db.rs`, `k8s.rs`, `docker.rs`,
+`rabbitmq.rs`, `network.rs` VPNs and tunnels, `workspace.rs` adding connections, history, scheduled jobs, tickets):
+built into the DevCat Agent, and served to other agents by `devcat mcp` (`mcp_server.rs`, `tools_for`), which Sync
+MCP (`mcp_sync.rs`) writes into Claude Code / Codex / Cursor / Gemini configs. Keep one implementation: a new tool
+goes in `agent_tools/` and both get it. `for_scope` only offers tools for what the folder has (no Docker tools
+without a Docker connection), and `devcat mcp` tells the agent when that changes (`notifications/tools/list_changed`).
+Which connections, network profiles, notes and ticket boards an agent sees follows its folder (`agent_tools::Scope`,
+`in_reach`, a project's `folders`). Each connection's AI access (`McpAccess`: off / read / full,
+`ConnectionConfig::agent_access`) decides the rest: off hides it from every agent, and over MCP changes need full
+(`may_change`; connections without the setting follow the project's `mcp_writes`; a read-only connection is never
+full). Network profiles have their own (`NetProfile::agent_access`, default read: status, logs and connect; full
+also disconnect and edit). Rules that hold whatever the caller: a connection an agent adds gets AI access read;
+agents never change a connection's or profile's access; VPN configs an agent writes can't run programs
+(`network::agent_config_problem`, the passwordless helper's checks); jobs stay in the agent's folder and never Bypass;
+secret-looking values are hidden (`redact_secrets`). A run fed outside text (a ticket's agent: `Scope::unattended`)
+gets no tool that reaches boards, jobs, connection setup or profile changes. `devcat mcp` logs every call in
+`mcp_audit.rs` (the UI's MCP activity).
+
+One exception to "both get it": what can't be undone is for the DevCat Agent only (`db_drop_database`,
+`db_restore`, `k8s_delete`, `docker_remove`, `rmq_delete`, `net_profile_delete`, `db_import` emptying the table
+first), because the user confirms it by typing its name (`Tool::confirm`, which the harness asks for whatever the
+policy, hooks or "always allow"), and over MCP DevCat can't ask; the phone dispatcher refuses that confirmation too.
+Such a tool isn't offered when `Scope::mcp` and refuses to run there. Keep any new tool that can't be undone the same
+way. A chat opened from a connection (`agent_open` with `connection_id`, "Ask DevCat Agent") starts with
+`agent_tools::brief`: that connection's structure, never its rows.
+
+VPNs, tunnels, scheduled jobs, ticket runs and rooms live in the open DevCat, not in the `devcat mcp` process each
+agent starts. So with DevCat open (app or `devcat serve`), `devcat mcp` hands each call to it over `agent_bridge.rs`
+(127.0.0.1, a random port and token in `<data>/agent-bridge.json`, one JSON line each way) and DevCat runs the same
+tool with the same scope (`tools_for(…, in_app)`); with DevCat closed it runs the call itself, passive
+(`network::set_passive`: it never starts networks), and tools that need DevCat say so. Sync MCP and the bridge are
+about this computer, so they stay out of the phone dispatcher, like the SSH workbench above.
 
 ## Ghost chats
 
@@ -113,9 +132,10 @@ so what comes from a room is untrusted input. Keep these rules:
 - **Nothing copies this computer's files into a room from an agent.** Sharing files and folders is a person's act
   in the window (`room_paths_add`, `room_file_add_bytes`); don't add a tool for it. Likewise nothing from a room is
   written on the computer (skills, memory, notes, files) without a person looking at it and confirming.
-- **The bridge for `devcat mcp`** is the app listening on 127.0.0.1 with a fresh token in `<data>/rooms/agents.json`
-  (`rooms_tools::start_bridge`); `devcat mcp` can't open the rooms itself (one iroh key, one writer of the
-  document). Keep requests token-checked and loopback-only.
+- **`devcat mcp` reaches the rooms through the app** (`agent_bridge.rs`, the one channel for every tool: 127.0.0.1,
+  a fresh token in `<data>/agent-bridge.json`); `devcat mcp` can't open the rooms itself (one iroh key, one writer of
+  the document), and `devcat serve` leaves them to the app (`mcp_server::tools_for`). Keep requests token-checked
+  and loopback-only.
 - **Root container names never contain `/`**: Loro panics when it imports a change to such a root (in the window and
   in Rust). Files in folders use `doc.rs` `root_part` (`/` → `%2F`, `%` → `%25`), and the window the same
   (`replica.ts` `rootPart`). Any new per-file container must go through it.

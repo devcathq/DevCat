@@ -62,11 +62,8 @@ pub(crate) async fn node() -> AppResult<&'static Node> {
     NODE.get_or_try_init(|| async {
         let dir = DIR.get().ok_or_else(|| AppError::msg("Rooms aren't initialised"))?.clone();
         let cfg = Config { dir, relay: relay_config(), port: 0, keeper: false, keeper_owners: vec![] };
+        // this user's coding agents (`devcat mcp`) reach the rooms through the app (agent_bridge.rs)
         let node = Node::start(cfg, Arc::new(AppHost)).await.map_err(AppError::msg)?;
-        // this user's coding agents (`devcat mcp`) reach the rooms through the app
-        if !crate::events::headless() {
-            crate::rooms_tools::start_bridge();
-        }
         Ok(node)
     })
     .await

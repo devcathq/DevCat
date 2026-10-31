@@ -677,7 +677,8 @@ fn answer_of(v: &Value) -> Answer {
 /// works unattended on text from the tracker, so changing data needs the connection's AI access to
 /// be full, as for agents over MCP.
 pub fn scope_of(b: &Board) -> Scope {
-    Scope { project: b.project_id.clone().filter(|p| !p.trim().is_empty()), folder: Some(b.repo.clone().into()), mcp: true }
+    // a ticket's text comes from the tracker: its agent can't reach boards, jobs or DevCat's setup
+    Scope { project: b.project_id.clone().filter(|p| !p.trim().is_empty()), folder: Some(b.repo.clone().into()), mcp: true, unattended: true }
 }
 
 /// The board's AI connection.
