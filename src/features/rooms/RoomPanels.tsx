@@ -52,15 +52,17 @@ function Rich({ text, handles, files, onOpen }: { text: string; handles: string[
 }
 
 /** A message's reactions, one chip per emoji (yours highlighted; a click adds or takes back yours),
- *  and the picker. */
-function Reactions({ room, message, reactions, me, canReact }: { room: string; message: string; reactions: Reaction[]; me: string; canReact: boolean }) {
-  const [picking, setPicking] = useState(false);
+ *  and the picker. With no reactions yet, the picker is opened from the message's hover toolbar
+ *  (`picking`), so hovering doesn't grow the message by a line. */
+function Reactions({ room, message, reactions, me, canReact, picking, setPicking }: {
+  room: string; message: string; reactions: Reaction[]; me: string; canReact: boolean; picking: boolean; setPicking: (on: boolean) => void;
+}) {
   const groups = REACTIONS.map((e) => ({ e, by: reactions.filter((r) => r.emoji === e) })).filter((g) => g.by.length);
   const react = (e: string) => {
     setPicking(false);
     void rooms.react(room, message, e).catch((er) => toast.error(errMsg(er)));
   };
-  if (!groups.length && !picking) return canReact ? <button className="mt-0.5 hidden text-faint group-hover:inline-block hover:text-fg" title="React" onClick={() => setPicking(true)}><SmilePlus className="size-3.5" /></button> : null;
+  if (!groups.length && !picking) return null;
   return (
     <div className="mt-1 flex flex-wrap items-center gap-1">
       {groups.map((g) => (
@@ -87,6 +89,7 @@ export function ThreadPanel({ room, view, messages, pins, reactions, files, onOp
   const [dragging, setDragging] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [picking, setPicking] = useState<string | null>(null);
   const [decisionsOpen, setDecisionsOpen] = useState(true);
   const running = useRooms((s) => s.agents[room]) ?? view.agentRunning;
   const agentError = useRooms((s) => s.agentErrors[room]);
@@ -171,6 +174,7 @@ export function ThreadPanel({ room, view, messages, pins, reactions, files, onOp
                 <span>{time(m.at)}</span>
                 {isPinned && <span className="flex items-center gap-0.5 text-warn" title="Pinned as a decision"><PinIcon className="size-3" />decision</span>}
                 <span className="ml-auto hidden items-center gap-1.5 group-hover:flex">
+                  {!view.summary.removed && <button className="hover:text-fg" title="React" onClick={() => setPicking(m.id)}><SmilePlus className="size-3.5" /></button>}
                   {!view.summary.removed && <button className="hover:text-fg" title="Reply" onClick={() => setReplyTo(m)}><Reply className="size-3.5" /></button>}
                   {canEdit && <button className="hover:text-fg" title={isPinned ? "Unpin" : "Pin as a decision"} onClick={() => pin(m, !isPinned)}><PinIcon className={clsx("size-3.5", isPinned && "text-warn")} /></button>}
                 </span>
@@ -182,7 +186,8 @@ export function ThreadPanel({ room, view, messages, pins, reactions, files, onOp
                 </button>
               )}
               <Rich text={m.text} handles={handles} files={files} onOpen={onOpen} />
-              <Reactions room={room} message={m.id} reactions={reactions.filter((r) => r.message === m.id)} me={view.me} canReact={!view.summary.removed} />
+              <Reactions room={room} message={m.id} reactions={reactions.filter((r) => r.message === m.id)} me={view.me} canReact={!view.summary.removed}
+                picking={picking === m.id} setPicking={(on) => setPicking(on ? m.id : null)} />
             </div>
           );
         })}
@@ -203,12 +208,12 @@ export function ThreadPanel({ room, view, messages, pins, reactions, files, onOp
           </div>
         )}
         <div className="flex flex-wrap gap-1">
-          {[...new Set(["@agents", ...Object.values(view.handles)])].map((h) => (
+          {[...new Set(["@agents", ...Object.values(view.handles).sort()])].map((h) => (
             <button key={h} onClick={() => mention(h)} className="flex items-center gap-0.5 rounded bg-accent/10 px-1.5 py-px text-[11px] text-accent hover:bg-accent/20" title={h === "@agents" ? "Wake every agent in the room" : `Wake ${h}`}>
               <Bot className="size-3" />{h.slice(1)}
             </button>
           ))}
-          {[...new Set(["@everyone", ...Object.entries(view.people ?? {}).filter(([id]) => id !== view.me).map(([, h]) => h)])].map((h) => (
+          {[...new Set(["@everyone", ...Object.entries(view.people ?? {}).filter(([id]) => id !== view.me).map(([, h]) => h).sort()])].map((h) => (
             <button key={h} onClick={() => mention(h)} className="flex items-center gap-0.5 rounded bg-hover px-1.5 py-px text-[11px] text-muted hover:text-fg" title={h === "@everyone" ? "Tell everyone in the room" : `Tell ${h.slice(1)}: they're notified`}>
               <AtSign className="size-3" />{h.slice(1)}
             </button>
