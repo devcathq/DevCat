@@ -12,6 +12,15 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Agents can do much more in DevCat:** Claude Code, Codex, Cursor, Gemini CLI (through Sync MCP) and the DevCat
+  Agent can now connect your VPNs and tunnels, set up new ones from a `.ovpn` / WireGuard file, add connections (from
+  a project's `.env`, say), work with Docker, RabbitMQ and more of Kubernetes (events, metrics, Helm, scale, restart,
+  apply), export, import, back up and restore databases, read your query history, schedule DevCat Agent jobs and read
+  your ticket boards. DevCat holds them to your settings: each connection's **AI / MCP access** as before, and now
+  one for each VPN and tunnel too (**Off**, **Read & connect**, **Full**). Connections an agent adds start at
+  read-only access, VPN configs from an agent can't run scripts, and secrets stay hidden. With DevCat open, these
+  calls run in DevCat, so a VPN it connects works for the agent. See **What agents can do** and the new
+  **walkthrough** in the docs.
 - **Delete a project from the project menu:** the menu at the top left has **Delete project**, so you can remove a
   project without finding it in the Connections sidebar. DevCat asks first, and the project's connections are kept (#107).
 - **File names with spaces are clickable in terminals and Claude Code tabs:** a path like

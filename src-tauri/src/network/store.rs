@@ -273,6 +273,7 @@ pub mod tests {
             vpn_password: None,
             summary: None,
             options: Default::default(),
+            mcp_access: None,
         }
     }
 

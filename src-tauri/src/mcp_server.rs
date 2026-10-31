@@ -80,8 +80,12 @@ pub fn main(args: &[String]) -> i32 {
     crate::secrets::follow_data_dir(&dir);
     crate::network::init(dir.clone());
     crate::network::set_passive();
+    // with DevCat open, tool calls run there (agent_bridge.rs)
+    crate::agent_bridge::use_from(dir.clone());
     crate::memory::init(dir.clone());
     crate::mcp_audit::init(dir.clone());
+    // boards are listed here; they're worked in the open DevCat
+    crate::tickets::init_reading(dir.clone());
     crate::state::init(dir);
     // Claude's newest memories reach this session, even with DevCat's window closed
     crate::memory::claude::auto();
@@ -96,19 +100,47 @@ pub struct Server {
     folder: Option<PathBuf>,
     /// The agent, from its `initialize` (memories record who wrote them).
     client: Mutex<String>,
+    /// The tool names the agent was last given (`tools/list`), to tell it when they change.
+    listed: Mutex<Option<Vec<String>>>,
 }
 
 impl Server {
     pub fn new(scope: Scope, folder: Option<PathBuf>) -> Server {
-        Server { scope, folder, client: Mutex::new("an agent".into()) }
+        Server { scope, folder, client: Mutex::new("an agent".into()), listed: Mutex::new(None) }
     }
 
-    /// Memory tools, then the connection tools for this folder.
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        let mut tools = crate::memory::tools::for_scope(&self.scope, &self.client.lock());
-        tools.extend(agent_tools::for_scope(&self.scope));
-        tools
+        tools_for(&self.scope, &self.client.lock())
     }
+
+    fn names(&self) -> Vec<String> {
+        self.tools().iter().map(|t| t.spec().name).collect()
+    }
+
+    /// Whether the tools differ from the ones the agent was last given (a call added the first
+    /// Docker connection, say, which brings the Docker tools): the agent is told to list them
+    /// again. Remembers the new set.
+    fn tools_changed(&self) -> bool {
+        let now = self.names();
+        let mut listed = self.listed.lock();
+        match listed.as_ref() {
+            Some(before) if *before != now => {
+                *listed = Some(now);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// What `devcat mcp` serves an agent (`client`) working in `scope`: memory, then DevCat's tools
+/// for the folder (connections, networks, jobs, ...), then notes. The open DevCat builds the
+/// same list for the calls `devcat mcp` hands it (`agent_bridge.rs`).
+pub(crate) fn tools_for(scope: &Scope, client: &str) -> Vec<Arc<dyn Tool>> {
+    let mut tools = crate::memory::tools::for_scope(scope, client);
+    tools.extend(agent_tools::for_scope(scope));
+    tools.extend(crate::agent_notes::for_scope(scope));
+    tools
 }
 
 /// The agent's name as memories record it.
@@ -171,8 +203,13 @@ async fn serve(server: Server) {
         for m in msg.as_array().cloned().unwrap_or_else(|| vec![msg]) {
             let (server, tx) = (server.clone(), tx.clone());
             tokio::spawn(async move {
+                let is_call = m.get("method").and_then(Value::as_str) == Some("tools/call");
                 if let Some(reply) = handle(&server, m).await {
                     let _ = tx.send(reply);
+                }
+                // e.g. the first Docker connection was added: its tools are there now
+                if is_call && server.tools_changed() {
+                    let _ = tx.send(json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" }));
                 }
             });
         }
@@ -195,14 +232,18 @@ async fn handle(server: &Server, msg: Value) -> Option<Value> {
                 id,
                 json!({
                     "protocolVersion": version,
-                    "capabilities": { "tools": { "listChanged": false }, "resources": { "listChanged": false } },
+                    "capabilities": { "tools": { "listChanged": true }, "resources": { "listChanged": false } },
                     "serverInfo": { "name": "devcat", "title": "DevCat connections and memory", "version": env!("DEVCAT_VERSION") },
                     "instructions": instructions(server),
                 }),
             )
         }
         "ping" => result(id, json!({})),
-        "tools/list" => result(id, json!({ "tools": server.tools().iter().map(|t| tool_json(t.as_ref())).collect::<Vec<_>>() })),
+        "tools/list" => {
+            let tools = server.tools();
+            *server.listed.lock() = Some(tools.iter().map(|t| t.spec().name).collect());
+            result(id, json!({ "tools": tools.iter().map(|t| tool_json(t.as_ref())).collect::<Vec<_>>() }))
+        }
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let input = params.get("arguments").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
@@ -234,7 +275,15 @@ async fn logged(server: &Server, what: &str, name: &str, input: Value) -> ToolOu
     let tool = server.tools().into_iter().find(|t| t.spec().name == name);
     let detail = tool.as_ref().and_then(|t| crate::mcp_audit::short(&t.summary(&input)));
     let out = match tool {
-        Some(t) => call(t, input.clone()).await,
+        Some(t) => {
+            // in the open DevCat if there is one (networks, jobs and ticket runs live there)
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let client = server.client.lock().clone();
+            match crate::agent_bridge::call(&server.scope, &client, name, &input, &cwd, t.timeout(&input)).await {
+                Some(out) => out,
+                None => call(t, input.clone()).await,
+            }
+        }
         None => ToolOutput::err(format!("No DevCat tool called \"{name}\" here (no connection of that kind for this folder?).")),
     };
     crate::mcp_audit::log(&crate::mcp_audit::Entry {
@@ -324,10 +373,13 @@ fn instructions(server: &Server) -> String {
 fn connections(scope: &Scope) -> String {
     let v = agent_tools::view(scope);
     let mut s = String::from(
-        "DevCat holds the user's database, Redis, MongoDB and Kubernetes connections (with their passwords, VPNs and read-only settings). \
-         Whenever a task needs data, a schema or cluster state from one of them, use these tools instead of asking for credentials, \
-         reading .env files or running psql / mysql / redis-cli / kubectl yourself: `devcat_connections` lists them, `db_schema` reads \
-         tables and columns, `db_query` runs SQL / MongoDB shell / Redis commands, `k8s_get` and `k8s_logs` read clusters. \
+        "DevCat holds the user's database, Redis, MongoDB, Kubernetes, Docker and RabbitMQ connections (with their passwords, VPNs and read-only settings) \
+         and their network profiles (OpenVPN / WireGuard VPNs, SSH tunnels, Kubernetes port-forwards). \
+         Whenever a task needs data, a schema, cluster, container or queue state from one of them, use these tools instead of asking for credentials, \
+         reading .env files or running psql / mysql / redis-cli / kubectl / docker / openvpn yourself: `devcat_connections` lists them, `db_schema` reads \
+         tables and columns, `db_query` runs SQL / MongoDB shell / Redis commands, `k8s_*` reads and manages clusters, `docker_*` engines, `rmq_*` brokers, \
+         `net_status` / `net_connect` the VPNs and tunnels (DevCat also connects the one a connection needs by itself), `devcat_connection_add` and \
+         `net_profile_save` set new ones up when the user asks. \
          Prefer reads (SELECT with a LIMIT). Changing data works only where the user allowed it.",
     );
     if let Some(p) = &v.project {
@@ -402,7 +454,7 @@ mod tests {
             db("access-locked", json!({ "mcpAccess": "full", "readOnly": true })),
         ]);
         std::fs::write(data.join("connections.json"), conns.to_string()).unwrap();
-        crate::state::init(data);
+        crate::state::init(data.clone());
         let server = Server::new(Scope { mcp: true, ..Scope::default() }, None);
         handle(&server, json!({ "id": 0, "method": "initialize", "params": { "clientInfo": { "name": "claude-code" } } })).await.unwrap();
         let call = |name: &str, args: Value| handle(&server, json!({ "id": 1, "method": "tools/call", "params": { "name": name, "arguments": args } }));
@@ -434,8 +486,35 @@ mod tests {
         let missing = handle(&server, json!({ "id": 4, "method": "resources/read", "params": { "uri": "devcat://conn/access-off/schema" } })).await.unwrap();
         assert_eq!(missing["error"]["code"], -32002);
 
+        // DevCat's own tools: listed for what the folder has, and working over MCP
+        let tools = handle(&server, json!({ "id": 5, "method": "tools/list" })).await.unwrap();
+        let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+        for want in ["devcat_connection_add", "devcat_connection_test", "db_ddl", "db_export", "db_history", "net_status", "net_profile_save", "agent_jobs", "devcat_notes"] {
+            assert!(names.contains(&want), "{want} missing: {names:?}");
+        }
+        assert!(!names.iter().any(|n| n.starts_with("docker_") || n.starts_with("rmq_") || n.starts_with("k8s_")), "no tools for kinds the folder hasn't: {names:?}");
+        assert!(text(&call("net_status", json!({})).await.unwrap()).contains("no DevCat network profiles"));
+        let export = data.join("t.csv");
+        let exported = call("db_export", json!({ "connection": "access-ro", "table": "t", "format": "csv", "path": export })).await.unwrap();
+        assert!(text(&exported).contains("Wrote 0 rows") || text(&exported).contains("no such table"), "{exported}");
+        let exported = call("db_export", json!({ "connection": "access-rw", "table": "t", "format": "csv", "path": export })).await.unwrap();
+        assert_eq!(exported["result"]["isError"], false, "an export only reads: {exported}");
+        assert!(std::fs::read_to_string(&export).unwrap().contains('7'));
+        let added = call("devcat_connection_add", json!({ "name": "access-new", "kind": "sqlite", "file": data.join("new.db"), "options": { "create": "true" } })).await.unwrap();
+        assert_eq!(added["result"]["isError"], false, "{added}");
+        let listed = text(&call("devcat_connections", json!({})).await.unwrap());
+        assert!(listed.contains("access-new (sqlite) id") && listed.lines().any(|l| l.starts_with("- access-new") && l.ends_with("(agents read only)")), "what an agent adds, agents only read: {listed}");
+        let refused = call("db_import", json!({ "connection": "access-new", "table": "x", "format": "csv", "path": export })).await.unwrap();
+        assert!(text(&refused).contains("only lets agents read"), "{refused}");
+        // the first Docker connection brings the Docker tools: the agent is told to list them again
+        assert!(!server.tools_changed(), "nothing new since tools/list");
+        let docker = call("devcat_connection_add", json!({ "name": "access-docker", "kind": "docker", "test": false })).await.unwrap();
+        assert_eq!(docker["result"]["isError"], false, "{docker}");
+        assert!(server.tools_changed() && !server.tools_changed(), "changed once");
+        assert!(server.names().iter().any(|n| n == "docker_list"));
+
         let log: Vec<_> = crate::mcp_audit::tail(2000).into_iter().filter(|e| e.connection.as_deref().is_some_and(|c| c.starts_with("access-"))).collect();
-        let ro = log.iter().find(|e| e.connection.as_deref() == Some("access-ro")).unwrap();
+        let ro = log.iter().find(|e| e.connection.as_deref() == Some("access-ro") && e.tool == "db_query").unwrap();
         assert_eq!((ro.client.as_str(), ro.tool.as_str(), ro.ok), ("claude-code", "db_query", false));
         assert!(ro.detail.as_deref().unwrap().contains("CREATE TABLE t") && ro.error.as_deref().unwrap().contains("only lets agents read"), "{ro:?}");
         assert!(log.iter().any(|e| e.tool == "read devcat://conn/access-rw/schema" && e.ok));

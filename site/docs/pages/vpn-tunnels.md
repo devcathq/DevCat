@@ -30,6 +30,22 @@ Click a profile and **Connect**. Its status, log (**Show logs**) and a live traf
 In a database connection's form, set **Network** to a VPN, tunnel or port-forward. When you open that connection,
 DevCat connects the network first. See [Database connections](connections.md).
 
+## AI / MCP access
+
+Agents (Claude Code, Codex… through [Sync MCP](sync-mcp.md), and the DevCat Agent) can see and connect your VPNs
+and tunnels, and set up new ones from a file. Each profile's **AI / MCP access** (edit the profile) decides how far
+they go:
+
+| Access | What agents can do |
+| --- | --- |
+| **Off** | Nothing: the profile is hidden from them. A connection through it works for them only once you've connected it |
+| **Read & connect** | See its status and log, and connect it (DevCat also does when a connection needs it). The default |
+| **Full** | Also disconnect it, edit it and delete it |
+
+Profiles an agent adds start at **Read & connect**, and agents never change a profile's access. A config an agent
+writes may not run scripts or programs (OpenVPN `up`, `down`, `plugin`, `script-security`…; WireGuard `PostUp`,
+`PreDown`…). See [What agents can do](agent-tools.md).
+
 ## What you need installed
 
 - **Windows:** nothing up front. DevCat includes the official OpenVPN and WireGuard installers and offers to install

@@ -351,6 +351,9 @@ export interface NetProfile {
   vpnPassword?: string | null;
   summary?: string | null;
   options: Record<string, string>;
+  /** What agents may do with it: off hides it, read (default) shows its status and lets them
+   *  connect it, full also disconnect, edit and delete it. */
+  mcpAccess?: McpAccess | null;
 }
 
 export interface NetProfileFull { profile: NetProfile; configText?: string | null }

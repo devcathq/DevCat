@@ -20,7 +20,7 @@ pub mod traffic;
 mod wireguard;
 
 use crate::error::{AppError, AppResult};
-use crate::models::{ConnectionConfig, SshConfig};
+use crate::models::{ConnectionConfig, McpAccess, SshConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -86,6 +86,18 @@ pub struct NetProfile {
     /// Extra options (e.g. "dns": "true" for WireGuard, "ovpnArgs": extra CLI args).
     #[serde(default)]
     pub options: HashMap<String, String>,
+    /// What agents may do with it (see `agent_tools/network.rs`): off hides it, read (the
+    /// default) shows its status and logs and lets them connect it, full also disconnect, edit
+    /// and delete it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_access: Option<McpAccess>,
+}
+
+impl NetProfile {
+    /// What agents may do with this profile.
+    pub fn agent_access(&self) -> McpAccess {
+        self.mcp_access.unwrap_or(McpAccess::Read)
+    }
 }
 
 /// Profile plus its VPN config text (for editing).
@@ -152,6 +164,39 @@ static PASSIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 
 pub fn set_passive() {
     PASSIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether this process leaves networks to the app (`devcat mcp`): its own status of them says
+/// nothing about what's connected.
+pub fn passive() -> bool {
+    PASSIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Every saved profile (without secrets); none before `init`.
+pub fn profiles() -> Vec<NetProfile> {
+    store().and_then(|s| s.load_all()).unwrap_or_default()
+}
+
+/// One saved profile (without secrets).
+pub fn profile(id: &str) -> Option<NetProfile> {
+    profiles().into_iter().find(|p| p.id == id)
+}
+
+/// Tell the windows the saved profiles changed (an agent added or edited one).
+pub fn profiles_changed() {
+    crate::events::emit("net-profiles", serde_json::json!({}));
+}
+
+/// The live status of one profile (idle when it never connected).
+pub fn status_of(id: &str) -> NetStatus {
+    registry::status(id)
+}
+
+/// What in VPN config text an agent wrote would run programs, load code or write files with
+/// admin rights (what the passwordless helper refuses), if anything: agents' configs are held to
+/// that whichever way DevCat later connects them (helper, password prompt or UAC).
+pub fn agent_config_problem(kind: NetKind, text: &str) -> Option<String> {
+    helper::agent_config_problem(kind == NetKind::Openvpn, text)
 }
 
 /// Called once from `lib.rs` setup.
@@ -347,6 +392,7 @@ pub async fn net_import(path: String) -> AppResult<NetProfileFull> {
         vpn_password: None,
         summary: None,
         options: HashMap::new(),
+        mcp_access: None,
     };
     let config_text = match kind {
         NetKind::Openvpn => {

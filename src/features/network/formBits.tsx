@@ -7,10 +7,10 @@ import { readTextFile } from "@tauri-apps/plugin-fs";
 import { toast } from "sonner";
 import { Button, Checkbox, IconButton, Input, Select, Textarea } from "../../components/ui";
 import { errMsg } from "../../lib/api";
-import type { NetProfile } from "../../lib/types";
+import type { McpAccess, NetProfile } from "../../lib/types";
 import { useConnections } from "../../store/connections";
 import { COLOR_PRESETS } from "../connections/dialog/sections";
-import { Row } from "../connections/dialog/formBits";
+import { Row, Segmented } from "../connections/dialog/formBits";
 import { createProject } from "../connections/tree/projectActions";
 
 export function SectionTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {
@@ -109,6 +109,28 @@ export function IdentityRows({ p, set, namePlaceholder }: { p: NetProfile; set: 
       <Row label="" hint="Connect automatically when DevCat starts.">
         <Checkbox label="Auto-connect" checked={p.autoConnect} onChange={(v) => set({ autoConnect: v })} />
       </Row>
+      <AiAccessRow p={p} set={set} />
     </>
+  );
+}
+
+const AI_ACCESS: { value: McpAccess; label: string }[] = [
+  { value: "off", label: "Off" },
+  { value: "read", label: "Read & connect" },
+  { value: "full", label: "Full" },
+];
+
+/** AI / MCP access: what agents (Claude Code, Codex… over MCP, and DevCat Agent) may do with the profile. */
+function AiAccessRow({ p, set }: { p: NetProfile; set: (patch: Partial<NetProfile>) => void }) {
+  const value: McpAccess = p.mcpAccess ?? "read";
+  const hint = value === "off"
+    ? "Hidden from every agent; connections through it work for them only once you've connected it."
+    : value === "read"
+      ? "Agents see its status and logs and may connect it (DevCat also does when a connection needs it)."
+      : "Agents may also disconnect it, edit it and delete it.";
+  return (
+    <Row label="AI / MCP access" hint={<>{hint} Every call is logged under Sync MCP → Activity.</>}>
+      <div><Segmented value={value} options={AI_ACCESS} onChange={(v) => set({ mcpAccess: v })} /></div>
+    </Row>
   );
 }

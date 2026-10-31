@@ -170,6 +170,11 @@ fn check(job: &Job) -> AppResult<()> {
     }
 }
 
+/// Whether jobs are managed in this process (the app; not `devcat serve` or `devcat mcp`).
+pub fn ready() -> bool {
+    FILE.get().is_some()
+}
+
 /// Set up the jobs file and start the scheduler.
 pub fn init(data_dir: PathBuf) {
     if FILE.set(data_dir.join("agent-jobs.json")).is_err() {
