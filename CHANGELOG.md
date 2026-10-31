@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Rooms:** hovering a message no longer pushes the thread down by a line. **React** now sits in the message's
+  hover toolbar, next to **Reply** and **Pin**. The agent and people chips above the message box are listed
+  alphabetically.
+
 ## 0.18.0 - 2026-10-30
 
 - **Ask DevCat Agent about a connection:** right-click a database, Redis, MongoDB or Kubernetes connection (or use
