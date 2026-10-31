@@ -76,18 +76,17 @@ select option, select optgroup { background-color: var(--solid-panel, var(--colo
 .blame-age-6 { background: #b06c8a; } .blame-age-7 { background: #cf7a63; } .blame-age-8 { background: #e48f3f; }
 .blame-age-9 { background: #f5a524; } .blame-age-now { background: #4ade80; }
 
-/* Shimmering text ("working" on AI workspace tabs). */
-.shimmer-text {
-  color: transparent;
-  background: linear-gradient(90deg, var(--color-accent) 0%, var(--color-accent) 35%, #fff4d6 50%, var(--color-accent) 65%, var(--color-accent) 100%);
-  background-size: 250% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  animation: shimmer-text 1.8s linear infinite;
+/* Pulsing "working" on AI workspace tabs. It runs for as long as an agent works, so it animates
+   opacity only, which the GPU does on its own. Animating anything else repaints the window on
+   every frame: the shimmer this replaced (a sliding background) cost about 15% of a core on a
+   160 Hz screen. Endless animations elsewhere follow the same rule (see AGENTS.md): opacity or
+   transform, never on an <svg> (spin icons with <Spin>, components/ui). */
+.working-text {
+  color: var(--color-accent);
+  animation: working-text 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
-@keyframes shimmer-text {
-  from { background-position: 100% 0; }
-  to { background-position: -150% 0; }
+@keyframes working-text {
+  50% { opacity: 0.45; }
 }
 
 /* Rooms: a part an agent claimed, and a suggested change waiting for a person (RoomTab). */

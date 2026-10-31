@@ -1,6 +1,6 @@
 // Small set of shared UI primitives. Keep them dumb and composable.
 import clsx from "clsx";
-import { Loader2, X } from "lucide-react";
+import { Loader2, X, type LucideIcon } from "lucide-react";
 import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 
 type Variant = "primary" | "ghost" | "danger" | "default";
@@ -21,7 +21,7 @@ export function Button({ variant = "default", size = "md", className, loading, c
         className,
       )}
     >
-      {loading && <Loader2 className="size-3.5 animate-spin" />}
+      {loading && <Spin icon={Loader2} className="size-3.5" />}
       {children}
     </button>
   );
@@ -82,7 +82,19 @@ export function Checkbox({ label, checked, onChange }: { label: string; checked:
 }
 
 export function Spinner({ className }: { className?: string }) {
-  return <Loader2 className={clsx("size-4 animate-spin text-muted", className)} />;
+  return <Spin icon={Loader2} className={clsx("size-4 text-muted", className)} />;
+}
+
+/** A spinning icon. Use this, never `animate-spin` on an icon: WebView2 can't hand a spinning <svg>
+ *  to the GPU, so it redraws the window on every frame (about 10% of a core on a 160 Hz screen) for
+ *  as long as the icon shows. The span spins instead, and the icon fills it, so `className` (size,
+ *  color, margins, position) goes on the span. `spinning={false}` shows the icon still. */
+export function Spin({ icon: Icon, spinning = true, className }: { icon: LucideIcon; spinning?: boolean; className?: string }) {
+  return (
+    <span className={clsx("flex", spinning && "animate-spin", className)}>
+      <Icon className="size-full" />
+    </span>
+  );
 }
 
 export function Empty({ icon, title, children }: { icon?: ReactNode; title: string; children?: ReactNode }) {

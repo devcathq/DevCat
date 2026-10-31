@@ -3,14 +3,13 @@ import {
   useNodesState, useReactFlow, type Edge, type NodeMouseHandler,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import clsx from "clsx";
 import { toPng, toSvg } from "html-to-image";
 import {
   ArrowDownUp, ArrowLeftRight, Download, Filter, Image as ImageIcon, LayoutGrid, Maximize, RefreshCw, Search, Workflow, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Button, Empty, ErrorBox, IconButton, Input, Spinner, Toolbar } from "../../components/ui";
+import { Button, Empty, ErrorBox, IconButton, Input, Spinner, Toolbar, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { SchemaSnapshot, TableStructure } from "../../lib/types";
 import type { Tab } from "../../tabs/types";
@@ -307,7 +306,7 @@ function ErDiagram({ tab }: { tab: ErTab }) {
         <span className="text-[11px] text-faint">{visibleTables.length}/{model.tables.length} tables · {edges.length} relations</span>
         <Button size="sm" variant="ghost" onClick={() => exportImage("png")} disabled={exporting || !nodes.length}><ImageIcon className="size-3.5" />PNG</Button>
         <Button size="sm" variant="ghost" onClick={() => exportImage("svg")} disabled={exporting || !nodes.length}><Download className="size-3.5" />SVG</Button>
-        <IconButton title="Reload schema" onClick={load}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+        <IconButton title="Reload schema" onClick={load}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
       </Toolbar>
       <div className="relative flex min-h-0 flex-1">
         {showFilter && (

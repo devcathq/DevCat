@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { AiTerminalIcon } from "../../components/ui/AppIcons";
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
-import { Button, ErrorBox, IconButton } from "../../components/ui";
+import { Button, ErrorBox, IconButton, Spin } from "../../components/ui";
 import { api } from "../../lib/api";
 import { useTabs } from "../../store/tabs";
 import type { GitView, Tab } from "../../tabs/types";
@@ -96,7 +96,7 @@ export default function GitTab({ tab }: { tab: GitTabT }) {
         <RemoteButtons repo={repo} dlg={dlg} />
         <div className="mx-0.5 h-4 w-px shrink-0 bg-line" />
         <RepoMenu repo={repo} />
-        <IconButton title="Refresh" onClick={() => void refreshRepo(repo)}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+        <IconButton title="Refresh" onClick={() => void refreshRepo(repo)}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
       </div>
       {refs?.operation && <OperationBanner repo={repo} op={refs.operation} dlg={dlg} onResolve={() => setView("changes")} />}
       <div className="relative min-h-0 flex-1">

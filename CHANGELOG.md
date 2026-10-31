@@ -12,6 +12,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Less CPU while agents work or something loads** (#119): the "working" label on AI workspace tabs now pulses
+  instead of shimmering, and spinners (loading, refreshing, the ✦ next to "working") turn on the GPU. Both used to
+  make the window redraw on every frame for as long as they showed: on a 160 Hz screen, about 18% of a CPU core
+  while an agent worked and 10% for a single spinner, now about 3% either way. The SFTP progress bar for a transfer
+  of unknown size no longer lays the page out again on every frame either.
 - **Agents can do much more in DevCat:** Claude Code, Codex, Cursor, Gemini CLI (through Sync MCP) and the DevCat
   Agent can now connect your VPNs and tunnels, set up new ones from a `.ovpn` / WireGuard file, add connections (from
   a project's `.env`, say), work with Docker, RabbitMQ and more of Kubernetes (events, metrics, Helm, scale, restart,

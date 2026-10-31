@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { AiTerminalIcon } from "../../components/ui/AppIcons";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { Button, ErrorBox, IconButton } from "../../components/ui";
+import { Button, ErrorBox, IconButton, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { GitRepo } from "../../lib/types";
 import { useTabs } from "../../store/tabs";
@@ -259,7 +259,7 @@ function RepoList({ root }: { root: string }) {
           )}
         </div>
         <IconButton title="Rescan" onClick={() => void scan()} className="size-5.5">
-          <RefreshCw className={clsx("size-3.5", loading && "animate-spin")} />
+          <Spin icon={RefreshCw} spinning={loading} className="size-3.5" />
         </IconButton>
       </div>
       {repos && (
@@ -271,7 +271,7 @@ function RepoList({ root }: { root: string }) {
         {error ? (
           <ErrorBox error={error} />
         ) : !repos ? (
-          <div className="flex items-center gap-2 px-3 py-2 text-[12px] text-faint"><Loader2 className="size-3.5 animate-spin" />Scanning…</div>
+          <div className="flex items-center gap-2 px-3 py-2 text-[12px] text-faint"><Spin icon={Loader2} className="size-3.5" />Scanning…</div>
         ) : repos.length === 0 ? (
           <div className="px-3 py-4 text-center text-[12px] text-muted">
             No git repositories found within {depth} levels of {basename(root)}.
@@ -322,7 +322,7 @@ function RepoRow({ row, active, collapsed, busy, onToggle, onMenu }: {
           {r.isSubmodule && <span className="shrink-0 rounded border border-info/30 px-1 text-[9px] font-semibold tracking-wide text-info uppercase" title="Submodule or linked worktree">sub</span>}
           {outside && <span className="shrink-0 text-[10px] text-faint" title="This repository contains the scanned folder">enclosing</span>}
           <span className="flex-1" />
-          {busy && <Loader2 className="size-3 shrink-0 animate-spin text-muted" />}
+          {busy && <Spin icon={Loader2} className="size-3 shrink-0 text-muted" />}
           {r.error && <AlertTriangle className="size-3 shrink-0 text-danger" />}
           {r.changes > 0 && (
             <span className="shrink-0 rounded bg-warn/15 px-1 font-mono text-[10px] font-semibold text-warn" title={`${r.changes} changed file${r.changes === 1 ? "" : "s"}`}>

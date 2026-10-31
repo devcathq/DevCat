@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { AlertTriangle, ChevronRight, Folder, FolderOpen, Loader2, Lock, Plus, Star } from "lucide-react";
 import { memo, type MouseEvent } from "react";
+import { Spin } from "../../../components/ui";
 import { KindIcon } from "../../../components/ui/KindIcon";
 import { NetBadge } from "../../network/NetBadge";
 import { ForwardBadge } from "../../ssh/ForwardBadge";
@@ -27,7 +28,7 @@ interface Props {
 }
 
 function Chevron({ expanded, visible, loading, onClick }: { expanded: boolean; visible: boolean; loading?: boolean; onClick: () => void }) {
-  if (loading) return <span className="flex size-4 shrink-0 items-center justify-center"><Loader2 className="size-3 animate-spin text-muted" /></span>;
+  if (loading) return <span className="flex size-4 shrink-0 items-center justify-center"><Spin icon={Loader2} className="size-3 text-muted" /></span>;
   if (!visible) return <span className="size-4 shrink-0" />;
   return (
     <span

@@ -11,7 +11,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { toast } from "sonner";
-import { IconButton, Input } from "../../components/ui";
+import { IconButton, Input, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import { remoteHost, remoteParts, remoteUri } from "../../lib/remotePath";
 import type { FileEntry } from "../../lib/types";
@@ -357,7 +357,7 @@ function FilePane({ side, title, dir, error, setDir, reload, showHidden, active,
           <Input className="h-6! font-mono text-[11px]!" value={pathText} onChange={(e) => setPathText(e.target.value)} disabled={!dir} />
         </form>
         <IconButton title="Refresh (F5)" disabled={!dir} onClick={refresh}>
-          {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+          {loading ? <Spin icon={Loader2} className="size-3.5" /> : <RefreshCw className="size-3.5" />}
         </IconButton>
         <IconButton title="New folder" disabled={!dir} onClick={() => void newFolder()}><FolderPlus className="size-3.5" /></IconButton>
         <IconButton
@@ -375,7 +375,7 @@ function FilePane({ side, title, dir, error, setDir, reload, showHidden, active,
         {shownError ? (
           <div className="selectable m-3 whitespace-pre-wrap rounded-md border border-danger/30 bg-danger/10 px-3 py-2 font-mono text-[11px] text-danger">{shownError}</div>
         ) : !entries ? (
-          <div className="flex h-24 items-center justify-center"><Loader2 className="size-4 animate-spin text-muted" /></div>
+          <div className="flex h-24 items-center justify-center"><Spin icon={Loader2} className="size-4 text-muted" /></div>
         ) : (
           <>
             {visible.map((e) => (
@@ -434,7 +434,7 @@ function Transfers({ jobs, onClear }: { jobs: Job[]; onClear: () => void }) {
           return (
             <div key={j.id} className="flex items-center gap-3 border-b border-line/60 px-3 py-1.5 text-[12px]">
               <span className="w-4 shrink-0">
-                {j.state === "running" ? <Loader2 className="size-3.5 animate-spin text-accent" />
+                {j.state === "running" ? <Spin icon={Loader2} className="size-3.5 text-accent" />
                   : j.state === "done" ? <Check className="size-3.5 text-ok" />
                   : <X className={clsx("size-3.5", j.state === "failed" ? "text-danger" : "text-faint")} />}
               </span>

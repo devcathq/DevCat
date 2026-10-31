@@ -146,3 +146,19 @@ so what comes from a room is untrusted input. Keep these rules:
   way into or out of a room records itself there. Who *edited* comes from the document's history (`doc.edits`):
   an agent's changes must be committed with `commit_by` so they show as the agent.
 - Rooms are desktop-only, like the SSH workbench: keep them out of the phone dispatcher.
+
+## Animations that run for a long time
+
+A "working" label or a spinner can stay on screen for hours, and the window draws every frame of it (160 times a
+second on a 160 Hz screen). An animation the GPU can't run on its own makes the page restyle and repaint on every
+one of those frames: about 10% of a CPU core for a single spinner in WebView2. So an endless animation:
+
+- **animates only `opacity` or `transform`.** Not `background-position` (the old "working" shimmer), `left`,
+  `width`, `height` or colors; moving `left` also lays the page out again on every frame.
+- **is never on an `<svg>`.** WebView2 runs a spinning svg on the main thread. Spin icons with `<Spin icon={…}>`
+  (`components/ui`), which turns a span around the icon; `Spinner` uses it. Don't put `animate-spin` on an icon.
+- **runs on the page, not in JavaScript.** No `requestAnimationFrame` loops or fast timers for something that
+  should keep moving.
+
+To check one, read Chromium's counters for the page over CDP (`Performance.getMetrics`): while it shows,
+`RecalcStyleCount` should barely rise.

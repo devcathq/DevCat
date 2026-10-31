@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { forwardRef, memo, useCallback, useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { toast } from "sonner";
-import { IconButton } from "../../../components/ui";
+import { IconButton, Spin } from "../../../components/ui";
 import { api } from "../../../lib/api";
 import type { FileEntry, GitStatus } from "../../../lib/types";
 import { useTabs } from "../../../store/tabs";
@@ -448,7 +448,7 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
         </IconButton>
         <IconButton title="Collapse all" onClick={collapseAll} className="size-5.5"><ChevronsDownUp className="size-3.5" /></IconButton>
         <IconButton title="Refresh" onClick={refresh} className="size-5.5">
-          <RefreshCw className={clsx("size-3.5", root?.state === "loading" && "animate-spin")} />
+          <Spin icon={RefreshCw} spinning={root?.state === "loading"} className="size-3.5" />
         </IconButton>
       </div>
       {pins.length > 0 && !query && <PinnedList pins={pins} cwd={cwd} activePath={activePath} onMenu={showMenu} />}
@@ -572,7 +572,7 @@ const EntryRow = memo(function EntryRow({ row, selected, active, git, dirty, pin
           onClick={(ev) => { ev.stopPropagation(); onToggle(e.path); }}
         >
           {row.loading
-            ? <Loader2 className="size-3 animate-spin" />
+            ? <Spin icon={Loader2} className="size-3" />
             : <ChevronRight className={clsx("size-3 transition-transform duration-100", row.expanded && "rotate-90")} />}
         </span>
       ) : <span className="size-4 shrink-0" />}

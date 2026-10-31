@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { KeyRound, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Badge, Button, Checkbox, Dialog, ErrorBox, Field, IconButton, Input, Spinner } from "../../components/ui";
+import { Badge, Button, Checkbox, Dialog, ErrorBox, Field, IconButton, Input, Spinner, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { IndexDef, TableRef, TableStructure } from "../../lib/types";
 import { collRef, validateDoc } from "./ejson";
@@ -40,7 +40,7 @@ export function IndexesPanel({ connId, table, readOnly }: { connId: string; tabl
         {data && <Badge>{data.indexes.length}</Badge>}
         <div className="flex-1" />
         <Button size="sm" onClick={() => setCreate(true)} disabled={readOnly}><Plus className="size-3.5" />Create index</Button>
-        <IconButton title="Reload" onClick={load}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+        <IconButton title="Reload" onClick={load}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
       </div>
       {error && <ErrorBox error={error} />}
       {loading && !data && <div className="flex items-center gap-2 text-xs text-muted"><Spinner className="size-3.5" />Loading…</div>}

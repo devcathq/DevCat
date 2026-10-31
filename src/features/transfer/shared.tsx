@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import clsx from "clsx";
 import { CheckSquare, RefreshCw, Search, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { IconButton, Input, Select, Spinner } from "../../components/ui";
+import { IconButton, Input, Select, Spinner, Spin } from "../../components/ui";
 import { KindIcon } from "../../components/ui/KindIcon";
 import { api, errMsg } from "../../lib/api";
 import type { ConnectionConfig, ConnectionKind, TableRef, TreeNode } from "../../lib/types";
@@ -244,7 +244,7 @@ export function TargetPicker({ value, onChange, kinds = SQL_KINDS, label, compac
           </Select>
         )}
         <IconButton title="Reload databases" onClick={() => { dbs.reload(); schemas.reload(); }} disabled={!value.connId}>
-          <RefreshCw className={clsx("size-3.5", (dbs.loading || schemas.loading) && "animate-spin")} />
+          <Spin icon={RefreshCw} spinning={dbs.loading || schemas.loading} className="size-3.5" />
         </IconButton>
       </div>
     </div>
