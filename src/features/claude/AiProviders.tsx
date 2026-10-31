@@ -138,6 +138,9 @@ function useModelList(value: AgentSettings, providerId: string, apiKey: string) 
   return { ...state, reload: () => setNonce((n) => n + 1) };
 }
 
+/** The harness's default (`MAX_STEPS`). */
+const DEFAULT_MAX_STEPS = 60;
+
 /** DevCat Agent: which model API to use, with presets for the common ones. The model itself is
  *  picked in the chat; here it only gets a default once the provider's list is known. */
 function AgentFields({ value, onChange, providerId, apiKey }: { value: AgentSettings; onChange: (a: AgentSettings) => void; providerId: string; apiKey: string }) {
@@ -157,7 +160,7 @@ function AgentFields({ value, onChange, providerId, apiKey }: { value: AgentSett
         <Field label="Provider" hint={preset?.keyHint ?? "Any OpenAI- or Anthropic-compatible API."}>
           <Select value={preset?.label ?? ""} onChange={(e) => {
             const p = AGENT_PRESETS.find((x) => x.label === e.target.value);
-            if (p) onChange({ ...p.settings });
+            if (p) onChange({ ...p.settings, maxSteps: value.maxSteps });
           }}>
             {!preset && <option value="">Custom</option>}
             {AGENT_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}
@@ -185,6 +188,12 @@ function AgentFields({ value, onChange, providerId, apiKey }: { value: AgentSett
           : list.error ? <>Couldn't reach the provider ({list.error}).<button className="text-accent hover:underline" onClick={list.reload}>Try again</button></>
           : null}
       </div>
+      <Field label="Steps per turn" hint={`How many steps (model calls) the agent takes on one message before it pauses and asks you to continue. 0 = no limit. Default ${DEFAULT_MAX_STEPS}.`}>
+        <Input className="w-28 font-mono text-xs" type="number" min={0} step={10} value={value.maxSteps ?? DEFAULT_MAX_STEPS} onChange={(e) => {
+          const n = Math.floor(Number(e.target.value));
+          onChange({ ...value, maxSteps: e.target.value === "" || !Number.isFinite(n) || n < 0 ? null : n });
+        }} />
+      </Field>
     </>
   );
 }

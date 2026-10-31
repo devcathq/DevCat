@@ -581,7 +581,7 @@ function TurnEnd({ item }: { item: Extract<Item, { kind: "end" }> }) {
     return <div className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">{item.error ?? "Something went wrong."}</div>;
   }
   const parts = [
-    item.end === "stopped" ? "Stopped" : item.end === "stepLimit" ? "Paused after many steps. Say “continue” to keep going" : null,
+    item.end === "stopped" ? "Stopped" : item.end === "stepLimit" ? "Paused after many steps. Say “continue” to keep going (set “Steps per turn” in the connection’s settings)" : null,
     item.elapsedMs ? `Took ${fmtDuration(item.elapsedMs)}` : null,
     item.tokens ? `${fmtTokens(item.tokens)} tokens` : null,
   ].filter(Boolean);

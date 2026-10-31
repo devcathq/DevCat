@@ -18,7 +18,8 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
-/// Steps per turn before the agent stops and asks the user to continue.
+/// Default steps per turn before the agent stops and asks the user to continue (see
+/// [`Agent::max_steps`]); helpers always stop here.
 pub const MAX_STEPS: u32 = 60;
 
 /// Share of the context window at which the conversation is summarized before the next step.
@@ -137,7 +138,7 @@ impl Inbox {
 pub enum TurnEnd {
     /// The model answered.
     Answered,
-    /// [`MAX_STEPS`] steps without an answer; the user can say "continue".
+    /// [`Agent::max_steps`] steps without an answer; the user can say "continue".
     StepLimit,
 }
 
@@ -181,6 +182,9 @@ pub struct Agent {
     pub sandbox: bool,
     /// Messages sent while a turn runs (the app keeps a clone to put them in).
     pub inbox: Inbox,
+    /// Steps per turn before it stops with [`TurnEnd::StepLimit`]; 0 = no limit. [`MAX_STEPS`]
+    /// by default.
+    pub max_steps: u32,
     /// Tools the user allowed for the rest of the session.
     allowed: HashSet<String>,
     /// A helper started by `subagent` (that call's id): it only looks, never asks, and starts no
@@ -195,7 +199,7 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(model: Arc<dyn Model>, tools: Registry, policy: Policy, approver: Arc<dyn Approver>, system: String) -> Agent {
-        Agent { model, tools, policy, approver, system, context_window: None, hooks: Arc::default(), sandbox: false, inbox: Inbox::default(), allowed: HashSet::new(), helper: None, started: false, halt: None }
+        Agent { model, tools, policy, approver, system, context_window: None, hooks: Arc::default(), sandbox: false, inbox: Inbox::default(), max_steps: MAX_STEPS, allowed: HashSet::new(), helper: None, started: false, halt: None }
     }
 
     /// Run the hooks of `event` (see [`Hooks::run`]); what they say to the user is sent on. Stop
@@ -310,7 +314,7 @@ impl Agent {
         match &res {
             Err(Error::Cancelled) => session.append(SessionEvent::Interrupted { reason: "Stopped by the user".into() }).await?,
             Err(e) => session.append(SessionEvent::Interrupted { reason: e.to_string() }).await?,
-            Ok(TurnEnd::StepLimit) => session.append(SessionEvent::Interrupted { reason: format!("Stopped after {MAX_STEPS} steps") }).await?,
+            Ok(TurnEnd::StepLimit) => session.append(SessionEvent::Interrupted { reason: format!("Stopped after {} steps", self.max_steps) }).await?,
             Ok(TurnEnd::Answered) => {}
         }
         res
@@ -325,7 +329,12 @@ impl Agent {
         let system = self.system_now();
         // a Stop hook already sent the agent back to work this turn
         let mut stop_hook_active = false;
-        for _ in 0..MAX_STEPS {
+        let mut steps = 0u32;
+        loop {
+            if self.max_steps > 0 && steps >= self.max_steps {
+                return Ok(TurnEnd::StepLimit);
+            }
+            steps += 1;
             // what the user sent meanwhile goes in before the step (after the tool results), past
             // the UserPromptSubmit hooks like a message that starts a turn
             let mut queued = self.inbox.take().into_iter();
@@ -445,7 +454,6 @@ impl Agent {
                 return Err(Error::Hook(why));
             }
         }
-        Ok(TurnEnd::StepLimit)
     }
 
     /// The system prompt for this turn: plan mode adds what it means.
@@ -545,6 +553,7 @@ impl Agent {
                 hooks: self.hooks.clone(),
                 sandbox: self.sandbox,
                 inbox: Inbox::default(),
+                max_steps: MAX_STEPS,
                 allowed: self.allowed.clone(),
                 helper: Some(id.to_string()),
                 started: true,
