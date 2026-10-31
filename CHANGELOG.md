@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Less CPU while agents work or something loads** (#119): the "working" label on AI workspace tabs now pulses
+  instead of shimmering, and spinners (loading, refreshing, the ✦ next to "working") turn on the GPU. Both used to
+  make the window redraw on every frame for as long as they showed: on a 160 Hz screen, about 18% of a CPU core
+  while an agent worked and 10% for a single spinner, now about 3% either way. The SFTP progress bar for a transfer
+  of unknown size no longer lays the page out again on every frame either.
+
 ## 0.18.0 - 2026-10-30
 
 - **Ask DevCat Agent about a connection:** right-click a database, Redis, MongoDB or Kubernetes connection (or use

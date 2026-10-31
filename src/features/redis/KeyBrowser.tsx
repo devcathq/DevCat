@@ -3,7 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { ChevronDown, ChevronRight, Folder, FolderOpen, KeyRound, Plus, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, IconButton, Input, Select, Spinner } from "../../components/ui";
+import { Button, IconButton, Input, Select, Spinner, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { TreeNode } from "../../lib/types";
 import { REDIS_TYPES, cmd, parseScan, replyError, typeMeta } from "./util";
@@ -198,7 +198,7 @@ export function KeyBrowser({ connId, db, onDb, selected, onSelect, onNewKey, rel
         </Select>
         <IconButton title="New key" onClick={onNewKey}><Plus className="size-3.5" /></IconButton>
         <IconButton title="Refresh" onClick={() => { loadDbs(); if (scanMode) runScan("0", []); else loadTree(); }}>
-          <RefreshCw className={clsx("size-3.5", loading && "animate-spin")} />
+          <Spin icon={RefreshCw} spinning={loading} className="size-3.5" />
         </IconButton>
       </div>
       <div className="flex items-center gap-1 border-b border-line p-1.5">

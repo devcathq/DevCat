@@ -2,7 +2,7 @@ import clsx from "clsx";
 import { AlertTriangle, Boxes, Cpu, Layers, MemoryStick, RefreshCw, Server } from "lucide-react";
 import type { ReactNode } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
-import { Button, ErrorBox, IconButton, Spinner } from "../../components/ui";
+import { Button, ErrorBox, IconButton, Spinner, Spin } from "../../components/ui";
 import { k8s, type K8sObject, type ResourceStat } from "./api";
 import { age, eventTime, fmtBytes, fmtCpu, nodeStatus, parseQty, useNow } from "./format";
 import { useAsync, useMetrics } from "./hooks";
@@ -131,7 +131,7 @@ export default function Overview({ connId, onNavigate }: { connId: string; onNav
             <div className="text-[15px] font-semibold">Cluster overview</div>
             <div className="truncate text-xs text-muted">{data.context} · {data.server} · Kubernetes {data.version} ({data.platform})</div>
           </div>
-          <IconButton title="Refresh" onClick={() => { reload(); nodes.reload(); }}><RefreshCw className={clsx("size-4", loading && "animate-spin")} /></IconButton>
+          <IconButton title="Refresh" onClick={() => { reload(); nodes.reload(); }}><Spin icon={RefreshCw} spinning={loading} className="size-4" /></IconButton>
         </div>
         {data.errors.length > 0 && (
           <div className="rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">

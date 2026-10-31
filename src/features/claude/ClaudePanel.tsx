@@ -8,7 +8,7 @@ import { AiTerminalIcon } from "../../components/ui/AppIcons";
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { toast } from "sonner";
-import { Button, IconButton, Spinner } from "../../components/ui";
+import { Button, IconButton, Spinner, Spin } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { ClaudeInfo, GitStatus, SessionMeta } from "../../lib/types";
 import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
@@ -378,7 +378,7 @@ function Workspace({ cwd }: { cwd: string }) {
         <div className="flex h-full flex-col">
           <SectionHeader title="Sessions" open={sessionsOpen} onToggle={toggleSessions} count={isClaude ? sessions?.length : undefined}>
             <IconButton title="Refresh sessions" className="size-5.5" onClick={() => { void loadSessions(true); void refreshGit(cwd); }}>
-              <RefreshCw className={clsx("size-3.5", sessLoading && "animate-spin")} />
+              <Spin icon={RefreshCw} spinning={sessLoading} className="size-3.5" />
             </IconButton>
           </SectionHeader>
           {sessionsOpen && isAgent && <AgentJobs cwd={cwd} providerId={selected.id} />}

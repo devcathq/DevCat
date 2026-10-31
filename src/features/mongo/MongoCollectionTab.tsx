@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Button, Dialog, Empty, ErrorBox, IconButton, Input, Select, Spinner } from "../../components/ui";
+import { Button, Dialog, Empty, ErrorBox, IconButton, Input, Select, Spinner, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { CellValue, QueryResult } from "../../lib/types";
 import { useConnections } from "../../store/connections";
@@ -184,7 +184,7 @@ export default function MongoCollectionTab({ tab }: { tab: MongoTab }) {
             <IconButton title="Reset query" onClick={reset}><RotateCcw className="size-3.5" /></IconButton>
             <div className="mx-1 h-4 w-px bg-line" />
             <Button size="sm" onClick={() => setEditor({ mode: "insert", text: "{\n  \n}" })} disabled={readOnly}><Plus className="size-3.5" />Insert</Button>
-            <IconButton title="Reload" onClick={load}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+            <IconButton title="Reload" onClick={load}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
           </div>
 
           <div className="relative min-h-0 flex-1 bg-app">

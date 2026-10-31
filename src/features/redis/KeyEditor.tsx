@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { AlertTriangle, Braces, Clock, Copy, KeyRound, Plus, RefreshCw, Save, Trash2, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Button, Dialog, Empty, ErrorBox, IconButton, Input, Spinner } from "../../components/ui";
+import { Button, Dialog, Empty, ErrorBox, IconButton, Input, Spinner, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { RedisKeyValue } from "../../lib/types";
 import { asJson, cmd, formatBytes, formatTtl, replyError, typeMeta } from "./util";
@@ -191,7 +191,7 @@ export function KeyEditor({ connId, db, keyName, readOnly, onRenamed, onDeleted,
           title="Key name (edit to rename)"
         />
         <IconButton title="Copy key name" onClick={() => navigator.clipboard.writeText(data.key).then(() => toast.success("Copied"))}><Copy className="size-3.5" /></IconButton>
-        <IconButton title="Reload" onClick={load}><RefreshCw className={clsx("size-3.5", loading && "animate-spin")} /></IconButton>
+        <IconButton title="Reload" onClick={load}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
         <IconButton title="Delete key" onClick={() => setConfirmDelete(true)} disabled={readOnly}><Trash2 className="size-3.5" /></IconButton>
       </div>
       <div className="flex shrink-0 items-center gap-3 border-b border-line bg-panel px-3 py-1 text-[11.5px] text-muted">

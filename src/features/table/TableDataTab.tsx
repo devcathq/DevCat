@@ -8,7 +8,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { toast } from "sonner";
-import { Badge, Button, ErrorBox, IconButton, Spinner } from "../../components/ui";
+import { Badge, Button, ErrorBox, IconButton, Spinner, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import { dialectOf, type CellValue, type ColumnInfo, type RowChange, type SortSpec, type TableDataPage } from "../../lib/types";
 import { useConnections } from "../../store/connections";
@@ -173,7 +173,7 @@ export default function TableDataTab({ tab }: { tab: TableDataT }) {
       {/* toolbar */}
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line bg-panel px-2">
         <IconButton title="Refresh (F5)" onClick={() => guard(() => void load())} disabled={loading}>
-          <RefreshCw className={loading ? "size-3.5 animate-spin" : "size-3.5"} />
+          <Spin icon={RefreshCw} spinning={loading} className="size-3.5" />
         </IconButton>
         <div className="mx-1 h-4 w-px bg-line" />
         <IconButton title="Add row" disabled={!ctl.canEdit} onClick={() => ctl.addRow()}><Plus className="size-4" /></IconButton>
