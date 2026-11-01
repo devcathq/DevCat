@@ -683,7 +683,9 @@ pub async fn fs_preview(t: &Target) -> AppResult<FilePreview> {
         run(t, r#"cat "$1""#, &[&t.path], None).await?
     };
     // Preview a local copy with the same name (the previewer goes by name and content).
-    let name = t.path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("file").to_string();
+    // The host names it: on Windows a `\`, `..` or drive in it would put the copy anywhere.
+    let name = t.path.rsplit('/').next().unwrap_or_default().replace(['\\', '/', ':'], "_");
+    let name = if super::sftp::plain_local_name(&name) { name } else { "file".to_string() };
     let dir = std::env::temp_dir().join(format!("devcat-remote-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir_all(&dir)?;
     let local = dir.join(&name);

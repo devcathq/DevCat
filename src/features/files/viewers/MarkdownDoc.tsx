@@ -6,6 +6,7 @@ import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../../../lib/api";
+import { OutsideImage } from "../../claude/Markdown";
 import { dirname, openFilePreview } from "../format";
 
 /** Resolve `rel` against directory `base` (handles ./ and ../). */
@@ -71,8 +72,12 @@ function makeComponents(filePath: string, root: string | null): Components {
     ),
     img: ({ src, alt }) => {
       const s = typeof src === "string" ? src : "";
-      if (!s || EXTERNAL.test(s)) return <img src={s} alt={alt} className="inline max-w-full" />;
-      return <LocalImage path={resolvePath(dir, decodeURIComponent(s.replace(/[#?].*$/, "")))} alt={alt} />;
+      // web, `//host` and other schemes don't load by themselves (see OutsideImage); a drive letter is a path
+      if (!s || EXTERNAL.test(s) || /^[\\/]{2}/.test(s) || /^[a-z][a-z0-9+.-]+:/i.test(s)) return <OutsideImage src={s} alt={alt} />;
+      const path = resolvePath(dir, decodeURIComponent(s.replace(/[#?].*$/, "")));
+      // `/\host\share` is a network path on Windows too
+      if (/^[\\/]{2}/.test(path)) return <OutsideImage src={s} alt={alt} />;
+      return <LocalImage path={path} alt={alt} />;
     },
     pre: ({ children }) => (
       <pre className="selectable my-3 overflow-x-auto rounded-md border border-line bg-app p-3 font-mono text-xs leading-relaxed text-fg/90">{children}</pre>

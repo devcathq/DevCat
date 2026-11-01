@@ -35,6 +35,8 @@ devcat mcp: your DevCat connections and shared memory as an MCP server (stdio)
                             project (its id, see projects.json)
   --folder <path>           The folder for `auto` (default: the agent's folder, else this one)
   --data-dir <path>         DevCat's data folder (default: the app's)
+  --unattended              The run works on outside text without anyone watching (a ticket):
+                            no tools that reach boards, jobs, DevCat's setup, notes or rooms
 
 Use Sync MCP in DevCat (Connections → the plug button) to add it to Claude Code, Codex, Cursor
 and Gemini.
@@ -50,6 +52,10 @@ pub fn main(args: &[String]) -> i32 {
             "--project" => value("--project").map(|v| project = Some(v)),
             "--folder" => value("--folder").map(|v| folder = given(&v).map(PathBuf::from)),
             "--data-dir" => value("--data-dir").map(|v| data_dir = given(&v).map(PathBuf::from)),
+            "--unattended" => {
+                scope.unattended = true;
+                Ok(())
+            }
             "-h" | "--help" | "help" => {
                 eprint!("{HELP}");
                 return 0;
@@ -79,6 +85,7 @@ pub fn main(args: &[String]) -> i32 {
     crate::init_process();
     crate::secrets::follow_data_dir(&dir);
     crate::network::init(dir.clone());
+    crate::db::ssh::init(dir.clone());
     crate::network::set_passive();
     // with DevCat open, tool calls run there (agent_bridge.rs)
     crate::agent_bridge::use_from(dir.clone());
@@ -141,9 +148,16 @@ impl Server {
 /// agents use. The open DevCat builds the same list (`in_app`) for the calls `devcat mcp` hands
 /// it (`agent_bridge.rs`). Rooms live in the app's network node: there they run; in `devcat mcp`
 /// (and `devcat serve`, which leaves rooms to the app) they say to open DevCat.
+///
+/// An unattended run (`Scope::unattended`, a ticket's Claude Code) gets what a ticket's DevCat
+/// Agent gets (`tickets::worker`): no notes and no rooms, since it works on outside text and nobody
+/// approves what it posts to other people.
 pub(crate) fn tools_for(scope: &Scope, client: &str, in_app: bool) -> Vec<Arc<dyn Tool>> {
     let mut tools = crate::memory::tools::for_scope(scope, client);
     tools.extend(agent_tools::for_scope(scope));
+    if scope.unattended {
+        return tools;
+    }
     tools.extend(crate::agent_notes::for_scope(scope));
     if crate::rooms_tools::allowed_anywhere() && (!in_app || !crate::events::headless()) {
         tools.extend(crate::rooms_tools::tools(client, !in_app));

@@ -13,7 +13,6 @@
 use super::trackers::Tracker;
 use super::{Board, RunRecord, Ticket, TrackerKind};
 use crate::agent_tools::Scope;
-use crate::claude::locate;
 use crate::error::{AppError, AppResult};
 use devcat_harness::approval::DenyAll;
 use devcat_harness::prompt::{Environment, system_prompt};
@@ -387,6 +386,10 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         log(&b.id, "With your prompt for this ticket (instead of the board's default)".into());
     }
     let session = Arc::new(Mutex::new(None));
+    // git's settings in each repository as the user left them: an agent that changes them gets no
+    // git run there afterwards (`git_setup`)
+    let setups: Vec<Vec<u8>> = repos.iter().map(|r| git_setup(&r.path)).collect();
+    let skipped_setups: Vec<Option<Vec<u8>>> = skipped.iter().map(|(name, _, _)| repos_dir(&b.repo, name).map(|p| git_setup(&p))).collect();
     let answer = run_agent(b, &t, &where_text(&branch, own && cont.is_none(), &repos, &skipped), &images, custom, reply, cancel, &session).await;
     rec.session_id = session.lock().clone();
     rec.provider_id = Some(provider_of(b).to_string());
@@ -402,6 +405,14 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
     let mut changed: Vec<&Repo> = vec![];
     let mut saved = true;
     for (n, r) in repos.iter().enumerate() {
+        if git_setup(&r.path) != setups[n] {
+            saved = false;
+            rec.notes.push(format!(
+                "The agent changed git's own settings in {} (its .git config, attributes or hooks), so DevCat ran no git there: nothing was committed or pushed, and it's still on {branch}. Check .git before you run git in it.",
+                r.label()
+            ));
+            continue;
+        }
         let files = changed_files(&r.path).await.unwrap_or(0);
         if files > 0 {
             if wip
@@ -413,7 +424,7 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
             }
             let head = if said_fixed { format!("{}: {}", t.key, t.title) } else { format!("WIP {}: {} (unfinished)", t.key, t.title) };
             let msg = format!("{head}\n\n{summary}\n\n{}\nWorked on by the DevCat agent.", t.url).trim().to_string();
-            if let Err(e) = commit(&r.path, &msg, rec).await {
+            if let Err(e) = commit(&r.path, &msg, b.allow_commands, rec).await {
                 saved = false;
                 rec.notes.push(format!("Couldn't commit the agent's work in {} (left uncommitted on {saved_on}): {e}", r.label()));
                 continue;
@@ -436,9 +447,11 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
             let _ = git(&r.path, &["branch", "-q", "-D", &branch]).await;
         }
     }
-    for (name, _, before) in &skipped {
+    for ((name, _, before), setup) in skipped.iter().zip(&skipped_setups) {
         if let Some(p) = repos_dir(&b.repo, name) {
-            if fingerprint(&p).await != *before {
+            if setup.as_ref() != Some(&git_setup(&p)) {
+                rec.notes.push(format!("The agent changed git's own settings in {name} (its .git config, attributes or hooks): check .git before you run git in it"));
+            } else if fingerprint(&p).await != *before {
                 rec.notes.push(format!("{name} has your uncommitted changes and was changed while the agent worked: check it"));
             }
         }
@@ -458,7 +471,7 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         stage(&b.id, "Pushing");
         pushed = true;
         for r in &changed {
-            if let Err(e) = git_push(&r.path, &branch).await {
+            if let Err(e) = git_push(&r.path, &branch, b.allow_commands).await {
                 pushed = false;
                 rec.notes.push(format!("Push failed in {}: {e}", r.label()));
             }
@@ -897,9 +910,23 @@ fn chat_text(b: &Board, r: &RunRecord) -> String {
 
 // ---------------------------------------------------------------- git
 
+/// Git without the repository's hooks (see `git_with`).
 async fn git(cwd: &str, args: &[&str]) -> AppResult<String> {
-    let mut cmd = locate::tool_command("git").await;
-    cmd.args(args).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null()).kill_on_drop(true);
+    git_with(cwd, args, false).await
+}
+
+/// Git as the worker runs it in a repository an agent has worked in, on text from the tracker:
+/// git's own hardening (`claude::git::git_command`: no fsmonitor, no pager), and no hooks unless
+/// `hooks` (the board lets its agent run commands anyway). With commands off the agent can still
+/// write files, a hook among them (`.git/hooks`, or a hooks folder in the repository such as
+/// `.husky`), and committing would run it. The repository's own git settings are checked
+/// separately (`git_setup`): an agent that changed them gets no git run in that repository.
+async fn git_with(cwd: &str, args: &[&str], hooks: bool) -> AppResult<String> {
+    let mut cmd = crate::claude::git::git_command(Path::new(cwd));
+    if !hooks {
+        cmd.arg("-c").arg(format!("core.hooksPath={}", no_hooks().display()));
+    }
+    cmd.args(args);
     let out = tokio::time::timeout(Duration::from_secs(120), cmd.output()).await.map_err(|_| AppError::msg(format!("git {} took too long", args.join(" "))))?.map_err(|e| AppError::msg(format!("git: {e}")))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -913,18 +940,77 @@ async fn changed_files(repo: &str) -> AppResult<usize> {
     Ok(git(repo, &["status", "--porcelain", "--untracked-files=all"]).await?.lines().filter(|l| !l.trim().is_empty()).count())
 }
 
-/// Commit everything; when the repository's hooks refuse it, again without them (noted).
-async fn commit(repo: &str, msg: &str, rec: &mut RunRecord) -> AppResult<()> {
+/// Commit everything; with `hooks` (the board's agent may run commands), the repository's hooks
+/// run, and when they refuse it, it's committed again without them (noted).
+async fn commit(repo: &str, msg: &str, hooks: bool, rec: &mut RunRecord) -> AppResult<()> {
     git(repo, &["add", "-A"]).await?;
-    if let Err(e) = git(repo, &["commit", "-q", "-m", msg]).await {
+    if !hooks {
+        return git(repo, &["commit", "-q", "--no-verify", "-m", msg]).await.map(drop);
+    }
+    if let Err(e) = git_with(repo, &["commit", "-q", "-m", msg], true).await {
         git(repo, &["commit", "-q", "--no-verify", "-m", msg]).await?;
         rec.notes.push(format!("The commit hooks failed, so it was committed without them: {e}"));
     }
     Ok(())
 }
 
-async fn git_push(repo: &str, branch: &str) -> AppResult<()> {
-    git(repo, &["push", "-q", "-u", "origin", branch]).await.map(drop)
+async fn git_push(repo: &str, branch: &str, hooks: bool) -> AppResult<()> {
+    git_with(repo, &["push", "-q", "-u", "origin", branch], hooks).await.map(drop)
+}
+
+/// An empty folder for `core.hooksPath`, so git finds no hooks: in DevCat's own data folder,
+/// which an agent working in a repository can't write to.
+fn no_hooks() -> std::path::PathBuf {
+    let dir = super::dir().map(|d| d.join("no-hooks")).unwrap_or_else(|_| std::env::temp_dir().join("devcat-no-hooks"));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// What in `repo`'s git folder can make git run a program: its config (`core.sshCommand`,
+/// `credential.helper`, filters, `gpg.program`, includes, …), attributes and hooks, as bytes.
+/// Taken before the agent works and compared after: when the agent changed it, DevCat runs no
+/// git there (not even `status`), since the settings are no longer the user's. Read from the
+/// files, without running git.
+fn git_setup(repo: &str) -> Vec<u8> {
+    fn add(out: &mut Vec<u8>, path: &Path) {
+        out.extend_from_slice(path.to_string_lossy().as_bytes());
+        out.push(0);
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.is_dir() {
+                let mut names: Vec<_> = std::fs::read_dir(path).into_iter().flatten().flatten().map(|e| e.path()).collect();
+                names.sort();
+                for p in names {
+                    add(out, &p);
+                }
+            } else if meta.file_type().is_symlink() {
+                out.extend_from_slice(std::fs::read_link(path).unwrap_or_default().to_string_lossy().as_bytes());
+            } else {
+                out.extend_from_slice(&std::fs::read(path).unwrap_or_default());
+            }
+        }
+        out.push(0);
+    }
+    let dot_git = Path::new(repo).join(".git");
+    // a worktree or submodule: `.git` is a file naming the folder
+    let git_dir = match std::fs::read_to_string(&dot_git) {
+        Ok(s) => match s.trim().strip_prefix("gitdir:") {
+            Some(d) => Path::new(repo).join(d.trim()),
+            None => dot_git.clone(),
+        },
+        Err(_) => dot_git.clone(),
+    };
+    let common = match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(c) => git_dir.join(c.trim()),
+        Err(_) => git_dir.clone(),
+    };
+    let mut out = Vec::new();
+    add(&mut out, &dot_git);
+    for dir in [&git_dir, &common] {
+        for part in ["config", "config.worktree", "info/attributes", "hooks", "commondir"] {
+            add(&mut out, &dir.join(part));
+        }
+    }
+    out
 }
 
 /// `<prefix>abc-12-fix-the-login-redirect` (prefix e.g. `devcat/`).
@@ -1018,7 +1104,7 @@ fn repos_dir(folder: &str, name: &str) -> Option<String> {
 
 /// The user's uncommitted changes in a repository, to see whether they changed meanwhile.
 async fn fingerprint(repo: &str) -> String {
-    format!("{}{}", git(repo, &["status", "--porcelain", "--untracked-files=all"]).await.unwrap_or_default(), git(repo, &["diff"]).await.unwrap_or_default())
+    format!("{}{}", git(repo, &["status", "--porcelain", "--untracked-files=all"]).await.unwrap_or_default(), git(repo, &["diff", "--no-ext-diff", "--no-textconv"]).await.unwrap_or_default())
 }
 
 /// The board's repositories the agent may change (clean, on a branch), and the ones it must leave
@@ -1235,8 +1321,43 @@ mod tests {
         std::fs::write(dir.join("b.txt"), "new\n").unwrap();
         assert_eq!(changed_files(cwd).await.unwrap(), 1);
         let mut rec = error_record("1", String::new());
-        commit(cwd, "msg", &mut rec).await.unwrap();
+        commit(cwd, "msg", false, &mut rec).await.unwrap();
         assert_eq!(changed_files(cwd).await.unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With commands off the repository's hooks don't run (a file the agent wrote could be one),
+    /// and a change to git's own settings shows.
+    #[tokio::test]
+    async fn hooks_off_and_settings_checked() {
+        let dir = std::env::temp_dir().join(format!("devcat-tickets-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_str().unwrap();
+        for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@example.com"], vec!["config", "user.name", "t"]] {
+            git(cwd, &args).await.unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(cwd, &["add", "."]).await.unwrap();
+        git(cwd, &["commit", "-qm", "init"]).await.unwrap();
+        let before = git_setup(cwd);
+        assert_eq!(git_setup(cwd), before);
+        // a hook that refuses every commit, which `--no-verify` alone doesn't skip
+        let hook = dir.join(".git").join("hooks").join("prepare-commit-msg");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_ne!(git_setup(cwd), before, "a new hook shows");
+        let mut rec = error_record("1", String::new());
+        std::fs::write(dir.join("b.txt"), "new\n").unwrap();
+        commit(cwd, "msg", false, &mut rec).await.unwrap();
+        assert!(rec.notes.is_empty(), "no hook ran: {:?}", rec.notes);
+        assert_eq!(changed_files(cwd).await.unwrap(), 0);
+        let settings = git_setup(cwd);
+        git(cwd, &["config", "core.sshCommand", "ssh -v"]).await.unwrap();
+        assert_ne!(git_setup(cwd), settings, "a config change shows");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

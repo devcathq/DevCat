@@ -725,9 +725,13 @@ pub fn agent_config_problem(openvpn: bool, text: &str) -> Option<String> {
             }
             continue;
         }
+        // `setenv opt <directive> …` runs <directive>, and OpenVPN unwraps it again and again
+        // (`setenv opt setenv opt plugin …`): unwrap all of it, as the helper does (`OvpnChecker`)
+        let mut rest = &toks[..];
         let mut name = norm_directive(t0);
-        if name == "setenv" && toks.len() > 2 && toks[1].eq_ignore_ascii_case("opt") {
-            name = norm_directive(&toks[2]);
+        while name == "setenv" && rest.len() > 2 && rest[1].eq_ignore_ascii_case("opt") {
+            rest = &rest[2..];
+            name = norm_directive(&rest[0]);
         }
         if is_rejected(&name) {
             return uses(&name);

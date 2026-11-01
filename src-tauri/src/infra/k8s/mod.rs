@@ -81,6 +81,49 @@ fn load_kubeconfig(path: Option<&str>) -> AppResult<Kubeconfig> {
     Ok(kc)
 }
 
+/// Why DevCat won't connect an agent to the kubeconfig(s) at `path` (a connection's file, several
+/// joined like `KUBECONFIG`), if it won't. A kubeconfig can log in by running a program (an `exec`
+/// credential plugin, or an `auth-provider`'s `cmd-path`), so one an agent names could run any
+/// command without the user's approval: refused unless it's the user's own kubeconfig. And one in
+/// a folder the agent writes to (`writable`) is refused too: it's read again on every use, so the
+/// agent could add such a program afterwards.
+pub(crate) fn agent_kubeconfig_problem(path: &str, writable: &[&Path]) -> Option<String> {
+    let defaults = default_kubeconfigs();
+    let writable: Vec<PathBuf> = writable.iter().filter_map(|w| std::fs::canonicalize(w).ok()).collect();
+    for p in std::env::split_paths(path.trim()).filter(|p| !p.as_os_str().is_empty()) {
+        let p = expand_tilde(&p.to_string_lossy());
+        let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if defaults.contains(&real) {
+            continue;
+        }
+        if writable.iter().any(|w| real.starts_with(w)) {
+            return Some(format!(
+                "{} is in a folder the agent writes to, where it could later be changed to run a program to log in: keep the kubeconfig elsewhere (e.g. in ~/.kube), or add the connection yourself in DevCat.",
+                p.display()
+            ));
+        }
+        let runs = Kubeconfig::read_from(&real)
+            .map(|kc| kc.auth_infos.iter().any(|n| n.auth_info.as_ref().is_some_and(|a| a.exec.is_some() || a.auth_provider.is_some())))
+            .unwrap_or(false);
+        if runs {
+            return Some(format!(
+                "{} logs in by running a program (an exec plugin or auth-provider), which DevCat doesn't run for an agent: add the connection yourself in DevCat.",
+                p.display()
+            ));
+        }
+    }
+    None
+}
+
+/// The user's own kubeconfigs: `KUBECONFIG`, else `~/.kube/config`.
+fn default_kubeconfigs() -> Vec<PathBuf> {
+    let list: Vec<PathBuf> = match std::env::var_os("KUBECONFIG") {
+        Some(v) if !v.is_empty() => std::env::split_paths(&v).filter(|p| !p.as_os_str().is_empty()).collect(),
+        _ => dirs::home_dir().map(|h| vec![h.join(".kube").join("config")]).unwrap_or_default(),
+    };
+    list.into_iter().map(|p| std::fs::canonicalize(&p).unwrap_or(p)).collect()
+}
+
 /// GUI apps on macOS don't inherit the login shell's PATH, so exec credential plugins
 /// (gke-gcloud-auth-plugin, aws, kubelogin…) are not found. Build a PATH that includes
 /// the usual install locations.

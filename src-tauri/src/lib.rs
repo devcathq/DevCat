@@ -96,6 +96,7 @@ fn init_process() {
 fn init_backend(dir: std::path::PathBuf) {
     secrets::follow_data_dir(&dir);
     network::init(dir.clone());
+    db::ssh::init(dir.clone());
     ai::init(dir.clone());
     agent::init(dir.clone());
     state::init(dir.clone());

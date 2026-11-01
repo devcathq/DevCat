@@ -141,7 +141,10 @@ pub(crate) mod tests {
         let mine: Vec<_> = tail(KEEP).into_iter().filter(|x| x.tool.starts_with("audit-test-")).collect();
         assert_eq!(mine.iter().map(|x| x.tool.as_str()).collect::<Vec<_>>(), ["audit-test-b", "audit-test-a"]);
         assert!(!mine[0].ok);
-        let line = std::fs::read_to_string(path().unwrap()).unwrap();
-        assert!(!line.contains("\"detail\""), "empty fields aren't written");
+        // this test's lines only: other tests log calls (with details) into the same file meanwhile
+        let text = std::fs::read_to_string(path().unwrap()).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| l.contains("\"audit-test-")).collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines.iter().all(|l| !l.contains("\"detail\"")), "empty fields aren't written");
     }
 }

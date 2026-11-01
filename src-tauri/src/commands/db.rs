@@ -19,6 +19,22 @@ pub async fn db_list_databases(state: St, conn_id: String) -> AppResult<Vec<Stri
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn db_execute(state: St, conn_id: String, script: String, opts: ExecOptions, skip_history: Option<bool>) -> AppResult<Vec<QueryResult>> {
     let d = state.driver(&conn_id).await?;
+    execute_on(state, d, conn_id, script, opts, skip_history).await
+}
+
+/// `db_execute` on a read-only session (`St::read_only_driver`), for a caller that may only read
+/// (a read-only phone): the driver and server refuse writes, not only DevCat's look at the words.
+pub async fn db_execute_read_only(state: St, conn_id: String, script: String, opts: ExecOptions) -> AppResult<Vec<QueryResult>> {
+    let d = state.read_only_driver(&conn_id).await?;
+    execute_on(state, d, conn_id, script, opts, Some(false)).await
+}
+
+/// `db_table_data` on a read-only session (its `filter` is the caller's SQL).
+pub async fn db_table_data_read_only(state: St, conn_id: String, req: TableDataRequest) -> AppResult<TableDataPage> {
+    state.read_only_driver(&conn_id).await?.table_data(&req).await
+}
+
+async fn execute_on(state: St, d: crate::db::DynDriver, conn_id: String, script: String, opts: ExecOptions, skip_history: Option<bool>) -> AppResult<Vec<QueryResult>> {
     let started = std::time::Instant::now();
     let res = d.execute(&script, &opts).await;
     if skip_history.unwrap_or(false) {
@@ -39,6 +55,10 @@ pub async fn db_execute(state: St, conn_id: String, script: String, opts: ExecOp
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn db_cancel(state: St, conn_id: String) -> AppResult<()> {
+    // a read-only phone's query runs on the read-only twin
+    if let Some(ro) = state.open_read_only(&conn_id).await {
+        let _ = ro.cancel().await;
+    }
     state.driver(&conn_id).await?.cancel().await
 }
 
