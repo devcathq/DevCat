@@ -432,7 +432,7 @@ fn plan_upload(src: &Path, dst_dir: &str) -> AppResult<Vec<Step>> {
 
 /// Is `name` (one remote path part) a plain file name here too? A host's file may be called
 /// `..\\..\\x` or `C:\\x`: legal on Linux, but a path that leaves the folder on Windows.
-fn plain_local_name(name: &str) -> bool {
+pub(super) fn plain_local_name(name: &str) -> bool {
     let mut parts = Path::new(name).components();
     matches!(parts.next(), Some(std::path::Component::Normal(n)) if n == name) && parts.next().is_none()
 }
@@ -657,6 +657,8 @@ mod tests {
         std::fs::set_permissions(&f, perm).unwrap();
         let mut file = create_replacing(&f).await.unwrap();
         file.write_all(b"new").await.unwrap();
+        // tokio writes in the background: flush as the download does, else the read may beat it
+        file.flush().await.unwrap();
         drop(file);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
         std::fs::remove_dir_all(&dir).unwrap();

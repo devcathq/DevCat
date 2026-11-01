@@ -462,8 +462,17 @@ pub fn is_read_only_statement(d: Dialect, sql: &str) -> bool {
     let upper = sql.to_ascii_uppercase();
     // Anything that switches the session or transaction back to read-write, in any statement:
     // `BEGIN READ WRITE`, `START TRANSACTION READ WRITE`, `SELECT set_config('default_transaction_read_only', …)`.
-    let spaced = upper.split_whitespace().collect::<Vec<_>>().join(" ");
-    if spaced.contains("READ WRITE") || contains_word(&upper, "SET_CONFIG") || upper.contains("TRANSACTION_READ_ONLY") {
+    // Also with comments taken out (`READ/**/WRITE`), or only their markers taken out (MySQL runs
+    // what's in `/*! … */`), and MySQL's executable comments refused outright.
+    let squeeze = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let spaced = squeeze(&upper);
+    let bare = squeeze(&without_comments(&upper));
+    let marks = squeeze(&upper.replace("/*!", " ").replace("/*", " ").replace("*/", " "));
+    if [&spaced, &bare, &marks].iter().any(|s| s.contains("READ WRITE"))
+        || contains_word(&upper, "SET_CONFIG")
+        || upper.contains("TRANSACTION_READ_ONLY")
+        || (d == Dialect::Mysql && upper.contains("/*!"))
+    {
         return false;
     }
     match kw.as_str() {
@@ -480,6 +489,29 @@ pub fn is_read_only_statement(d: Dialect, sql: &str) -> bool {
         "SET" => !upper.contains("READ") && !["GLOBAL", "PERSIST", "PERSIST_ONLY", "PASSWORD", "ROLE", "AUTHORIZATION"].iter().any(|k| contains_word(&upper, k)),
         _ => false,
     }
+}
+
+/// `s` with `/* … */` blocks and `--` / `#` line comments replaced by a space, quotes ignored:
+/// only for refusing more (a comment marker inside a string just takes out more text).
+fn without_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find(|c| c == '/' || c == '-' || c == '#') {
+        let (before, at) = rest.split_at(i);
+        out.push_str(before);
+        if at.starts_with("/*") {
+            rest = at[2..].find("*/").map_or("", |e| &at[2 + e + 2..]);
+            out.push(' ');
+        } else if at.starts_with("--") || at.starts_with('#') {
+            rest = at.find('\n').map_or("", |e| &at[e..]);
+            out.push(' ');
+        } else {
+            out.push_str(&at[..1]);
+            rest = &at[1..];
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn contains_word(upper: &str, word: &str) -> bool {

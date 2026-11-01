@@ -1,7 +1,7 @@
 // Markdown renderer for assistant messages and review findings (GFM: tables, task lists, …).
 import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Image as ImageIcon } from "lucide-react";
 import { memo, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -39,6 +39,37 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   );
 }
 
+/**
+ * An image in Markdown that comes from outside DevCat (an agent's answer, a repository's file, a
+ * room's, a note): only a `data:` / `blob:` one shows by itself. Loading any other would send its
+ * address to that server without a click, with whatever an agent put in it (told to by a ticket,
+ * a web page or a database row); and a `//host/…` one makes Windows log in to that host (SMB).
+ * Those show as a button that opens the address in the browser.
+ */
+export function OutsideImage({ src, alt }: { src?: string; alt?: string }) {
+  const s = src ?? "";
+  if (/^(data:image\/|blob:)/i.test(s)) return <img src={s} alt={alt ?? ""} className="inline max-w-full" />;
+  const web = /^https?:\/\//i.test(s);
+  let host = "";
+  try {
+    if (web) host = new URL(s).host;
+  } catch {
+    /* not a URL */
+  }
+  return (
+    <button
+      type="button"
+      title={web ? `Not loaded by itself: open ${s} in the browser` : s}
+      disabled={!web}
+      className="inline-flex max-w-full items-center gap-1 rounded border border-line px-1.5 py-px align-middle text-xs text-muted enabled:hover:bg-hover enabled:hover:text-fg"
+      onClick={() => web && void openUrl(s).catch(() => {})}
+    >
+      <ImageIcon className="size-3.5 shrink-0" />
+      <span className="truncate">{alt || "Image"}{host ? ` · ${host}` : ""}</span>
+    </button>
+  );
+}
+
 function textOf(n: ReactNode): string {
   if (typeof n === "string" || typeof n === "number") return String(n);
   if (Array.isArray(n)) return n.map(textOf).join("");
@@ -48,6 +79,7 @@ function textOf(n: ReactNode): string {
 
 function makeComponents(cwd: string): Components {
   return {
+    img: ({ src, alt }) => <OutsideImage src={typeof src === "string" ? src : undefined} alt={alt} />,
     pre: ({ children }) => {
       const child = Array.isArray(children) ? children[0] : children;
       const cls = child && typeof child === "object" && "props" in child ? String((child as { props: { className?: string } }).props.className ?? "") : "";

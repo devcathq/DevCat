@@ -32,6 +32,7 @@ pub async fn delete_project(state: St, id: String, delete_connections: Option<bo
             if let Some(d) = state.sessions.write().await.remove(cid) {
                 d.close().await;
             }
+            state.close_read_only(cid).await;
             super::connections::drop_infra_clients(cid).await;
             state.store.delete(cid)?;
             if let Err(e) = state.bookmarks.remove_for_connection(cid) {

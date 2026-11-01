@@ -1,0 +1,12 @@
+# pnpm settings for this project (no workspace packages: DevCat is a single package).
+#
+# Security overrides for transitive dependencies `pnpm audit` flags. Drop an entry once the
+# package that pulls it in ships the fixed version itself.
+overrides:
+  # monaco-editor pins dompurify 3.4.15 (its markdown hovers): sanitizer bypasses fixed in 3.4.17.
+  dompurify: ^3.4.17
+  # excalidraw -> mermaid -> langium -> chevrotain: `_.template` code injection, prototype pollution.
+  lodash-es: ^4.18.1
+  # excalidraw (3.x) and mermaid-to-excalidraw (4.0.2, only `nanoid()` is used): fixed in 3.3.18 / 5.1.16.
+  nanoid@<3.3.18: ^3.3.18
+  nanoid@>=4.0.0 <5.1.16: ^5.1.16

@@ -659,11 +659,19 @@ pub(crate) mod tests {
             let dir = std::env::temp_dir().join(format!("devcat-git-{name}-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
             let dir = std::fs::canonicalize(&dir).unwrap();
+            // Windows canonicalizes to `\\?\C:\…`, which git takes for `host:path` as a remote URL
+            let dir = match dir.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+                Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+                _ => dir,
+            };
             let r = TempRepo { dir };
             r.git(&["init", "-q", "-b", "main"]);
             r.git(&["config", "user.name", "DevCat Test"]);
             r.git(&["config", "user.email", "test@devcat.invalid"]);
             r.git(&["config", "commit.gpgsign", "false"]);
+            // the tests compare file contents byte for byte, whatever the user's global
+            // `core.autocrlf` (true by default with Git for Windows)
+            r.git(&["config", "core.autocrlf", "false"]);
             r
         }
         pub fn git(&self, args: &[&str]) -> String {

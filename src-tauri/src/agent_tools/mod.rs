@@ -562,7 +562,10 @@ impl Tool for DbQuery {
         }
         let max_rows = input.get("max_rows").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, MAX_ROWS)).unwrap_or(DEFAULT_ROWS);
         let database = input.get("database").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
-        let driver = match St::get().driver(&c.id).await {
+        // A query judged a read by its words ran without asking (`Kind::Query`), or over MCP
+        // without full access: run it on a read-only session, so a write dressed up as a read fails.
+        let driver = if reads_only(&c, query) { St::get().read_only_driver(&c.id).await } else { St::get().driver(&c.id).await };
+        let driver = match driver {
             Ok(d) => d,
             Err(e) => return ToolOutput::err(connect_error(&self.0, &c, &e.to_string())),
         };
@@ -805,7 +808,8 @@ impl Tool for DbExport {
         if path.exists() {
             return ToolOutput::err(format!("{} already exists: pick another `path`.", path.display()));
         }
-        let driver = match St::get().driver(&c.id).await {
+        // An export only reads (its query and `filter` included): a read-only session makes sure.
+        let driver = match St::get().read_only_driver(&c.id).await {
             Ok(d) => d,
             Err(e) => return ToolOutput::err(connect_error(&self.0, &c, &e.to_string())),
         };
@@ -863,6 +867,7 @@ async fn drop_database(c: &ConnectionConfig, name: &str) -> crate::error::AppRes
     if let Some(d) = st.sessions.write().await.remove(&c.id) {
         d.close().await;
     }
+    st.close_read_only(&c.id).await;
     let (sql, run_in) = drop_statement(c.kind, name);
     let mut cfg = st.store.get(&c.id)?;
     if let Some(db) = run_in {

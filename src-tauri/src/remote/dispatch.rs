@@ -282,8 +282,12 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "db_list_databases" => out(commands::db::db_list_databases(st(), a!("connId")).await),
         "db_table_data" => {
             let req: crate::db::TableDataRequest = a!("req");
-            if client.readonly() && req.filter.as_deref().is_some_and(|f| f.contains(';')) {
-                return Err(json!("A filter can't contain ';' on a read-only phone"));
+            if client.readonly() {
+                if req.filter.as_deref().is_some_and(|f| f.contains(';')) {
+                    return Err(json!("A filter can't contain ';' on a read-only phone"));
+                }
+                // the filter is the phone's own SQL: a read-only session refuses what it might write
+                return out(commands::db::db_table_data_read_only(st(), a!("connId"), req).await);
             }
             out(commands::db::db_table_data(st(), a!("connId"), req).await)
         }
@@ -292,13 +296,15 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "db_execute" => {
             let conn_id: String = a!("connId");
             let script: String = a!("script");
+            let opts: crate::db::ExecOptions = arg(args, "opts").unwrap_or(crate::db::ExecOptions { database: None, schema: None, max_rows: None });
             if client.readonly() {
                 let kind = st().store.load_all().ok().and_then(|all| all.into_iter().find(|c| c.id == conn_id)).map(|c| c.kind);
                 if !super::readonly::allowed(kind, &script) {
                     return Err(json!("This phone has read-only access: only queries that read data can run."));
                 }
+                // judged by its words; a read-only session makes sure
+                return out(commands::db::db_execute_read_only(st(), conn_id, script, opts).await);
             }
-            let opts: crate::db::ExecOptions = arg(args, "opts").unwrap_or(crate::db::ExecOptions { database: None, schema: None, max_rows: None });
             out(commands::db::db_execute(st(), conn_id, script, opts, Some(false)).await)
         }
         "db_cancel" => out(commands::db::db_cancel(st(), a!("connId")).await),

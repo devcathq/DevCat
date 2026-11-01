@@ -61,9 +61,15 @@ pub fn secret_like(rel: &Path) -> bool {
         return true;
     }
     let name = rel.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    let exact = [".env", ".npmrc", ".netrc", ".pypirc", ".pgpass", "credentials", "credentials.json", "secrets.json", "secrets.yaml", "secrets.yml", ".htpasswd"];
-    let ext = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".ovpn", ".gpg", ".asc"];
+    let exact = [
+        ".env", ".npmrc", ".netrc", ".pypirc", ".pgpass", "credentials", "credentials.json", "secrets.json", "secrets.yaml", "secrets.yml", ".htpasswd",
+        // git's plaintext credential store, cloud / agent / tool logins
+        ".credentials.json", "auth.json", "oauth_creds.json", "credentials.toml", "credentials.tfrc.json", ".terraformrc", ".dockercfg", ".boto",
+        ".s3cfg", ".vault-token", "kubeconfig", ".yarnrc.yml",
+    ];
+    let ext = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".ovpn", ".gpg", ".asc", ".ppk"];
     exact.contains(&name.as_str())
+        || name.starts_with(".git-credentials")
         || name.starts_with(".env.")
         || name.starts_with("id_rsa")
         || name.starts_with("id_ed25519")

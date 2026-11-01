@@ -582,7 +582,7 @@ mod tests {
     fn agents_configs_cant_run_programs() {
         let ok = "client\ndev tun\nremote vpn.example.com 1194\n<ca>\nup this is cert data\n</ca>\nauth-user-pass\n";
         assert_eq!(net::agent_config_problem(NetKind::Openvpn, ok), None);
-        for bad in ["client\nup /tmp/x.sh\n", "client\n--script-security 2\n", "setenv opt plugin /x.so\n", "<connection>\nremote a 1\nup /x\n</connection>\n", "<script>\n</script>\n", "<ca>\nno end\n"] {
+        for bad in ["client\nup /tmp/x.sh\n", "client\n--script-security 2\n", "setenv opt plugin /x.so\n", "setenv opt setenv opt plugin /x.so\n", "setenv opt SETENV opt setenv opt up /x\n", "<connection>\nremote a 1\nup /x\n</connection>\n", "<script>\n</script>\n", "<ca>\nno end\n"] {
             assert!(net::agent_config_problem(NetKind::Openvpn, bad).is_some(), "{bad}");
         }
         assert_eq!(net::agent_config_problem(NetKind::Wireguard, "[Interface]\nPrivateKey = a=\n[Peer]\nEndpoint = h:51820\n"), None);
