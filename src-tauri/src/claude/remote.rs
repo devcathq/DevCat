@@ -847,6 +847,20 @@ fn parse_tree(out: &[u8]) -> Vec<TreeItem> {
 /// `env` is exported first on the host; `forward` = (remote port, local port) for -R.
 /// A session's startup command runs before its login shell.
 pub fn terminal_args(t: &Target, program: Option<&str>, args: &[String], env: &[(String, String)], forward: Option<(u16, u16)>) -> Vec<String> {
+    let mut a = vec!["-tt".to_string()];
+    a.extend(ssh_args(t, true));
+    if let Some((rp, lp)) = forward {
+        a.extend(["-o".into(), "ExitOnForwardFailure=no".into(), "-R".into(), format!("127.0.0.1:{rp}:127.0.0.1:{lp}")]);
+    }
+    a.push("--".into());
+    a.push(t.ssh_dest().to_string());
+    // A plain shell in the home folder: no remote command, so the host starts the account's own
+    // login shell. That also works where the host's shell isn't POSIX (Windows OpenSSH runs a
+    // command in cmd / PowerShell, where `exec "${SHELL:-/bin/sh}" …` fails).
+    let startup = t.session.as_ref().and_then(|s| s.startup.as_deref());
+    if program.is_none_or(str::is_empty) && env.is_empty() && startup.is_none() && matches!(t.path.as_str(), "~" | "~/") {
+        return a;
+    }
     let mut inner = String::new();
     for (k, v) in env {
         inner.push_str(&format!("export {k}={}; ", sh_quote(v)));
@@ -871,13 +885,6 @@ pub fn terminal_args(t: &Target, program: Option<&str>, args: &[String], env: &[
     }
     // Through a login shell, so the PATH from the user's profile (~/.local/bin, nvm…) applies.
     let remote = format!("exec \"${{SHELL:-/bin/sh}}\" -lc {}", sh_quote(&inner));
-    let mut a = vec!["-tt".to_string()];
-    a.extend(ssh_args(t, true));
-    if let Some((rp, lp)) = forward {
-        a.extend(["-o".into(), "ExitOnForwardFailure=no".into(), "-R".into(), format!("127.0.0.1:{rp}:127.0.0.1:{lp}")]);
-    }
-    a.push("--".into());
-    a.push(t.ssh_dest().to_string());
     a.push(remote);
     a
 }
@@ -907,6 +914,11 @@ mod tests {
         assert_eq!(a[0], "-tt");
         assert_eq!(a[a.len() - 2], "devbox");
         assert!(a.last().unwrap().contains("exec 'claude' '--resume' 'x y'") || a.last().unwrap().contains("claude"), "{a:?}");
+        // A plain shell at home sends no remote command (Windows hosts can't run the POSIX one).
+        let home = Target::parse("ssh://devbox/~").unwrap();
+        assert_eq!(terminal_args(&home, None, &[], &[], None).last().unwrap(), "devbox");
+        // Anywhere else it still goes through the login shell with a cd.
+        assert!(terminal_args(&t, None, &[], &[], None).last().unwrap().contains("/srv/app"));
     }
 
     /// End to end against a real host: DEVCAT_SSH_TEST=ssh://host/scratch/dir (it's wiped).
