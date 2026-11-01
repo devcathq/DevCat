@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Rooms:** hovering a message no longer pushes the thread down by a line. **React** now sits in the message's
+  hover toolbar, next to **Reply** and **Pin**. The agent and people chips above the message box are listed
+  alphabetically.
+
 ## 0.19.0 - 2026-11-01
 
 - **Agents can do much more in DevCat** (#122): Claude Code, Codex, Cursor, Gemini CLI (through Sync MCP) and the DevCat
