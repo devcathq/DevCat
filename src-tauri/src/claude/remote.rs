@@ -467,6 +467,7 @@ pub async fn forget_session(id: &str) {
     let Some(s) = Session::load(&format!("{SESSION_PREFIX}{id}")) else { return };
     super::ssh_forward::stop(id);
     let t = Target::for_session(s, "~");
+    HOST_OS.lock().remove(&host_key(&t));
     let _ = tokio::task::spawn_blocking(move || release_master(&t)).await;
 }
 
@@ -843,18 +844,89 @@ fn parse_tree(out: &[u8]) -> Vec<TreeItem> {
 
 // ---------- terminals ----------
 
+/// The shell a host runs remote commands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostOs {
+    /// sh / bash / zsh…: Linux, macOS, BSD.
+    Posix,
+    /// Windows OpenSSH: the command goes to cmd or PowerShell.
+    Windows,
+}
+
+/// Hosts already probed (`dest:port` → Windows?), for the app's lifetime.
+static HOST_OS: once_cell::sync::Lazy<parking_lot::Mutex<std::collections::HashMap<String, HostOs>>> = once_cell::sync::Lazy::new(Default::default);
+
+fn host_key(t: &Target) -> String {
+    format!("{}:{}", t.dest, t.port.unwrap_or(0))
+}
+
+/// Whether a terminal here needs a remote command at all (see `terminal_args`): a plain shell in
+/// the home folder doesn't, and then the host's OS doesn't matter.
+pub fn needs_command(t: &Target, program: Option<&str>, env: &[(String, String)]) -> bool {
+    let startup = t.session.as_ref().and_then(|s| s.startup.as_deref());
+    !(program.is_none_or(str::is_empty) && env.is_empty() && startup.is_none() && matches!(t.path.as_str(), "~" | "~/"))
+}
+
+/// What the host runs commands in. One `echo $env:OS %OS%` tells them apart: cmd expands `%OS%`,
+/// PowerShell `$env:OS` (both to `Windows_NT`), sh neither. Cached once known; when the probe
+/// can't log in (no key, agent or saved password: the user types it in the terminal) it's
+/// `Posix`, as before, and asked again next time.
+pub async fn host_os(t: &Target) -> HostOs {
+    let key = host_key(t);
+    if let Some(os) = HOST_OS.lock().get(&key) {
+        return *os;
+    }
+    let (env, _askpass) = askpass_env(t);
+    let mut cmd = tokio::process::Command::new("ssh");
+    cmd.args(ssh_args(t, false)).arg("--").arg(t.ssh_dest()).arg("echo $env:OS %OS%");
+    cmd.envs(env).kill_on_drop(true).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x0800_0000); // no console window
+    }
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(20), cmd.output()).await else { return HostOs::Posix };
+    if out.status.code() == Some(255) {
+        return HostOs::Posix;
+    }
+    let os = if String::from_utf8_lossy(&out.stdout).contains("Windows_NT") { HostOs::Windows } else { HostOs::Posix };
+    HOST_OS.lock().insert(key, os);
+    os
+}
+
 /// `ssh` arguments for a terminal in `t.path`: a login shell, or `program args` (e.g. claude).
 /// `env` is exported first on the host; `forward` = (remote port, local port) for -R.
 /// A session's startup command runs before its login shell.
-pub fn terminal_args(t: &Target, program: Option<&str>, args: &[String], env: &[(String, String)], forward: Option<(u16, u16)>) -> Vec<String> {
+pub fn terminal_args(t: &Target, os: HostOs, program: Option<&str>, args: &[String], env: &[(String, String)], forward: Option<(u16, u16)>) -> Vec<String> {
+    let mut a = vec!["-tt".to_string()];
+    a.extend(ssh_args(t, true));
+    if let Some((rp, lp)) = forward {
+        a.extend(["-o".into(), "ExitOnForwardFailure=no".into(), "-R".into(), format!("127.0.0.1:{rp}:127.0.0.1:{lp}")]);
+    }
+    a.push("--".into());
+    a.push(t.ssh_dest().to_string());
+    // A plain shell in the home folder: no remote command, so the host starts the account's own
+    // login shell, whatever it is.
+    if !needs_command(t, program, env) {
+        return a;
+    }
+    let startup = t.session.as_ref().and_then(|s| s.startup.as_deref());
+    let program = program.filter(|p| !p.is_empty());
+    a.push(match os {
+        HostOs::Posix => posix_command(&t.path, startup, program, args, env),
+        HostOs::Windows => powershell_command(&t.path, startup, program, args, env),
+    });
+    a
+}
+
+fn posix_command(path: &str, startup: Option<&str>, program: Option<&str>, args: &[String], env: &[(String, String)]) -> String {
     let mut inner = String::new();
     for (k, v) in env {
         inner.push_str(&format!("export {k}={}; ", sh_quote(v)));
     }
-    inner.push_str(&format!("cd {} || exit 1; ", sh_path(&t.path)));
-    match program.filter(|p| !p.is_empty()) {
+    inner.push_str(&format!("cd {} || exit 1; ", sh_path(path)));
+    match program {
         None => {
-            if let Some(cmd) = t.session.as_ref().and_then(|s| s.startup.as_deref()) {
+            if let Some(cmd) = startup {
                 inner.push_str(cmd);
                 inner.push_str("; ");
             }
@@ -870,16 +942,67 @@ pub fn terminal_args(t: &Target, program: Option<&str>, args: &[String], env: &[
         }
     }
     // Through a login shell, so the PATH from the user's profile (~/.local/bin, nvm…) applies.
-    let remote = format!("exec \"${{SHELL:-/bin/sh}}\" -lc {}", sh_quote(&inner));
-    let mut a = vec!["-tt".to_string()];
-    a.extend(ssh_args(t, true));
-    if let Some((rp, lp)) = forward {
-        a.extend(["-o".into(), "ExitOnForwardFailure=no".into(), "-R".into(), format!("127.0.0.1:{rp}:127.0.0.1:{lp}")]);
+    format!("exec \"${{SHELL:-/bin/sh}}\" -lc {}", sh_quote(&inner))
+}
+
+/// Single-quote for PowerShell (it also ends a string at curly single quotes: doubled too).
+fn ps_quote(s: &str) -> String {
+    let mut q = String::from("'");
+    for c in s.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            q.push(c);
+        }
+        q.push(c);
     }
-    a.push("--".into());
-    a.push(t.ssh_dest().to_string());
-    a.push(remote);
-    a
+    q.push('\'');
+    q
+}
+
+/// A path for PowerShell: `~` / `~/x` from $HOME, `/C:/x` (as written in an ssh:// URI) → `C:/x`.
+fn ps_path(p: &str) -> String {
+    if p == "~" || p == "~/" {
+        return "$HOME".into();
+    }
+    if let Some(rest) = p.strip_prefix("~/") {
+        return format!("(Join-Path $HOME {})", ps_quote(rest));
+    }
+    let b = p.as_bytes();
+    let drive = b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':';
+    ps_quote(if drive { &p[1..] } else { p })
+}
+
+/// A Windows host: the same terminal as a PowerShell script, sent as `-EncodedCommand` (base64 of
+/// UTF-16LE), so nothing in it needs quoting for cmd or PowerShell, whichever runs the command.
+/// The session's startup command is the user's own, in PowerShell there.
+fn powershell_command(path: &str, startup: Option<&str>, program: Option<&str>, args: &[String], env: &[(String, String)]) -> String {
+    let mut s = String::new();
+    for (k, v) in env {
+        s.push_str(&format!("$env:{k} = {}; ", ps_quote(v)));
+    }
+    s.push_str(&format!("try {{ Set-Location -LiteralPath {} -ErrorAction Stop }} catch {{ Write-Host $_; exit 1 }}; ", ps_path(path)));
+    let keep = match program {
+        None => {
+            if let Some(cmd) = startup {
+                s.push_str(cmd);
+                s.push_str("; ");
+            }
+            true
+        }
+        Some(p) => {
+            s.push_str("& ");
+            s.push_str(&ps_quote(p));
+            for a in args {
+                s.push(' ');
+                s.push_str(&ps_quote(a));
+            }
+            s.push_str("; exit $LASTEXITCODE");
+            false
+        }
+    };
+    let utf16: Vec<u8> = s.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+    format!("powershell -NoLogo{} -EncodedCommand {encoded}", if keep { " -NoExit" } else { "" })
 }
 
 #[cfg(test)]
@@ -903,10 +1026,46 @@ mod tests {
         assert_eq!(sh_quote("it's"), r"'it'\''s'");
         assert_eq!(sh_path("~/a b"), "\"$HOME\"/'a b'");
         let t = Target::parse("ssh://devbox/srv/app").unwrap();
-        let a = terminal_args(&t, Some("claude"), &["--resume".into(), "x y".into()], &[], None);
+        let a = terminal_args(&t, HostOs::Posix, Some("claude"), &["--resume".into(), "x y".into()], &[], None);
         assert_eq!(a[0], "-tt");
         assert_eq!(a[a.len() - 2], "devbox");
         assert!(a.last().unwrap().contains("exec 'claude' '--resume' 'x y'") || a.last().unwrap().contains("claude"), "{a:?}");
+        // A plain shell at home sends no remote command (Windows hosts can't run the POSIX one).
+        let home = Target::parse("ssh://devbox/~").unwrap();
+        assert_eq!(terminal_args(&home, HostOs::Windows, None, &[], &[], None).last().unwrap(), "devbox");
+        // Anywhere else it still goes through the login shell with a cd.
+        assert!(terminal_args(&t, HostOs::Posix, None, &[], &[], None).last().unwrap().contains("/srv/app"));
+    }
+
+    #[test]
+    fn powershell_for_windows_hosts() {
+        let decode = |cmd: &str| {
+            use base64::Engine;
+            let b64 = cmd.rsplit(' ').next().unwrap();
+            let b = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+            String::from_utf16(&b.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()).unwrap()
+        };
+        assert_eq!(ps_quote("it's ‘x’"), "'it''s ‘‘x’’'");
+        assert_eq!(ps_path("~"), "$HOME");
+        assert_eq!(ps_path("~/a b"), "(Join-Path $HOME 'a b')");
+        assert_eq!(ps_path("/C:/work"), "'C:/work'");
+        assert_eq!(ps_path("/D:\\x"), "'D:\\x'");
+
+        let t = Target::parse("ssh://winbox/C:/work").unwrap();
+        let shell = terminal_args(&t, HostOs::Windows, None, &[], &[], None);
+        let cmd = shell.last().unwrap();
+        assert!(cmd.starts_with("powershell -NoLogo -NoExit -EncodedCommand "), "{cmd}");
+        assert!(!cmd.contains('$') && !cmd.contains('\''), "{cmd}");
+        assert_eq!(decode(cmd), "try { Set-Location -LiteralPath 'C:/work' -ErrorAction Stop } catch { Write-Host $_; exit 1 }; ");
+
+        let home = Target::parse("ssh://winbox/~").unwrap();
+        let cmd = terminal_args(&home, HostOs::Windows, Some("claude"), &["--resume".into(), "it's".into()], &[("DEVCAT_X".into(), "v".into())], None);
+        let cmd = cmd.last().unwrap();
+        assert!(cmd.starts_with("powershell -NoLogo -EncodedCommand "), "{cmd}");
+        assert_eq!(
+            decode(cmd),
+            "$env:DEVCAT_X = 'v'; try { Set-Location -LiteralPath $HOME -ErrorAction Stop } catch { Write-Host $_; exit 1 }; & 'claude' '--resume' 'it''s'; exit $LASTEXITCODE"
+        );
     }
 
     /// End to end against a real host: DEVCAT_SSH_TEST=ssh://host/scratch/dir (it's wiped).
@@ -938,7 +1097,7 @@ printf 'hello\n' > README.md && printf 'fn main() {}\n' > src/main.rs && git add
         assert!(g.is_repo && g.root.as_deref().unwrap().starts_with("ssh://"), "{g:?}");
         assert!(g.files.iter().any(|f| f.path == "README.md"));
 
-        let a = terminal_args(&dir, Some("sh"), &["-c".into(), "pwd; echo $DEVCAT_X".into()], &[("DEVCAT_X".into(), "it's set".into())], None);
+        let a = terminal_args(&dir, HostOs::Posix, Some("sh"), &["-c".into(), "pwd; echo $DEVCAT_X".into()], &[("DEVCAT_X".into(), "it's set".into())], None);
         let out = tokio::process::Command::new("ssh").args(&a).output().await.unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains(&dir.path) && text.contains("it's set"), "{text}");
