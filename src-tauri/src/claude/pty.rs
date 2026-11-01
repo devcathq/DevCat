@@ -232,9 +232,15 @@ pub(crate) async fn open(
     let uid = uuid::Uuid::new_v4();
     let id = uid.to_string();
     let agent = is_claude(program.as_deref());
+    // What the host runs the terminal's command in (only asked when there is one to run).
+    let host_os = match &remote {
+        Some(t) if agent || super::remote::needs_command(t, program.as_deref(), &env.iter().filter(|(k, _)| k.starts_with("DEVCAT_")).cloned().collect::<Vec<_>>()) => super::remote::host_os(t).await,
+        _ => super::remote::HostOs::Posix,
+    };
     // Remote agents report through a reverse forward: host 127.0.0.1:<this> → DevCat's hook server.
+    // Not from a Windows host: the hook command needs a POSIX shell and curl there.
     let mut forward = None;
-    if agent {
+    if agent && host_os == super::remote::HostOs::Posix {
         // Claude Code hooks report "finished" / "needs input" back to DevCat (notifications).
         if let Some(h) = crate::notify::hooks::launch(&id) {
             args.splice(0..0, h.args);
@@ -268,7 +274,7 @@ pub(crate) async fn open(
             let env: Vec<(String, String)> = env.into_iter().filter(|(k, _)| k.starts_with("DEVCAT_")).collect();
             let prog = program.as_deref().map(|p| if is_claude(Some(p)) { "claude" } else { p });
             let mut c = CommandBuilder::new("ssh");
-            c.args(super::remote::terminal_args(t, prog, &args, &env, forward));
+            c.args(super::remote::terminal_args(t, host_os, prog, &args, &env, forward));
             if let Some(h) = dirs::home_dir() {
                 c.cwd(h);
             }
