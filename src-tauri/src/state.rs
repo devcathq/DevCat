@@ -16,6 +16,8 @@ pub struct AppState {
     pub notes: NoteStore,
     /// Open database sessions keyed by connection id.
     pub sessions: RwLock<HashMap<String, DynDriver>>,
+    /// Read-only twins of those sessions (`read_only_driver`), keyed by connection id.
+    read_only_sessions: RwLock<HashMap<String, DynDriver>>,
 }
 
 impl AppState {
@@ -32,6 +34,43 @@ impl AppState {
             notes: NoteStore::new(data_dir),
             projects,
             sessions: RwLock::new(HashMap::new()),
+            read_only_sessions: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// A session on `conn_id` opened read-only (as if the connection were set read-only), for a
+    /// caller that may only read: an agent's query DevCat judged a read by its words (it then runs
+    /// without asking, or over MCP without full access), a read-only phone. Words can be made to
+    /// look like a read (comment and quoting rules differ per database, functions can write), so
+    /// the driver and, where it can, the server refuse writes too (`default_transaction_read_only`,
+    /// `SET SESSION TRANSACTION READ ONLY`, SQLite opened read-only). A connection that's read-only
+    /// already uses its own session.
+    pub async fn read_only_driver(&self, conn_id: &str) -> AppResult<DynDriver> {
+        let mut cfg = self.store.get(conn_id).map_err(|_| AppError::NotConnected(conn_id.into()))?;
+        if cfg.read_only {
+            return self.driver(conn_id).await;
+        }
+        if let Some(d) = self.read_only_sessions.read().await.get(conn_id) {
+            return Ok(d.clone());
+        }
+        cfg.read_only = true;
+        crate::network::ensure_for(&cfg).await?;
+        let d = crate::db::connect(&cfg).await?;
+        self.read_only_sessions.write().await.insert(conn_id.to_string(), d.clone());
+        Ok(d)
+    }
+
+    /// The open read-only twin of `conn_id`'s session, if any (to cancel its query).
+    pub async fn open_read_only(&self, conn_id: &str) -> Option<DynDriver> {
+        self.read_only_sessions.read().await.get(conn_id).cloned()
+    }
+
+    /// Close the read-only twin of `conn_id`'s session: wherever the session itself is dropped
+    /// (settings changed, connection closed or deleted), so the next read connects anew.
+    pub async fn close_read_only(&self, conn_id: &str) {
+        let removed = self.read_only_sessions.write().await.remove(conn_id);
+        if let Some(d) = removed {
+            d.close().await;
         }
     }
 

@@ -655,8 +655,15 @@ pub(crate) mod tests {
         (Phone { _ep: ep, _conn: conn, send, recv }, first)
     }
 
+    /// A port free for UDP (the endpoint) and TCP too (browser access takes the same number): on
+    /// Windows a free UDP port can be one TCP may not use (in use, or an excluded range: 10013).
     pub(crate) fn free_port() -> u16 {
-        std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+        loop {
+            let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+            if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() {
+                return port;
+            }
+        }
     }
 
     #[tokio::test]

@@ -676,8 +676,15 @@ pub async fn room_folder_save(room: String, path: String, dest: String, replace:
     if full && !replace {
         return Err(AppError::msg(format!("{} already exists and has files in it.", dest.display())));
     }
+    // A file's name is whatever the member who shared it wrote (any key, with `..` or a drive):
+    // only plain names under the folder, checked before anything is written.
+    let mut targets = Vec::with_capacity(files.len());
     for f in &files {
-        write_out(&r, f, &dest.join(&f.path[dir.len() + 1..])).await?;
+        let rel = clean_path(&f.path[dir.len() + 1..]).map_err(|e| AppError::msg(format!("Nothing was saved: {} can't be saved on this computer ({e})", f.path)))?;
+        targets.push((f, dest.join(rel)));
+    }
+    for (f, target) in &targets {
+        write_out(&r, f, target).await?;
     }
     let _ = r.doc().log(ActivityKind::TookOut, &dir, None, Some(to.as_deref().unwrap_or("their computer")), Some(files.len()), &me, devcat_rooms::now_ms());
     Ok(files.len())

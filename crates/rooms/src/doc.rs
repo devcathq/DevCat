@@ -418,6 +418,15 @@ pub struct EditSpan {
 
 pub type DocResult<T> = Result<T, String>;
 
+/// Changes that make Loro panic (`RoomDoc::import`).
+const UNREADABLE: &str = "Refused changes this DevCat can't read (a damaged or malformed document change)";
+
+/// Let go of a copy a panic left with poisoned locks: dropping it panics too, so that's caught
+/// (what it couldn't free stays allocated).
+fn drop_broken(doc: LoroDoc) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(doc)));
+}
+
 pub struct RoomDoc {
     doc: LoroDoc,
 }
@@ -434,7 +443,14 @@ impl RoomDoc {
 
     pub fn load(snapshot: &[u8]) -> DocResult<RoomDoc> {
         let d = RoomDoc::new();
-        d.doc.import(snapshot).map_err(|e| format!("The room's document is damaged: {e}"))?;
+        // a fresh copy, so a panic (see `import`) only loses it
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.doc.import(snapshot))) {
+            Ok(r) => r.map_err(|e| format!("The room's document is damaged: {e}"))?,
+            Err(_) => {
+                drop_broken(d.doc);
+                return Err(UNREADABLE.into());
+            }
+        };
         Ok(d)
     }
 
@@ -465,7 +481,21 @@ impl RoomDoc {
     }
 
     /// Merge changes from another copy. Returns whether anything new came in.
+    ///
+    /// They're untrusted (any member's DevCat, or one changed to send anything): Loro panics
+    /// importing a change to a root container whose name has `/` (or is empty), with its locks
+    /// held, which breaks this copy for good: every later use panics, and the next sync brings the
+    /// change again. So they're merged into a fork first, and refused if that panics.
     pub fn import(&self, bytes: &[u8]) -> DocResult<bool> {
+        let probe = self.doc.fork();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe.import(bytes))) {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(format!("Couldn't merge changes: {e}")),
+            Err(_) => {
+                drop_broken(probe);
+                return Err(UNREADABLE.into());
+            }
+        }
         let before = self.doc.oplog_vv();
         self.doc.import(bytes).map_err(|e| format!("Couldn't merge changes: {e}"))?;
         Ok(self.doc.oplog_vv() != before)
@@ -1431,6 +1461,30 @@ mod tests {
 
     fn who(name: &str, agent: bool) -> Author {
         Author { member: format!("{name}-id"), name: name.into(), agent, via: None }
+    }
+
+    /// A change to a root container named with `/` (which Loro panics on when importing) is
+    /// refused, and the copy keeps working.
+    #[test]
+    fn bad_root_names_are_refused() {
+        let a = RoomDoc::new();
+        a.create_file("plan.md", "The deadline is Friday.", &who("Arif", false), 1).unwrap();
+        let b = RoomDoc::new();
+        sync(&a, &b);
+        // a copy changed to write what Loro's own API won't
+        let evil = LoroDoc::new();
+        evil.import(&a.snapshot()).unwrap();
+        let root = ContainerID::Root { name: "files/../x".into(), container_type: loro::ContainerType::Map };
+        let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            evil.get_map(root).insert("k", 1).unwrap();
+            evil.commit();
+            evil.export(ExportMode::updates(&b.doc.oplog_vv())).unwrap()
+        }));
+        let Ok(bytes) = made else { return }; // this Loro refuses to make one at all
+        let _ = b.import(&bytes);
+        // still usable, with what it had
+        assert_eq!(b.read("plan.md").as_deref(), Some("The deadline is Friday."));
+        b.import(&a.updates_since(&b.version())).unwrap();
     }
 
     /// Two copies that exchange everything both ways.

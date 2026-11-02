@@ -277,8 +277,11 @@ mod tests {
         post(format!("/hook/t-good/{}", s.token), body).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(get("t-good").map(|a| a.status), Some("working".into()));
-        let l = launch("p1").unwrap();
-        assert!(l.env[0].1.ends_with(&format!("/hook/p1/{}", s.token)));
+        // hooks are offered on Unix only (`launch`)
+        match launch("p1") {
+            Some(l) => assert!(l.env[0].1.ends_with(&format!("/hook/p1/{}", s.token))),
+            None => assert!(!cfg!(unix), "Unix terminals get the hook"),
+        }
         AGENTS.lock().remove("t-good");
     }
 }

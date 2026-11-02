@@ -4,7 +4,7 @@
 import clsx from "clsx";
 import { ArrowUp, Copy, Download, Eye, EyeOff, File, FileCode, FileText, Folder, FolderGit2, FolderOpen, Home, Image as ImageIcon, MoreVertical, Pencil, RefreshCw, Save, Table2, Upload, WrapText, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { errMsg } from "../lib/rpc";
 import { host, nav, toast, toastErr, top, useApp } from "../lib/store";
@@ -237,10 +237,29 @@ export function Files({ dir, root }: { dir: string; root?: string }) {
 
 // ------------------------------------------------------------------ one file
 
+/**
+ * Images in an agent's answer or a file don't load by themselves (only `data:` / `blob:` ones):
+ * loading one would send its address, with whatever an agent put in it, to that server without a
+ * tap. They show as a link to open instead.
+ */
+const MD_COMPONENTS: Components = {
+  img: ({ src, alt }) => {
+    const s = typeof src === "string" ? src : "";
+    if (/^(data:image\/|blob:)/i.test(s)) return <img src={s} alt={alt ?? ""} />;
+    const web = /^https?:\/\//i.test(s);
+    return (
+      <a href={web ? s : undefined} target="_blank" rel="noopener noreferrer" title={s}
+        className="inline-flex items-center gap-1 rounded border border-line px-1.5 text-[12px] text-muted">
+        <ImageIcon size={13} /> {alt || "Image"}
+      </a>
+    );
+  },
+};
+
 export function Markdown({ text, className }: { text: string; className?: string }) {
   return (
     <div className={clsx("md selectable leading-relaxed", className ?? "text-[14px]")}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{text}</ReactMarkdown>
     </div>
   );
 }

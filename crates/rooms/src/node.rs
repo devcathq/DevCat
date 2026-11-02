@@ -538,6 +538,11 @@ impl Inner {
             };
             r.update_membership(|m| m.members.push(Member { id: peer.to_string(), name: clean_name(name), role, added_at: now_ms() }), false);
         }
+        // A keeper only stores the room's sealed changes: it never gets the keys or the document
+        // (Sync and Blob refuse it the same way).
+        if !r.state.lock().membership.member(peer).is_some_and(|m| m.role.reads()) {
+            return denied("Only people who read the room get its keys.");
+        }
         r.note_hints(peer, hints);
         let st = r.state.lock().clone();
         Reply::Admitted { hints: self.all_hints(&st), membership: st.membership, keys: st.keys.into_iter().collect(), doc: b64(&r.doc.snapshot()) }
@@ -1152,10 +1157,20 @@ impl Room {
         }
         match tokio::time::timeout(ANSWER, read_frame::<_, Reply>(&mut recv)).await {
             Ok(Ok(Some(Reply::Synced { membership, keys, updates, version, hints }))) => {
-                let new_epoch = {
+                // What to take from them is decided by the newest list the owner signed (theirs,
+                // if it's newer than ours): keys and changes only from someone who reads the room,
+                // and keys only for epochs that list has reached. A key for a later epoch would be
+                // one a member made up, which the room would then use after removing them. The
+                // owner makes every key itself and takes none.
+                let (peer_reads, epoch) = {
+                    let st = self.state.lock();
+                    let list = if st.membership.superseded_by(&membership) { &membership } else { &st.membership };
+                    (list.member(peer).is_some_and(|m| m.role.reads()), list.epoch)
+                };
+                let new_epoch = peer_reads && !self.is_owner() && {
                     let mut st = self.state.lock();
                     let before = st.keys.len();
-                    for (e, k) in keys {
+                    for (e, k) in keys.into_iter().filter(|(e, _)| *e <= epoch) {
                         st.keys.entry(e).or_insert(k);
                     }
                     st.keys.len() != before
@@ -1167,7 +1182,7 @@ impl Room {
                 for (id, h) in hints.iter().filter(|(id, _)| **id != self.me) {
                     self.note_hints(id, h);
                 }
-                if let Some(b) = unb64(&updates) {
+                if peer_reads && let Some(b) = unb64(&updates) {
                     self.import_remote(&b);
                 }
                 // Only to someone who still reads the room: the owner also syncs with a member it

@@ -1642,8 +1642,10 @@ fn split_batch(sql: &str) -> Option<Vec<String>> {
     Some(pieces)
 }
 
-/// Conservative read-only check for a statement/batch.
-fn is_read_only_sql(sql: &str) -> bool {
+/// Conservative read-only check for a statement/batch. SQL Server has no read-only session, so on
+/// a read-only connection this is what refuses writes (also for read-only phones and agents:
+/// `remote::readonly`).
+pub(crate) fn is_read_only_sql(sql: &str) -> bool {
     let cleaned = strip_comments(sql).to_uppercase();
     let first = cleaned.split_whitespace().next().unwrap_or("");
     if !matches!(first, "SELECT" | "WITH" | "SET" | "PRINT" | "DECLARE" | "USE" | "EXEC" | "EXECUTE" | "SP_HELP" | "SP_HELPTEXT" | "DBCC") && !first.is_empty() {
@@ -1667,12 +1669,32 @@ fn is_read_only_sql(sql: &str) -> bool {
     !words.iter().any(|w| WRITES.contains(w))
 }
 
+/// `sql` without comments, with string literals and quoted identifiers (`[…]`, `"…"`) emptied, so
+/// words inside them don't count. Identifiers must be skipped as SQL Server reads them: a `'` in
+/// `[a'b]` is part of the name, and taking it for the start of a string would hide the statements
+/// that follow.
 fn strip_comments(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len());
     let c: Vec<char> = sql.chars().collect();
     let mut i = 0;
     while i < c.len() {
-        if c[i] == '-' && c.get(i + 1) == Some(&'-') {
+        if c[i] == '[' || c[i] == '"' {
+            // `]]` / `""` inside stand for one `]` / `"`
+            let close = if c[i] == '[' { ']' } else { '"' };
+            i += 1;
+            while i < c.len() {
+                if c[i] == close {
+                    if c.get(i + 1) == Some(&close) {
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                i += 1;
+            }
+            i += 1;
+            out.push_str(if close == ']' { "[]" } else { "\"\"" });
+        } else if c[i] == '-' && c.get(i + 1) == Some(&'-') {
             while i < c.len() && c[i] != '\n' {
                 i += 1;
             }
@@ -1728,6 +1750,11 @@ mod tests {
         assert!(!is_read_only_sql("SELECT 1 EXEC('DELETE FROM t')"));
         assert!(!is_read_only_sql("DECLARE @s nvarchar(99) = N'DROP TABLE t'; EXEC sp_executesql @s"));
         assert!(!is_read_only_sql("SELECT * FROM OPENQUERY(srv, 'DELETE FROM t')"));
+        // a quote inside a quoted identifier doesn't start a string that hides what follows
+        assert!(!is_read_only_sql("SELECT [it's] FROM t; DELETE FROM t; SELECT 'x'"));
+        assert!(!is_read_only_sql("SELECT \"it's\" FROM t; DROP TABLE t; SELECT 'x'"));
+        assert!(!is_read_only_sql("SELECT [a]]'b] FROM t; DELETE FROM t; SELECT 'x'"));
+        assert!(is_read_only_sql("SELECT [delete], \"update\" FROM [my table]"));
     }
 
     #[test]

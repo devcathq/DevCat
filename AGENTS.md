@@ -47,8 +47,17 @@ also disconnect and edit). Rules that hold whatever the caller: a connection an 
 agents never change a connection's or profile's access; VPN configs an agent writes can't run programs
 (`network::agent_config_problem`, the passwordless helper's checks); jobs stay in the agent's folder and never Bypass;
 secret-looking values are hidden (`redact_secrets`). A run fed outside text (a ticket's agent: `Scope::unattended`)
-gets no tool that reaches boards, jobs, connection setup or profile changes. `devcat mcp` logs every call in
+gets no tool that reaches boards, jobs, connection setup, profile changes, notes or rooms, and tests only existing
+connections; a ticket's Claude Code gets the same through `devcat mcp --unattended` (`mcp_sync::run_config`) and the
+bridge (`Call::unattended`: a call can narrow its scope, never widen it). `devcat mcp` logs every call in
 `mcp_audit.rs` (the UI's MCP activity).
+
+Judging a query by its words can be fooled, so a query DevCat lets through only because it looks like a read (an
+agent's `Kind::Query`, read access over MCP, `db_export`, a read-only phone) runs on a read-only session
+(`St::read_only_driver`), where the driver and, where it can, the server refuse writes. A kubeconfig an agent names
+may not log in by running a program (`infra::k8s::agent_kubeconfig_problem`). The ticket worker runs git without
+the repository's hooks unless the board allows commands, and no git at all in a repository whose git settings
+(config, attributes, hooks) changed while the agent worked (`tickets::worker::git_setup`).
 
 One exception to "both get it": what can't be undone is for the DevCat Agent only (`db_drop_database`,
 `db_restore`, `k8s_delete`, `docker_remove`, `rmq_delete`, `net_profile_delete`, `db_import` emptying the table

@@ -60,7 +60,12 @@ pub async fn open_endpoint(cfg: &ConnectionConfig, default_port: u16) -> AppResu
     }
 }
 
-pub(crate) struct TunnelHandler;
+/// Checks the server's host key (`check_host_key`); why it refused one, for the error.
+pub(crate) struct TunnelHandler {
+    host: String,
+    port: u16,
+    refused: Arc<std::sync::Mutex<Option<String>>>,
+}
 
 /// An authenticated SSH client session.
 pub(crate) type SshSession = client::Handle<TunnelHandler>;
@@ -68,10 +73,61 @@ pub(crate) type SshSession = client::Handle<TunnelHandler>;
 impl client::Handler for TunnelHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, _key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
-        // TODO: known_hosts verification (russh::keys::check_known_hosts) with a
-        // trust-on-first-use prompt in the UI. Unknown host keys are accepted for now.
-        Ok(true)
+    async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+        let key = match key {
+            PublicKeyOrCertificate::PublicKey { key, .. } => key.clone(),
+            // a host certificate: its key, as known_hosts records it
+            PublicKeyOrCertificate::Certificate(c) => russh::keys::PublicKey::from(c.public_key().clone()),
+        };
+        match check_host_key(&self.host, self.port, &key, known_hosts_file().as_deref()) {
+            Ok(()) => Ok(true),
+            Err(why) => {
+                *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+                Ok(false)
+            }
+        }
+    }
+}
+
+/// DevCat's own record of SSH host keys (`<data>/ssh_known_hosts`).
+static KNOWN_HOSTS: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+
+/// Where DevCat records the SSH host keys it has seen (the app and `devcat mcp`, from their data
+/// folder; else the default one).
+pub fn init(data_dir: PathBuf) {
+    let _ = KNOWN_HOSTS.set(data_dir.join("ssh_known_hosts"));
+}
+
+fn known_hosts_file() -> Option<PathBuf> {
+    KNOWN_HOSTS.get().cloned().or_else(|| crate::cli::default_data_dir().map(|d| d.join("ssh_known_hosts")))
+}
+
+/// Whether `key` may be `host:port`'s. As the user's `~/.ssh/known_hosts` has it; else as DevCat
+/// recorded it the first time it connected (`known`), trust on first use, like OpenSSH's
+/// `StrictHostKeyChecking=accept-new`. A key that differs from a recorded one is refused:
+/// someone may be between DevCat and the server, waiting for the password and the database
+/// traffic. With nowhere to record keys, any is taken (as before).
+fn check_host_key(host: &str, port: u16, key: &russh::keys::PublicKey, known: Option<&std::path::Path>) -> Result<(), String> {
+    use russh::keys::Error::KeyChanged;
+    let changed = |line: usize, file: &str| {
+        format!("SSH: {host}'s host key isn't the one recorded for it (line {line} of {file}), so DevCat didn't connect: someone may be between you and the server. If its key really changed, remove that line.")
+    };
+    match russh::keys::check_known_hosts(host, port, key) {
+        Ok(true) => return Ok(()),
+        Err(KeyChanged { line }) => return Err(changed(line, "~/.ssh/known_hosts")),
+        _ => {}
+    }
+    let Some(known) = known else { return Ok(()) };
+    match russh::keys::check_known_hosts_path(host, port, key, known) {
+        Ok(true) => Ok(()),
+        Err(KeyChanged { line }) => Err(changed(line, &known.display().to_string())),
+        _ => {
+            // the name goes into the file as it is: nothing that could start another line
+            if host.is_empty() || !host.chars().all(|c| c.is_ascii_alphanumeric() || ".-_:%[]".contains(c)) {
+                return Err(format!("SSH: {host:?} isn't a host name DevCat can record a key for"));
+            }
+            russh::keys::known_hosts::learn_known_hosts_path(host, port, key, known).map_err(|e| format!("SSH: couldn't record {host}'s host key: {e}"))
+        }
     }
 }
 
@@ -152,11 +208,16 @@ pub(crate) async fn connect_session(ssh: &SshConfig) -> AppResult<SshSession> {
         ..Default::default()
     });
     let ssh_port = if ssh.port == 0 { 22 } else { ssh.port };
-    let connect = client::connect(config, (ssh.host.as_str(), ssh_port), TunnelHandler);
+    let refused = Arc::new(std::sync::Mutex::new(None));
+    let handler = TunnelHandler { host: ssh.host.trim().to_string(), port: ssh_port, refused: refused.clone() };
+    let connect = client::connect(config, (ssh.host.as_str(), ssh_port), handler);
     let mut session = tokio::time::timeout(Duration::from_secs(20), connect)
         .await
         .map_err(|_| ssh_err(format!("timed out connecting to {}:{ssh_port}", ssh.host)))?
-        .map_err(ssh_err)?;
+        .map_err(|e| match refused.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            Some(why) => AppError::msg(why),
+            None => ssh_err(e),
+        })?;
     authenticate(&mut session, ssh).await?;
     Ok(session)
 }
@@ -192,6 +253,22 @@ async fn open_tunnel(ssh: &SshConfig, target_host: &str, target_port: u16) -> Ap
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first key a host shows is recorded; the same one later passes, another is refused.
+    #[test]
+    fn host_keys_trusted_on_first_use() {
+        let k = |s: &str| russh::keys::PublicKey::from_openssh(s).unwrap();
+        let one = k("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFpOWZwegZe1YLMdfAJ34ibygmw5yRoGPtvILh5609Bb");
+        let two = k("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE5MZqX2fDi8meur0pdVrMnQjcBksJNQjJWskd59+X/o");
+        let file = std::env::temp_dir().join(format!("devcat-known-hosts-{}", uuid::Uuid::new_v4()));
+        let host = "bastion.devcat-test.invalid";
+        assert_eq!(check_host_key(host, 22, &one, Some(&file)), Ok(()), "first use: recorded");
+        assert_eq!(check_host_key(host, 22, &one, Some(&file)), Ok(()), "the same key again");
+        assert!(check_host_key(host, 22, &two, Some(&file)).unwrap_err().contains("isn't the one recorded"), "a different key");
+        assert_eq!(check_host_key(host, 2222, &two, Some(&file)), Ok(()), "another port is another host");
+        assert!(check_host_key("evil\nother.example ssh-ed25519 AAAA", 22, &one, Some(&file)).is_err(), "no new lines through the name");
+        let _ = std::fs::remove_file(&file);
+    }
 
     fn base_cfg() -> ConnectionConfig {
         serde_json::from_value(serde_json::json!({

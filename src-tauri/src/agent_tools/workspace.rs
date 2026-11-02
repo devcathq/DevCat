@@ -97,7 +97,17 @@ fn config_from(scope: &Scope, v: &View, input: &Value, ctx: &ToolCtx) -> Result<
         "options": options,
         "readOnly": arg_bool(input, "read_only").unwrap_or(false),
     });
-    serde_json::from_value(cfg).map_err(|e| ToolOutput::err(format!("Bad connection settings: {e}")))
+    let cfg: ConnectionConfig = serde_json::from_value(cfg).map_err(|e| ToolOutput::err(format!("Bad connection settings: {e}")))?;
+    // a kubeconfig can run a program to log in: not one the agent names (see the function)
+    if cfg.kind == ConnectionKind::Kubernetes {
+        if let Some(file) = cfg.file_path.as_deref().filter(|f| !f.trim().is_empty()) {
+            let temp = std::env::temp_dir();
+            if let Some(why) = crate::infra::k8s::agent_kubeconfig_problem(file, &[ctx.cwd.as_path(), temp.as_path()]) {
+                return Err(ToolOutput::err(why));
+            }
+        }
+    }
+    Ok(cfg)
 }
 
 // ---------- devcat_connection_add
@@ -200,6 +210,9 @@ impl Tool for ConnTest {
                 Ok(full) => full,
                 Err(e) => return ToolOutput::err(e.to_string()),
             }
+        } else if self.0.unattended {
+            // a run on outside text (a ticket) doesn't reach servers it describes itself
+            return ToolOutput::err("This run can only test DevCat's existing connections: give `connection`.");
         } else {
             match config_from(&self.0, &view(&self.0), &input, ctx) {
                 Ok(c) => c,

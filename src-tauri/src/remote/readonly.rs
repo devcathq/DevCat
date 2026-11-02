@@ -1,9 +1,17 @@
 //! Read-only phones may still run queries, as long as every statement only reads.
 //! Deliberately strict: anything we can't classify is refused.
+//!
+//! This only judges the words, and words can be made to look like a read: callers that may only
+//! read also run what passes on a read-only session (`St::read_only_driver`), so the driver and,
+//! where it can, the server refuse writes as well.
+use crate::db::Dialect;
+use crate::db::sql_common as sc;
 use crate::models::ConnectionKind;
 
-/// Remove `-- …` / `# …` line comments and `/* … */` blocks (outside quotes).
-fn strip_sql_comments(s: &str) -> String {
+/// Remove line comments (`-- …`, and `# …` in MySQL) and `/* … */` blocks (outside quotes), the
+/// way `d` reads them: `#` is an operator in PostgreSQL and starts temp-table names in SQL Server,
+/// and MySQL's `--` needs a space after it. MySQL runs what's in `/*! … */`, so that stays.
+fn strip_sql_comments(d: Dialect, s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let b: Vec<char> = s.chars().collect();
     let (mut i, mut quote) = (0, None::<char>);
@@ -22,19 +30,19 @@ fn strip_sql_comments(s: &str) -> String {
                 quote = Some(c);
                 out.push(c);
             }
-            '-' if b.get(i + 1) == Some(&'-') => {
+            '-' if b.get(i + 1) == Some(&'-') && (d != Dialect::Mysql || b.get(i + 2).is_none_or(|c| c.is_whitespace())) => {
                 while i < b.len() && b[i] != '\n' {
                     i += 1;
                 }
                 continue;
             }
-            '#' => {
+            '#' if d == Dialect::Mysql => {
                 while i < b.len() && b[i] != '\n' {
                     i += 1;
                 }
                 continue;
             }
-            '/' if b.get(i + 1) == Some(&'*') => {
+            '/' if b.get(i + 1) == Some(&'*') && !(d == Dialect::Mysql && b.get(i + 2) == Some(&'!')) => {
                 i += 2;
                 while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
                     i += 1;
@@ -58,8 +66,23 @@ const WRITE_WORDS: &[&str] = &[
     "reset", "load", "attach", "detach", "comment", "refresh", "kill", "shutdown",
 ];
 
-fn sql_read_only(script: &str) -> bool {
-    let clean = strip_sql_comments(script);
+/// Every statement only reads, by three looks that must all agree: the statements as the driver
+/// splits them for `d` (its comment, quoting and `$$` rules) each pass the driver's own read-only
+/// check, SQL Server's script passes its driver's check (it doesn't split on `;`), and the words
+/// of every `;`-separated part start like a read and contain no writing word.
+fn sql_read_only(d: Dialect, script: &str) -> bool {
+    let stmts = sc::split_statements(d, script);
+    if stmts.is_empty() || !stmts.iter().all(|s| sc::is_read_only_statement(d, s)) {
+        return false;
+    }
+    if d == Dialect::Mssql && !crate::db::mssql::is_read_only_sql(script) {
+        return false;
+    }
+    words_read_only(d, script)
+}
+
+fn words_read_only(d: Dialect, script: &str) -> bool {
+    let clean = strip_sql_comments(d, script);
     let mut any = false;
     for stmt in clean.split(';').map(str::trim).filter(|s| !s.is_empty()) {
         any = true;
@@ -136,7 +159,10 @@ fn mongo_read_only(script: &str) -> bool {
 /// May a read-only phone run `script` on a connection of this kind?
 pub fn allowed(kind: Option<ConnectionKind>, script: &str) -> bool {
     match kind {
-        Some(ConnectionKind::Postgres | ConnectionKind::Mysql | ConnectionKind::Sqlite | ConnectionKind::Mssql) => sql_read_only(script),
+        Some(ConnectionKind::Postgres) => sql_read_only(Dialect::Postgres, script),
+        Some(ConnectionKind::Mysql) => sql_read_only(Dialect::Mysql, script),
+        Some(ConnectionKind::Sqlite) => sql_read_only(Dialect::Sqlite, script),
+        Some(ConnectionKind::Mssql) => sql_read_only(Dialect::Mssql, script),
         Some(ConnectionKind::Redis) => redis_read_only(script),
         Some(ConnectionKind::Mongodb) => mongo_read_only(script),
         _ => false,
@@ -173,6 +199,29 @@ mod tests {
         ] {
             assert!(!allowed(Some(Mysql), bad), "{bad}");
         }
+    }
+
+    /// Comments as each database reads them: what one database ignores, another runs.
+    #[test]
+    fn sql_comments_per_database() {
+        // `#` is an operator in PostgreSQL, a temp-table prefix in SQL Server, not a comment
+        assert!(!allowed(Some(Postgres), "SELECT 1 # 1; DELETE FROM t"));
+        assert!(!allowed(Some(Mssql), "SELECT 1 # 1; DELETE FROM t"));
+        assert!(!allowed(Some(Sqlite), "SELECT 1 # 1; DELETE FROM t"));
+        assert!(allowed(Some(Mysql), "# a note\nSELECT 1"));
+        // MySQL's `--` needs a space after it: `1--1` is arithmetic
+        assert!(!allowed(Some(Mysql), "SELECT 1--1; DELETE FROM t"));
+        assert!(allowed(Some(Mysql), "-- a note\nSELECT 1"));
+        // MySQL runs what's in `/*! … */`
+        assert!(!allowed(Some(Mysql), "SELECT 1 /*! ; DELETE FROM t */"));
+        // a quote inside a quoted identifier isn't a string
+        assert!(!allowed(Some(Mssql), "SELECT [it's] FROM t; DELETE FROM t; SELECT 'x'"));
+        // the way back to writing, with a comment in between
+        assert!(!allowed(Some(Postgres), "SELECT 1; BEGIN READ/**/WRITE"));
+        assert!(!allowed(Some(Postgres), "SELECT 1; BEGIN; SELECT 2"));
+        // reads still pass
+        assert!(allowed(Some(Postgres), "SELECT $$it's$$, E'a\\'b' FROM t"));
+        assert!(allowed(Some(Mssql), "SELECT [order], \"note\" FROM [my table] WHERE a = N'x'"));
     }
 
     #[test]

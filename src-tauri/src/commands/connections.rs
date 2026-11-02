@@ -20,6 +20,7 @@ pub async fn save_connection(state: St, config: ConnectionConfig) -> AppResult<C
     if let Some(d) = removed {
         d.close().await;
     }
+    state.close_read_only(&config.id).await;
     drop_infra_clients(&config.id).await;
     // An SSH session that can't be used shouldn't save (its folders would just fail later).
     if config.kind == crate::models::ConnectionKind::Ssh {
@@ -42,6 +43,7 @@ pub async fn delete_connection(state: St, id: String) -> AppResult<()> {
     if let Some(d) = removed {
         d.close().await;
     }
+    state.close_read_only(&id).await;
     drop_infra_clients(&id).await;
     crate::claude::remote::forget_session(&id).await;
     state.store.delete(&id)?;
@@ -81,6 +83,7 @@ pub async fn close_connection(state: St, id: String) -> AppResult<()> {
     if let Some(d) = removed {
         d.close().await;
     }
+    state.close_read_only(&id).await;
     drop_infra_clients(&id).await;
     Ok(())
 }

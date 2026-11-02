@@ -162,17 +162,43 @@ impl Env {
 
 /// The `devcat` program the agents start, and its `--data-dir` when not the app's default.
 fn program() -> AppResult<(String, Option<String>)> {
-    let exe = std::env::current_exe()?;
-    let exe = std::fs::canonicalize(&exe).unwrap_or(exe).to_string_lossy().to_string();
+    let exe = match appimage() {
+        Some(file) => file,
+        None => std::env::current_exe()?,
+    };
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    if in_appimage_mount(&exe) {
+        return Err(AppError::msg("DevCat runs from a temporary AppImage mount, which is gone once DevCat quits: start it from the AppImage file to sync MCP"));
+    }
+    let exe = exe.to_string_lossy().to_string();
     let data_dir = DATA_DIR.get().filter(|d| Some(d.as_path()) != crate::cli::default_data_dir().as_deref()).map(|d| d.to_string_lossy().to_string());
     Ok((exe, data_dir))
 }
 
+/// The AppImage file DevCat runs from (Linux). Inside an AppImage the running binary sits in a
+/// temporary mount (`/tmp/.mount_DevCat…/usr/bin/devcat`) that goes away when DevCat quits, and
+/// another local user can create that path in the shared `/tmp` afterwards: agents' configs must
+/// name the AppImage itself (which passes `mcp …` on to DevCat).
+fn appimage() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let file = PathBuf::from(std::env::var_os("APPIMAGE")?);
+    (file.is_absolute() && file.is_file()).then_some(file)
+}
+
+/// Whether `exe` is inside an AppImage's temporary mount (see `appimage`).
+fn in_appimage_mount(exe: &Path) -> bool {
+    cfg!(target_os = "linux") && exe.components().any(|c| c.as_os_str().to_string_lossy().starts_with(".mount_"))
+}
+
 /// `--mcp-config` for one Claude Code run DevCat starts itself (a ticket): `devcat mcp` for
-/// `folder`, in `project` when given (else the project whose code folder holds it).
+/// `folder`, in `project` when given (else the project whose code folder holds it). The run
+/// works on the tracker's text with nobody watching, so it's `--unattended` (`Scope::unattended`):
+/// no boards, jobs, DevCat's setup, notes or rooms.
 pub fn run_config(project: Option<&str>, folder: &Path) -> AppResult<Value> {
     let (exe, data_dir) = program()?;
-    let mut args = vec!["mcp".to_string()];
+    let mut args = vec!["mcp".to_string(), "--unattended".to_string()];
     if let Some(id) = project {
         args.extend(["--project".to_string(), id.to_string()]);
     }
@@ -673,7 +699,8 @@ mod tests {
         assert_eq!(keys, ["fs", "devcat"], "the old DevCat entry is replaced, the look-alike removed, the rest kept in order");
         assert_eq!(v["mcpServers"]["devcat"]["args"], json!(["mcp"]));
         assert_eq!(v["numStartups"], 3);
-        let key = folder.to_string_lossy().to_string();
+        // as Claude Code keys the folder (`/` separators, also on Windows)
+        let key = claude_key(&folder.to_string_lossy());
         assert_eq!(v["projects"][&key]["mcpServers"]["devcat"]["args"], json!(["mcp", "--project", "p1"]));
         assert_eq!(v["projects"][&key]["allowedTools"], json!([]));
         assert_eq!(v["projects"][gone]["mcpServers"], json!({}));

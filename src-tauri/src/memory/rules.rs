@@ -90,11 +90,16 @@ pub fn apply(on: bool) -> AppResult<Vec<String>> {
 }
 
 fn apply_in(files: &[PathBuf], on: bool) -> AppResult<Vec<String>> {
-    let b = block(&super::list(&Place::Global));
+    let b = on.then(|| block(&super::list(&Place::Global)));
+    write_block(files, b.as_deref())
+}
+
+/// Put DevCat's block `b` in each of `files` (None: take it out). Returns the files changed.
+fn write_block(files: &[PathBuf], b: Option<&str>) -> AppResult<Vec<String>> {
     let mut changed = Vec::new();
     for path in files {
         let text = std::fs::read_to_string(path).unwrap_or_default();
-        let next = with_block(&text, on.then_some(b.as_str()));
+        let next = with_block(&text, b);
         if next == text {
             continue;
         }
@@ -149,10 +154,12 @@ mod tests {
         std::fs::write(home.join(".codex/AGENTS.md"), "Mine.\n").unwrap();
         let files = files_in(&home);
         assert_eq!(files, [home.join(".codex/AGENTS.md")]);
-        assert_eq!(apply_in(&files, true).unwrap().len(), 1);
+        // a fixed block: other tests save global memories meanwhile, which `apply_in` would list
+        let b = block(&[]);
+        assert_eq!(write_block(&files, Some(&b)).unwrap().len(), 1);
         let text = std::fs::read_to_string(home.join(".codex/AGENTS.md")).unwrap();
         assert!(text.starts_with("Mine.\n\n<!-- devcat-memory:start") && text.contains("memory_search"), "{text}");
-        assert!(apply_in(&files, true).unwrap().is_empty(), "unchanged");
+        assert!(write_block(&files, Some(&b)).unwrap().is_empty(), "unchanged");
         apply_in(&files, false).unwrap();
         assert_eq!(std::fs::read_to_string(home.join(".codex/AGENTS.md")).unwrap(), "Mine.\n");
         assert!(home.join(".codex/AGENTS.md.devcat-bak").exists());
