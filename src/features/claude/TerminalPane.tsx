@@ -22,6 +22,7 @@ import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
 import { droppedPaths, isFileDrag, shellQuote } from "../files/drop";
 import { isRemote, remoteHost } from "../../lib/remotePath";
 import { toast } from "sonner";
+import { Spinner } from "../../components/ui";
 
 
 const CODE_EXT = new Set(("ts tsx js jsx mjs cjs json md mdx css scss html rs go py rb java kt swift c h cpp hpp cs php sh zsh bash yml yaml toml " +
@@ -380,22 +381,36 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     else if (isRemote(cb.current.cwd)) await pasteRemoteImage(null, null);
   };
 
+  /** What's being pasted / copied to the host right now, shown in the corner so a key press is seen to have registered. */
+  const [busy, setBusy] = useState<string | null>(null);
+
+  /** Type file paths into the terminal. When the program asked for bracketed paste (Claude Code, a
+   *  shell), each goes in as a paste of its own, like a file dropped on iTerm2: Claude Code then
+   *  shows a pasted image as `[Image #1]` instead of its path. */
+  const typePaths = async (id: string, paths: string[]) => {
+    if (!termRef.current?.term.modes.bracketedPasteMode) {
+      await api.ptyWrite(id, paths.map(shellQuote).join(" ") + " ");
+      return;
+    }
+    for (const p of paths) await api.ptyWrite(id, `\x1b[200~${shellQuote(p)}\x1b[201~ `);
+  };
+
   /** Copy an image to the SSH host and type its path; without one, send `fallback` (the key as
    *  typed). `img` null = the OS clipboard's image. */
   const pasteRemoteImage = async (img: { data: string; name: string } | null, fallback: string | null) => {
     const id = ptyRef.current;
     if (!id) return;
-    const t = img ? toast.loading(`Copying the image to ${remoteHost(cb.current.cwd)}…`) : null;
+    setBusy(`Pasting image to ${remoteHost(cb.current.cwd)}…`);
     heldInput.current ??= [];
     try {
       const path = await api.remotePasteImage(cb.current.cwd, img?.data, img?.name);
-      if (path) await api.ptyWrite(id, shellQuote(path) + " ");
+      if (path) await typePaths(id, [path]);
       else if (fallback) await api.ptyWrite(id, fallback);
     } catch (err) {
       toast.error(`Couldn't paste the image: ${errMsg(err)}`);
       if (fallback) await api.ptyWrite(id, fallback).catch(() => {});
     } finally {
-      if (t !== null) toast.dismiss(t);
+      setBusy(null);
       const held = heldInput.current?.join("") ?? "";
       heldInput.current = null;
       if (held) await api.ptyWrite(id, held).catch(() => {});
@@ -414,10 +429,10 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     try {
       let paths = await droppedPaths(e.dataTransfer, "terminal");
       if (paths.length && isRemote(cb.current.cwd)) {
-        const t = toast.loading(`Copying to ${remoteHost(cb.current.cwd)}…`);
-        try { paths = await api.remoteStageFiles(cb.current.cwd, paths); } finally { toast.dismiss(t); }
+        setBusy(`Copying ${paths.length === 1 ? "the file" : `${paths.length} files`} to ${remoteHost(cb.current.cwd)}…`);
+        try { paths = await api.remoteStageFiles(cb.current.cwd, paths); } finally { setBusy(null); }
       }
-      if (paths.length) await api.ptyWrite(id, paths.map(shellQuote).join(" ") + " ");
+      if (paths.length) await typePaths(id, paths);
       termRef.current?.term.focus();
     } catch (err) {
       termRef.current?.term.write(`\r\n\x1b[31mCouldn't drop the file: ${errMsg(err)}\x1b[0m\r\n`);
@@ -434,6 +449,12 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       {dropping && (
         <div className="pointer-events-none absolute inset-2 flex items-center justify-center rounded-lg border-2 border-dashed border-accent/60 bg-app/70 text-[13px] text-fg">
           {isRemote(cwd) ? `Drop to copy the files to ${remoteHost(cwd)} and type their paths` : "Drop to type the file's path into the terminal"}
+        </div>
+      )}
+      {busy && (
+        <div className="pointer-events-none absolute right-3 bottom-2 flex items-center gap-1.5 rounded-md border border-line bg-panel/95 px-2 py-1 text-[12px] text-fg shadow-sm">
+          <Spinner className="size-3.5" />
+          {busy}
         </div>
       )}
     </div>
