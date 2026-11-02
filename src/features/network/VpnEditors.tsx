@@ -271,6 +271,9 @@ export function OpenVpnEditor({ p, set, text, setText, initialMode, saved }: Vpn
       <Row label="openvpn arguments" hint="Optional extra command-line arguments, e.g. --mute-replay-warnings.">
         <Input className="font-mono text-xs!" value={p.options.ovpnArgs ?? ""} placeholder="(none)" onChange={(e) => setOption(p, set, "ovpnArgs", e.target.value || null)} />
       </Row>
+      <Row label="" hint="For servers older than OpenVPN 2.4.5: DCO drops their packets, so the VPN connects but nothing gets through. DevCat turns it off by itself when OpenVPN reports that.">
+        <Checkbox label="Turn off Data Channel Offload (DCO)" checked={p.options.disableDco === "true"} onChange={(v) => setOption(p, set, "disableDco", v ? "true" : null)} />
+      </Row>
     </>
   );
 }
