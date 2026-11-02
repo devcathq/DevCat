@@ -12,15 +12,37 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-- **OpenVPN with older servers on Windows and Linux:** a VPN whose server runs OpenVPN older than 2.4.5 connected
-  but let nothing through, because OpenVPN's Data Channel Offload (DCO) drops that server's packets ("Data Channel
-  Offload doesn't support DATA_V1 packets"). DevCat now notices this, turns DCO off for that profile and connects
-  again (Windows asks for administrator rights once more). The profile also has a **Turn off Data Channel Offload**
-  checkbox.
+## 0.20.0 - 2026-11-02
 
-- **Rooms:** hovering a message no longer pushes the thread down by a line. **React** now sits in the message's
-  hover toolbar, next to **Reply** and **Pin**. The agent and people chips above the message box are listed
-  alphabetically.
+- **Security fixes** (#126): a security audit found places where text from outside (a ticket's description, a room
+  member, another computer, an agent's answer) could get DevCat to do more than you allowed. Those are closed, and
+  the vulnerable dependencies are updated. What you may notice: SSH tunnels for databases and network profiles now
+  check the server's host key (from `~/.ssh/known_hosts`, else the first key seen is remembered) and refuse one that
+  changed. Images in Markdown that comes from outside (agent answers, files, notes, rooms) no longer load from the
+  network by themselves: they show as a button that opens the address. Ticket boards that don't allow commands no
+  longer run the repository's commit hooks on the agent's commits, and a ticket's Claude Code gets the same limited
+  tools as a ticket's DevCat Agent. Queries that an agent or a read-only phone may run because they only read now go
+  through a separate read-only database session, so the database refuses writes too. Chat bots don't send
+  `.git-credentials` or similar credential files.
+- **SSH terminals on Windows hosts** (#125): a saved SSH session to a Windows computer closed straight away
+  (`'exec' is not recognized…`). A plain shell now opens the account's own shell. With a start folder, a startup
+  command or an agent terminal (such as `claude`), DevCat runs it as PowerShell, so write a Windows host's startup
+  command for PowerShell. The file tree, preview, git and SFTP don't work on Windows hosts yet.
+- **DevCat Agent: steps per turn** (#124): the agent no longer stops after a fixed 60 steps ("Paused after many
+  steps"). Each DevCat Agent connection has **Steps per turn** (default 60, 0 for no limit), and chats that are
+  already open pick up a change.
+- **Pasting images into Claude Code over SSH** (#127): a pasted or dropped image now shows as `[Image #1]` instead
+  of its path on the host, and a small chip in the terminal's corner shows while it's being copied there.
+- **OpenVPN with older servers on Windows and Linux** (#128): a VPN whose server runs OpenVPN older than 2.4.5
+  connected but let nothing through, because OpenVPN's Data Channel Offload (DCO) drops that server's packets ("Data
+  Channel Offload doesn't support DATA_V1 packets"). DevCat now notices this, turns DCO off for that profile and
+  connects again (Windows asks for administrator rights once more). The profile also has a **Turn off Data Channel
+  Offload** checkbox.
+- **SFTP downloads over an existing copy** (#120): downloading a folder into one that already holds a copy no longer
+  stops with "Permission denied" at the first read-only file (git's objects, for example).
+- **Rooms** (#121): hovering a message no longer pushes the thread down by a line. **React** now sits in the
+  message's hover toolbar, next to **Reply** and **Pin**. The agent and people chips above the message box are
+  listed alphabetically.
 
 ## 0.19.0 - 2026-11-01
 
