@@ -5,7 +5,9 @@ use super::store::{NetStore, write_private};
 use super::helper::{self, Outcome};
 use super::{NetKind, NetProfile, elevate, tools};
 use crate::error::{AppError, AppResult};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -24,6 +26,22 @@ pub enum Action {
     Error(String),
     /// Cumulative bytes (in, out) from `>BYTECOUNT`.
     Bytes(u64, u64),
+    /// Data Channel Offload is dropping the server's packets ([`DCO_DATA_V1`]): the daemon is
+    /// being stopped, so it can be started again without DCO.
+    NoDco,
+}
+
+/// What OpenVPN 2.6+ logs, again and again, when it runs with Data Channel Offload (the Windows
+/// and Linux default) and the server is older than 2.4.5: such servers still send DATA_V1
+/// packets, which DCO drops. The tunnel comes up, then nothing gets through it.
+const DCO_DATA_V1: &str = "Data Channel Offload doesn't support DATA_V1 packets";
+
+/// Profile option: start OpenVPN with `disable-dco` (set by DevCat once it saw [`DCO_DATA_V1`],
+/// or by the user in the profile).
+pub const NO_DCO_OPTION: &str = "disableDco";
+
+pub fn dco_disabled(p: &NetProfile) -> bool {
+    p.options.get(NO_DCO_OPTION).is_some_and(|v| v == "true")
 }
 
 const STATES: &[&str] = &[
@@ -54,11 +72,30 @@ pub struct Machine {
     /// A terminal error was reported; suppress "connecting" updates until connected again.
     failed: bool,
     fatal: Option<String>,
+    /// [`DCO_DATA_V1`] was seen (and the daemon told to stop).
+    no_dco: bool,
 }
 
 impl Machine {
     pub fn new(user: Option<String>, pass: Option<String>) -> Self {
-        Self { user: user.filter(|u| !u.is_empty()), pass: pass.filter(|p| !p.is_empty()), failed: false, fatal: None }
+        Self { user: user.filter(|u| !u.is_empty()), pass: pass.filter(|p| !p.is_empty()), failed: false, fatal: None, no_dco: false }
+    }
+
+    /// A log line; the first [`DCO_DATA_V1`] also stops the daemon (see [`Action::NoDco`]).
+    fn log(&mut self, msg: &str) -> Vec<Action> {
+        let mut a = vec![Action::Log(msg.to_string())];
+        if !self.no_dco && msg.contains(DCO_DATA_V1) {
+            self.no_dco = true;
+            // Like a terminal error: no "connecting" updates or exit error while it stops.
+            self.failed = true;
+            a.extend([Action::NoDco, Action::Send("signal SIGTERM".into())]);
+        }
+        a
+    }
+
+    /// The daemon was stopped because DCO drops the server's packets.
+    pub fn wants_no_dco(&self) -> bool {
+        self.no_dco
     }
 
     fn fail(&mut self, msg: String, stop: bool) -> Vec<Action> {
@@ -96,7 +133,7 @@ impl Machine {
             if flags.contains('F') {
                 self.fatal = Some(msg.to_string());
             }
-            return vec![Action::Log(msg.to_string())];
+            return self.log(msg);
         }
         if let Some(rest) = line.strip_prefix(">STATE:") {
             let fields: Vec<&str> = rest.split(',').collect();
@@ -141,7 +178,7 @@ impl Machine {
                 return self.on_state(&fields);
             }
             if fields.len() >= 3 {
-                return vec![Action::Log(fields[2..].join(","))];
+                return self.log(&fields[2..].join(","));
             }
         }
         vec![Action::Log(line.to_string())]
@@ -149,6 +186,10 @@ impl Machine {
 
     /// `time,STATE,desc,local_ip,remote_ip,remote_port,…`
     fn on_state(&mut self, f: &[&str]) -> Vec<Action> {
+        if self.no_dco {
+            // Stopping to start again without DCO (even a replayed CONNECTED would be wrong).
+            return vec![];
+        }
         let name = f.get(1).copied().unwrap_or("");
         let desc = f.get(2).copied().unwrap_or("");
         match name {
@@ -411,7 +452,8 @@ pub async fn adopt(id: String, profile: NetProfile) -> bool {
         let _ = tx.send(cmd.to_string());
     }
     let machine = Machine::new(profile.vpn_user.clone(), profile.vpn_password.clone());
-    let reader = tokio::spawn(mgmt_task(id.clone(), generation, stream, rx, machine, s.token.clone()));
+    // How that daemon was started isn't known: a DCO problem gets one restart without it.
+    let reader = tokio::spawn(mgmt_task(id.clone(), generation, stream, rx, machine, s.token.clone(), false));
     let run = OvpnRun { tx, reader, pid_file: s.pid_file.clone(), via_helper: s.via_helper };
     match registry::store_run(&id, generation, Run::Openvpn(run)) {
         Ok(()) => {
@@ -526,7 +568,7 @@ pub async fn connect(id: String, generation: u64, profile: NetProfile, store: &N
         return Err(AppError::msg("The OpenVPN configuration file is missing; edit the profile and paste it again"));
     }
     let stored = paths.config.clone();
-    paths.config = run_config(&id, &stored, &dir)?;
+    paths.config = run_config(&id, &stored, &dir, dco_disabled(&profile))?;
     // A daemon left running by a DevCat that crashed is stopped first (in the same admin prompt).
     let leftover = leftover_pid(&paths.pid, &stored).or_else(|| leftover_pid(&paths.pid, &paths.config));
     if let Some(pid) = leftover {
@@ -580,7 +622,7 @@ pub async fn connect(id: String, generation: u64, profile: NetProfile, store: &N
         let _ = tx.send(cmd.to_string());
     }
     let machine = Machine::new(profile.vpn_user.clone(), profile.vpn_password.clone());
-    let reader = tokio::spawn(mgmt_task(id.clone(), generation, stream, rx, machine, token));
+    let reader = tokio::spawn(mgmt_task(id.clone(), generation, stream, rx, machine, token, dco_disabled(&profile)));
     let run = OvpnRun { tx, reader, pid_file: paths.pid.clone(), via_helper };
     match registry::store_run(&id, generation, Run::Openvpn(run)) {
         Ok(()) => {
@@ -629,21 +671,48 @@ pub fn without_privilege_drop(config: &str) -> Option<String> {
     changed.then(|| out.join("\n"))
 }
 
-/// The config file OpenVPN is started with. On macOS / Linux, OpenVPN that dropped root with
-/// `user` / `group` can't delete its routes on disconnect, and the host route to the server
-/// (KEEP_SERVER_ROUTE) is left behind; once the Wi-Fi address changes it blocks every app from
-/// reaching the server ("Can't assign requested address"). Such configs run from a copy
-/// (`<id>.run.ovpn`) without those lines; the profile itself is left as imported.
-fn run_config(id: &str, stored: &Path, dir: &Path) -> AppResult<PathBuf> {
+/// `config` with `disable-dco` added (behind `ignore-unknown-option`, so an OpenVPN older than
+/// 2.6 that has no DCO doesn't refuse the config), or `None` when it already turns DCO off.
+pub fn without_dco(config: &str) -> Option<String> {
+    let has = config.lines().any(|l| helper::ovpn_tokens(l).first().is_some_and(|t| t.trim_start_matches("--").eq_ignore_ascii_case("disable-dco")));
+    if has {
+        return None;
+    }
+    let mut out = config.trim_end().to_string();
+    out.push_str("\n\n# added by DevCat: the server's packets don't get through Data Channel Offload\nignore-unknown-option disable-dco\ndisable-dco\n");
+    Some(out)
+}
+
+/// The config file OpenVPN is started with: the profile's, or a copy (`<id>.run.ovpn`; the
+/// profile itself is left as imported) when DevCat has to change it:
+/// - On macOS / Linux, OpenVPN that dropped root with `user` / `group` can't delete its routes on
+///   disconnect, and the host route to the server (KEEP_SERVER_ROUTE) is left behind; once the
+///   Wi-Fi address changes it blocks every app from reaching the server ("Can't assign requested
+///   address"). The copy has those lines commented out.
+/// - `no_dco` ([`NO_DCO_OPTION`]): the copy turns Data Channel Offload off. In the config rather
+///   than on the command line, so the passwordless helper (which takes no extra arguments) runs it.
+fn run_config(id: &str, stored: &Path, dir: &Path, no_dco: bool) -> AppResult<PathBuf> {
     let run = dir.join(format!("{id}.run.ovpn"));
     let text = std::fs::read_to_string(stored).unwrap_or_default();
-    match without_privilege_drop(&text) {
-        Some(copy) if !cfg!(windows) => {
-            write_private(&run, copy.as_bytes())?;
+    let mut copy = None;
+    if !cfg!(windows) {
+        if let Some(c) = without_privilege_drop(&text) {
             registry::log(id, "Ignoring `user` / `group` in this config so OpenVPN can remove its routes when it disconnects");
+            copy = Some(c);
+        }
+    }
+    if no_dco {
+        if let Some(c) = without_dco(copy.as_deref().unwrap_or(&text)) {
+            registry::log(id, "Starting OpenVPN without Data Channel Offload (disable-dco), as set in this profile");
+            copy = Some(c);
+        }
+    }
+    match copy {
+        Some(copy) => {
+            write_private(&run, copy.as_bytes())?;
             Ok(run)
         }
-        _ => {
+        None => {
             let _ = std::fs::remove_file(&run);
             Ok(stored.to_path_buf())
         }
@@ -680,7 +749,8 @@ async fn launch_with_prompt(id: &str, generation: u64, paths: &Paths, port: u16,
     }
 }
 
-async fn mgmt_task(id: String, generation: u64, stream: TcpStream, mut rx: mpsc::UnboundedReceiver<String>, mut m: Machine, token: String) {
+/// `without_dco`: the daemon was started with DCO turned off ([`NO_DCO_OPTION`]).
+async fn mgmt_task(id: String, generation: u64, stream: TcpStream, mut rx: mpsc::UnboundedReceiver<String>, mut m: Machine, token: String, without_dco: bool) {
     let (r, mut w) = stream.into_split();
     let mut lines = BufReader::new(r).lines();
     let mut rx_open = true;
@@ -707,6 +777,10 @@ async fn mgmt_task(id: String, generation: u64, stream: TcpStream, mut rx: mpsc:
                             registry::set_error(&id, generation, e);
                         }
                         Action::Bytes(rx, tx) => super::traffic::set_totals(&id, rx, tx),
+                        Action::NoDco => {
+                            registry::log(&id, "This VPN server sends DATA_V1 packets (it runs OpenVPN older than 2.4.5), and OpenVPN's Data Channel Offload drops them: nothing gets through the tunnel. Turning DCO off for this profile and connecting again");
+                            registry::set_connecting(&id, generation, Some("reconnecting without Data Channel Offload".into()));
+                        }
                     }
                 }
             }
@@ -723,10 +797,45 @@ async fn mgmt_task(id: String, generation: u64, stream: TcpStream, mut rx: mpsc:
     registry::log(&id, "OpenVPN management connection closed");
     // The daemon exited (or was stopped): nothing to re-attach to after a restart.
     forget_session(&id, &token);
-    if registry::generation(&id) == Some(generation) && !m.has_failed() && registry::status(&id).state != registry::ERROR {
+    let ours = registry::generation(&id) == Some(generation);
+    if m.wants_no_dco() {
+        drop(registry::take_run_if(&id, generation));
+        // Not when it was disconnected meanwhile (that started a new generation).
+        if ours && without_dco {
+            // Can't happen with disable-dco in effect; never restart (and ask for admin rights) in a loop.
+            registry::set_error(&id, generation, "OpenVPN's Data Channel Offload drops this server's packets although the profile turns DCO off; add --disable-dco to the openvpn arguments");
+        } else if ours {
+            tokio::spawn(reconnect_without_dco(id, generation));
+        }
+        return;
+    }
+    if ours && !m.has_failed() && registry::status(&id).state != registry::ERROR {
         registry::set_error(&id, generation, m.exit_message());
     }
     drop(registry::take_run_if(&id, generation));
+}
+
+/// After [`Action::NoDco`]: remember [`NO_DCO_OPTION`] in the profile and connect again in the
+/// same attempt (`generation`), so whoever waits for it gets a working tunnel. A named
+/// `dyn Future + Send`: `connect` spawns `mgmt_task`, which spawns this, which awaits `connect`,
+/// a cycle the compiler can't check for `Send` through opaque `async fn` types.
+fn reconnect_without_dco(id: String, generation: u64) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    Box::pin(async move {
+        let res = async {
+            let st = super::store()?;
+            let mut profile = st.find(&id)?;
+            if !dco_disabled(&profile) {
+                profile.options.insert(NO_DCO_OPTION.into(), "true".into());
+                st.save(profile, None)?; // None keeps the config and the password
+                super::profiles_changed();
+            }
+            connect(id.clone(), generation, st.get(&id)?.profile, st, false).await
+        }
+        .await;
+        if let Err(e) = res {
+            registry::set_error(&id, generation, e.to_string());
+        }
+    })
 }
 
 #[cfg(test)]
@@ -849,6 +958,42 @@ mod tests {
         let mut m = Machine::new(None, None);
         assert_eq!(m.on_line(">STATE:1,EXITING,SIGTERM,,,,,"), vec![Action::Error("OpenVPN exited (SIGTERM)".into())]);
         assert_eq!(Machine::new(None, None).exit_message(), "OpenVPN exited unexpectedly (see the log)");
+    }
+
+    #[test]
+    fn dco_dropping_data_v1_stops_once() {
+        let line = "Data Channel Offload doesn't support DATA_V1 packets. Upgrade your server to 2.4.5 or newer.";
+        let mut m = Machine::new(None, None);
+        assert_eq!(m.on_line(">STATE:1,CONNECTED,SUCCESS,10.33.48.10,152.118.33.20,2121,,"), vec![Action::Connected("10.33.48.10 (152.118.33.20:2121)".into())]);
+        assert_eq!(
+            m.on_line(&format!(">LOG:1762078677,,{line}")),
+            vec![Action::Log(line.into()), Action::NoDco, Action::Send("signal SIGTERM".into())]
+        );
+        assert!(m.wants_no_dco());
+        // Repeats are only logged; stopping isn't reported as an error or a state change.
+        assert_eq!(m.on_line(&format!(">LOG:1762078680,,{line}")), vec![Action::Log(line.into())]);
+        assert_eq!(m.on_line(">STATE:2,EXITING,SIGTERM,,,,,"), vec![]);
+
+        // Also from the history `log on all` replays (re-attaching to a running daemon), and a
+        // replayed CONNECTED after it doesn't mark the tunnel up.
+        let mut m = Machine::new(None, None);
+        assert!(m.on_line(&format!("1762078677,,{line}")).contains(&Action::NoDco));
+        assert_eq!(m.on_line("1762078600,CONNECTED,SUCCESS,10.33.48.10,152.118.33.20,2121,,"), vec![]);
+
+        let mut m = Machine::new(None, None);
+        assert_eq!(m.on_line(">LOG:1,,Data Channel: cipher 'AES-256-GCM', peer-id: 1"), vec![Action::Log("Data Channel: cipher 'AES-256-GCM', peer-id: 1".into())]);
+        assert!(!m.wants_no_dco());
+    }
+
+    #[test]
+    fn dco_turned_off_in_config() {
+        let out = without_dco("client\nremote a 1194\n<ca>\nx\n</ca>\n\n").unwrap();
+        assert!(out.starts_with("client\nremote a 1194\n<ca>\nx\n</ca>\n\n#"), "{out}");
+        assert!(out.ends_with("\nignore-unknown-option disable-dco\ndisable-dco\n"), "{out}");
+        assert_eq!(without_dco("client\n  disable-dco\n"), None);
+        assert_eq!(without_dco("client\n--Disable-DCO\n"), None);
+        // Commented out doesn't count.
+        assert!(without_dco("client\n# disable-dco\n;disable-dco\n").is_some());
     }
 
     #[test]

@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **OpenVPN with older servers on Windows and Linux:** a VPN whose server runs OpenVPN older than 2.4.5 connected
+  but let nothing through, because OpenVPN's Data Channel Offload (DCO) drops that server's packets ("Data Channel
+  Offload doesn't support DATA_V1 packets"). DevCat now notices this, turns DCO off for that profile and connects
+  again (Windows asks for administrator rights once more). The profile also has a **Turn off Data Channel Offload**
+  checkbox.
+
 - **Rooms:** hovering a message no longer pushes the thread down by a line. **React** now sits in the message's
   hover toolbar, next to **Reply** and **Pin**. The agent and people chips above the message box are listed
   alphabetically.
