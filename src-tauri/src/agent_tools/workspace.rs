@@ -8,6 +8,8 @@
 //!   (the Bypass mode), and only in its own folder (or below).
 //! - Ticket boards follow the folder rule of connections; DevCat, not the agent, talks to the
 //!   tracker, and `tickets_fix` hands tickets to the board's own agent run.
+//! - `devcat_open_file` shows the user a file in DevCat's window (`opened::show`), as if they'd
+//!   opened it with DevCat; its content doesn't go back to the agent.
 use super::*;
 use crate::agent_jobs::{self, Job, Schedule};
 use crate::history::SavedQuery;
@@ -27,6 +29,8 @@ pub(super) fn add(out: &mut Vec<Arc<dyn Tool>>, s: &Arc<Scope>, v: &View) {
     if s.unattended {
         return;
     }
+    // nobody watches an unattended run, so there's no one to show a file to
+    out.push(Arc::new(OpenFile));
     out.push(Arc::new(ConnAdd(s.clone())));
     out.push(Arc::new(Jobs(s.clone())));
     out.push(Arc::new(JobSave(s.clone())));
@@ -753,9 +757,82 @@ impl Tool for TicketsFix {
     }
 }
 
+// ---------- devcat_open_file
+
+/// Shows the user a file in DevCat's window: PDFs, images, sheets in the viewer, text in the
+/// editor. It reads like `read` (never asks): the window changes, nothing else, and the agent gets
+/// only where it opened.
+struct OpenFile;
+
+#[async_trait]
+impl Tool for OpenFile {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "devcat_open_file".into(),
+            description: "Open a file on this computer in the DevCat window for the user to look at: PDFs, images, spreadsheets, CSV, Word and Markdown in DevCat's viewer, code and other text in its editor. Use it when the user asks to open, show or preview a file in DevCat. You don't get the file's content back (read it with your own file tools). Needs the DevCat app open.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The file: absolute, or relative to your folder (`~` is the home folder)" }
+                },
+                "required": ["path"]
+            }),
+        }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, input: &Value) -> String {
+        input.get("path").and_then(Value::as_str).unwrap_or("?").to_string()
+    }
+    async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
+        let Some(p) = arg(&input, "path") else {
+            return ToolOutput::err("Missing `path`: the file to open.");
+        };
+        let path = file_to_open(ctx, &p);
+        // `devcat mcp` with DevCat closed: no window in this process
+        if crate::network::passive() {
+            return ToolOutput::err("DevCat isn't open, and files open in its window: the user opens DevCat and asks again.");
+        }
+        #[cfg(feature = "gui")]
+        if let Some(app) = crate::events::app() {
+            return match crate::opened::show(app, &path) {
+                Ok(shown) => ToolOutput::ok(format!("Opened {shown} in DevCat.")),
+                Err(e) => ToolOutput::err(e),
+            };
+        }
+        let _ = path;
+        ToolOutput::err("DevCat runs without windows here (`devcat serve`), so there's nowhere to show the file.")
+    }
+}
+
+/// The file the model means: relative to its folder, `~` the home folder.
+fn file_to_open(ctx: &ToolCtx, p: &str) -> PathBuf {
+    let p = local_path(ctx, p);
+    if let Some(rest) = p.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with(['/', '\\']))
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest.trim_start_matches(['/', '\\']));
+    }
+    PathBuf::from(p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_to_open_start_in_the_agents_folder() {
+        let dir = std::env::temp_dir().join("proj");
+        let ctx = ToolCtx::at(&dir);
+        assert_eq!(file_to_open(&ctx, "docs/manual.pdf"), dir.join("docs/manual.pdf"));
+        let abs = std::env::temp_dir().join("elsewhere.pdf");
+        assert_eq!(file_to_open(&ctx, &abs.to_string_lossy()), abs);
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(file_to_open(&ctx, "~/notes/a.md"), home.join("notes/a.md"));
+        assert_eq!(file_to_open(&ctx, "~"), home);
+        assert_eq!(file_to_open(&ctx, "~other/a.md"), PathBuf::from("~other/a.md"), "another user's home isn't expanded");
+    }
 
     #[test]
     fn jobs_stay_in_the_agents_folder() {

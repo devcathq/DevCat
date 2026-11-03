@@ -1,6 +1,7 @@
-// Files opened with DevCat (double-click in Finder / Explorer, "Open With", or dropped on the
-// Dock icon): the backend queues them and pokes a window. .ovpn profiles open the VPN import
-// form; anything else opens in an editor tab.
+// Files opened with DevCat (double-click in Finder / Explorer, "Open With", dropped on the
+// Dock icon, or an agent's `devcat_open_file`): the backend queues them and pokes a window.
+// .ovpn profiles open the VPN import form (not one an agent opened: that's a file tab);
+// anything else opens in an editor tab.
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -13,12 +14,14 @@ interface OpenedFile {
   path: string;
   /** Its git repository, else its folder. */
   root: string | null;
+  /** An agent opened it: a file tab whatever it is (a VPN config an agent wrote isn't offered for import). */
+  agent?: boolean;
 }
 
 async function drain() {
   const files = (await invoke<OpenedFile[] | null>("take_opened_files").catch(() => null)) ?? [];
   if (!files.length) return;
-  const vpn = files.filter((f) => /\.ovpn$/i.test(f.path));
+  const vpn = files.filter((f) => !f.agent && /\.ovpn$/i.test(f.path));
   if (vpn.length) {
     const ui = useUi.getState();
     ui.setSidebar("network");
