@@ -1,12 +1,13 @@
 // Markdown / image / docx / binary previews (editable text lives in TextEditor.tsx).
 import Editor from "@monaco-editor/react";
 import clsx from "clsx";
-import { Code, Eye, ExternalLink, FileQuestion, Maximize, Minimize, WrapText, ZoomIn, ZoomOut } from "lucide-react";
+import { Code, Download, Eye, ExternalLink, FileQuestion, Maximize, Minimize, WrapText, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Button, IconButton } from "../../../components/ui";
 import type { FilePreview } from "../../../lib/types";
 import { fmtSize, openExternally } from "../format";
+import { downloadRemoteFile } from "../download";
 import { MarkdownDoc } from "./MarkdownDoc";
 import { TruncatedBanner } from "./SheetViewer";
 import { isRemote } from "../../../lib/remotePath";
@@ -152,7 +153,9 @@ export function BinaryCard({ preview }: ViewerProps) {
         <div className="text-xs text-muted">
           {fmtSize(preview.size)}{preview.mime ? ` · ${preview.mime}` : ""}
         </div>
-        {!isRemote(preview.path) && <Button className="mt-2" onClick={() => void openExternally(preview.path)}><ExternalLink className="size-3.5" /> Open externally</Button>}
+        {isRemote(preview.path)
+          ? <Button className="mt-2" onClick={() => void downloadRemoteFile(preview.path)}><Download className="size-3.5" /> Download</Button>
+          : <Button className="mt-2" onClick={() => void openExternally(preview.path)}><ExternalLink className="size-3.5" /> Open externally</Button>}
       </div>
     </div>
   );

@@ -20,6 +20,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   "Not a directory", and they open in a full Git tab: history, diffs, blame, staging, commit, branches, tags,
   stash, merge, fetch, pull and push, all run by git on the host (with the host's own credentials for fetch, pull
   and push). Blame and file history also work on files from SSH folders. Linux and macOS hosts.
+- **Download files from SSH hosts** (#133): a file on an SSH host that DevCat can't preview (a video, an archive, a file
+  too large to show) now has a Download button. Pick a folder on this computer; progress shows in a notification
+  you can cancel, and when it's done you can reveal the file.
 
 ## 0.21.0 - 2026-11-03
 
