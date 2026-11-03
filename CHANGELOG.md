@@ -12,7 +12,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-- **Download files from SSH hosts**: a file on an SSH host that DevCat can't preview (a video, an archive, a file
+- **Download files from SSH hosts** (#133): a file on an SSH host that DevCat can't preview (a video, an archive, a file
   too large to show) now has a Download button. Pick a folder on this computer; progress shows in a notification
   you can cancel, and when it's done you can reveal the file.
 
