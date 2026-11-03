@@ -50,7 +50,10 @@ secret-looking values are hidden (`redact_secrets`). A run fed outside text (a t
 gets no tool that reaches boards, jobs, connection setup, profile changes, notes or rooms, and tests only existing
 connections; a ticket's Claude Code gets the same through `devcat mcp --unattended` (`mcp_sync::run_config`) and the
 bridge (`Call::unattended`: a call can narrow its scope, never widen it). `devcat mcp` logs every call in
-`mcp_audit.rs` (the UI's MCP activity).
+`mcp_audit.rs` (the UI's MCP activity). `devcat_open_file` (`workspace.rs`) shows the user a file in the window
+through `opened::show`, the same queue as a file opened with DevCat: it returns only where the file opened, never its
+content, opens a `.ovpn` as text rather than in the VPN import form (`OpenedFile::agent`), and an unattended run
+doesn't get it.
 
 Judging a query by its words can be fooled, so a query DevCat lets through only because it looks like a read (an
 agent's `Kind::Query`, read access over MCP, `db_export`, a read-only phone) runs on a read-only session
