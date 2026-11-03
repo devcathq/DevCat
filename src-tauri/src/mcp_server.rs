@@ -519,7 +519,7 @@ mod tests {
         // DevCat's own tools: listed for what the folder has, and working over MCP
         let tools = handle(&server, json!({ "id": 5, "method": "tools/list" })).await.unwrap();
         let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
-        for want in ["devcat_connection_add", "devcat_connection_test", "db_ddl", "db_export", "db_history", "net_status", "net_profile_save", "agent_jobs", "devcat_notes"] {
+        for want in ["devcat_connection_add", "devcat_connection_test", "db_ddl", "db_export", "db_history", "net_status", "net_profile_save", "agent_jobs", "devcat_notes", "devcat_open_file"] {
             assert!(names.contains(&want), "{want} missing: {names:?}");
         }
         assert!(!names.iter().any(|n| n.starts_with("docker_") || n.starts_with("rmq_") || n.starts_with("k8s_")), "no tools for kinds the folder hasn't: {names:?}");

@@ -2,7 +2,7 @@
 // items a chat draws, and how those items read (step rows, folded runs of steps). Shared by the
 // desktop chat (./AgentChat.tsx) and the phone / browser version (mobile/src/screens/agentchat.tsx),
 // so nothing here may import Tauri.
-import { Bot, Boxes, Database, DatabaseBackup, DatabaseZap, FileDown, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, NotebookPen, Plug, ScrollText, Search, SquareTerminal, StickyNote, Wrench } from "lucide-react";
+import { AppWindow, Bot, Boxes, Database, DatabaseBackup, DatabaseZap, FileDown, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, NotebookPen, Plug, ScrollText, Search, SquareTerminal, StickyNote, Wrench } from "lucide-react";
 import type { AgentApprovalRequest, AgentBlock, AgentContext, AgentLiveEvent, AgentModel, AgentPolicy, AgentQuestion, AgentSessionEvent, AgentUsage } from "../../lib/types";
 
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
@@ -320,6 +320,7 @@ export function describe(name: string, input: Record<string, unknown> | null, st
     case "devcat_notes": return i.id
       ? { icon: StickyNote, verb: done ? "Read a note" : "Reading a note", target: str(i.id) }
       : { icon: StickyNote, verb: done ? "Searched notes" : "Searching notes", target: [str(i.query), str(i.project)].filter(Boolean).join(" · ") };
+    case "devcat_open_file": return { icon: AppWindow, verb: done ? "Opened in DevCat" : "Opening in DevCat", target: rel(str(i.path), cwd) };
     case "devcat_note_write": return { icon: NotebookPen, verb: done ? (i.id ? "Updated a note" : "Saved a note") : "Saving a note", target: noteTitle(str(i.body)) };
     case "todo_write": {
       const todos = todoList(i);

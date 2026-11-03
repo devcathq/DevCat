@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Agents can open files in DevCat**: ask Claude Code, Codex, Cursor, Gemini or the DevCat Agent to "open it in
+  DevCat" and the file opens in a DevCat tab, a PDF in the viewer and code in the editor, with the new
+  `devcat_open_file` tool. The agent doesn't get the file's content from it. It needs the DevCat app open.
+
 ## 0.20.0 - 2026-11-02
 
 - **Security fixes** (#126): a security audit found places where text from outside (a ticket's description, a room

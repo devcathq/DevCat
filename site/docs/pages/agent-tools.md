@@ -98,6 +98,16 @@ that first, as it does when you open the connection.
 | `devcat_notes`, `devcat_note_write` | Search, read and write your [notes](notes.md) |
 | `memory_*`, `handoff_*` | The [shared memory](memory.md) |
 
+### Showing you a file
+
+| Tool | What it does |
+| --- | --- |
+| `devcat_open_file` | Opens a file on this computer in a DevCat tab, as if you'd opened it with DevCat: PDFs, images, spreadsheets, CSV, Word and Markdown in the viewer, code and other text in the editor. Ask an agent to "open it in DevCat" |
+
+The agent doesn't get the file's content back from it, only where it opened. A `.ovpn` an agent opens shows as text,
+not in the VPN import form. It needs the DevCat app open (not `devcat serve`), and the agent working on a ticket
+doesn't get it.
+
 ## What agents may do
 
 DevCat enforces these rules itself, whatever the agent asks for.
@@ -128,7 +138,8 @@ that's open. So:
 - **DevCat open** (the app, or [`devcat serve`](devcat-serve.md)): `devcat mcp` hands every call to it. VPNs connect
   there and work for every program on the computer.
 - **DevCat closed**: `devcat mcp` runs the call itself. Databases, clusters, Docker and RabbitMQ still work when
-  they're reachable, but it never starts a VPN: the tools that need DevCat (VPNs, jobs, tickets) say so.
+  they're reachable, but it never starts a VPN: the tools that need DevCat (VPNs, jobs, tickets, opening a file)
+  say so.
 - Scheduled jobs live in the app, so they need the app open (`devcat serve` doesn't run them).
 
 The two talk over `127.0.0.1` with a random port and token that only your account can read
