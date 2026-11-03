@@ -112,9 +112,15 @@ async fn enclosing_repo(root: &Path) -> Option<(PathBuf, usize)> {
     Some((path, levels))
 }
 
-async fn fill_status(mut repo: GitRepo) -> GitRepo {
+async fn fill_status(repo: GitRepo) -> GitRepo {
     let dir = PathBuf::from(&repo.path);
-    match git_raw(&dir, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"]).await {
+    let out = git_raw(&dir, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"]).await;
+    with_status(repo, out)
+}
+
+/// `repo` with what its `git status --porcelain=v2 --branch -z` says.
+fn with_status(mut repo: GitRepo, out: AppResult<crate::claude::git::GitOut>) -> GitRepo {
+    match out {
         Ok(out) if out.code == 0 => {
             let st = parse_status_v2(&out.stdout);
             repo.head_sha = st.oid.filter(|o| !o.starts_with('('));
@@ -178,6 +184,53 @@ pub(super) async fn scan(root: &Path, max_depth: u32) -> AppResult<Vec<GitRepo>>
         })
         .collect();
     let mut repos: Vec<GitRepo> = futures::stream::iter(repos.into_iter().map(fill_status)).buffer_unordered(STATUS_CONCURRENCY).collect().await;
+    repos.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(repos)
+}
+
+/// `path` is `dir` or inside it (`/`-separated paths on a host).
+fn within(path: &str, dir: &str) -> bool {
+    let dir = dir.trim_end_matches('/');
+    path == dir || path.strip_prefix(dir).is_some_and(|r| r.starts_with('/')) || dir.is_empty()
+}
+
+/// `scan` for a folder on an SSH host: the host walks and reads every status in one go
+/// (`remote::git_scan`); paths come back as `ssh://` URIs, so each opens in a Git tab like a local one.
+pub(super) async fn scan_remote(t: &crate::claude::remote::Target, max_depth: u32) -> AppResult<Vec<GitRepo>> {
+    let (root, found) = crate::claude::remote::git_scan(t, max_depth.min(MAX_DEPTH), SKIP_DIRS).await?;
+    let depth = |p: &str| p.split('/').filter(|s| !s.is_empty()).count();
+    let paths: Vec<String> = found.iter().map(|f| f.path.clone()).collect();
+    let mut repos: Vec<GitRepo> = found
+        .into_iter()
+        .map(|f| {
+            let parent = paths.iter().filter(|p| **p != f.path && within(&f.path, p)).max_by_key(|p| p.len()).map(|p| t.uri(p));
+            let rel = if f.enclosing {
+                vec![".."; depth(&root).saturating_sub(depth(&f.path)).max(1)].join("/")
+            } else {
+                match f.path.strip_prefix(root.trim_end_matches('/')).map(|r| r.trim_start_matches('/')) {
+                    Some("") => ".".to_string(),
+                    Some(r) => r.to_string(),
+                    None => f.path.clone(),
+                }
+            };
+            let name = f.path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&f.path).to_string();
+            let repo = GitRepo {
+                path: t.uri(&f.path),
+                name,
+                rel,
+                parent,
+                is_submodule: f.is_submodule,
+                branch: None,
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+                changes: 0,
+                head_sha: None,
+                error: None,
+            };
+            with_status(repo, Ok(f.status))
+        })
+        .collect();
     repos.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(repos)
 }

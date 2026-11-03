@@ -22,6 +22,7 @@ import { HistoryView } from "./HistoryView";
 import { stashChanges, StashesView } from "./StashesView";
 import { gitAction, refreshRepo, useRepo } from "./store";
 import { operationLabel, tildify } from "./util";
+import { isRemote } from "../../lib/remotePath";
 
 type GitTabT = Extract<Tab, { type: "git" }>;
 
@@ -270,7 +271,7 @@ function RepoMenu({ repo }: { repo: string }) {
       { label: "New AI chat here", icon: <AiTerminalIcon className="size-3.5" />, onClick: () => openClaudeWorkspace(repo) },
       "separator",
       { label: "Copy path", icon: <Copy className="size-3.5" />, onClick: () => void copyText(repo) },
-      { label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(repo) },
+      ...(isRemote(repo) ? [] : [{ label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(repo) }]),
     ]);
   };
   return (

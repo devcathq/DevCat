@@ -94,7 +94,7 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
 
   const shown = relPath(tab.path, tab.root);
   const kind = preview?.kind;
-  const canBlame = !!repo && !isRemote(tab.path) && (kind === "text" || kind === "markdown");
+  const canBlame = !!repo && (kind === "text" || kind === "markdown");
   const blame = !!tab.blame && repo !== null && (!preview || canBlame);
   const setBlame = (v: boolean) => useTabs.getState().update(tab.id, { blame: v } as never);
 

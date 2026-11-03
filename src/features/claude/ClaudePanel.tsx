@@ -146,7 +146,7 @@ function WorkspaceHeader() {
     if (cwd) {
       items.push(
         "separator",
-        ...(branch && gitRoot && !isRemote(gitRoot) ? [{ label: "Open Git repository", icon: <FolderGit2 className="size-3.5" />, onClick: () => openGitRepo(gitRoot) }] : []),
+        ...(branch && gitRoot ? [{ label: "Open Git repository", icon: <FolderGit2 className="size-3.5" />, onClick: () => openGitRepo(gitRoot) }] : []),
         { label: "Copy folder path", icon: <Copy className="size-3.5" />, onClick: () => void copyText(remoteParts(cwd)?.path ?? cwd) },
         ...(isRemote(cwd) ? [] : [{ label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(cwd) } as MenuItem]),
         { label: "Close folder", icon: <X className="size-3.5" />, onClick: () => setCwd(null) },

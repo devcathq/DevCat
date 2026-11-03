@@ -6,6 +6,7 @@ import { memo, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } 
 import { toast } from "sonner";
 import { Spinner } from "../../../components/ui";
 import { api } from "../../../lib/api";
+import { isRemote } from "../../../lib/remotePath";
 import type { SessionMeta } from "../../../lib/types";
 import { useTabs } from "../../../store/tabs";
 import { useContextMenu, type MenuItem } from "../../connections/ContextMenu";
@@ -68,16 +69,18 @@ export function SessionsList({ cwd, sessions, error, loading, query, setQuery, n
   const open = (s: SessionMeta) => openClaudeWorkspace(cwd, { sessionId: s.id, title: s.title });
 
   const showMenu = (e: MouseEvent, s: SessionMeta) => {
+    // A session on an SSH host lives in that host's ~/.claude: nothing to rename or reveal here.
+    const remote = isRemote(cwd);
     const items: MenuItem[] = [
       { label: "Open", icon: <SquareArrowOutUpRight className="size-3.5" />, onClick: () => open(s) },
-      { label: "Rename…", icon: <Pencil className="size-3.5" />, onClick: () => { cancelled.current = false; setEditing(s.id); } },
+      ...(remote ? [] : [{ label: "Rename…", icon: <Pencil className="size-3.5" />, onClick: () => { cancelled.current = false; setEditing(s.id); } }]),
       "separator",
       { label: "Copy session id", icon: <Copy className="size-3.5" />, onClick: () => void copyText(s.id) },
       { label: "Copy resume command", icon: <Copy className="size-3.5" />, onClick: () => void copyText(`claude --resume ${s.id}`) },
-      {
+      ...(remote ? [] : [{
         label: "Reveal transcript file", icon: <FileText className="size-3.5" />,
         onClick: () => void transcriptPath(cwd, s.id).then(revealPath).catch((err) => toast.error(String(err))),
-      },
+      }]),
     ];
     menu.show(e, items);
   };
