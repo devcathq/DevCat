@@ -402,7 +402,7 @@ const FileTree = forwardRef<FileTreeHandle, { cwd: string; git: GitStatus | null
         ? { label: "Unpin", icon: <PinOff className="size-3.5" />, onClick: () => unpin(e.path) }
         : { label: "Pin", icon: <Pin className="size-3.5" />, onClick: () => togglePin(e.path, cwd) }]),
       ...(e.isDir
-        ? e.isRepo && !isRemote(e.path) ? [{ label: "Open Git repository", icon: <FolderGit2 className="size-3.5" />, onClick: () => openGitRepo(e.path) }] : []
+        ? e.isRepo ? [{ label: "Open Git repository", icon: <FolderGit2 className="size-3.5" />, onClick: () => openGitRepo(e.path) }] : []
         : isRemote(e.path) ? [] : [
           { label: "Blame", icon: <UserSearch className="size-3.5" />, onClick: () => openBlame(e.path, cwd) },
           { label: "File history", icon: <History className="size-3.5" />, onClick: () => void showFileHistory(e.path) },

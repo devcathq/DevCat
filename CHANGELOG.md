@@ -14,7 +14,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 - **Claude Code sessions on SSH hosts** (#130): the Sessions list of an SSH folder now shows the past Claude Code
   sessions on that host (its own `~/.claude`), and opening one resumes it there in a new Claude tab, so the history
-  stays the host's. Linux and macOS hosts.
+  stays the host's. New Claude chats there get their session id from the start, so restarting one picks it up again.
+  Linux and macOS hosts.
+- **Git on SSH hosts** (#130): the Git sidebar now lists the repositories in an SSH folder instead of failing with
+  "Not a directory", and they open in a full Git tab: history, diffs, blame, staging, commit, branches, tags,
+  stash, merge, fetch, pull and push, all run by git on the host (with the host's own credentials for fetch, pull
+  and push). Blame and file history also work on files from SSH folders. Linux and macOS hosts.
+
 ## 0.21.0 - 2026-11-03
 
 - **Agents can open files in DevCat** (#131): ask Claude Code, Codex, Cursor, Gemini or the DevCat Agent to "open it in

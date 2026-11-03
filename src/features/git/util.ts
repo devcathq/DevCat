@@ -1,4 +1,5 @@
 // Small helpers shared by the git views.
+import { displayPath } from "../../lib/remotePath";
 import type { GitRefKind } from "../../lib/types";
 import { relTime } from "../files/format";
 
@@ -45,7 +46,7 @@ export function operationLabel(op: string): string {
   return op;
 }
 
-/** Shorten a path for display: /Users/me/x → ~/x */
+/** Shorten a path for display: /Users/me/x → ~/x (on an SSH host: `devbox: ~/x`) */
 export function tildify(p: string): string {
-  return p.replace(/^\/(Users|home)\/[^/]+/, "~");
+  return displayPath(p);
 }

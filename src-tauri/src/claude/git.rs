@@ -75,22 +75,118 @@ pub(crate) fn git_command(cwd: &Path) -> tokio::process::Command {
     cmd
 }
 
-/// Runs git; only fails when git can't be spawned. Non-zero exit codes are returned to the caller.
-pub(crate) async fn git_raw<I, S>(cwd: &Path, args: I) -> AppResult<GitOut>
+// ---------- where a repository's git runs ----------
+
+/// A repository: a folder here, or one on an SSH host (`ssh://…`, `path` = its top level there),
+/// whose git runs on the host over ssh (`remote::git`).
+#[derive(Debug, Clone)]
+pub(crate) enum Repo {
+    Local(PathBuf),
+    Remote(super::remote::Target),
+}
+
+/// Borrowed `Repo`: what `git_raw` and friends take, so a plain `&Path` works too.
+pub(crate) enum At<'a> {
+    Local(&'a Path),
+    Remote(&'a super::remote::Target),
+}
+
+pub(crate) trait GitAt {
+    fn git_at(&self) -> At<'_>;
+}
+
+impl GitAt for Path {
+    fn git_at(&self) -> At<'_> {
+        At::Local(self)
+    }
+}
+
+impl GitAt for PathBuf {
+    fn git_at(&self) -> At<'_> {
+        At::Local(self)
+    }
+}
+
+impl GitAt for Repo {
+    fn git_at(&self) -> At<'_> {
+        match self {
+            Repo::Local(p) => At::Local(p),
+            Repo::Remote(t) => At::Remote(t),
+        }
+    }
+}
+
+impl Repo {
+    /// Work-tree file `rel` (already `resolve_rel`ed) as git stores it, None if missing; over `cap`: an error.
+    pub(crate) async fn read_worktree(&self, rel: &str, cap: u64) -> AppResult<Option<Vec<u8>>> {
+        match self {
+            Repo::Local(root) => read_worktree(&root.join(rel), cap),
+            Repo::Remote(t) => super::remote::worktree_read(t, rel, cap).await,
+        }
+    }
+
+    /// Whether work-tree path `rel` is a file.
+    pub(crate) async fn is_file(&self, rel: &str) -> AppResult<bool> {
+        match self {
+            Repo::Local(root) => Ok(root.join(rel).is_file()),
+            Repo::Remote(t) => super::remote::worktree_is_file(t, rel).await,
+        }
+    }
+
+    /// Deletes an untracked/new work-tree file (files and symlinks only, inside the repository).
+    async fn remove_worktree_file(&self, rel: &str) -> AppResult<()> {
+        let rel = resolve_rel(self, rel)?;
+        match self {
+            Repo::Local(root) => {
+                let path = root.join(&rel);
+                match std::fs::symlink_metadata(&path) {
+                    Ok(m) if m.is_file() || m.file_type().is_symlink() => Ok(std::fs::remove_file(&path)?),
+                    _ => Ok(()),
+                }
+            }
+            Repo::Remote(t) => super::remote::worktree_remove(t, &rel).await,
+        }
+    }
+}
+
+/// Runs git with `env` added, within `timeout`; only fails when git can't be run (or ssh can't
+/// reach the host). Non-zero exit codes are returned to the caller.
+pub(crate) async fn git_exec<R, I, S>(cwd: &R, args: I, env: &[(&str, String)], timeout: Option<Duration>) -> AppResult<GitOut>
 where
+    R: GitAt + ?Sized,
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let out = git_command(cwd)
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| AppError::msg(format!("Failed to run git ({}): {e}", GIT_BIN.display())))?;
-    Ok(GitOut {
-        code: out.status.code().unwrap_or(-1),
-        stdout: out.stdout,
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-    })
+    match cwd.git_at() {
+        At::Local(dir) => {
+            let mut cmd = git_command(dir);
+            cmd.args(args);
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+            let fut = cmd.output();
+            let res = match timeout {
+                Some(t) => tokio::time::timeout(t, fut).await.map_err(|_| AppError::msg("git timed out"))?,
+                None => fut.await,
+            };
+            let out = res.map_err(|e| AppError::msg(format!("Failed to run git ({}): {e}", GIT_BIN.display())))?;
+            Ok(GitOut { code: out.status.code().unwrap_or(-1), stdout: out.stdout, stderr: String::from_utf8_lossy(&out.stderr).into_owned() })
+        }
+        At::Remote(t) => {
+            let args: Vec<String> = args.into_iter().map(|a| a.as_ref().to_string_lossy().into_owned()).collect();
+            super::remote::git(t, &args, env, timeout).await
+        }
+    }
+}
+
+/// Runs git; only fails when git can't be spawned. Non-zero exit codes are returned to the caller.
+pub(crate) async fn git_raw<R, I, S>(cwd: &R, args: I) -> AppResult<GitOut>
+where
+    R: GitAt + ?Sized,
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    git_exec(cwd, args, &[], None).await
 }
 
 pub(crate) fn git_error(out: &GitOut) -> AppError {
@@ -108,8 +204,9 @@ pub(crate) fn git_error(out: &GitOut) -> AppError {
 }
 
 /// Runs git and returns stdout, mapping a non-zero exit to `AppError::Msg(stderr)`.
-pub(crate) async fn git_ok<I, S>(cwd: &Path, args: I) -> AppResult<Vec<u8>>
+pub(crate) async fn git_ok<R, I, S>(cwd: &R, args: I) -> AppResult<Vec<u8>>
 where
+    R: GitAt + ?Sized,
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
@@ -133,11 +230,21 @@ pub(crate) async fn repo_root(cwd: &Path) -> AppResult<Option<PathBuf>> {
     Ok(if s.is_empty() { None } else { Some(PathBuf::from(s)) })
 }
 
-pub(crate) async fn require_root(cwd: &str) -> AppResult<PathBuf> {
-    repo_root(Path::new(cwd)).await?.ok_or_else(|| AppError::msg(format!("Not a git repository: {cwd}")))
+/// The repository `cwd` (a folder here or `ssh://…`) is in, at its top level.
+pub(crate) async fn require_root(cwd: &str) -> AppResult<Repo> {
+    let not_repo = || AppError::msg(format!("Not a git repository: {cwd}"));
+    if let Some(t) = super::remote::Target::parse(cwd) {
+        let out = git_raw(&Repo::Remote(t.clone()), ["rev-parse", "--show-toplevel"]).await?;
+        let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if out.code != 0 || !top.starts_with('/') {
+            return Err(if out.code == 3 || out.code == 127 { git_error(&out) } else { not_repo() });
+        }
+        return Ok(Repo::Remote(super::remote::Target { path: top, ..t }));
+    }
+    repo_root(Path::new(cwd)).await?.map(Repo::Local).ok_or_else(not_repo)
 }
 
-pub(crate) async fn has_head(root: &Path) -> AppResult<bool> {
+pub(crate) async fn has_head<R: GitAt + ?Sized>(root: &R) -> AppResult<bool> {
     Ok(git_raw(root, ["rev-parse", "--verify", "-q", "HEAD"]).await?.code == 0)
 }
 
@@ -185,11 +292,48 @@ fn canonical_parent(p: &Path) -> PathBuf {
 
 /// Resolves `p` (absolute, or relative to the repo root) to a `/`-separated path relative to
 /// `root`. Rejects anything outside the repository. The repo root itself resolves to ".".
-pub(crate) fn resolve_rel(root: &Path, p: &str) -> AppResult<String> {
-    let escape = || AppError::msg(format!("Path is outside the repository: {p}"));
+pub(crate) fn resolve_rel<R: GitAt + ?Sized>(root: &R, p: &str) -> AppResult<String> {
     if p.trim().is_empty() {
         return Err(AppError::msg("Empty path"));
     }
+    match root.git_at() {
+        At::Local(root) => resolve_rel_local(root, p),
+        At::Remote(t) => resolve_rel_remote(t, p),
+    }
+}
+
+/// `resolve_rel` on an SSH host, lexically (`/` paths there; `p` may be an `ssh://` URI of the same host).
+fn resolve_rel_remote(t: &super::remote::Target, p: &str) -> AppResult<String> {
+    let escape = || AppError::msg(format!("Path is outside the repository: {p}"));
+    let path = match super::remote::Target::parse(p) {
+        Some(o) if o.dest == t.dest && o.port == t.port => o.path,
+        Some(_) => return Err(escape()),
+        None if p.starts_with('/') => p.to_string(),
+        None => format!("{}/{p}", t.path),
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop().ok_or_else(escape)?;
+            }
+            s => parts.push(s),
+        }
+    }
+    let root: Vec<&str> = t.path.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+    if parts.len() < root.len() || parts[..root.len()] != root[..] {
+        return Err(escape());
+    }
+    let rest = &parts[root.len()..];
+    if rest.first() == Some(&".git") {
+        return Err(AppError::msg("Refusing to operate on the .git directory"));
+    }
+    Ok(if rest.is_empty() { ".".into() } else { rest.join("/") })
+}
+
+fn resolve_rel_local(root: &Path, p: &str) -> AppResult<String> {
+    let escape = || AppError::msg(format!("Path is outside the repository: {p}"));
     let given = Path::new(p);
     let abs = if given.is_absolute() { given.to_path_buf() } else { root.join(given) };
     let norm = normalize(&abs).ok_or_else(escape)?;
@@ -212,7 +356,7 @@ pub(crate) fn resolve_rel(root: &Path, p: &str) -> AppResult<String> {
     Ok(if parts.is_empty() { ".".into() } else { parts.join("/") })
 }
 
-fn resolve_all(root: &Path, paths: &[String]) -> AppResult<Vec<String>> {
+fn resolve_all(root: &Repo, paths: &[String]) -> AppResult<Vec<String>> {
     paths.iter().map(|p| resolve_rel(root, p)).collect()
 }
 
@@ -409,7 +553,7 @@ pub async fn git_status(cwd: String) -> AppResult<GitStatus> {
 }
 
 /// Blob contents for a revision spec like `HEAD:path` / `:path`; None if it doesn't exist.
-pub(crate) async fn read_blob(root: &Path, spec: &str) -> AppResult<Option<Vec<u8>>> {
+pub(crate) async fn read_blob<R: GitAt + ?Sized>(root: &R, spec: &str) -> AppResult<Option<Vec<u8>>> {
     let size = git_raw(root, ["cat-file", "-s", spec]).await?;
     if size.code != 0 {
         return Ok(None);
@@ -422,7 +566,7 @@ pub(crate) async fn read_blob(root: &Path, spec: &str) -> AppResult<Option<Vec<u
 }
 
 /// Worktree contents (symlinks as their target, like git stores them); None if missing.
-fn read_worktree(path: &Path) -> AppResult<Option<Vec<u8>>> {
+fn read_worktree(path: &Path, cap: u64) -> AppResult<Option<Vec<u8>>> {
     let Ok(meta) = std::fs::symlink_metadata(path) else { return Ok(None) };
     if meta.file_type().is_symlink() {
         let target = std::fs::read_link(path)?;
@@ -431,7 +575,7 @@ fn read_worktree(path: &Path) -> AppResult<Option<Vec<u8>>> {
     if !meta.is_file() {
         return Ok(None);
     }
-    if meta.len() > VERSION_CAP {
+    if meta.len() > cap {
         return Err(AppError::msg(format!("File too large to diff ({} MB)", meta.len() / (1024 * 1024))));
     }
     Ok(Some(std::fs::read(path)?))
@@ -451,7 +595,7 @@ pub async fn git_file_versions(cwd: String, path: String, staged: bool) -> AppRe
             Some(b) => Some(b),
             None => read_blob(&root, &head_spec).await?,
         };
-        (original, read_worktree(&root.join(&rel))?)
+        (original, root.read_worktree(&rel, VERSION_CAP).await?)
     };
     let (original, modified) = (original.unwrap_or_default(), modified.unwrap_or_default());
     if original.contains(&0) || modified.contains(&0) {
@@ -476,22 +620,46 @@ pub async fn git_diff_text(cwd: String, staged: bool) -> AppResult<String> {
         let list = git_ok(&root, ["ls-files", "--others", "--exclude-standard", "-z"]).await?;
         let list = String::from_utf8_lossy(&list).into_owned();
         let files: Vec<&str> = list.split('\0').filter(|s| !s.is_empty()).collect();
+        // On an SSH host every diff in one go (a round trip each would take minutes).
+        let mut fetched = match &root {
+            Repo::Remote(t) => {
+                let first: Vec<String> = files.iter().take(UNTRACKED_DIFF_FILES).map(|f| f.to_string()).collect();
+                Some(super::remote::untracked_diffs(t, &first, VERSION_CAP, DIFF_CAP.saturating_sub(out.len())).await?.into_iter())
+            }
+            Repo::Local(_) => None,
+        };
         for (i, f) in files.iter().enumerate() {
             if out.len() >= DIFF_CAP || i >= UNTRACKED_DIFF_FILES {
                 out.extend_from_slice(format!("\n# … {} more untracked file(s) not shown\n", files.len() - i).as_bytes());
                 break;
             }
-            let too_big = std::fs::metadata(root.join(f)).map(|m| m.len() > VERSION_CAP).unwrap_or(false);
-            if too_big {
-                out.extend_from_slice(format!("diff --git a/{f} b/{f}\nnew file mode 100644\n# file too large to show\n").as_bytes());
-                continue;
+            let diff = match (&root, fetched.as_mut()) {
+                (_, Some(it)) => match it.next() {
+                    Some(d) => d,
+                    None => {
+                        out.extend_from_slice(format!("\n# … {} more untracked file(s) not shown\n", files.len() - i).as_bytes());
+                        break;
+                    }
+                },
+                (Repo::Local(dir), None) => {
+                    let too_big = std::fs::metadata(dir.join(f)).map(|m| m.len() > VERSION_CAP).unwrap_or(false);
+                    if too_big {
+                        None
+                    } else {
+                        let d = git_raw(&root, ["diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", f]).await?;
+                        // --no-index exits 1 when the files differ
+                        if d.code > 1 {
+                            return Err(git_error(&d));
+                        }
+                        Some(d.stdout)
+                    }
+                }
+                (Repo::Remote(_), None) => unreachable!("remote diffs are fetched above"),
+            };
+            match diff {
+                Some(d) => out.extend_from_slice(&d),
+                None => out.extend_from_slice(format!("diff --git a/{f} b/{f}\nnew file mode 100644\n# file too large to show\n").as_bytes()),
             }
-            let d = git_raw(&root, ["diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", f]).await?;
-            // --no-index exits 1 when the files differ
-            if d.code > 1 {
-                return Err(git_error(&d));
-            }
-            out.extend_from_slice(&d.stdout);
         }
     }
     if out.len() > DIFF_CAP {
@@ -534,16 +702,6 @@ pub async fn git_unstage(cwd: String, paths: Vec<String>) -> AppResult<()> {
     };
     git_ok(&root, with_paths(args, &rels)).await?;
     Ok(())
-}
-
-/// Removes an untracked/new file from the worktree (files and symlinks only, inside `root`).
-fn delete_worktree_file(root: &Path, rel: &str) -> AppResult<()> {
-    let rel = resolve_rel(root, rel)?;
-    let path = root.join(&rel);
-    match std::fs::symlink_metadata(&path) {
-        Ok(m) if m.is_file() || m.file_type().is_symlink() => Ok(std::fs::remove_file(&path)?),
-        _ => Ok(()),
-    }
 }
 
 /// Discard worktree changes (and delete untracked files) for `paths`.
@@ -593,7 +751,7 @@ pub async fn git_discard(cwd: String, paths: Vec<String>, include_staged: Option
         git_ok(&root, with_paths(vec!["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree"], &staged_only)).await?;
     }
     for f in untracked.iter().chain(added.iter()) {
-        delete_worktree_file(&root, f)?;
+        root.remove_worktree_file(f).await?;
     }
     Ok(())
 }
@@ -690,8 +848,35 @@ pub(crate) mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, content).unwrap();
         }
+        /// The folder as the commands get it: a path, or `ssh://…` while `OverSsh` is on.
         pub fn cwd(&self) -> String {
-            self.dir.to_string_lossy().into_owned()
+            let path = self.dir.to_string_lossy().into_owned();
+            if OVER_SSH.with(|o| o.get()) {
+                format!("ssh://{}{path}", super::super::remote::LOCAL_TEST_HOST)
+            } else {
+                path
+            }
+        }
+    }
+
+    thread_local! {
+        static OVER_SSH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// While alive, `TempRepo::cwd` is an SSH folder on the test host (`remote::LOCAL_TEST_HOST`:
+    /// its commands run through the SSH code paths, with the local `sh` standing in for the host).
+    pub struct OverSsh;
+
+    impl OverSsh {
+        pub fn on() -> OverSsh {
+            OVER_SSH.with(|o| o.set(true));
+            OverSsh
+        }
+    }
+
+    impl Drop for OverSsh {
+        fn drop(&mut self) {
+            OVER_SSH.with(|o| o.set(false));
         }
     }
 
@@ -760,8 +945,38 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.txt\0\
         assert!(resolve_rel(&root, "").is_err());
     }
 
+    #[test]
+    fn rejects_path_escapes_on_a_host() {
+        let root = Repo::Remote(super::super::remote::Target::parse("ssh://box:2222/srv/app").unwrap());
+        assert_eq!(resolve_rel(&root, "a/b.txt").unwrap(), "a/b.txt");
+        assert_eq!(resolve_rel(&root, "a/../b.txt").unwrap(), "b.txt");
+        assert_eq!(resolve_rel(&root, "/srv/app/x/y").unwrap(), "x/y");
+        assert_eq!(resolve_rel(&root, "ssh://box:2222/srv/app/x/y").unwrap(), "x/y");
+        assert_eq!(resolve_rel(&root, "/srv/app").unwrap(), ".");
+        assert!(resolve_rel(&root, "ssh://other/srv/app/x").is_err(), "another host");
+        assert!(resolve_rel(&root, "ssh://box/srv/app/x").is_err(), "another port");
+        assert!(resolve_rel(&root, "/srv/apple/x").is_err(), "a folder, not a name prefix");
+        assert!(resolve_rel(&root, "../outside.txt").is_err());
+        assert!(resolve_rel(&root, "a/../../outside").is_err());
+        assert!(resolve_rel(&root, "/../../srv/app/../../etc/passwd").is_err());
+        assert!(resolve_rel(&root, "/etc/passwd").is_err());
+        assert!(resolve_rel(&root, ".git/config").is_err());
+        assert!(resolve_rel(&root, "").is_err());
+    }
+
     #[tokio::test]
     async fn not_a_repo() {
+        not_a_repo_body().await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn not_a_repo_over_ssh() {
+        let _ssh = OverSsh::on();
+        not_a_repo_body().await
+    }
+
+    async fn not_a_repo_body() {
         let dir = std::env::temp_dir().join(format!("devcat-norepo-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let st = git_status(dir.to_string_lossy().into_owned()).await.unwrap();
@@ -772,6 +987,17 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.txt\0\
 
     #[tokio::test]
     async fn status_and_versions() {
+        status_and_versions_body().await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn status_and_versions_over_ssh() {
+        let _ssh = OverSsh::on();
+        status_and_versions_body().await
+    }
+
+    async fn status_and_versions_body() {
         let repo = TempRepo::new("status");
         repo.write("keep.txt", "one\n");
         repo.write("gone.txt", "bye\n");
@@ -827,6 +1053,17 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.txt\0\
 
     #[tokio::test]
     async fn ahead_behind_from_upstream() {
+        ahead_behind_from_upstream_body().await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ahead_behind_from_upstream_over_ssh() {
+        let _ssh = OverSsh::on();
+        ahead_behind_from_upstream_body().await
+    }
+
+    async fn ahead_behind_from_upstream_body() {
         let repo = TempRepo::new("ab");
         repo.write("a.txt", "a\n");
         repo.git(&["add", "-A"]);
@@ -844,6 +1081,17 @@ u UU N... 100644 100644 100644 100644 d1 d2 d3 conflict.txt\0\
 
     #[tokio::test]
     async fn stage_unstage_discard_commit() {
+        stage_unstage_discard_commit_body().await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stage_unstage_discard_commit_over_ssh() {
+        let _ssh = OverSsh::on();
+        stage_unstage_discard_commit_body().await
+    }
+
+    async fn stage_unstage_discard_commit_body() {
         let repo = TempRepo::new("ops");
         // no HEAD yet: stage + unstage via rm --cached
         repo.write("first.txt", "1\n");

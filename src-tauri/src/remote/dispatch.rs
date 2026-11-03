@@ -189,8 +189,10 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         }
         "paste_dir" => super::transfer::paste_dir().map(|p| json!(p)).map_err(|e| json!(e)),
         "home_dir" => Ok(json!(dirs::home_dir().map(|h| h.to_string_lossy().into_owned()))),
-        "claude_sessions" => out(crate::claude::sessions::claude_sessions(a!("cwd")).await),
-        "claude_transcript" => out(crate::claude::sessions::claude_transcript(a!("cwd"), a!("sessionId")).await),
+        // Sessions of an SSH folder are read on the host, logging in with what the computer has
+        // (a session's saved password): desktop only, like the SSH workbench (AGENTS.md).
+        "claude_sessions" => out(crate::claude::sessions::claude_sessions(local_folder(a!("cwd"))?).await),
+        "claude_transcript" => out(crate::claude::sessions::claude_transcript(local_folder(a!("cwd"))?, a!("sessionId")).await),
         "ai_providers_list" => out(crate::ai::ai_providers_list().await),
         // DevCat Agent chats (src-tauri/src/agent.rs): the phone gets `agent-event`s of the chats it opened.
         "agent_open" => {
@@ -392,6 +394,14 @@ fn expand_home(p: &str) -> String {
     }
 }
 
+/// `cwd`, unless it's a folder on an SSH host (`ssh://…`): those stay on the computer.
+fn local_folder(cwd: String) -> Result<String, Value> {
+    if cwd.starts_with(crate::claude::remote::SCHEME) {
+        return Err(json!("Folders on SSH hosts open from DevCat on your computer only."));
+    }
+    Ok(cwd)
+}
+
 /// One line for the audit log: the call and its most telling arguments (never passwords).
 pub fn audit_detail(cmd: &str, args: &Value) -> Option<String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
@@ -428,6 +438,13 @@ pub fn audit_detail(cmd: &str, args: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_folders_stay_on_the_computer() {
+        assert!(local_folder("ssh://devcat-abc/srv/app".into()).is_err());
+        assert!(local_folder("ssh://devbox/srv/app".into()).is_err());
+        assert_eq!(local_folder("/Users/me/app".into()).unwrap(), "/Users/me/app");
+    }
 
     #[test]
     fn audit_lines() {

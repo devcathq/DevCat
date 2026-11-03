@@ -485,10 +485,27 @@ pub fn release_master(t: &Target) {
 /// An `ssh` running `script` (POSIX sh) on the host with `args` as $1…; stdio not set up.
 /// Keep the returned guard alive until the command has finished.
 pub(crate) fn ssh_command(t: &Target, script: &str, args: &[&str]) -> (tokio::process::Command, Askpass) {
+    let quoted: Vec<String> = args.iter().map(|a| sh_path(a)).collect();
+    ssh_command_quoted(t, script, &quoted)
+}
+
+/// Tests: an SSH folder on this host name runs its commands with the local `sh`, as the host's
+/// sshd would, so the SSH code paths (scripts, quoting, exit codes) are tested without a server.
+#[cfg(test)]
+pub(crate) const LOCAL_TEST_HOST: &str = "local-test.devcat.invalid";
+
+/// `ssh_command` with `args` already quoted for the remote shell.
+fn ssh_command_quoted(t: &Target, script: &str, args: &[String]) -> (tokio::process::Command, Askpass) {
     let mut remote = format!("sh -c {} devcat", sh_quote(script));
     for a in args {
         remote.push(' ');
-        remote.push_str(&sh_path(a));
+        remote.push_str(a);
+    }
+    #[cfg(test)]
+    if t.dest == LOCAL_TEST_HOST {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(remote).kill_on_drop(true);
+        return (cmd, Askpass::default());
     }
     let (env, guard) = askpass_env(t);
     let mut cmd = tokio::process::Command::new("ssh");
@@ -518,26 +535,39 @@ pub(crate) fn connect_error(t: &Target, err: &str) -> AppError {
 
 /// Run `script` (POSIX sh) on the host with `args` as $1…, optional stdin. Returns stdout.
 async fn run(t: &Target, script: &str, args: &[&str], stdin: Option<&[u8]>) -> AppResult<Vec<u8>> {
+    let quoted: Vec<String> = args.iter().map(|a| sh_path(a)).collect();
+    run_quoted(t, script, &quoted, stdin).await
+}
+
+async fn run_quoted(t: &Target, script: &str, args: &[String], stdin: Option<&[u8]>) -> AppResult<Vec<u8>> {
+    let out = run_raw(t, script, args, stdin, TIMEOUT).await?;
+    if out.code == 0 {
+        return Ok(out.stdout);
+    }
+    let err = out.stderr.trim().to_string();
+    Err(AppError::msg(if err.is_empty() { format!("Command failed on {}", t.label()) } else { err }))
+}
+
+/// `script` on the host, its exit code and output as they are (ssh's own failure, exit 255, is an
+/// error). `args` are quoted for the remote shell already.
+async fn run_raw(t: &Target, script: &str, args: &[String], stdin: Option<&[u8]>, timeout: Duration) -> AppResult<super::git::GitOut> {
     t.ready().await?;
-    let (mut cmd, _askpass) = ssh_command(t, script, args);
+    let (mut cmd, _askpass) = ssh_command_quoted(t, script, args);
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| AppError::msg(format!("Couldn't run ssh ({e}). Install the OpenSSH client.")))?;
     if let (Some(data), Some(mut w)) = (stdin, child.stdin.take()) {
         w.write_all(data).await.map_err(|e| AppError::msg(format!("ssh: {e}")))?;
         drop(w);
     }
-    let out = tokio::time::timeout(TIMEOUT, child.wait_with_output())
+    let out = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| AppError::msg(format!("{} didn't answer in time", t.label())))?
         .map_err(|e| AppError::msg(format!("ssh: {e}")))?;
-    if out.status.success() {
-        return Ok(out.stdout);
-    }
-    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     if out.status.code() == Some(255) {
-        return Err(connect_error(t, &err));
+        return Err(connect_error(t, stderr.trim()));
     }
-    Err(AppError::msg(if err.is_empty() { format!("Command failed on {}", t.label()) } else { err }))
+    Ok(super::git::GitOut { code: out.status.code().unwrap_or(-1), stdout: out.stdout, stderr })
 }
 
 /// Records separated by NUL; sections by a NUL-wrapped marker.
@@ -733,6 +763,197 @@ printf '%s\000' "$r"; cd "$r" && git status --porcelain=v2 --branch -z -uall"#;
     let root = String::from_utf8_lossy(&out[..i]).into_owned();
     let st = parse_status_v2(&out[i + 1..]);
     Ok(GitStatus { is_repo: true, root: Some(t.uri(&root)), branch: st.branch(), ahead: st.ahead, behind: st.behind, files: st.files })
+}
+
+// ---------- git: the Git tab on an SSH folder ----------
+
+/// The start of every git script: in the folder `$1` (then shifted away), with what `git_command`
+/// sets here: no pager, prompts, optional locks, translated messages or fsmonitor (a repository's
+/// config could run a program on `git status` with it). `G` is that git.
+const GIT_PRELUDE: &str = r#"cd "$1" 2>/dev/null || { echo "No folder $1 there" >&2; exit 3; }
+shift
+PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+command -v git >/dev/null 2>&1 || { echo "git isn't installed on this host" >&2; exit 127; }
+export GIT_OPTIONAL_LOCKS=0 GIT_PAGER=cat GIT_TERMINAL_PROMPT=0 LC_ALL=C
+G() { git -c core.quotepath=false -c color.ui=false -c core.fsmonitor=false --no-pager "$@"; }
+"#;
+
+/// Long enough for a fetch / pull / push; callers pass a shorter one where they have it.
+const GIT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The scripts are POSIX sh: a Windows host (cmd / PowerShell) can't run them.
+async fn posix_host(t: &Target) -> AppResult<()> {
+    if host_os(t).await == HostOs::Windows {
+        return Err(AppError::msg(format!("{} is a Windows host: Git over SSH needs a Linux or macOS host for now.", t.label())));
+    }
+    Ok(())
+}
+
+/// `GIT_PRELUDE` + `body`, run in `t.path` with `args` ($1… in `body`, quoted here).
+async fn git_script(t: &Target, body: &str, args: &[String], timeout: Duration) -> AppResult<super::git::GitOut> {
+    posix_host(t).await?;
+    let script = format!("{GIT_PRELUDE}{body}");
+    let mut q = vec![sh_path(&t.path)];
+    q.extend(args.iter().map(|a| sh_quote(a)));
+    run_raw(t, &script, &q, None, timeout).await
+}
+
+/// `git args…` in `t.path` on the host, `env` exported first (names are DevCat's own constants).
+pub(crate) async fn git(t: &Target, args: &[String], env: &[(&str, String)], timeout: Option<Duration>) -> AppResult<super::git::GitOut> {
+    let mut body = String::new();
+    for (k, v) in env {
+        body.push_str(&format!("export {k}={}\n", sh_quote(v)));
+    }
+    body.push_str("G \"$@\"\n");
+    git_script(t, &body, args, timeout.unwrap_or(GIT_TIMEOUT)).await
+}
+
+/// A work-tree file `rel` (under `t.path`) as git sees it: its bytes, or a symlink's target;
+/// None when it's missing or not a file. Larger than `cap`: an error naming its size.
+pub(crate) async fn worktree_read(t: &Target, rel: &str, cap: u64) -> AppResult<Option<Vec<u8>>> {
+    let body = r#"f=$1
+if [ -L "$f" ]; then printf L; readlink "$f" | tr -d '\n'
+elif [ -f "$f" ]; then
+  z=$(wc -c < "$f" | tr -d ' ')
+  if [ "$z" -gt "$2" ]; then printf 'B%s' "$z"; else printf F; cat "$f"; fi
+else printf N; fi"#;
+    let out = git_script(t, body, &[rel.to_string(), cap.to_string()], TIMEOUT).await?;
+    if out.code != 0 {
+        return Err(AppError::msg(out.stderr.trim().to_string()));
+    }
+    let (kind, rest) = out.stdout.split_first().map(|(k, r)| (*k, r.to_vec())).unwrap_or((b'N', vec![]));
+    match kind {
+        b'L' | b'F' => Ok(Some(rest)),
+        b'B' => {
+            let n: u64 = String::from_utf8_lossy(&rest).trim().parse().unwrap_or(0);
+            Err(AppError::msg(format!("File too large to diff ({} MB)", n / (1024 * 1024))))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Whether `rel` (under `t.path`) is a file on the host (following symlinks, like `Path::is_file`).
+pub(crate) async fn worktree_is_file(t: &Target, rel: &str) -> AppResult<bool> {
+    Ok(git_script(t, r#"[ -f "$1" ]"#, &[rel.to_string()], TIMEOUT).await?.code == 0)
+}
+
+/// Delete the file or symlink `rel` (under `t.path`); anything else is left alone.
+pub(crate) async fn worktree_remove(t: &Target, rel: &str) -> AppResult<()> {
+    let out = git_script(t, r#"if [ -L "$1" ] || [ -f "$1" ]; then rm -f -- "$1"; fi"#, &[rel.to_string()], TIMEOUT).await?;
+    if out.code != 0 {
+        return Err(AppError::msg(out.stderr.trim().to_string()));
+    }
+    Ok(())
+}
+
+/// The operation in progress in the repository at `t.path`, as `gitx::commands::operation` tells.
+pub(crate) async fn git_operation(t: &Target) -> AppResult<Option<String>> {
+    let body = r#"d=$(G rev-parse --git-dir) || exit 1
+if [ -d "$d/rebase-merge" ]; then echo rebase
+elif [ -d "$d/rebase-apply" ]; then if [ -e "$d/rebase-apply/applying" ]; then echo am; else echo rebase; fi
+elif [ -f "$d/MERGE_HEAD" ]; then echo merge
+elif [ -f "$d/CHERRY_PICK_HEAD" ]; then echo cherry-pick
+elif [ -f "$d/REVERT_HEAD" ]; then echo revert
+fi"#;
+    let out = git_script(t, body, &[], TIMEOUT).await?;
+    if out.code != 0 {
+        return Err(AppError::msg(out.stderr.trim().to_string()));
+    }
+    let op = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok((!op.is_empty()).then_some(op))
+}
+
+/// New-file diffs of untracked `files` (under `t.path`), in one go: per file its diff, or None
+/// when it's larger than `cap`. Stops once about `total` bytes are out.
+pub(crate) async fn untracked_diffs(t: &Target, files: &[String], cap: u64, total: usize) -> AppResult<Vec<Option<Vec<u8>>>> {
+    let body = r#"S=$(printf '\001DEVCAT\001'); cap=$1; total=$2; shift 2; sum=0
+for f in "$@"; do
+  [ "$sum" -gt "$total" ] && break
+  printf '%s\000' "$S"
+  z=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  if [ "${z:-0}" -gt "$cap" ]; then printf 'BIG\000'; continue; fi
+  sum=$((sum + ${z:-0}))
+  printf 'OK\000'
+  G diff --no-color --no-ext-diff --no-index -- /dev/null "$f"; c=$?
+  [ "$c" -gt 1 ] && exit "$c"
+  printf '\000'
+done"#;
+    let mut args = vec![cap.to_string(), total.to_string()];
+    args.extend(files.iter().cloned());
+    let out = git_script(t, body, &args, GIT_TIMEOUT).await?;
+    if out.code != 0 {
+        return Err(AppError::msg(out.stderr.trim().to_string()));
+    }
+    Ok(sections(&out.stdout)
+        .into_iter()
+        .skip(1)
+        .map(|sec| match sec.first().map(String::as_str) {
+            Some("BIG") => None,
+            _ => Some(sec[1..].join("\0").into_bytes()),
+        })
+        .collect())
+}
+
+/// A repository `git_scan` found: its path on the host, whether `.git` is a file, whether it's
+/// the one enclosing the scanned folder, and its `git status --porcelain=v2 --branch -z`.
+pub(crate) struct ScannedRepo {
+    pub path: String,
+    pub is_submodule: bool,
+    pub enclosing: bool,
+    pub status: super::git::GitOut,
+}
+
+/// The repositories under `t.path` down to `depth` (and the one enclosing it), with their status,
+/// in one go. Skips hidden folders and `skip` (node_modules…) as the local scan does. Returns the
+/// scanned folder as the host sees it.
+pub(crate) async fn git_scan(t: &Target, depth: u32, skip: &[&str]) -> AppResult<(String, Vec<ScannedRepo>)> {
+    let prune: String = skip.iter().map(|n| format!(" -o -name {}", sh_quote(n))).collect();
+    let body = format!(
+        r#"S=$(printf '\001DEVCAT\001'); E=$(printf '\002')
+root=$(pwd -P); printf '%s\000' "$root"
+tmp=$(mktemp 2>/dev/null || echo "/tmp/devcat-git.$$"); trap 'rm -f "$tmp"' EXIT
+emit() {{
+  printf '%s\000%s\t%s\000' "$S" "$1" "$2"
+  ( cd "$2" && G status --porcelain=v2 --branch -z --untracked-files=normal ) 2>"$tmp"; c=$?
+  printf '\000%s%s\t' "$E" "$c"; tr -d '\000' < "$tmp"; printf '\000'
+}}
+kind() {{ if [ -d "$1/.git" ] && [ ! -L "$1/.git" ]; then echo dir; elif [ -f "$1/.git" ]; then echo file; fi; }}
+if [ -z "$(kind .)" ]; then
+  top=$(G rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$top" ] && [ "$top" != "$root" ]; then k=$(kind "$top"); emit "enclosing-${{k:-dir}}" "$top"; fi
+fi
+find . -maxdepth "$(($1 + 1))" \( -name .git \( -type d -o -type f \) -print -prune \) -o \( -type d ! -name . \( -name '.*'{prune} \) -prune \) 2>/dev/null |
+while IFS= read -r g; do
+  d=${{g%/.git}}; [ "$d" = . ] && p="$root" || p="$root/${{d#./}}"
+  if [ -f "$g" ]; then emit file "$p"; else emit dir "$p"; fi
+done"#
+    );
+    let out = git_script(t, &body, &[depth.to_string()], Duration::from_secs(120)).await?;
+    if out.code != 0 {
+        return Err(AppError::msg(out.stderr.trim().to_string()));
+    }
+    let mut secs = sections(&out.stdout).into_iter();
+    let root = secs.next().and_then(|v| v.into_iter().next()).unwrap_or_else(|| t.path.clone());
+    let repos = secs
+        .filter_map(|sec| {
+            let (head, rest) = sec.split_first()?;
+            let (kind, path) = head.split_once('\t')?;
+            let end = rest.iter().rposition(|r| r.starts_with('\u{2}'))?;
+            let (code, stderr) = rest[end][1..].split_once('\t').unwrap_or((&rest[end][1..], ""));
+            let mut stdout = Vec::new();
+            for r in &rest[..end] {
+                stdout.extend_from_slice(r.as_bytes());
+                stdout.push(0);
+            }
+            Some(ScannedRepo {
+                path: path.to_string(),
+                is_submodule: kind.ends_with("file"),
+                enclosing: kind.starts_with("enclosing"),
+                status: super::git::GitOut { code: code.parse().unwrap_or(-1), stdout, stderr: stderr.to_string() },
+            })
+        })
+        .collect();
+    Ok((root, repos))
 }
 
 // ---------- Claude Code transcripts ----------
@@ -982,6 +1203,10 @@ pub fn needs_command(t: &Target, program: Option<&str>, env: &[(String, String)]
 /// can't log in (no key, agent or saved password: the user types it in the terminal) it's
 /// `Posix`, as before, and asked again next time.
 pub async fn host_os(t: &Target) -> HostOs {
+    #[cfg(test)]
+    if t.dest == LOCAL_TEST_HOST {
+        return HostOs::Posix;
+    }
     let key = host_key(t);
     if let Some(os) = HOST_OS.lock().get(&key) {
         return *os;

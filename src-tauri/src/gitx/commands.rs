@@ -4,7 +4,7 @@ use super::parse::*;
 use super::*;
 use crate::claude::FileVersions;
 use crate::claude::git::{
-    git_command, git_error, git_ok, git_raw, has_head, invalidate_cache, read_blob, require_root, resolve_rel, GitOut, DIFF_CAP,
+    git_error, git_exec, git_ok, git_raw, has_head, invalidate_cache, read_blob, require_root, resolve_rel, GitOut, Repo, DIFF_CAP,
     VERSION_CAP,
 };
 use crate::error::{AppError, AppResult};
@@ -35,7 +35,7 @@ fn check_arg<'a>(what: &str, s: &'a str) -> AppResult<&'a str> {
 }
 
 /// Full sha of the commit `rev` points at.
-async fn resolve_commit(root: &Path, rev: &str) -> AppResult<String> {
+async fn resolve_commit(root: &Repo, rev: &str) -> AppResult<String> {
     let rev = check_arg("revision", rev)?;
     let out = git_raw(root, ["rev-parse", "--verify", "-q", "--end-of-options", &format!("{rev}^{{commit}}")]).await?;
     if out.code != 0 {
@@ -44,11 +44,11 @@ async fn resolve_commit(root: &Path, rev: &str) -> AppResult<String> {
     Ok(text(&out.stdout).trim().to_string())
 }
 
-async fn ref_exists(root: &Path, full_ref: &str) -> AppResult<bool> {
+async fn ref_exists(root: &Repo, full_ref: &str) -> AppResult<bool> {
     Ok(git_raw(root, ["show-ref", "--verify", "-q", full_ref]).await?.code == 0)
 }
 
-async fn check_branch_name(root: &Path, name: &str) -> AppResult<String> {
+async fn check_branch_name(root: &Repo, name: &str) -> AppResult<String> {
     let name = check_arg("branch name", name)?;
     let out = git_raw(root, ["check-ref-format", "--branch", name]).await?;
     // `--branch` expands @{-N}; require the name to be literal
@@ -58,7 +58,7 @@ async fn check_branch_name(root: &Path, name: &str) -> AppResult<String> {
     Ok(name.to_string())
 }
 
-async fn check_tag_name(root: &Path, name: &str) -> AppResult<String> {
+async fn check_tag_name(root: &Repo, name: &str) -> AppResult<String> {
     let name = check_arg("tag name", name)?;
     if git_raw(root, ["check-ref-format", &format!("refs/tags/{name}")]).await?.code != 0 {
         return Err(AppError::msg(format!("Invalid tag name: {name}")));
@@ -66,12 +66,12 @@ async fn check_tag_name(root: &Path, name: &str) -> AppResult<String> {
     Ok(name.to_string())
 }
 
-async fn remote_names(root: &Path) -> AppResult<Vec<String>> {
+async fn remote_names(root: &Repo) -> AppResult<Vec<String>> {
     Ok(text(&git_ok(root, ["remote"]).await?).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
 }
 
 /// Splits "origin/feat/x" into ("origin", "feat/x") using the configured remotes (names may contain '/').
-async fn split_remote_branch(root: &Path, name: &str) -> AppResult<Option<(String, String)>> {
+async fn split_remote_branch(root: &Repo, name: &str) -> AppResult<Option<(String, String)>> {
     let mut remotes = remote_names(root).await?;
     remotes.sort_by_key(|r| std::cmp::Reverse(r.len()));
     Ok(remotes.into_iter().find_map(|r| {
@@ -80,7 +80,7 @@ async fn split_remote_branch(root: &Path, name: &str) -> AppResult<Option<(Strin
     }))
 }
 
-async fn check_remote(root: &Path, remote: &str) -> AppResult<String> {
+async fn check_remote(root: &Repo, remote: &str) -> AppResult<String> {
     let remote = check_arg("remote", remote)?;
     if !remote_names(root).await?.iter().any(|r| r == remote) {
         return Err(AppError::msg(format!("Unknown remote: {remote}")));
@@ -101,24 +101,15 @@ fn combined(out: &GitOut) -> String {
 }
 
 /// Runs a mutating git command (never opens an editor); returns combined output, error text on failure.
-async fn run<I, S>(root: &Path, args: I, timeout: Option<Duration>, extra_env: &[(&str, String)]) -> AppResult<String>
+async fn run<I, S>(root: &Repo, args: I, timeout: Option<Duration>, extra_env: &[(&str, String)]) -> AppResult<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
     invalidate_cache();
-    let mut cmd = git_command(root);
-    cmd.args(args).env("GIT_EDITOR", "true").env("GIT_MERGE_AUTOEDIT", "no");
-    for (k, v) in extra_env {
-        cmd.env(k, v);
-    }
-    let fut = cmd.output();
-    let res = match timeout {
-        Some(t) => tokio::time::timeout(t, fut).await.map_err(|_| AppError::msg("git timed out"))?,
-        None => fut.await,
-    };
-    let out = res.map_err(|e| AppError::msg(format!("Failed to run git: {e}")))?;
-    let out = GitOut { code: out.status.code().unwrap_or(-1), stdout: out.stdout, stderr: text(&out.stderr) };
+    let mut env = vec![("GIT_EDITOR", "true".to_string()), ("GIT_MERGE_AUTOEDIT", "no".to_string())];
+    env.extend(extra_env.iter().cloned());
+    let out = git_exec(root, args, &env, timeout).await?;
     let msg = combined(&out);
     if out.code != 0 {
         return Err(if msg.is_empty() { git_error(&out) } else { AppError::msg(msg) });
@@ -126,7 +117,7 @@ where
     Ok(msg)
 }
 
-async fn run_local<I, S>(root: &Path, args: I) -> AppResult<String>
+async fn run_local<I, S>(root: &Repo, args: I) -> AppResult<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -135,9 +126,11 @@ where
 }
 
 /// Network ops: batch-mode SSH (unless the user configured their own) and an overall timeout.
-async fn run_network(root: &Path, args: Vec<String>) -> AppResult<String> {
+async fn run_network(root: &Repo, args: Vec<String>) -> AppResult<String> {
     let mut env = Vec::new();
-    if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
+    // (on an SSH host git runs without this computer's environment)
+    let own_ssh = matches!(root, Repo::Local(_)) && (std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some());
+    if !own_ssh {
         let configured = git_raw(root, ["config", "--get", "core.sshCommand"]).await?;
         if configured.code != 0 || text(&configured.stdout).trim().is_empty() {
             env.push(("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=15".to_string()));
@@ -146,9 +139,16 @@ async fn run_network(root: &Path, args: Vec<String>) -> AppResult<String> {
     run(root, args, Some(NETWORK_TIMEOUT), &env).await
 }
 
-async fn git_dir(root: &Path) -> AppResult<PathBuf> {
-    let p = PathBuf::from(text(&git_ok(root, ["rev-parse", "--git-dir"]).await?).trim());
-    Ok(if p.is_absolute() { p } else { root.join(p) })
+/// The operation in progress in the repository, if any (see `operation`).
+async fn operation_of(root: &Repo) -> AppResult<Option<String>> {
+    match root {
+        Repo::Local(dir) => {
+            let p = PathBuf::from(text(&git_ok(root, ["rev-parse", "--git-dir"]).await?).trim());
+            let git_dir = if p.is_absolute() { p } else { dir.join(p) };
+            Ok(operation(&git_dir).map(String::from))
+        }
+        Repo::Remote(t) => crate::claude::remote::git_operation(t).await,
+    }
 }
 
 /// In-progress operation: "merge" | "rebase" | "am" | "cherry-pick" | "revert".
@@ -168,7 +168,7 @@ fn operation(git_dir: &Path) -> Option<&'static str> {
     }
 }
 
-async fn parents_of(root: &Path, sha: &str) -> AppResult<Vec<String>> {
+async fn parents_of(root: &Repo, sha: &str) -> AppResult<Vec<String>> {
     let out = text(&git_ok(root, ["rev-list", "--parents", "-n", "1", sha]).await?);
     Ok(out.split_whitespace().skip(1).map(String::from).collect())
 }
@@ -181,6 +181,9 @@ fn is_hex_prefix(s: &str) -> bool {
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn git_repos(root: String, max_depth: Option<u32>) -> AppResult<Vec<GitRepo>> {
+    if let Some(t) = crate::claude::remote::Target::parse(&root) {
+        return scan::scan_remote(&t, max_depth.unwrap_or(scan::DEFAULT_DEPTH)).await;
+    }
     scan::scan(Path::new(&root), max_depth.unwrap_or(scan::DEFAULT_DEPTH)).await
 }
 
@@ -212,7 +215,11 @@ pub async fn git_log(cwd: String, query: GitLogQuery) -> AppResult<Vec<GitCommit
         Some(p) => Some(resolve_rel(&root, p)?),
         None => None,
     };
-    if path.as_deref().is_some_and(|p| p != "." && root.join(p).is_file()) {
+    let is_file = match path.as_deref() {
+        Some(p) if p != "." => root.is_file(p).await?,
+        _ => false,
+    };
+    if is_file {
         args.push("--follow".into());
     }
     args.push("--end-of-options".into());
@@ -245,7 +252,7 @@ pub async fn git_log(cwd: String, query: GitLogQuery) -> AppResult<Vec<GitCommit
 }
 
 /// Files changed by `sha` vs its first parent (vs the empty tree for root commits).
-async fn commit_files(root: &Path, sha: &str, parents: &[String]) -> AppResult<Vec<GitCommitFile>> {
+async fn commit_files(root: &Repo, sha: &str, parents: &[String]) -> AppResult<Vec<GitCommitFile>> {
     let base: Vec<String> = match parents.first() {
         Some(p) => vec![p.clone(), sha.to_string()],
         None => vec!["--root".into(), sha.to_string()],
@@ -323,17 +330,24 @@ pub async fn git_blame(cwd: String, path: String, rev: Option<String>) -> AppRes
     };
     let raw = match &rev {
         Some(sha) => read_blob(&root, &format!("{sha}:{rel}")).await?.ok_or_else(|| AppError::msg(format!("{rel} does not exist at {sha}")))?,
-        None => {
-            let p = root.join(&rel);
-            let meta = std::fs::metadata(&p).map_err(|e| AppError::msg(format!("Cannot read {rel}: {e}")))?;
-            if !meta.is_file() {
-                return Err(AppError::msg("Not a file"));
+        None => match &root {
+            Repo::Local(dir) => {
+                let p = dir.join(&rel);
+                let meta = std::fs::metadata(&p).map_err(|e| AppError::msg(format!("Cannot read {rel}: {e}")))?;
+                if !meta.is_file() {
+                    return Err(AppError::msg("Not a file"));
+                }
+                if meta.len() > VERSION_CAP {
+                    return Err(AppError::msg(format!("File too large to blame ({} MB)", meta.len() / (1024 * 1024))));
+                }
+                std::fs::read(&p)?
             }
-            if meta.len() > VERSION_CAP {
-                return Err(AppError::msg(format!("File too large to blame ({} MB)", meta.len() / (1024 * 1024))));
-            }
-            std::fs::read(&p)?
-        }
+            Repo::Remote(_) => root
+                .read_worktree(&rel, VERSION_CAP)
+                .await
+                .map_err(|e| AppError::msg(e.to_string().replace("to diff", "to blame")))?
+                .ok_or_else(|| AppError::msg("Not a file"))?,
+        },
     };
     if raw.contains(&0) {
         return Err(AppError::msg("Cannot blame a binary file"));
@@ -357,7 +371,7 @@ pub async fn git_refs(cwd: String) -> AppResult<GitRefs> {
         git_ok(&root, ["remote", "-v"]),
         git_raw(&root, ["symbolic-ref", "-q", "--short", "HEAD"]),
         git_raw(&root, ["rev-parse", "--verify", "-q", "HEAD"]),
-        git_dir(&root),
+        operation_of(&root),
     );
     let (mut local, mut remote, mut tags) = (vec![], vec![], vec![]);
     for line in text(&refs?).lines() {
@@ -383,7 +397,7 @@ pub async fn git_refs(cwd: String) -> AppResult<GitRefs> {
         remote,
         tags,
         remotes: remote_list,
-        operation: dir.ok().and_then(|d| operation(&d)).map(String::from),
+        operation: dir.ok().flatten(),
     })
 }
 
@@ -475,7 +489,9 @@ pub async fn git_merge(cwd: String, branch: String, no_ff: bool) -> AppResult<St
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn git_abort(cwd: String) -> AppResult<()> {
     let root = require_root(&cwd).await?;
-    let op = operation(&git_dir(&root).await?).ok_or_else(|| AppError::msg("No merge, rebase, cherry-pick or revert in progress"))?;
+    let op = operation_of(&root).await?.ok_or_else(|| AppError::msg("No merge, rebase, cherry-pick or revert in progress"))?;
+    // only the operations `operation` names (what a host printed becomes a git subcommand)
+    let op = ["rebase", "am", "merge", "cherry-pick", "revert"].into_iter().find(|o| *o == op).ok_or_else(|| AppError::msg(format!("Unknown operation: {op}")))?;
     run_local(&root, [op, "--abort"]).await?;
     Ok(())
 }
@@ -623,7 +639,7 @@ pub async fn git_push(cwd: String, opts: RemoteOpts) -> AppResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude::git::tests::TempRepo;
+    use crate::claude::git::tests::{OverSsh, TempRepo};
 
     fn commit(repo: &TempRepo, file: &str, content: &str, msg: &str) -> String {
         repo.write(file, content);
@@ -638,6 +654,17 @@ mod tests {
 
     #[tokio::test]
     async fn discovers_nested_repos() {
+        discovers_nested_repos_body().await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discovers_nested_repos_over_ssh() {
+        let _ssh = OverSsh::on();
+        discovers_nested_repos_body().await
+    }
+
+    async fn discovers_nested_repos_body() {
         let top = TempRepo::new("scan");
         commit(&top, "readme.md", "top\n", "init");
         top.write("dirty.txt", "x\n");
@@ -685,7 +712,7 @@ mod tests {
         // scanning from inside a repo reports the enclosing repo
         let deep = top.dir.join("docs/guide");
         std::fs::create_dir_all(&deep).unwrap();
-        let inside = git_repos(deep.to_string_lossy().into_owned(), None).await.unwrap();
+        let inside = git_repos(format!("{}/docs/guide", top.cwd()), None).await.unwrap();
         assert_eq!(inside.len(), 1);
         assert_eq!(inside[0].rel, "../..");
         assert_eq!(inside[0].path, top.cwd());
@@ -696,11 +723,22 @@ mod tests {
         std::fs::write(broken.join(".git"), "gitdir: /nonexistent/devcat\n").unwrap();
         let repos = git_repos(top.cwd(), None).await.unwrap();
         assert!(by_rel(&repos, "broken").error.is_some());
-        assert!(git_repos(top.dir.join("missing").to_string_lossy().into_owned(), None).await.is_err());
+        assert!(git_repos(format!("{}/missing", top.cwd()), None).await.is_err());
     }
 
     #[tokio::test]
     async fn history_show_blame() {
+        history_show_blame_body().await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn history_show_blame_over_ssh() {
+        let _ssh = OverSsh::on();
+        history_show_blame_body().await
+    }
+
+    async fn history_show_blame_body() {
         let repo = TempRepo::new("hist");
         let empty = git_log(repo.cwd(), GitLogQuery::default()).await.unwrap();
         assert!(empty.is_empty());
@@ -775,6 +813,17 @@ mod tests {
 
     #[tokio::test]
     async fn refs_branches_tags_stash() {
+        refs_branches_tags_stash_body().await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn refs_branches_tags_stash_over_ssh() {
+        let _ssh = OverSsh::on();
+        refs_branches_tags_stash_body().await
+    }
+
+    async fn refs_branches_tags_stash_body() {
         let repo = TempRepo::new("refs");
         repo.git(&["config", "tag.gpgsign", "false"]);
         let c1 = commit(&repo, "f.txt", "1\n", "one");
@@ -867,6 +916,17 @@ mod tests {
 
     #[tokio::test]
     async fn local_remote_roundtrip() {
+        local_remote_roundtrip_body().await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_remote_roundtrip_over_ssh() {
+        let _ssh = OverSsh::on();
+        local_remote_roundtrip_body().await
+    }
+
+    async fn local_remote_roundtrip_body() {
         // "remote" is a bare repo on disk — no network
         let bare = TempRepo::new("bare");
         bare.git(&["config", "core.bare", "true"]);

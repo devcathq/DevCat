@@ -5,7 +5,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, errMsg } from "../../lib/api";
-import { isRemote } from "../../lib/remotePath";
 import type { ClaudeInfo, ClaudeMsg, ClaudePermissionMode, GitStatus } from "../../lib/types";
 import { useTabs } from "../../store/tabs";
 
@@ -135,9 +134,9 @@ export function claudeLaunchArgs(tabId: string): string[] {
   let sessionId = s.sessionFresh ? null : s.sessionId;
   let sessionFresh = false;
   if (sessionId) args.push("--resume", sessionId);
-  // New chat: we pick its session id, so the tab knows its own session before the first message (on
-  // SSH hosts we can't see transcripts, so a restart couldn't tell whether there's one to resume).
-  else if (!isRemote(s.cwd)) {
+  // New chat: we pick its session id, so the tab knows its own session before the first message
+  // (on an SSH host too: the host's Claude Code writes it there, and the Sessions list reads it).
+  else {
     sessionId = crypto.randomUUID();
     sessionFresh = true;
     args.push("--session-id", sessionId);

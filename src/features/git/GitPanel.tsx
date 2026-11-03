@@ -20,6 +20,7 @@ import { openGitRepo } from "./open";
 import { DEFAULT_DEPTH, pickScanRoot, useGitScan, useScanRoot } from "./scan";
 import { gitAction, useGitRepos } from "./store";
 import { tildify } from "./util";
+import { isRemote } from "../../lib/remotePath";
 
 const INDENT = 12;
 /** Rescan on window focus at most this often. */
@@ -123,7 +124,7 @@ function RootHeader({ root }: { root: string | null }) {
       items.push(
         "separator",
         { label: "Copy folder path", icon: <Copy className="size-3.5" />, onClick: () => void copyText(root) },
-        { label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(root) },
+        ...(isRemote(root) ? [] : [{ label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(root) } as MenuItem]),
       );
     }
     menu.show({ clientX: r.left, clientY: r.bottom + 2 }, items);
@@ -234,7 +235,7 @@ function RepoList({ root }: { root: string }) {
       { label: "Scan from this folder", icon: <FolderSearch className="size-3.5" />, onClick: () => useGitScan.getState().setRoot(r.path) },
       "separator",
       { label: "Copy path", icon: <Copy className="size-3.5" />, onClick: () => void copyText(r.path) },
-      { label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(r.path) },
+      ...(isRemote(r.path) ? [] : [{ label: REVEAL_LABEL, icon: <FolderSearch className="size-3.5" />, onClick: () => void revealPath(r.path) } as MenuItem]),
     ];
     menu.show(e, items);
   };
