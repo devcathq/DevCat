@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Claude Code sessions on SSH hosts** (#PR): the Sessions list of an SSH folder now shows the past Claude Code
+  sessions on that host (its own `~/.claude`), and opening one resumes it there in a new Claude tab, so the history
+  stays the host's. Linux and macOS hosts.
+
 ## 0.20.0 - 2026-11-02
 
 - **Security fixes** (#126): a security audit found places where text from outside (a ticket's description, a room

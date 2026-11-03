@@ -735,6 +735,114 @@ printf '%s\000' "$r"; cd "$r" && git status --porcelain=v2 --branch -z -uall"#;
     Ok(GitStatus { is_repo: true, root: Some(t.uri(&root)), branch: st.branch(), ahead: st.ahead, behind: st.behind, files: st.files })
 }
 
+// ---------- Claude Code transcripts ----------
+
+/// Claude Code's transcripts for the folder `$1` on the host (`$2`: its encoded project-dir name
+/// as spelled here, may be empty). Prints the folder as the host sees it (`pwd -P`, `pwd`), then
+/// one section per session file: `name\tmtime size\tcount`, and for a file not listed on stdin
+/// (`name mtime size` lines: unchanged since last time, count `=`) its first 128 KB, its title /
+/// cost lines and its last 256 KB, or all of it when small. Transcripts run to tens of MB, so they
+/// are never copied whole; lines cut off at those edges just don't parse.
+const SESSIONS_SCRIPT: &str = r#"
+cd "$1" 2>/dev/null || { echo "No folder $1 there" >&2; exit 3; }
+known=$(cat)
+S=$(printf '\001DEVCAT\001')
+root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+enc() { printf '%s' "$1" | sed 's/[^a-zA-Z0-9]/-/g'; }
+real=$(pwd -P); here=$(pwd)
+printf '%s\000%s\000' "$real" "$here"
+[ -d "$root" ] || exit 0
+seen=
+for n in "$2" "$(enc "$real")" "$(enc "$here")"; do
+  [ -n "$n" ] || continue
+  case " $seen " in *" $n "*) continue ;; esac
+  seen="$seen $n"
+  [ -d "$root/$n" ] || continue
+  for f in "$root/$n"/*.jsonl; do
+    [ -f "$f" ] || continue
+    m=$(stat -c '%Y %s' "$f" 2>/dev/null || stat -f '%m %z' "$f" 2>/dev/null) || continue
+    name=${f##*/}
+    case "
+$known
+" in *"
+$name $m
+"*) printf '%s\000%s\t%s\t=\000' "$S" "$name" "$m"; continue ;; esac
+    c=$(grep -E '"type":"(user|assistant)"' "$f" | grep -vc '"isSidechain":true')
+    printf '%s\000%s\t%s\t%s\000' "$S" "$name" "$m" "${c:-0}"
+    if [ "${m#* }" -le 393216 ]; then
+      cat "$f"
+    else
+      head -c 131072 "$f"; printf '\n'
+      grep -E '"type":"(custom-title|ai-title|summary|last-prompt|cost-state)"' "$f"
+      tail -c 262144 "$f"
+    fi
+    printf '\000'
+  done
+done
+"#;
+
+/// One session file from `claude_transcripts`.
+pub(crate) struct Transcript {
+    /// `<session id>.jsonl`
+    pub name: String,
+    /// "mtime size" on the host (unchanged when equal).
+    pub version: String,
+    pub mtime: Option<String>,
+    /// user / assistant messages; None when the host said it's unchanged (no `lines` either).
+    pub count: Option<usize>,
+    pub lines: Vec<String>,
+}
+
+/// The folder as the host sees it (resolved, as typed) and its Claude Code transcripts. `known`:
+/// files already read ("name mtime size"), which come back without their lines.
+pub(crate) async fn claude_transcripts(t: &Target, known: &[String]) -> AppResult<(Vec<String>, Vec<Transcript>)> {
+    t.ready().await?;
+    if host_os(t).await == HostOs::Windows {
+        return Err(AppError::msg(format!("{} is a Windows host: its Claude Code sessions can't be listed yet.", t.label())));
+    }
+    // Spelled as Claude Code does (one `-` per character); the host's sed may count bytes.
+    let encoded = if t.path.starts_with('/') { super::sessions::encode_cwd(t.path.trim_end_matches('/')) } else { String::new() };
+    let mut stdin = known.join("\n");
+    stdin.push('\n');
+    let out = run(t, SESSIONS_SCRIPT, &[&t.path, &encoded], Some(stdin.as_bytes())).await?;
+    Ok(parse_transcripts(&out))
+}
+
+/// `SESSIONS_SCRIPT` run by the local `sh` (tests: this computer stands in for the host).
+#[cfg(all(test, unix))]
+pub(crate) fn transcripts_here(dir: &str, encoded: &str, known: &[String], config_dir: &std::path::Path) -> (Vec<String>, Vec<Transcript>) {
+    use std::io::Write;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", SESSIONS_SCRIPT, "devcat", dir, encoded])
+        .env("CLAUDE_CONFIG_DIR", config_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{}", known.join("\n")).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    parse_transcripts(&out.stdout)
+}
+
+fn parse_transcripts(out: &[u8]) -> (Vec<String>, Vec<Transcript>) {
+    let mut s = sections(out).into_iter();
+    let dirs = s.next().unwrap_or_default();
+    let files = s
+        .filter_map(|sec| {
+            let mut it = sec.into_iter();
+            let head = it.next()?;
+            let mut f = head.splitn(3, '\t');
+            let (name, version, count) = (f.next()?.to_string(), f.next()?.to_string(), f.next()?);
+            let mtime = version.split(' ').next().and_then(unix_rfc3339);
+            let count = if count == "=" { None } else { Some(count.trim().parse().unwrap_or(0)) };
+            let lines = it.flat_map(|body| body.lines().map(str::to_string).collect::<Vec<_>>()).collect();
+            Some(Transcript { name, version, mtime, count, lines })
+        })
+        .collect();
+    (dirs, files)
+}
+
 // ---------- sessions ----------
 
 /// Log in to a (possibly unsaved) session: "user on host (Linux 6.8 x86_64)".

@@ -204,11 +204,26 @@ fn clip(s: &str) -> String {
 /// Build the metadata of one session file. None when it has no user/assistant messages.
 pub(super) fn parse_meta(path: &Path) -> Option<SessionMeta> {
     let id = path.file_stem()?.to_string_lossy().into_owned();
+    let md = path.metadata().ok();
+    let created = md.as_ref().and_then(|m| m.created().ok()).map(rfc3339);
+    let updated = md.as_ref().and_then(|m| m.modified().ok()).map(rfc3339);
+    meta_from_lines(id, read_lines(path).ok()?, None, created, updated)
+}
+
+/// `parse_meta` over transcript lines. `count`: the number of messages when known otherwise (only
+/// part of a remote transcript is read); `created` / `updated`: when the lines carry no timestamps.
+fn meta_from_lines(
+    id: String,
+    lines: impl Iterator<Item = String>,
+    count: Option<usize>,
+    created: Option<String>,
+    updated: Option<String>,
+) -> Option<SessionMeta> {
     let (mut first_ts, mut last_ts) = (None::<String>, None::<String>);
     let (mut custom_title, mut ai_title, mut summary, mut last_prompt_line) = (None::<String>, None, None, None);
     let (mut first_prompt, mut last_prompt) = (None::<String>, None::<String>);
-    let (mut count, mut branch, mut cost) = (0usize, None, None);
-    for raw in read_lines(path).ok()? {
+    let (mut count_read, mut branch, mut cost) = (0usize, None, None);
+    for raw in lines {
         let Ok(l) = serde_json::from_str::<Line>(&raw) else { continue };
         if let Some(ts) = l.timestamp.filter(|t| !t.is_empty()) {
             if first_ts.is_none() {
@@ -218,7 +233,7 @@ pub(super) fn parse_meta(path: &Path) -> Option<SessionMeta> {
         }
         match l.kind.as_deref() {
             Some(k @ ("user" | "assistant")) if !l.is_sidechain && l.message.is_some() => {
-                count += 1;
+                count_read += 1;
                 if let Some(b) = l.git_branch.filter(|b| !b.is_empty() && b != "HEAD") {
                     branch = Some(b);
                 }
@@ -241,12 +256,12 @@ pub(super) fn parse_meta(path: &Path) -> Option<SessionMeta> {
             _ => {}
         }
     }
+    let count = count.unwrap_or(count_read);
     if count == 0 {
         return None;
     }
-    let md = path.metadata().ok();
-    let created = first_ts.or_else(|| md.as_ref().and_then(|m| m.created().ok()).map(rfc3339));
-    let updated = last_ts.or_else(|| md.as_ref().and_then(|m| m.modified().ok()).map(rfc3339));
+    let created = first_ts.or(created);
+    let updated = last_ts.or(updated);
     let title = custom_title
         .filter(|t| !t.is_empty())
         .or(ai_title)
@@ -356,12 +371,67 @@ pub async fn claude_projects() -> AppResult<Vec<ClaudeProject>> {
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn claude_sessions(cwd: String) -> AppResult<Vec<SessionMeta>> {
+    if let Some(t) = super::remote::Target::parse(&cwd) {
+        return remote_sessions(&t).await;
+    }
     blocking(move || sessions_in(&projects_root(), &cwd)).await
+}
+
+/// A folder's transcripts on a host: file name → ("mtime size", meta; None = not a session here).
+type RemoteFiles = HashMap<String, (String, Option<SessionMeta>)>;
+/// Sessions read from hosts, per (host, folder).
+static REMOTE_META: Lazy<Mutex<HashMap<(String, String), RemoteFiles>>> = Lazy::new(Default::default);
+
+/// The sessions of a folder on an SSH host, from the host's own Claude Code
+/// (`~/.claude/projects` there). Files read before come back only when they changed.
+async fn remote_sessions(t: &super::remote::Target) -> AppResult<Vec<SessionMeta>> {
+    let key = (format!("{}:{}", t.dest, t.port.unwrap_or(0)), t.path.clone());
+    let known: Vec<String> = REMOTE_META.lock().get(&key).map(|m| m.iter().map(|(n, (v, _))| format!("{n} {v}")).collect()).unwrap_or_default();
+    let (dirs, files) = super::remote::claude_transcripts(t, &known).await?;
+    let mut spellings = dirs;
+    spellings.push(t.path.clone());
+    let mut cache = REMOTE_META.lock();
+    let old = cache.remove(&key).unwrap_or_default();
+    let mut now = RemoteFiles::new();
+    for f in files {
+        let meta = match f.count {
+            None => match old.get(&f.name) {
+                Some((v, m)) if *v == f.version => m.clone(),
+                _ => continue, // the host thought we had it: read again next time
+            },
+            Some(count) => remote_meta(&f, count, &spellings),
+        };
+        now.insert(f.name, (f.version, meta));
+    }
+    let mut out: Vec<SessionMeta> = now.values().filter_map(|(_, m)| m.clone()).collect();
+    cache.insert(key, now);
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out.dedup_by(|a, b| a.id == b.id);
+    Ok(out)
+}
+
+/// One remote transcript's meta; None when it isn't a session or belongs to another folder whose
+/// name encodes the same (`/a-b` and `/a/b`).
+fn remote_meta(f: &super::remote::Transcript, count: usize, spellings: &[String]) -> Option<SessionMeta> {
+    let id = f.name.strip_suffix(".jsonl")?.to_string();
+    let cwd = f.lines.iter().filter(|l| l.contains("\"cwd\"")).find_map(|l| serde_json::from_str::<CwdOnly>(l).ok()?.cwd.filter(|c| !c.is_empty()));
+    if cwd.is_some_and(|c| !spellings.iter().any(|s| same_path(s, &c))) {
+        return None;
+    }
+    meta_from_lines(id, f.lines.iter().cloned(), Some(count), None, f.mtime.clone())
+}
+
+fn local_only(cwd: &str, what: &str) -> AppResult<()> {
+    if super::remote::Target::parse(cwd).is_some() {
+        return Err(AppError::msg(format!("{what} isn't available for sessions on an SSH host yet")));
+    }
+    Ok(())
 }
 
 /// Transcript lines of a session (only user/assistant/system/result-like entries, raw JSON).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn claude_transcript(cwd: String, session_id: String) -> AppResult<Vec<Value>> {
+    local_only(&cwd, "Reading the transcript")?;
     if !valid_session_id(&session_id) {
         return Err(AppError::msg(format!("Invalid session id: {session_id}")));
     }
@@ -379,6 +449,7 @@ pub async fn claude_transcript(cwd: String, session_id: String) -> AppResult<Vec
 /// to Claude's own title. Returns the title the list shows now.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn claude_rename(cwd: String, session_id: String, title: String) -> AppResult<String> {
+    local_only(&cwd, "Renaming")?;
     if !valid_session_id(&session_id) {
         return Err(AppError::msg(format!("Invalid session id: {session_id}")));
     }
@@ -450,6 +521,69 @@ mod tests {
     fn assistant(cwd: &str, ts: &str) -> Value {
         serde_json::json!({"type":"assistant","cwd":cwd,"timestamp":ts,"isSidechain":false,"gitBranch":"feat/x",
             "message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}})
+    }
+
+    /// A host's sessions (read in part over SSH) match the same files read whole here.
+    #[cfg(unix)]
+    #[test]
+    fn remote_matches_local() {
+        let config = temp_root();
+        let folder = temp_root();
+        let cwd = std::fs::canonicalize(&folder).unwrap().to_string_lossy().into_owned();
+        let dir = config.join("projects").join(encode_cwd(&cwd));
+        // big: read as head + title lines + tail; the custom title sits in the middle
+        let mut big = vec![
+            serde_json::json!({"type":"file-history-snapshot","messageId":"m"}),
+            user(&cwd, "2026-02-01T00:00:00.000Z", Value::String("Start the migration".into())),
+            serde_json::json!({"type":"ai-title","aiTitle":"Early title"}),
+        ];
+        let filler = "x".repeat(4000);
+        for i in 0..200 {
+            big.push(assistant(&cwd, &format!("2026-02-01T00:{:02}:{:02}.000Z", i / 60, i % 60)));
+            big.push(serde_json::json!({"type":"user","cwd":cwd,"timestamp":"2026-02-01T01:00:00.000Z","isSidechain":false,
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":filler}]}}));
+            if i == 100 {
+                big.push(serde_json::json!({"type":"custom-title","customTitle":"Migration work"}));
+                big.push(serde_json::json!({"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[]}}));
+            }
+        }
+        big.push(user(&cwd, "2026-02-02T09:00:00.000Z", Value::String("ship it".into())));
+        big.push(serde_json::json!({"type":"cost-state","totalCostUSD":3.5}));
+        write_jsonl(&dir.join("big.jsonl"), &big);
+        write_jsonl(&dir.join("small.jsonl"), &[user(&cwd, "2026-02-03T00:00:00.000Z", Value::String("hello".into())), assistant(&cwd, "2026-02-03T00:00:01.000Z")]);
+        // same encoded name, another folder: left out
+        write_jsonl(&dir.join("other.jsonl"), &[user("/elsewhere", "2026-02-04T00:00:00.000Z", Value::String("not here".into()))]);
+        assert!(std::fs::metadata(dir.join("big.jsonl")).unwrap().len() > 393_216);
+
+        let (dirs, files) = super::super::remote::transcripts_here(&cwd, &encode_cwd(&cwd), &[], &config);
+        assert_eq!(dirs[0], cwd);
+        assert_eq!(files.len(), 3);
+        let big_lines = files.iter().find(|f| f.name == "big.jsonl").unwrap().lines.len();
+        assert!(big_lines < big.len() / 2, "big file read in part ({big_lines} lines)");
+        let mut spellings = dirs.clone();
+        spellings.push(cwd.clone());
+        for f in &files {
+            let remote = remote_meta(f, f.count.unwrap(), &spellings);
+            let local = parse_meta(&dir.join(&f.name));
+            if f.name == "other.jsonl" {
+                assert!(remote.is_none());
+                continue;
+            }
+            let (r, l) = (remote.unwrap(), local.unwrap());
+            assert_eq!((&r.id, &r.title, &r.first_prompt, &r.last_prompt), (&l.id, &l.title, &l.first_prompt, &l.last_prompt));
+            assert_eq!((r.message_count, &r.git_branch, r.cost_usd), (l.message_count, &l.git_branch, l.cost_usd));
+            assert_eq!((&r.created_at, &r.updated_at), (&l.created_at, &l.updated_at));
+        }
+        let r = remote_meta(files.iter().find(|f| f.name == "big.jsonl").unwrap(), 401, &spellings).unwrap();
+        assert_eq!(r.title, "Migration work");
+
+        // unchanged files come back without their lines
+        let known: Vec<String> = files.iter().map(|f| format!("{} {}", f.name, f.version)).collect();
+        let (_, again) = super::super::remote::transcripts_here(&cwd, "", &known, &config);
+        assert_eq!(again.len(), 3);
+        assert!(again.iter().all(|f| f.count.is_none() && f.lines.is_empty()));
+        let _ = std::fs::remove_dir_all(&config);
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]
