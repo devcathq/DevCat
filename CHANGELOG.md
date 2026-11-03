@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Download files from SSH hosts**: a file on an SSH host that DevCat can't preview (a video, an archive, a file
+  too large to show) now has a Download button. Pick a folder on this computer; progress shows in a notification
+  you can cancel, and when it's done you can reveal the file.
+
 ## 0.21.0 - 2026-11-03
 
 - **Agents can open files in DevCat** (#131): ask Claude Code, Codex, Cursor, Gemini or the DevCat Agent to "open it in
