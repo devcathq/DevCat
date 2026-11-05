@@ -12,6 +12,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.22.0 - 2026-11-05
+
 - **Claude Code sessions on SSH hosts** (#130): the Sessions list of an SSH folder now shows the past Claude Code
   sessions on that host (its own `~/.claude`), and opening one resumes it there in a new Claude tab, so the history
   stays the host's. New Claude chats there get their session id from the start, so restarting one picks it up again.
@@ -23,6 +25,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Download files from SSH hosts** (#133): a file on an SSH host that DevCat can't preview (a video, an archive, a file
   too large to show) now has a Download button. Pick a folder on this computer; progress shows in a notification
   you can cancel, and when it's done you can reveal the file.
+- **Claude Code sessions list was empty** (#134): a folder whose newest Claude Code session had moved into a
+  subfolder early on (`cd backend`) showed "No sessions yet in this folder" although it had many. Its sessions show
+  again, and the folder is no longer counted under that subfolder.
 
 ## 0.21.0 - 2026-11-03
 
