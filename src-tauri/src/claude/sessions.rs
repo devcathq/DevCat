@@ -63,20 +63,36 @@ struct CwdOnly {
     cwd: Option<String>,
 }
 
+/// Whether `name` is the project dir name Claude Code gives `cwd` (exact, or truncated + hashed).
+fn names_dir(cwd: &str, name: &str) -> bool {
+    let enc = encode_cwd(cwd);
+    enc == name || (enc.len() > 100 && name.get(..100).is_some_and(|n| enc.get(..100) == Some(n)))
+}
+
+/// A session's `cwd` follows it into subfolders (`cd sub` early on, then the first `cwd` line says
+/// `<root>/sub`), so a `cwd` whose encoding is the dir's own name wins over the first one found.
 pub(crate) fn dir_cwd(dir: &Path) -> Option<String> {
     if let Some(c) = DIR_CWD.lock().get(dir) {
         return Some(c.clone());
     }
+    let name = dir.file_name()?.to_string_lossy().into_owned();
     let mut files = session_files(dir);
     files.sort_by_key(|p| std::cmp::Reverse(p.metadata().and_then(|m| m.modified()).ok()));
-    let found = files.iter().find_map(|f| {
+    let mut first: Option<String> = None;
+    let named = files.iter().take(20).find_map(|f| {
         read_lines(f).ok()?.take(200).find_map(|l| {
             if !l.contains("\"cwd\"") {
                 return None;
             }
-            serde_json::from_str::<CwdOnly>(&l).ok()?.cwd.filter(|c| !c.is_empty())
+            let c = serde_json::from_str::<CwdOnly>(&l).ok()?.cwd.filter(|c| !c.is_empty())?;
+            if names_dir(&c, &name) {
+                return Some(c);
+            }
+            first.get_or_insert(c);
+            None
         })
-    })?;
+    });
+    let found = named.or(first)?;
     DIR_CWD.lock().insert(dir.to_path_buf(), found.clone());
     Some(found)
 }
@@ -110,7 +126,7 @@ fn project_dirs_for(root: &Path, cwd: &str) -> Vec<PathBuf> {
         }
         let name = e.file_name().to_string_lossy().into_owned();
         // Cheap prefilter: exact name, or a name sharing a long prefix (truncated + hash).
-        let maybe = encoded.iter().any(|enc| name == *enc || (enc.len() > 100 && name.get(..100).is_some_and(|n| enc.get(..100) == Some(n))));
+        let maybe = spellings.iter().any(|s| names_dir(s, &name));
         if !maybe {
             continue;
         }
@@ -686,6 +702,21 @@ mod tests {
         let projects = projects_in(&root);
         assert_eq!(projects.len(), 2);
         assert!(projects.iter().any(|p| p.cwd == cwd && p.session_count == 1));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn newest_session_in_a_subfolder_keeps_the_dir() {
+        // The newest transcript's first `cwd` is a subfolder (it `cd`'d early): the dir is still the root's.
+        let root = temp_root();
+        let cwd = "/work/mono";
+        let dir = root.join(encode_cwd(cwd));
+        write_jsonl(&dir.join("old.jsonl"), &[user(cwd, "2026-01-01T00:00:00.000Z", Value::String("hi".into()))]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_jsonl(&dir.join("new.jsonl"), &[user("/work/mono/backend", "2026-01-02T00:00:00.000Z", Value::String("go".into()))]);
+        let list = sessions_in(&root, cwd);
+        assert_eq!(list.len(), 2);
+        assert!(projects_in(&root).iter().any(|p| p.cwd == cwd && p.session_count == 2));
         let _ = std::fs::remove_dir_all(&root);
     }
 
