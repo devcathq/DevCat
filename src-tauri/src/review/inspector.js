@@ -7,10 +7,19 @@
 
   function cssEscape(s) {
     if (typeof CSS !== "undefined" && CSS && typeof CSS.escape === "function") return CSS.escape(s);
-    return String(s).replace(/[^\w-]|^-?\d/g, function (ch, i) {
-      if (/\d/.test(ch)) return "\\3" + ch + " ";
-      return /[\x00-\x7f]/.test(ch) ? "\\" + ch : ch;
-    });
+    s = String(s);
+    var out = "";
+    for (var i = 0; i < s.length; i++) {
+      var ch = s.charAt(i), c = s.charCodeAt(i);
+      if (c === 0) out += "\uFFFD";
+      else if (c < 0x20 || c === 0x7f) out += "\\" + c.toString(16) + " ";
+      else if ((i === 0 && c >= 48 && c <= 57) || (i === 1 && c >= 48 && c <= 57 && s.charAt(0) === "-"))
+        out += "\\3" + ch + " ";
+      else if (i === 0 && ch === "-" && s.length === 1) out += "\\-";
+      else if (c >= 0x80 || ch === "-" || ch === "_" || /[0-9A-Za-z]/.test(ch)) out += ch;
+      else out += "\\" + ch;
+    }
+    return out;
   }
 
   function isJunkClass(name) {
@@ -41,18 +50,20 @@
   // One step of the selector: #id, else up to two meaningful classes, else the tag; :nth-of-type
   // only when a sibling would match it too.
   function part(e) {
-    if (e.id && !isJunkId(e.id)) return "#" + cssEscape(e.id);
+    var id = e.getAttribute("id"); // not e.id: <input name="id"> shadows it
     var cls = classesOf(e);
-    var s = cls.length ? "." + cls.map(cssEscape).join(".") : e.tagName.toLowerCase();
+    var useId = id && !isJunkId(id);
+    var s = useId ? "#" + cssEscape(id) : cls.length ? "." + cls.map(cssEscape).join(".") : e.localName;
     var sibs = e.parentElement ? Array.prototype.slice.call(e.parentElement.children) : [];
     var twins = sibs.filter(function (x) {
       if (x === e) return false;
-      if (!cls.length) return x.tagName === e.tagName;
+      if (useId) return x.getAttribute("id") === id;
+      if (!cls.length) return x.localName === e.localName;
       for (var i = 0; i < cls.length; i++) if (!hasClass(x, cls[i])) return false;
       return true;
     });
     if (twins.length) {
-      var same = sibs.filter(function (x) { return x.tagName === e.tagName; });
+      var same = sibs.filter(function (x) { return x.localName === e.localName; });
       s += ":nth-of-type(" + (same.indexOf(e) + 1) + ")";
     }
     return s;
@@ -66,13 +77,13 @@
   function selectorFor(el, root) {
     var parts = [];
     for (var e = el; e && e !== root; e = e.parentElement) {
-      var p = part(e);
-      parts.unshift(p);
-      if (p.charAt(0) === "#" && p.indexOf(" ") < 0 && e.id && !isJunkId(e.id)) break;
+      parts.unshift(part(e));
       if (root.querySelectorAll(parts.join(" ")).length <= 1) break;
     }
+    // Cap at 300 by dropping leading parts, never by cutting inside one (an escape could break).
+    while (parts.length > 1 && parts.join(" ").length > 300) parts.shift();
     var s = parts.join(" ");
-    return s.length > 300 ? s.slice(0, 300) : s;
+    return s.length > 300 ? el.localName : s;
   }
 
   function visibleText(el) {
@@ -81,7 +92,8 @@
       var names = ["alt", "aria-label", "placeholder", "title"];
       for (var i = 0; i < names.length && !t; i++) t = String(el.getAttribute(names[i]) || "").trim();
     }
-    return t.length > 40 ? t.slice(0, 39) + "…" : t;
+    var cps = Array.from(t); // by code point: never split a surrogate pair
+    return cps.length > 40 ? cps.slice(0, 39).join("") + "…" : t;
   }
 
   // Absolute paths become relative to the project root, guessed as the parent of the last `/src/`.
@@ -129,6 +141,7 @@
     isJunkId: isJunkId,
     selectorFor: selectorFor,
     visibleText: visibleText,
+    cssEscape: cssEscape,
     sourceOf: sourceOf,
   };
   if (CONFIG && CONFIG.test === true) return lib;

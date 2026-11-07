@@ -15,9 +15,10 @@ const lib = (0, eval)(src)({ test: true });
 function el(tag, props = {}, children = []) {
   const e = {
     tagName: tag.toUpperCase(),
-    id: props.id || "",
+    localName: tag,
+    id: props.clobber ? {} : props.id || "",
     classList: props.cls ? props.cls.split(" ") : [],
-    attrs: props.attrs || {},
+    attrs: Object.assign({}, props.id ? { id: props.id } : {}, props.attrs || {}),
     innerText: props.text || "",
     parentElement: null,
     children,
@@ -39,16 +40,16 @@ function compound(c) {
     if (m[1]) out.id = unesc(m[1]);
     else if (m[2]) out.cls.push(unesc(m[2]));
     else if (m[3]) out.nth = +m[3];
-    else out.tag = m[4].toUpperCase();
+    else out.tag = unesc(m[4]);
   }
   return out;
 }
 function matches(e, c) {
-  if (c.id && e.id !== c.id) return false;
-  if (c.tag && e.tagName !== c.tag) return false;
+  if (c.id && e.getAttribute("id") !== c.id) return false;
+  if (c.tag && e.localName !== c.tag) return false;
   if (!c.cls.every((k) => e.classList.includes(k))) return false;
   if (c.nth) {
-    const sibs = e.parentElement ? e.parentElement.children.filter((x) => x.tagName === e.tagName) : [e];
+    const sibs = e.parentElement ? e.parentElement.children.filter((x) => x.localName === e.localName) : [e];
     if (sibs.indexOf(e) + 1 !== c.nth) return false;
   }
   return true;
@@ -78,10 +79,15 @@ const img = el("img", { attrs: { alt: "Acme logo" } });
 const tw = el("div", { cls: "mt-4 md:flex" });
 const svelteEl = el("div", { extra: { __svelte_meta: { loc: { file: "src/routes/+page.svelte", line: 12, column: 4 } } } });
 const plainEl = el("div");
-const page = el("body", {}, [h1, cta, card1, card2, byId, styled, longP, img, tw, svelteEl, plainEl]);
+const dupA = el("div", { id: "dup" }, [el("b", { text: "A" })]);
+const dupB = el("div", { id: "dup" }, [el("b", { text: "B" })]);
+const clob = el("form", { id: "signup" }, [el("input", { clobber: true, attrs: { name: "id" } })]);
+const grad = el("linearGradient", {});
+const svg = el("svg", {}, [el("defs", {}, [grad])]);
+const page = el("body", {}, [h1, cta, card1, card2, byId, styled, longP, img, tw, svelteEl, plainEl, dupA, dupB, clob, svg]);
 
 // Tests ----------------------------------------------------------------------------------------
-const { isJunkClass, isJunkId, selectorFor, visibleText, sourceOf } = lib;
+const { cssEscape, isJunkClass, isJunkId, selectorFor, visibleText, sourceOf } = lib;
 
 eq(isJunkClass("css-1x2abc"), true, "css-in-js"); eq(isJunkClass("sc-bdVaJa"), true, "styled-components"); eq(isJunkClass("svelte-12ab3c"), true, "svelte scope");
 eq(isJunkClass("devcat-review-marked"), true, "our own mark");
@@ -98,8 +104,23 @@ eq(selectorFor(styled, page), "button", "css-1x2abc skipped");
 eq(selectorFor(tw, page), ".mt-4.md\\:flex", "escaped class");
 eq(query(page, selectorFor(tw, page))[0] === tw, true, "escaped selector finds the element");
 eq(selectorFor(el("div", { cls: "x".repeat(400) }, []), page).length <= 300, true, "capped at 300");
+eq(selectorFor(dupA.children[0], page), "#dup:nth-of-type(6) b", "duplicate id is not unique: keep walking, nth-of-type");
+eq(selectorFor(dupB, page), "#dup:nth-of-type(7)", "duplicate id gets nth-of-type");
+eq(selectorFor(clob.children[0], page), "input", "id read by attribute, not clobbered property");
+eq(selectorFor(clob, page), "#signup", "form with clobbering child");
+eq(selectorFor(grad, page), "linearGradient", "svg localName keeps case");
+// a long chain drops leading parts whole
+let deep = el("em", { cls: "leaf" }); const chain = [deep];
+for (let i = 0; i < 40; i++) { deep = el("div", { cls: "level-number-" + "a".repeat(10) + (i % 2 ? "" : "b") }, [deep, el("div", { cls: "level-number-" + "a".repeat(10) + (i % 2 ? "" : "b") })]); }
+const deepRoot = el("body", {}, [deep]);
+const longSel = selectorFor(chain[0], deepRoot);
+eq(longSel.length <= 300 && longSel.startsWith(".") && !longSel.startsWith(". "), true, "long selector drops whole leading parts");
+eq(cssEscape("-4a"), "-\\34 a", "fallback: -digit"); eq(cssEscape("4a"), "\\34 a", "fallback: leading digit");
+eq(cssEscape("-"), "\\-", "fallback: lone dash"); eq(cssEscape("md:flex"), "md\\:flex", "fallback: colon");
 
 eq(visibleText(longP), "Shared workspaces and roles for up to 2…", "first line cut at 40");
+eq(visibleText(el("p", { text: "a".repeat(38) + "😀 tail" })), "a".repeat(38) + "😀…", "no split surrogate at the cut");
+eq(JSON.stringify(visibleText(el("p", { text: "a".repeat(39) + "😀😀" }))).includes("\\ud83d\\u"), false, "no lone surrogate");
 eq(visibleText(img), "Acme logo", "alt fallback");
 eq(visibleText(el("input", { attrs: { placeholder: "Email" } })), "Email", "placeholder fallback");
 eq(visibleText(el("div", { text: "  \n " })), "", "empty");
