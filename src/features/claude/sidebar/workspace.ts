@@ -4,6 +4,7 @@
 // windows, so each change starts from the stored list and the others follow its `storage` event.
 import { open } from "@tauri-apps/plugin-dialog";
 import { create } from "zustand";
+import { localStart } from "../../../lib/remotePath";
 import { useTabs } from "../../../store/tabs";
 import type { Tab } from "../../../tabs/types";
 
@@ -98,7 +99,7 @@ window.addEventListener("storage", (e) => {
 
 /** Ask for a folder with the native picker; sets it as the workspace. */
 export async function pickFolder(): Promise<string | null> {
-  const dir = await open({ directory: true, multiple: false, defaultPath: useWorkspace.getState().cwd ?? undefined });
+  const dir = await open({ directory: true, multiple: false, defaultPath: localStart(useWorkspace.getState().cwd) });
   if (typeof dir !== "string") return null;
   useWorkspace.getState().setCwd(dir);
   return dir;

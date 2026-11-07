@@ -2,6 +2,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { create } from "zustand";
 import { useWorkspace } from "../claude/sidebar/workspace";
+import { localStart } from "../../lib/remotePath";
 
 const KEY_ROOT = "devcat.git.root";
 /** Scan folder per focused project: { [projectId]: root }. */
@@ -71,7 +72,7 @@ export function useScanRoot(): string | null {
 
 /** Ask for a folder with the native picker; sets it as the scan root. */
 export async function pickScanRoot(current: string | null): Promise<string | null> {
-  const dir = await open({ directory: true, multiple: false, defaultPath: current ?? undefined });
+  const dir = await open({ directory: true, multiple: false, defaultPath: localStart(current) });
   if (typeof dir !== "string") return null;
   useGitScan.getState().setRoot(dir);
   return dir;
