@@ -381,8 +381,17 @@
   }
 
   // Inspect mode --------------------------------------------------------------------------------
+  // Non-passive, so it only exists while inspecting: otherwise touch scrolling would wait on us.
+  var touching = false;
+  function setTouch(on) {
+    if (on === touching || !W) return;
+    touching = on;
+    if (on) W.addEventListener("touchstart", swallow, { capture: true, passive: false });
+    else W.removeEventListener("touchstart", swallow, { capture: true });
+  }
   function setInspect(on) {
     inspect = !!on;
+    setTouch(inspect);
     if (!inspect) { hovered = null; closeBox(); }
     drawHover();
   }
@@ -485,7 +494,7 @@
     ["click", "mousedown", "mouseup", "pointerdown", "pointerup", "auxclick", "contextmenu", "dblclick"].forEach(function (t) {
       W.addEventListener(t, t === "click" ? onClick : swallow, cap);
     });
-    W.addEventListener("touchstart", swallow, { capture: true, passive: false });
+    if (inspect) setTouch(true);
     W.addEventListener("keydown", onKey, cap);
     W.addEventListener("scroll", schedule, { capture: true, passive: true });
     W.addEventListener("resize", function () {

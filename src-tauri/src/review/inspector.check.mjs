@@ -146,7 +146,7 @@ function node(tag) {
     contains(c) { return this.children.includes(c); },
     attachShadow() { return (this._shadow = node("#shadow")); },
     addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
-    removeEventListener() {}, setAttribute(k, v) { this.attrs[k] = v; }, remove() {},
+    removeEventListener(t, f) { this.listeners[t] = (this.listeners[t] || []).filter((x) => x !== f); }, setAttribute(k, v) { this.attrs[k] = v; }, remove() {},
     querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }),
     focus() {}, set textContent(v) {}, set innerHTML(v) {},
   };
@@ -245,6 +245,17 @@ const cfg = (o) => ({ origin: "http://localhost:9", review: "r1", secret: "s3cre
   const h2 = w2.root.children[0];
   for (let i = 0; i < 30; i++) { w2.root.removeChild(h2); h2.parentNode = null; cb(); if (w2.root.children.length) back++; }
   eq(back, 20, "host re-appended 20 times at most");
+}
+
+{ // touchstart (non-passive) listener only while inspecting
+  const w = fakeWorld("http://localhost:9", "/");
+  run(w, cfg());
+  const n = () => (w.win.listeners.touchstart || []).length;
+  eq(n(), 1, "touchstart listener while inspecting");
+  w.win.__devcatReview.setInspect(false);
+  eq(n(), 0, "touchstart listener removed when inspect is off");
+  w.win.__devcatReview.setInspect(true);
+  eq(n(), 1, "touchstart listener back when inspect is on");
 }
 
 console.log("review inspector: ok");
