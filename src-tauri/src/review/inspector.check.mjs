@@ -135,4 +135,78 @@ eq(sourceOf(el("div", { attrs: { "data-source": "src/X.tsx:5" } })), "src/X.tsx:
 eq(sourceOf(el("div", { attrs: { "data-inspector-relative-path": "src/Y.vue", "data-inspector-line": "7" } })), "src/Y.vue:7", "inspector attrs");
 eq(sourceOf(el("div", { attrs: { "data-locatorjs": "src/Z.tsx:2" } })), "src/Z.tsx:2", "locatorjs");
 
+// Hostile page globals ---------------------------------------------------------------------------
+function node(tag) {
+  const n = {
+    tag, style: {}, children: [], listeners: {}, attrs: {}, classList: { add() {}, remove() {}, contains: () => false },
+    appendChild(c) { this.children.push(c); c.parentNode = this; return c; },
+    append(...cs) { for (const c of cs) this.appendChild(c); },
+    removeChild(c) { this.children = this.children.filter((x) => x !== c); },
+    contains(c) { return this.children.includes(c); },
+    attachShadow() { return node("#shadow"); },
+    addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
+    removeEventListener() {}, setAttribute(k, v) { this.attrs[k] = v; }, remove() {},
+    querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }),
+    focus() {}, set textContent(v) {}, set innerHTML(v) {},
+  };
+  return n;
+}
+function fakeWorld(origin, pathname, pre) {
+  const sent = [];
+  const root = node("html");
+  const doc = Object.assign(node("#document"), { documentElement: root, readyState: "complete", activeElement: null,
+    createElement: node, createTextNode: () => node("#text") });
+  const win = Object.assign(node("window"), {
+    location: { origin, pathname, hash: "" }, innerWidth: 800, innerHeight: 600, document: doc,
+    getComputedStyle: () => ({}), requestAnimationFrame: (f) => 0, setTimeout: () => 0, clearTimeout() {},
+    __TAURI_INTERNALS__: { invoke: (...a) => { sent.push(["captured", ...a]); return Promise.resolve({ notes: [] }); } },
+    MutationObserver: class { observe() {} disconnect() {} },
+  });
+  win.window = win;
+  if (pre) Object.defineProperty(win, "__devcatReview", { value: "page", configurable: false, writable: false });
+  return { win, doc, root, sent };
+}
+function run(world, cfg) {
+  const keep = { window: globalThis.window, document: globalThis.document, MutationObserver: globalThis.MutationObserver };
+  globalThis.window = world.win; globalThis.document = world.doc; globalThis.MutationObserver = world.win.MutationObserver;
+  try { (0, eval)(src)(cfg); } finally { Object.assign(globalThis, keep); }
+}
+const cfg = (o) => ({ origin: "http://localhost:9", review: "r1", secret: "s3cret", notes: [], pagePrefix: "", ...o });
+
+{ // wrong origin: nothing at all
+  const w = fakeWorld("https://evil.example", "/");
+  run(w, cfg());
+  eq([Object.getOwnPropertyNames(w.win).includes("__devcatReview"), w.sent.length, w.root.children.length], [false, 0, 0], "foreign origin: inert");
+  const f = fakeWorld("http://localhost:9", "/other/x.html");
+  run(f, cfg({ pagePrefix: "/f/r1/" }));
+  eq([f.sent.length, f.root.children.length], [0, 0], "file review outside prefix: inert");
+}
+{ // no Tauri invoke: nothing
+  const w = fakeWorld("http://localhost:9", "/");
+  delete w.win.__TAURI_INTERNALS__;
+  run(w, cfg());
+  eq([w.win.__devcatReview, w.root.children.length], [undefined, 0], "no invoke: inert");
+}
+{ // matching origin: global installed, frozen, secret hidden; hello goes through the captured invoke
+  const w = fakeWorld("http://localhost:9", "/pricing");
+  const captured = w.win.__TAURI_INTERNALS__.invoke;
+  run(w, cfg());
+  w.win.__TAURI_INTERNALS__.invoke = () => { throw new Error("page replaced invoke"); };
+  const g = w.win.__devcatReview;
+  eq([typeof g, Object.isFrozen(g), Object.keys(w.win).includes("__devcatReview")], ["object", true, false], "global frozen, not enumerable");
+  eq(Object.keys(g).sort(), ["highlight", "scrollTo", "setInspect", "setNotes"], "global methods");
+  eq(JSON.stringify(g).includes("s3cret"), false, "no secret on the global");
+  eq(Object.getOwnPropertyDescriptor(w.win, "__devcatReview").configurable, false, "not configurable");
+  eq(w.root.children.length, 1, "host appended");
+  const [who, cmd, args] = w.sent[0];
+  eq([who, cmd, args.review, args.secret, args.msg], ["captured", "plugin:devcat-review|msg", "r1", "s3cret",
+    { kind: "hello", page: "/pricing", width: 800, height: 600, missing: [] }], "hello through captured invoke");
+  void captured;
+}
+{ // a page that pre-defined the global: inspector still runs
+  const w = fakeWorld("http://localhost:9", "/f/r1/site/index.html", true);
+  run(w, cfg({ pagePrefix: "/f/r1/" }));
+  eq([w.win.__devcatReview, w.root.children.length, w.sent[0][2].msg.page], ["page", 1, "site/index.html"], "pre-defined global: still runs, page name without prefix");
+}
+
 console.log("review inspector: ok");
