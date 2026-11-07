@@ -138,12 +138,13 @@ eq(sourceOf(el("div", { attrs: { "data-locatorjs": "src/Z.tsx:2" } })), "src/Z.t
 // Hostile page globals ---------------------------------------------------------------------------
 function node(tag) {
   const n = {
+    _shadow: null,
     tag, style: {}, children: [], listeners: {}, attrs: {}, classList: { add() {}, remove() {}, contains: () => false },
     appendChild(c) { this.children.push(c); c.parentNode = this; return c; },
     append(...cs) { for (const c of cs) this.appendChild(c); },
     removeChild(c) { this.children = this.children.filter((x) => x !== c); },
     contains(c) { return this.children.includes(c); },
-    attachShadow() { return node("#shadow"); },
+    attachShadow() { return (this._shadow = node("#shadow")); },
     addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
     removeEventListener() {}, setAttribute(k, v) { this.attrs[k] = v; }, remove() {},
     querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }),
@@ -151,7 +152,7 @@ function node(tag) {
   };
   return n;
 }
-function fakeWorld(origin, pathname, pre) {
+function fakeWorld(origin, pathname, pre, sheets) {
   const sent = [];
   const root = node("html");
   const doc = Object.assign(node("#document"), { documentElement: root, readyState: "complete", activeElement: null,
@@ -163,6 +164,7 @@ function fakeWorld(origin, pathname, pre) {
     MutationObserver: class { observe() {} disconnect() {} },
   });
   win.window = win;
+  if (sheets) win.CSSStyleSheet = class { replaceSync(t) { this.css = t; } };
   if (pre) Object.defineProperty(win, "__devcatReview", { value: "page", configurable: false, writable: false });
   return { win, doc, root, sent };
 }
@@ -207,6 +209,42 @@ const cfg = (o) => ({ origin: "http://localhost:9", review: "r1", secret: "s3cre
   const w = fakeWorld("http://localhost:9", "/f/r1/site/index.html", true);
   run(w, cfg({ pagePrefix: "/f/r1/" }));
   eq([w.win.__devcatReview, w.root.children.length, w.sent[0][2].msg.page], ["page", 1, "site/index.html"], "pre-defined global: still runs, page name without prefix");
+}
+
+{ // styles: adoptedStyleSheets when constructable, inline CSSOM fallback otherwise
+  const a = fakeWorld("http://localhost:9", "/", false, true);
+  run(a, cfg());
+  const sh = a.root.children[0]._shadow;
+  eq([sh.adoptedStyleSheets.length, sh.children.some((c) => c.tag === "style")], [1, false], "sheet adopted, no <style>");
+  const b = fakeWorld("http://localhost:9", "/");
+  run(b, cfg());
+  const sb = b.root.children[0]._shadow;
+  eq([sb.adoptedStyleSheets, sb.children.some((c) => c.tag === "style"), sb.children.find((c) => c.className === "box").style.cssText.includes("position:fixed")],
+    [undefined, false, true], "inline fallback");
+}
+{ // attachShadow throwing: inert, no global
+  const w = fakeWorld("http://localhost:9", "/");
+  w.root.children.length;
+  const orig = w.doc.createElement;
+  w.doc.createElement = (t) => { const n = orig(t); n.attachShadow = () => { throw new Error("no"); }; return n; };
+  run(w, cfg());
+  eq([w.win.__devcatReview, w.sent.length], [undefined, 0], "attachShadow throws: inert");
+}
+{ // re-append is capped at 20
+  const w = fakeWorld("http://localhost:9", "/");
+  let cb;
+  w.win.MutationObserver = class { constructor(f) { cb = f; } observe() {} };
+  run(w, cfg());
+  const host = w.root.children[0];
+  for (let i = 0; i < 30; i++) { w.root.removeChild(host); host.parentNode = null; cb(); }
+  eq(w.root.children.length, 1 - 1 + 0 + 0, "after last removal the host stays out once the cap is hit");
+  let back = 0;
+  const w2 = fakeWorld("http://localhost:9", "/");
+  w2.win.MutationObserver = class { constructor(f) { cb = f; } observe() {} };
+  run(w2, cfg());
+  const h2 = w2.root.children[0];
+  for (let i = 0; i < 30; i++) { w2.root.removeChild(h2); h2.parentNode = null; cb(); if (w2.root.children.length) back++; }
+  eq(back, 20, "host re-appended 20 times at most");
 }
 
 console.log("review inspector: ok");

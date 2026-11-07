@@ -157,6 +157,15 @@
   var internals = W.__TAURI_INTERNALS__;
   if (!internals || typeof internals.invoke !== "function") return undefined;
   var rawInvoke = internals.invoke.bind(internals); // before the page's scripts can swap it
+  // Natives we rely on, taken now so the page can't swap them later.
+  var createEl = D.createElement.bind(D);
+  var queryOne = D.querySelector.bind(D);
+  var getCS = W.getComputedStyle.bind(W);
+  var raf = W.requestAnimationFrame.bind(W);
+  var setT = W.setTimeout.bind(W), clearT = W.clearTimeout.bind(W);
+  var MO = W.MutationObserver, SheetCtor = W.CSSStyleSheet;
+  var attachFn = W.Element && W.Element.prototype && W.Element.prototype.attachShadow;
+  var reappended = 0, sheetOk = false;
   var review = CONFIG.review, secret = CONFIG.secret;
   var notes = cleanNotes(CONFIG.notes);
   CONFIG = null;
@@ -196,7 +205,7 @@
   }
 
   function find(sel) {
-    try { return D.querySelector(sel); } catch (_) { return null; }
+    try { return queryOne(sel); } catch (_) { return null; }
   }
 
   var CSS =
@@ -215,9 +224,21 @@
     ".row button{border:1px solid #d1d5db;background:#f9fafb;color:#111827;border-radius:4px;padding:3px 10px;cursor:pointer}" +
     ".row button.go{background:#2563eb;border-color:#2563eb;color:#fff}";
 
+  // Without constructable stylesheets (or when a strict CSP blocks <style>) the critical properties go
+  // through CSSOM (el.style), which a CSP allows.
+  var FONT = "font:12px/1.4 system-ui,-apple-system,sans-serif;box-sizing:border-box;";
+  var INLINE = {
+    hv: "position:fixed;left:0;top:0;pointer-events:none;border:2px solid #2563eb;background:rgba(37,99,235,.12);display:none;" + FONT,
+    hl: "position:fixed;left:0;top:0;pointer-events:none;border:2px solid #f59e0b;background:rgba(245,158,11,.14);display:none;" + FONT,
+    lb: "position:fixed;left:0;top:0;pointer-events:none;background:#111827;color:#fff;padding:2px 6px;white-space:nowrap;display:none;" + FONT,
+    pin: "position:fixed;left:0;top:0;width:20px;height:20px;border-radius:50%;background:#2563eb;color:#fff;font-weight:700;font-size:11px;line-height:20px;text-align:center;pointer-events:auto;" + FONT,
+    box: "position:fixed;left:0;top:0;width:300px;background:#fff;color:#111827;border:1px solid #d1d5db;padding:8px;pointer-events:auto;display:none;" + FONT,
+    row: "display:flex;align-items:center;margin-top:6px;" + FONT,
+  };
   function h(tag, cls, parent, text) {
-    var n = D.createElement(tag);
+    var n = createEl(tag);
     if (cls) n.className = cls;
+    if (!sheetOk && cls && INLINE[cls]) n.style.cssText = INLINE[cls];
     if (text != null) n.textContent = text;
     if (parent) parent.appendChild(n);
     return n;
@@ -234,7 +255,7 @@
   }
 
   function describe(e) {
-    var r = rectOf(e), cs = W.getComputedStyle(e);
+    var r = rectOf(e), cs = getCS(e);
     var cls = classesOf(e);
     return e.localName + (cls.length ? "." + cls.join(".") : "") + " " + Math.round(r.width) + " × " + Math.round(r.height) +
       " · " + (cs.fontSize || "") + " " + (cs.color || "");
@@ -257,7 +278,7 @@
   }
 
   function styleString(e) {
-    var r = rectOf(e), cs = W.getComputedStyle(e);
+    var r = rectOf(e), cs = getCS(e);
     return Math.round(r.width) + "×" + Math.round(r.height) + ", " + cs.fontSize + "/" + cs.fontWeight + ", color " + cs.color +
       ", bg " + cs.backgroundColor + ", pad " + cs.padding;
   }
@@ -339,6 +360,7 @@
       en.pin.style.display = en.el.isConnected && (r.width || r.height) ? "block" : "none";
       en.pin.style.transform = "translate(" + Math.max(2, r.left - 10) + "px," + Math.max(2, r.top - 10) + "px)";
       en.pin.className = en.n === highlighted ? "pin on" : "pin";
+      if (!sheetOk) en.pin.style.background = en.n === highlighted ? "#f59e0b" : "#2563eb";
     }
     var he = highlighted == null ? null : entryFor(highlighted);
     if (he && he.el.isConnected) frame(hlBox, rectOf(he.el)); else hlBox.style.display = "none";
@@ -349,7 +371,7 @@
   function schedule() {
     if (queued) return;
     queued = true;
-    W.requestAnimationFrame(function () { queued = false; place(); });
+    raf(function () { queued = false; place(); });
   }
 
   function hello() {
@@ -387,8 +409,16 @@
   function onClick(e) {
     if (!inspect || e.target === host) return;
     swallow(e);
+    if (boxTarget && String(area.value || "").trim()) return; // keep the draft on its element
     var t = hovered && hovered.isConnected ? hovered : e.target;
     if (t && t.nodeType === 1) { setHover(t); openBox(t); }
+  }
+  function onBoxKey(e) {
+    if (e.target !== host) return;
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    if (e.type !== "keydown") return;
+    if (e.key === "Escape") { e.preventDefault(); closeBox(); }
+    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveBox(); }
   }
   function onKey(e) {
     if (e.target === host || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -404,10 +434,18 @@
   // Install -------------------------------------------------------------------------------------
   function install() {
     var root = D.documentElement;
-    host = D.createElement("devcat-review-host");
+    host = createEl("devcat-review-host");
     host.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647";
-    shadow = host.attachShadow({ mode: "closed" });
-    h("style", null, shadow).textContent = CSS;
+    try {
+      shadow = attachFn ? attachFn.call(host, { mode: "closed" }) : host.attachShadow({ mode: "closed" });
+    } catch (_) { return; } // can't make a private root: stay inert
+    if (!shadow) return;
+    try {
+      var sheet = new SheetCtor();
+      sheet.replaceSync(CSS);
+      shadow.adoptedStyleSheets = [sheet];
+      sheetOk = true;
+    } catch (_) { sheetOk = false; }
     hoverBox = h("div", "hv", shadow);
     hlBox = h("div", "hl", shadow);
     hoverLabel = h("div", "lb", shadow);
@@ -420,33 +458,40 @@
     errLine = h("span", null, row, "");
     var cancel = h("button", null, row, "Cancel");
     saveBtn = h("button", "go", row, "Save");
+    if (!sheetOk) {
+      area.style.cssText = "display:block;width:100%;height:72px;resize:none;border:1px solid #d1d5db;padding:4px 6px;color:#111827;background:#fff;" + FONT;
+      errLine.style.cssText = "flex:1;color:#6b7280;font-size:11px;";
+      cancel.style.cssText = saveBtn.style.cssText = "border:1px solid #d1d5db;background:#f9fafb;color:#111827;padding:3px 10px;margin-left:6px;" + FONT;
+      saveBtn.style.background = "#2563eb"; saveBtn.style.color = "#fff";
+    }
     cancel.addEventListener("click", closeBox);
     saveBtn.addEventListener("click", saveBox);
-    var quiet = function (e) { e.stopPropagation(); };
-    area.addEventListener("keydown", function (e) {
-      e.stopPropagation();
-      if (e.key === "Escape") { e.preventDefault(); closeBox(); }
-      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveBox(); }
-    });
-    area.addEventListener("keyup", quiet);
-    area.addEventListener("keypress", quiet);
+    // Keys typed in our box are handled here, in a window capture listener registered at init so it runs
+    // before page listeners added later; stopImmediatePropagation keeps those from seeing them. (Typing
+    // still works: the default action is untouched.) The page can still observe its own events in
+    // general, and read its own DOM: accepted.
+    W.addEventListener("keydown", onBoxKey, true);
+    W.addEventListener("keyup", onBoxKey, true);
+    W.addEventListener("keypress", onBoxKey, true);
     root.appendChild(host);
 
-    new MutationObserver(function () { if (host.parentNode !== root) root.appendChild(host); })
-      .observe(root, { childList: true });
+    new MO(function () {
+      if (host.parentNode !== root && reappended < 20) { reappended++; root.appendChild(host); }
+    }).observe(root, { childList: true });
 
     var cap = { capture: true };
     W.addEventListener("mousemove", onMove, { capture: true, passive: true });
     W.addEventListener("mouseout", onOut, { capture: true, passive: true });
-    ["click", "mousedown", "mouseup", "pointerdown", "pointerup"].forEach(function (t) {
+    ["click", "mousedown", "mouseup", "pointerdown", "pointerup", "auxclick", "contextmenu", "dblclick"].forEach(function (t) {
       W.addEventListener(t, t === "click" ? onClick : swallow, cap);
     });
+    W.addEventListener("touchstart", swallow, { capture: true, passive: false });
     W.addEventListener("keydown", onKey, cap);
     W.addEventListener("scroll", schedule, { capture: true, passive: true });
     W.addEventListener("resize", function () {
       schedule();
-      if (helloTimer) W.clearTimeout(helloTimer);
-      helloTimer = W.setTimeout(function () { helloTimer = 0; hello(); }, 500);
+      if (helloTimer) clearT(helloTimer);
+      helloTimer = setT(function () { helloTimer = 0; hello(); }, 500);
     }, { passive: true });
     W.addEventListener("popstate", schedule);
     W.addEventListener("hashchange", schedule);
