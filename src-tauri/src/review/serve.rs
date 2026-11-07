@@ -4,20 +4,25 @@
 //! To Tauri a page served from here is a remote origin, so it gets no IPC (a custom URI scheme
 //! would be a local origin with every DevCat command). The random review id is the read grant;
 //! there are no CORS or Private-Network headers, so other pages can't read through it, and the
-//! `Host` header must be `127.0.0.1:<port>` (DNS rebinding).
-
-#![allow(dead_code)] // Task 7 starts file reviews (`file_server().url`)
+//! `Host` header must be `127.0.0.1:<port>` (DNS rebinding). Hidden files and folders (a name
+//! starting with `.`) and secret-looking files are never served, even inside the folder.
 
 use super::{review_store, Target};
 use crate::error::{AppError, AppResult};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 /// Longest request head read (request line and headers).
 const MAX_HEAD: usize = 16 * 1024;
+/// The whole request head must arrive within this (not per read: a byte now and then doesn't
+/// keep a connection open).
+const HEAD_DEADLINE: Duration = Duration::from_secs(10);
+/// Most connections served at once; more are closed straight away.
+const MAX_CONNECTIONS: usize = 64;
 
 pub struct FileServer {
     port: u16,
@@ -30,11 +35,17 @@ pub fn file_server() -> &'static FileServer {
     SERVER.get_or_init(|| match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(listener) => {
             let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+            let slots = Slots::new(MAX_CONNECTIONS);
             std::thread::Builder::new()
                 .name("review-files".into())
                 .spawn(move || {
                     for stream in listener.incoming().flatten() {
-                        std::thread::spawn(move || handle(stream, port));
+                        // over the cap: dropped, which closes it
+                        let Some(slot) = slots.take() else { continue };
+                        std::thread::spawn(move || {
+                            handle(stream, port);
+                            drop(slot);
+                        });
                     }
                 })
                 .ok();
@@ -47,12 +58,41 @@ pub fn file_server() -> &'static FileServer {
     })
 }
 
+/// Counts open connections up to a cap.
+struct Slots(Arc<AtomicUsize>, usize);
+
+/// One open connection; frees its slot when dropped.
+struct Slot(Arc<AtomicUsize>);
+
+impl Slots {
+    fn new(max: usize) -> Self {
+        Slots(Arc::new(AtomicUsize::new(0)), max)
+    }
+
+    fn take(&self) -> Option<Slot> {
+        let max = self.1;
+        self.0.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < max).then_some(n + 1)).ok()?;
+        Some(Slot(self.0.clone()))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// The file server's origin if it has been started (a file review exists only then).
 pub fn running_origin() -> Option<String> {
     SERVER.get().map(FileServer::origin)
 }
 
 impl FileServer {
+    /// Did it start listening?
+    pub fn listening(&self) -> bool {
+        self.port != 0
+    }
+
     /// `http://127.0.0.1:<port>`.
     pub fn origin(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
@@ -60,9 +100,20 @@ impl FileServer {
 
     /// Where the review's file `rel` (relative to its folder, `/`-separated) is served.
     pub fn url(&self, review: &str, rel: &str) -> String {
-        let path: Vec<String> = rel.split('/').map(encode_segment).collect();
-        format!("{}/f/{review}/{}", self.origin(), path.join("/"))
+        format!("{}/f/{review}/{}", self.origin(), encode_path(rel))
     }
+}
+
+/// `rel` (`/`-separated) as it appears in the served URL's path.
+pub fn encode_path(rel: &str) -> String {
+    rel.split('/').map(encode_segment).collect::<Vec<_>>().join("/")
+}
+
+/// Never served: a hidden file or folder (`.git`, `.env`, …) anywhere in `rel`, or a file that
+/// looks like a key or a password store.
+pub fn hidden_or_secret(rel: &Path) -> bool {
+    rel.components().any(|c| matches!(c, Component::Normal(n) if n.to_string_lossy().starts_with('.')))
+        || crate::integrations::text::secret_like(rel)
 }
 
 fn encode_segment(s: &str) -> String {
@@ -110,15 +161,16 @@ pub fn resolve_file(root: &Path, rel: &str) -> AppResult<PathBuf> {
         return Err(refused());
     }
     let rel_path = Path::new(rel);
-    if !rel_path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+    if !rel_path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) || hidden_or_secret(rel_path) {
         return Err(refused());
     }
     let root = root.canonicalize().map_err(|_| refused())?;
     let path = root.join(rel_path).canonicalize().map_err(|_| refused())?;
-    if !path.starts_with(&root) || !path.is_file() {
-        return Err(refused());
+    // a link may lead to a hidden file in the folder: check where it really is too
+    match path.strip_prefix(&root) {
+        Ok(inside) if path.is_file() && !hidden_or_secret(inside) => Ok(path),
+        _ => Err(refused()),
     }
-    Ok(path)
 }
 
 /// What to answer to one request.
@@ -164,8 +216,29 @@ fn root_of(id: &str) -> Option<PathBuf> {
     }
 }
 
-fn read_head(stream: &TcpStream) -> Option<String> {
-    let mut reader = BufReader::new(std::io::Read::take(stream, MAX_HEAD as u64 + 2));
+/// What is left of a deadline, `None` once it has passed.
+fn time_left(until: Instant, now: Instant) -> Option<Duration> {
+    until.checked_duration_since(now).filter(|d| !d.is_zero())
+}
+
+/// Reads from the stream, each read limited to what is left of one overall deadline.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: Instant,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = time_left(self.until, Instant::now()).ok_or(std::io::ErrorKind::TimedOut)?;
+        self.stream.set_read_timeout(Some(left))?;
+        let mut stream = self.stream;
+        stream.read(buf)
+    }
+}
+
+fn read_head(stream: &TcpStream, deadline: Duration) -> Option<String> {
+    let timed = Deadline { stream, until: Instant::now() + deadline };
+    let mut reader = BufReader::new(timed.take(MAX_HEAD as u64 + 2));
     let mut head = String::new();
     loop {
         let mut line = String::new();
@@ -182,9 +255,8 @@ fn read_head(stream: &TcpStream) -> Option<String> {
 }
 
 fn handle(mut stream: TcpStream, port: u16) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-    let Some(head) = read_head(&stream) else { return };
+    let Some(head) = read_head(&stream, HEAD_DEADLINE) else { return };
     let reply = route(&head, port, root_of);
     let _ = match reply {
         Reply::File(path) => send_file(&mut stream, &path),
@@ -224,7 +296,7 @@ fn send_file(stream: &mut TcpStream, path: &Path) -> std::io::Result<()> {
     let Ok(mut file) = std::fs::File::open(path) else { return send_status(stream, 404) };
     let len = file.metadata()?.len();
     stream.write_all(head(200, content_type(path), len).as_bytes())?;
-    std::io::copy(&mut std::io::Read::take(&mut file, len), stream).map(|_| ())
+    std::io::copy(&mut (&mut file).take(len), stream).map(|_| ())
 }
 
 fn content_type(path: &Path) -> &'static str {
@@ -262,7 +334,6 @@ fn content_type(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
 
     fn tmp() -> PathBuf {
         let d = std::env::temp_dir().join(format!("devcat-review-{}", uuid::Uuid::new_v4()));
@@ -372,5 +443,77 @@ mod tests {
         review_store().close(&r.id);
         assert!(fetch(&host, &format!("/f/{}/index.html", r.id)).starts_with("HTTP/1.1 404"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn hidden_and_secret_files_are_refused() {
+        let d = tmp();
+        let root = d.join("site");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/config"), "x").unwrap();
+        std::fs::write(root.join(".env"), "x").unwrap();
+        std::fs::write(root.join("server.pem"), "x").unwrap();
+        std::fs::write(root.join("credentials.json"), "x").unwrap();
+        std::fs::create_dir_all(root.join("a/.cache")).unwrap();
+        std::fs::write(root.join("a/.cache/x.js"), "x").unwrap();
+        for rel in [".git/config", ".env", "server.pem", "credentials.json", "a/.cache/x.js", "./.env"] {
+            assert!(resolve_file(&root, rel).is_err(), "{rel}");
+        }
+        let r = root.clone();
+        let roots = move |id: &str| (id == "rv-a").then(|| r.clone());
+        let h = "127.0.0.1:4000";
+        for path in ["/f/rv-a/.env", "/f/rv-a/.git/config", "/f/rv-a/%2Eenv", "/f/rv-a/server.pem"] {
+            assert_eq!(route(&get(path, h), 4000, &roots), Reply::Status(404), "{path}");
+        }
+        #[cfg(unix)]
+        {
+            // a link inside the folder to a hidden file is refused too
+            std::os::unix::fs::symlink(root.join(".env"), root.join("env.txt")).unwrap();
+            assert!(resolve_file(&root, "env.txt").is_err());
+        }
+        assert!(resolve_file(&root, "index.html").is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn head_deadline_is_overall() {
+        let t0 = Instant::now();
+        let until = t0 + Duration::from_secs(10);
+        assert_eq!(time_left(until, t0), Some(Duration::from_secs(10)));
+        assert_eq!(time_left(until, t0 + Duration::from_secs(4)), Some(Duration::from_secs(6)));
+        assert_eq!(time_left(until, until), None);
+        assert_eq!(time_left(until, until + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn slow_head_is_cut_at_the_deadline() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            // one byte every 50 ms: each read is quick, the whole head never ends
+            for _ in 0..40 {
+                if c.write_all(b"G").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (stream, _) = listener.accept().unwrap();
+        let t0 = Instant::now();
+        assert!(read_head(&stream, Duration::from_millis(300)).is_none());
+        assert!(t0.elapsed() < Duration::from_millis(1000), "{:?}", t0.elapsed());
+        drop(stream);
+        let _ = client.join();
+    }
+
+    #[test]
+    fn open_connections_are_capped() {
+        let slots = Slots::new(2);
+        let a = slots.take().unwrap();
+        let _b = slots.take().unwrap();
+        assert!(slots.take().is_none());
+        drop(a);
+        assert!(slots.take().is_some());
     }
 }
