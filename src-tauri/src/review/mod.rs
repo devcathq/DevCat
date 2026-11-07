@@ -73,6 +73,10 @@ pub struct Review {
     pub saved: bool,
     /// What the review webview opens first (set by `set_load_url`).
     pub load_url: String,
+    /// Counts changes to the notes (not to the page size): what was shown is what is saved.
+    pub rev: u64,
+    /// The text last shown to the user: (rev, styles, text).
+    pub rendered: Option<(u64, bool, String)>,
 }
 
 /// Reviews in progress, in memory only.
@@ -116,6 +120,7 @@ fn edit_note(r: &mut Review, n: u32, comment: &str) -> AppResult<()> {
         .ok_or_else(|| AppError::Msg(format!("No comment number {n}")))?;
     note.comment = comment;
     r.saved = false;
+    r.rev += 1;
     Ok(())
 }
 
@@ -129,6 +134,7 @@ fn remove_note(r: &mut Review, n: u32) -> AppResult<()> {
     r.doc.notes.remove(i);
     renumber(&mut r.doc);
     r.saved = false;
+    r.rev += 1;
     Ok(())
 }
 
@@ -144,6 +150,8 @@ impl ReviewStore {
             missing: vec![],
             saved: false,
             load_url: String::new(),
+            rev: 0,
+            rendered: None,
         };
         self.reviews.lock().insert(r.id.clone(), r.clone());
         r
@@ -170,6 +178,7 @@ impl ReviewStore {
                 let n = r.doc.notes.len() as u32 + 1;
                 r.doc.notes.push(ReviewNote { n, page, width, selector, text, source, style, comment });
                 r.saved = false;
+                r.rev += 1;
             }
             InspectorMsg::Edit { n, comment } => edit_note(r, n, &comment)?,
             InspectorMsg::Remove { n } => remove_note(r, n)?,
@@ -193,6 +202,25 @@ impl ReviewStore {
         let r = map.get_mut(id).ok_or_else(no_review)?;
         remove_note(r, n)?;
         Ok(r.doc.clone())
+    }
+
+    /// Renders the review for the user to check, and remembers that text for `shown`.
+    pub fn render(&self, id: &str, styles: bool, date: &str) -> AppResult<Rendered> {
+        let mut map = self.reviews.lock();
+        let r = map.get_mut(id).ok_or_else(no_review)?;
+        let text = format::render(&r.doc, styles, date);
+        r.rendered = Some((r.rev, styles, text.clone()));
+        Ok(Rendered { text, rev: r.rev })
+    }
+
+    /// The exact text the user was shown for `rev`; an error when the review changed since.
+    pub fn shown(&self, id: &str, styles: bool, rev: u64) -> AppResult<String> {
+        let map = self.reviews.lock();
+        let r = map.get(id).ok_or_else(no_review)?;
+        match &r.rendered {
+            Some((at, s, text)) if *at == rev && r.rev == rev && *s == styles => Ok(text.clone()),
+            _ => Err(AppError::Msg("The review changed; check it again before saving".into())),
+        }
     }
 
     pub fn set_load_url(&self, id: &str, url: String) {
@@ -226,6 +254,41 @@ impl ReviewStore {
 pub fn review_store() -> &'static ReviewStore {
     static STORE: OnceLock<ReviewStore> = OnceLock::new();
     STORE.get_or_init(ReviewStore::default)
+}
+
+/// The review as text, and the revision of the notes it shows.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Rendered {
+    pub text: String,
+    pub rev: u64,
+}
+
+/// Saves the text the user checked (`rev`, from `render`) as a note: the note it was saved to
+/// before while that note is there, else a new one in the review's project (General when none,
+/// or when the project is gone). Nothing is saved when the review changed since.
+pub fn save_review(
+    store: &ReviewStore,
+    notes: &crate::notes::NoteStore,
+    projects: &crate::projects::ProjectStore,
+    id: &str,
+    styles: bool,
+    rev: u64,
+) -> AppResult<crate::notes::Note> {
+    use crate::notes::Note;
+    let body = store.shown(id, styles, rev)?;
+    let r = store.get(id).ok_or_else(no_review)?;
+    let earlier = r.note_id.as_ref().and_then(|nid| notes.list().ok()?.into_iter().find(|n| &n.id == nid));
+    let note = match earlier {
+        Some(old) => Note { body, ..old },
+        None => {
+            let project_id = r.project_id.filter(|p| projects.exists(p).unwrap_or(false));
+            Note { id: String::new(), project_id, body, pinned: false, created_at: 0, updated_at: 0 }
+        }
+    };
+    let saved = crate::notes::save_checked(notes, projects, note)?;
+    store.set_saved(id, saved.id.clone());
+    Ok(saved)
 }
 
 /// A review about to start, worked out from what the user asked for.
@@ -275,6 +338,10 @@ pub fn url_start(input: &str, dev_url: Option<&Url>) -> AppResult<Start> {
     })
 }
 
+fn is_html(p: &Path) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+}
+
 /// A local `.html` / `.htm` file to review. It's served from the code folder of the DevCat project
 /// that holds it (so `../assets/…` works inside a repo), else from its own folder.
 pub fn file_start(path: &str, projects: &[Project]) -> AppResult<Start> {
@@ -282,11 +349,14 @@ pub fn file_start(path: &str, projects: &[Project]) -> AppResult<Start> {
         return Err(refuse("Files on SSH hosts can't be reviewed"));
     }
     let p = Path::new(path);
-    let html = p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
-    if !p.is_absolute() || !html {
+    if !p.is_absolute() || !is_html(p) {
         return Err(refuse("Choose an .html file"));
     }
     let file = p.canonicalize().ok().filter(|f| f.is_file()).ok_or_else(|| refuse("That file isn't there"))?;
+    // a link named `.html` may lead to any file: the file itself must be one
+    if !is_html(&file) {
+        return Err(refuse("Choose an .html file"));
+    }
     let parent = file.parent().ok_or_else(|| refuse("That file isn't there"))?.to_path_buf();
     let root = projects
         .iter()
@@ -479,6 +549,56 @@ mod start_tests {
         assert!(file_start(&d.join("loose/missing.html").to_string_lossy(), &projects).is_err());
         assert!(file_start("site/index.html", &projects).is_err(), "relative");
         assert!(file_start("ssh://devcat-x/home/a.html", &projects).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_file_link_must_be_html_too() {
+        let d = tmp();
+        std::os::unix::fs::symlink(d.join("loose/notes.txt"), d.join("loose/link.html")).unwrap();
+        assert!(file_start(&d.join("loose/link.html").to_string_lossy(), &[]).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn stores() -> (PathBuf, crate::notes::NoteStore, crate::projects::ProjectStore) {
+        let d = std::env::temp_dir().join(format!("devcat-review-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        (d.clone(), crate::notes::NoteStore::new(d.clone()), crate::projects::ProjectStore::new(d))
+    }
+
+    fn add(c: &str) -> serde_json::Value {
+        serde_json::json!({"kind":"add","page":"/","width":800,"selector":"div","text":"t","comment":c})
+    }
+
+    #[test]
+    fn finish_refuses_a_review_that_changed_after_it_was_shown() {
+        let (d, notes, projects) = stores();
+        let s = ReviewStore::default();
+        let r = s.start(Target::Url { origin: "http://localhost:3000".into() }, "/".into(), None, "w".into());
+        s.apply(&r.id, &r.secret, &add("seen")).unwrap();
+        let shown = s.render(&r.id, false, "7 Nov 2026").unwrap();
+        s.apply(&r.id, &r.secret, &add("unseen")).unwrap();
+        let e = save_review(&s, &notes, &projects, &r.id, false, shown.rev).unwrap_err();
+        assert!(e.to_string().contains("check it again"), "{e}");
+        assert!(notes.list().unwrap().is_empty());
+        assert!(!s.get(&r.id).unwrap().saved);
+        // a hello (size only) doesn't count as a change
+        let again = s.render(&r.id, false, "7 Nov 2026").unwrap();
+        s.apply(&r.id, &r.secret, &serde_json::json!({"kind":"hello","page":"/","width":500,"height":400,"missing":[]})).unwrap();
+        // other styles than were shown: refused too
+        assert!(save_review(&s, &notes, &projects, &r.id, true, again.rev).is_err());
+        let saved = save_review(&s, &notes, &projects, &r.id, false, again.rev).unwrap();
+        assert_eq!(saved.body, again.text);
+        assert!(saved.body.contains("unseen") && saved.body.contains("7 Nov 2026"));
+        assert!(s.get(&r.id).unwrap().saved);
+        // saved again: the same note, updated
+        s.edit(&r.id, 1, "changed").unwrap();
+        let third = s.render(&r.id, false, "8 Nov 2026").unwrap();
+        let again_saved = save_review(&s, &notes, &projects, &r.id, false, third.rev).unwrap();
+        assert_eq!(again_saved.id, saved.id);
+        assert_eq!(notes.list().unwrap().len(), 1);
+        assert_eq!(notes.list().unwrap()[0].body, third.text);
         let _ = std::fs::remove_dir_all(&d);
     }
 

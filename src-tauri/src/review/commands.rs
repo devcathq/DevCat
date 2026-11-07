@@ -1,7 +1,7 @@
 //! The review tab's commands (app windows only: a review webview gets none of them).
 
 use super::webview::{self, call, find};
-use super::{channel, file_start, format, no_review, review_date, review_store, serve, url_start, ReviewDoc, Target};
+use super::{channel, file_start, no_review, review_date, review_store, save_review, serve, url_start, Rendered, Review, ReviewDoc, Target};
 use crate::error::{AppError, AppResult};
 use crate::notes::Note;
 use crate::state::St;
@@ -60,6 +60,17 @@ pub async fn review_start(
     Ok(ReviewInfo { id: r.id, title, doc: r.doc })
 }
 
+/// The review, if it belongs to the calling window: a window only drives its own reviews.
+fn owned(id: &str, window: &Window) -> AppResult<Review> {
+    review_store().get(id).filter(|r| r.window == window.label()).ok_or_else(no_review)
+}
+
+/// The review's webview, for the calling window's review.
+fn page(app: &AppHandle, window: &Window, id: &str) -> AppResult<tauri::Webview> {
+    owned(id, window)?;
+    find(app, id).ok_or_else(no_review)
+}
+
 /// Creating and closing are serialized, so two quick calls don't both add the webview and a
 /// close can't slip between finding the review and adding its webview.
 static CREATING: Mutex<()> = Mutex::new(());
@@ -79,10 +90,7 @@ pub async fn review_place(
     visible: bool,
 ) -> AppResult<()> {
     let _g = CREATING.lock();
-    let r = review_store().get(&id).ok_or_else(no_review)?;
-    if r.window != window.label() {
-        return Err(no_review());
-    }
+    let r = owned(&id, &window)?;
     let (pos, size) = (LogicalPosition::new(x.max(0.0), y.max(0.0)), LogicalSize::new(w.max(1.0), h.max(1.0)));
     let err = |e: tauri::Error| AppError::Msg(format!("Couldn't place the review page: {e}"));
     let wv = match find(&app, &id) {
@@ -91,14 +99,22 @@ pub async fn review_place(
             wv.set_size(size).map_err(err)?;
             wv
         }
-        None => webview::create(&window, &r, pos, size)?,
+        None => {
+            let wv = webview::create(&window, &r, pos, size)?;
+            // its window closed meanwhile (that doesn't wait for this lock): don't leave it behind
+            if review_store().get(&id).is_none() {
+                let _ = wv.close();
+                return Err(no_review());
+            }
+            wv
+        }
     };
     if visible { wv.show() } else { wv.hide() }.map_err(err)
 }
 
 #[tauri::command]
-pub async fn review_nav(app: AppHandle, id: String, action: NavAction) -> AppResult<()> {
-    let wv = find(&app, &id).ok_or_else(no_review)?;
+pub async fn review_nav(app: AppHandle, window: Window, id: String, action: NavAction) -> AppResult<()> {
+    let wv = page(&app, &window, &id)?;
     let err = |e: tauri::Error| AppError::Msg(format!("Couldn't go there: {e}"));
     match action {
         NavAction::Named(a) if a == "back" => wv.eval("history.back()").map_err(err),
@@ -113,14 +129,13 @@ pub async fn review_nav(app: AppHandle, id: String, action: NavAction) -> AppRes
 }
 
 #[tauri::command]
-pub async fn review_inspect(app: AppHandle, id: String, on: bool) -> AppResult<()> {
-    let wv = find(&app, &id).ok_or_else(no_review)?;
-    call(&wv, "setInspect", &json!(on))
+pub async fn review_inspect(app: AppHandle, window: Window, id: String, on: bool) -> AppResult<()> {
+    call(&page(&app, &window, &id)?, "setInspect", &json!(on))
 }
 
 #[tauri::command]
-pub async fn review_highlight(app: AppHandle, id: String, n: Option<u32>, scroll: bool) -> AppResult<()> {
-    let wv = find(&app, &id).ok_or_else(no_review)?;
+pub async fn review_highlight(app: AppHandle, window: Window, id: String, n: Option<u32>, scroll: bool) -> AppResult<()> {
+    let wv = page(&app, &window, &id)?;
     match n {
         Some(n) if scroll => call(&wv, "scrollTo", &json!(n)),
         _ => call(&wv, "highlight", &json!(n)),
@@ -137,45 +152,33 @@ fn changed(app: &AppHandle, id: &str) {
 }
 
 #[tauri::command]
-pub async fn review_edit(app: AppHandle, id: String, n: u32, comment: String) -> AppResult<ReviewDoc> {
+pub async fn review_edit(app: AppHandle, window: Window, id: String, n: u32, comment: String) -> AppResult<ReviewDoc> {
+    owned(&id, &window)?;
     let doc = review_store().edit(&id, n, &comment)?;
     changed(&app, &id);
     Ok(doc)
 }
 
 #[tauri::command]
-pub async fn review_remove(app: AppHandle, id: String, n: u32) -> AppResult<ReviewDoc> {
+pub async fn review_remove(app: AppHandle, window: Window, id: String, n: u32) -> AppResult<ReviewDoc> {
+    owned(&id, &window)?;
     let doc = review_store().remove(&id, n)?;
     changed(&app, &id);
     Ok(doc)
 }
 
-fn render(id: &str, styles: bool) -> AppResult<String> {
-    let r = review_store().get(id).ok_or_else(no_review)?;
-    Ok(format::render(&r.doc, styles, &review_date(chrono::Local::now().date_naive())))
+/// The review as text for the user to check, with the revision `review_finish` must be given.
+#[tauri::command]
+pub async fn review_render(window: Window, id: String, styles: bool) -> AppResult<Rendered> {
+    owned(&id, &window)?;
+    review_store().render(&id, styles, &review_date(chrono::Local::now().date_naive()))
 }
 
+/// Saves exactly the text `review_render` showed for `rev`; refused when the review changed since.
 #[tauri::command]
-pub async fn review_render(id: String, styles: bool) -> AppResult<String> {
-    render(&id, styles)
-}
-
-/// Saves the review as a note: the one it was saved to before while that note is there, else a
-/// new one in the review's project (General when none, or when the project is gone).
-#[tauri::command]
-pub async fn review_finish(app: AppHandle, state: St, id: String, styles: bool) -> AppResult<Note> {
-    let r = review_store().get(&id).ok_or_else(no_review)?;
-    let body = render(&id, styles)?;
-    let earlier = r.note_id.as_ref().and_then(|nid| state.notes.list().ok()?.into_iter().find(|n| &n.id == nid));
-    let note = match earlier {
-        Some(old) => Note { body, ..old },
-        None => {
-            let project_id = r.project_id.filter(|p| state.projects.exists(p).unwrap_or(false));
-            Note { id: String::new(), project_id, body, pinned: false, created_at: 0, updated_at: 0 }
-        }
-    };
-    let saved = crate::notes::save_checked(&state.notes, &state.projects, note)?;
-    review_store().set_saved(&id, saved.id.clone());
+pub async fn review_finish(app: AppHandle, window: Window, state: St, id: String, styles: bool, rev: u64) -> AppResult<Note> {
+    owned(&id, &window)?;
+    let saved = save_review(review_store(), &state.notes, &state.projects, &id, styles, rev)?;
     // every window reloads its notes (the same message a window sends after a save)
     crate::events::emit("devcat://window-sync", json!({ "kind": "notes", "from": "review" }));
     if let Some(r) = review_store().get(&id) {
@@ -185,8 +188,9 @@ pub async fn review_finish(app: AppHandle, state: St, id: String, styles: bool) 
 }
 
 #[tauri::command]
-pub async fn review_close(app: AppHandle, id: String) -> AppResult<()> {
+pub async fn review_close(app: AppHandle, window: Window, id: String) -> AppResult<()> {
     let _g = CREATING.lock();
+    owned(&id, &window)?;
     review_store().close(&id);
     if let Some(wv) = find(&app, &id) {
         wv.close().map_err(|e| AppError::Msg(format!("Couldn't close the review page: {e}")))?;

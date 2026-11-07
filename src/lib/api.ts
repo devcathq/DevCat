@@ -10,7 +10,7 @@ import type {
   ClaudeInfo, ClaudeProject, ClaudeStartOptions, FileEntry, FilePreview, FileVersions, GitStatus, SessionMeta,
   Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, McpSyncPlan, McpAuditEntry, Memory, MemoryKind, MemoryPlace, PlaceMemories, ClaudeImportPlan, MemorySyncReport, MemoryPeer, MemoryPeersStatus, MemoryTicket, MemoryPeerReport, MemorySyncActivity, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
   SavedQuery, SchemaSnapshot, TableDataPage, TableDataRequest, TableRef, TableStructure, TreeNode, Bookmark,
-  ReviewDoc, ReviewInfo,
+  ReviewDoc, ReviewInfo, ReviewRendered,
 } from "./types";
 
 export const api = {
@@ -45,8 +45,10 @@ export const api = {
   reviewHighlight: (id: string, n: number | null, scroll: boolean) => invoke<void>("review_highlight", { id, n, scroll }),
   reviewEdit: (id: string, n: number, comment: string) => invoke<ReviewDoc>("review_edit", { id, n, comment }),
   reviewRemove: (id: string, n: number) => invoke<ReviewDoc>("review_remove", { id, n }),
-  reviewRender: (id: string, styles: boolean) => invoke<string>("review_render", { id, styles }),
-  reviewFinish: (id: string, styles: boolean) => invoke<Note>("review_finish", { id, styles }),
+  /** The text to show before saving, and its revision (pass it to reviewFinish). */
+  reviewRender: (id: string, styles: boolean) => invoke<ReviewRendered>("review_render", { id, styles }),
+  /** Saves exactly the text rendered for `rev`; fails when the review changed since (render again). */
+  reviewFinish: (id: string, styles: boolean, rev: number) => invoke<Note>("review_finish", { id, styles, rev }),
   reviewClose: (id: string) => invoke<void>("review_close", { id }),
   reviewClearData: () => invoke<void>("review_clear_data"),
 

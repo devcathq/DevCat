@@ -94,6 +94,12 @@ export interface ReviewInfo {
   doc: ReviewDoc;
 }
 
+/** A review as text, and the revision of its notes that text shows. */
+export interface ReviewRendered {
+  text: string;
+  rev: number;
+}
+
 /** `review://changed` payload. */
 export interface ReviewChanged {
   id: string;
