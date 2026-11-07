@@ -148,7 +148,7 @@ function node(tag) {
     addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
     removeEventListener(t, f) { this.listeners[t] = (this.listeners[t] || []).filter((x) => x !== f); }, setAttribute(k, v) { this.attrs[k] = v; }, remove() {},
     querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }),
-    focus() {}, set textContent(v) {}, set innerHTML(v) {},
+    focus() {}, set textContent(v) {}, set innerHTML(v) {}, get firstChild() { return this.children[0] || null; },
   };
   return n;
 }
@@ -233,14 +233,15 @@ const cfg = (o) => ({ origin: "http://localhost:9", review: "r1", secret: "s3cre
 { // re-append is capped at 20
   const w = fakeWorld("http://localhost:9", "/");
   let cb;
-  w.win.MutationObserver = class { constructor(f) { cb = f; } observe() {} };
+  w.win.MutationObserver = class { constructor(f) { cb ||= f; } observe() {} }; // the first: the host's
   run(w, cfg());
   const host = w.root.children[0];
   for (let i = 0; i < 30; i++) { w.root.removeChild(host); host.parentNode = null; cb(); }
   eq(w.root.children.length, 1 - 1 + 0 + 0, "after last removal the host stays out once the cap is hit");
   let back = 0;
   const w2 = fakeWorld("http://localhost:9", "/");
-  w2.win.MutationObserver = class { constructor(f) { cb = f; } observe() {} };
+  cb = null;
+  w2.win.MutationObserver = class { constructor(f) { cb ||= f; } observe() {} };
   run(w2, cfg());
   const h2 = w2.root.children[0];
   for (let i = 0; i < 30; i++) { w2.root.removeChild(h2); h2.parentNode = null; cb(); if (w2.root.children.length) back++; }
@@ -256,6 +257,63 @@ const cfg = (o) => ({ origin: "http://localhost:9", review: "r1", secret: "s3cre
   eq(n(), 0, "touchstart listener removed when inspect is off");
   w.win.__devcatReview.setInspect(true);
   eq(n(), 1, "touchstart listener back when inspect is on");
+}
+
+// Pins follow DOM changes ------------------------------------------------------------------------
+// A world with controllable timers and observers, a querySelector that finds `found[sel]`, and an
+// invoke that answers with the notes the page opened with.
+function liveWorld(notes) {
+  const w = fakeWorld("http://localhost:9", "/app");
+  const timers = [];
+  w.win.setTimeout = (f, ms) => { timers.push({ f, ms, live: true }); return timers.length; };
+  w.win.clearTimeout = (id) => { if (timers[id - 1]) timers[id - 1].live = false; };
+  const observers = [];
+  w.win.MutationObserver = class { constructor(f) { this.f = f; observers.push(this); } observe(t, o) { this.t = t; this.o = o; } };
+  const found = {};
+  w.doc.querySelector = (sel) => found[sel] || null;
+  w.win.__TAURI_INTERNALS__.invoke = (...a) => { w.sent.push(["captured", ...a]); return Promise.resolve({ notes }); };
+  const pushed = [];
+  w.win.history = { pushState(...a) { pushed.push(["push", ...a]); return "p"; }, replaceState(...a) { pushed.push(["replace", ...a]); } };
+  run(w, cfg({ notes }));
+  const tree = observers.find((o) => o.o && o.o.subtree);
+  const pending = () => timers.filter((t) => t.live);
+  const fire = () => { const p = pending(); for (const t of p) { t.live = false; t.f(); } return p.length; };
+  const pins = () => w.root.children[0]._shadow.children[3].children.length;
+  const hellos = () => w.sent.filter((s) => s[2].msg.kind === "hello").map((s) => s[2].msg.missing);
+  return { w, tree, pending, fire, found, pins, hellos, pushed };
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const anEl = () => Object.assign(node("div"), { isConnected: true, getBoundingClientRect: () => ({ left: 5, top: 5, width: 10, height: 10 }) });
+
+{ // content rendered after load: the observer brings the pin, and DevCat hears the new missing list
+  const L = liveWorld([{ n: 1, page: "/app", selector: ".late", comment: "c" }]);
+  await tick();
+  eq([L.pins(), L.hellos()], [0, [[1]]], "at load the element isn't there yet");
+  eq([!!L.tree, L.tree && L.tree.t === L.w.root, L.tree && L.tree.o.childList], [true, true, true], "observes the document's subtree");
+  L.found[".late"] = anEl();
+  const rec = { target: L.w.root, addedNodes: [node("div")], removedNodes: [] };
+  L.tree.f([rec]); L.tree.f([rec]); L.tree.f([rec]);
+  eq([L.pending().length, L.pending()[0].ms], [1, 250], "mutations coalesce into one 250 ms timer");
+  L.fire();
+  await tick();
+  eq([L.pins(), L.hellos()], [1, [[1], []]], "re-rendered: pin shown, missing re-reported");
+  L.tree.f([rec]); L.fire(); await tick();
+  eq(L.hellos().length, 2, "missing unchanged: not re-reported");
+}
+{ // our own host moving isn't a page change
+  const L = liveWorld([]);
+  await tick();
+  const host = L.w.root.children[0];
+  L.tree.f([{ target: L.w.root, addedNodes: [host], removedNodes: [] }, { target: host, addedNodes: [node("x")], removedNodes: [] }]);
+  eq(L.pending().length, 0, "mutations of our host are ignored");
+}
+{ // pushState / replaceState: call through, then re-render
+  const L = liveWorld([{ n: 1, page: "/app", selector: ".x", comment: "c" }]);
+  await tick();
+  eq(L.w.win.history.pushState({ a: 1 }, "", "/next"), "p", "pushState returns what the original does");
+  L.w.win.history.replaceState(null, "", "/r");
+  eq(L.pushed, [["push", { a: 1 }, "", "/next"], ["replace", null, "", "/r"]], "originals called with the same arguments");
+  eq(L.pending().length, 1, "navigation schedules one re-render");
 }
 
 console.log("review inspector: ok");

@@ -173,7 +173,7 @@
   var inspect = true, hovered = null, host = null, shadow = null;
   var hoverBox, hoverLabel, pinLayer, hlBox, box, area, errLine, saveBtn;
   var boxTarget = null, entries = [], missingNow = [], shownPage = null;
-  var queued = false, helloTimer = 0, highlighted = null;
+  var queued = false, helloTimer = 0, domTimer = 0, highlighted = null;
   var reported = null; // the `missing` list DevCat last heard, as text
 
   function pageName() {
@@ -388,6 +388,39 @@
     if (reported !== null && missingNow.join(",") !== reported) hello();
   }
 
+  // The page changed its DOM or its URL (an SPA rendering late, pushState): pins and the missing
+  // list follow, at most once per 250 ms. A timer, not a loop: nothing runs while the page is still.
+  function domChanged() {
+    if (domTimer) return;
+    domTimer = setT(function () { domTimer = 0; renderPins(); recheck(); }, 250);
+  }
+  // Mutation records that are only our host moving (or anything under it) aren't the page's.
+  function pageMutated(recs) {
+    for (var i = 0; i < recs.length; i++) {
+      var r = recs[i];
+      if (r.target === host) continue;
+      var nodes = Array.prototype.slice.call(r.addedNodes || []).concat(Array.prototype.slice.call(r.removedNodes || []));
+      if (!nodes.length) return true;
+      for (var j = 0; j < nodes.length; j++) if (nodes[j] !== host) return true;
+    }
+    return false;
+  }
+  function wrapHistory() {
+    var hist = W.history;
+    if (!hist) return;
+    ["pushState", "replaceState"].forEach(function (name) {
+      var orig = hist[name];
+      if (typeof orig !== "function") return;
+      try {
+        hist[name] = function () {
+          var out = orig.apply(this, arguments);
+          domChanged();
+          return out;
+        };
+      } catch (_) {}
+    });
+  }
+
   // Inspect mode --------------------------------------------------------------------------------
   // Non-passive, so it only exists while inspecting: otherwise touch scrolling would wait on us.
   var touching = false;
@@ -495,6 +528,8 @@
     new MO(function () {
       if (host.parentNode !== root && reappended < 20) { reappended++; root.appendChild(host); }
     }).observe(root, { childList: true });
+    new MO(function (recs) { if (!domTimer && pageMutated(recs || [])) domChanged(); }).observe(root, { childList: true, subtree: true });
+    wrapHistory();
 
     var cap = { capture: true };
     W.addEventListener("mousemove", onMove, { capture: true, passive: true });
