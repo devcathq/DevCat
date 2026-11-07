@@ -1,6 +1,7 @@
 // Claude sidebar state: current workspace folder + recent folders (persisted in localStorage).
 import { open } from "@tauri-apps/plugin-dialog";
 import { create } from "zustand";
+import { localStart } from "../../../lib/remotePath";
 
 const KEY_CWD = "devcat.claude.cwd";
 /** Folder per focused project: { [projectId]: cwd }. */
@@ -67,7 +68,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
 
 /** Ask for a folder with the native picker; sets it as the workspace. */
 export async function pickFolder(): Promise<string | null> {
-  const dir = await open({ directory: true, multiple: false, defaultPath: useWorkspace.getState().cwd ?? undefined });
+  const dir = await open({ directory: true, multiple: false, defaultPath: localStart(useWorkspace.getState().cwd) });
   if (typeof dir !== "string") return null;
   useWorkspace.getState().setCwd(dir);
   return dir;

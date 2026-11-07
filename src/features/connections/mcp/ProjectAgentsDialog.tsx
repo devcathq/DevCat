@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { Button, Checkbox, Dialog, ErrorBox, IconButton } from "../../../components/ui";
 import { api, errMsg } from "../../../lib/api";
 import type { Project } from "../../../lib/types";
+import { localStart } from "../../../lib/remotePath";
 import { useConnections } from "../../../store/connections";
 import { openMcpSync } from "./McpSyncDialog";
 
@@ -28,7 +29,7 @@ function AgentsView({ project, onClose }: { project: Project; onClose: () => voi
   const [busy, setBusy] = useState(false);
 
   const add = async () => {
-    const dir = await openDialog({ directory: true, multiple: true, defaultPath: folders[0] });
+    const dir = await openDialog({ directory: true, multiple: true, defaultPath: folders.find((f) => localStart(f)) });
     const picked = (Array.isArray(dir) ? dir : dir ? [dir] : []).filter((d) => !folders.includes(d));
     if (picked.length) setFolders([...folders, ...picked]);
   };
