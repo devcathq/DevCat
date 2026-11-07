@@ -22,6 +22,23 @@ pub fn is_local_target(url: &Url, dev_url: Option<&Url>) -> bool {
     }
 }
 
+/// Is `url` on the review's site? Its origin, or the same site after the redirects nearly every
+/// site makes when it loads: `http` → `https` (typed addresses start as `http://`) and adding or
+/// removing `www.` (`google.com` → `www.google.com`). Same port, never a different host. `inspector.js` (`sameSite`) applies the same rule in the page.
+pub fn same_site(review_origin: &str, url: &Url) -> bool {
+    let Ok(o) = Url::parse(review_origin) else { return false };
+    if !o.origin().is_tuple() || !url.origin().is_tuple() {
+        return false;
+    }
+    if o.origin() == url.origin() {
+        return true;
+    }
+    let scheme_ok = o.scheme() == url.scheme() || (o.scheme() == "http" && url.scheme() == "https");
+    let (Some(a), Some(b)) = (o.host_str(), url.host_str()) else { return false };
+    let www = |x: &str, y: &str| x.strip_prefix("www.").is_some_and(|rest| rest == y && rest.contains('.'));
+    scheme_ok && o.port() == url.port() && (a == b || www(a, b) || www(b, a))
+}
+
 /// Is the calling webview this review's webview, on the review's origin? Checked from what Rust
 /// knows, never from what the page says: the webview's label and its top-level URL (the native
 /// webview's `url()`, not the URL of the frame that called). Frames can't call at all: Tauri's
@@ -36,7 +53,7 @@ pub fn caller_allowed(review: &Review, webview_label: &str, webview_url: &Url, f
         Url::parse(origin).is_ok_and(|o| o.origin().is_tuple() && o.origin() == webview_url.origin())
     };
     match &review.doc.target {
-        Target::Url { origin } => same_origin(origin),
+        Target::Url { origin } => same_site(origin, webview_url),
         Target::File { .. } => {
             file_origin.is_some_and(same_origin) && webview_url.path().starts_with(&format!("/f/{}/", review.id))
         }
@@ -163,7 +180,8 @@ mod tests {
         assert!(!caller_allowed(&r, &format!("{label}x"), &u("http://localhost:5173/"), None));
         assert!(!caller_allowed(&r, &label, &u("https://example.com/"), None));
         assert!(!caller_allowed(&r, &label, &u("http://localhost:5174/"), None));
-        assert!(!caller_allowed(&r, &label, &u("https://localhost:5173/"), None));
+        // http → https on the same host and port is the same site (see same_site)
+        assert!(caller_allowed(&r, &label, &u("https://localhost:5173/"), None));
         // `http://localhost:5173.evil.test` isn't a URL (bad port); these are its parsable look-alikes
         assert!(Url::parse("http://localhost:5173.evil.test/").is_err());
         assert!(!caller_allowed(&r, &label, &u("http://localhost.evil.test:5173/"), None));
@@ -180,6 +198,28 @@ mod tests {
         let bad = review(Target::Url { origin: "http://localhost:5173.evil.test".into() });
         let label = format!("review-{}", bad.id);
         assert!(!caller_allowed(&bad, &label, &u("http://localhost:5173/"), None));
+    }
+
+    #[test]
+    fn same_site_follows_https_and_www_redirects_only() {
+        // what typing `google.com` does: http://google.com → https://www.google.com/?zx=…
+        assert!(same_site("http://google.com", &u("https://www.google.com/?zx=1")));
+        assert!(same_site("https://www.example.com", &u("https://example.com/a")));
+        assert!(same_site("http://example.com", &u("http://www.example.com/")));
+        assert!(same_site("http://localhost:3000", &u("http://localhost:3000/x")));
+        // never a downgrade, another port, another host or a look-alike
+        assert!(!same_site("https://example.com", &u("http://example.com/")));
+        assert!(!same_site("https://example.com", &u("https://example.com:8443/")));
+        assert!(!same_site("https://example.com", &u("https://evil.com/")));
+        assert!(!same_site("https://example.com", &u("https://www.evil.com/")));
+        assert!(!same_site("https://example.com", &u("https://wwwexample.com/")));
+        assert!(!same_site("https://example.com", &u("https://www.www.example.com/")));
+        assert!(!same_site("https://example.com", &u("https://app.example.com/")));
+        assert!(!same_site("https://example.com", &u("https://example.com.evil.test/")));
+        assert!(!same_site("http://localhost", &u("http://www.localhost/")), "www. needs a dotted host");
+        assert!(!same_site("https://www.com", &u("https://com/")));
+        assert!(!same_site("not a url", &u("https://example.com/")));
+        assert!(!same_site("https://example.com", &u("data:text/html,x")));
     }
 
     #[test]

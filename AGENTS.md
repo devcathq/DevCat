@@ -178,8 +178,10 @@ untrusted**: anyone's code can run in it. Keep these rules:
 - **Everything from the inspector is data** (`intake.rs`, `MAX_NOTES` in `review/mod.rs`): lengths capped, control characters stripped,
   backticks escaped (`format.rs`). Nothing is saved until Finish, and Finish saves exactly the text the user saw
   (`rev` must match), through `notes::save_checked`.
-- **The inspector stays inert on other origins**: it acts only on the origin the review was started for or navigated
-  to, never on a page that merely embeds it. So DevCat calls into the page (`webview::call`: notes, highlight) only
+- **The inspector stays inert on other sites**: it acts only on the review's own site, never on a page that merely
+  embeds it. The site is the origin the review started on, plus the redirects nearly every site makes on load:
+  `http` → `https` and adding or removing `www.` (`channel::same_site`, `sameSite` in `inspector.js`; same port, never
+  another host or a downgrade). Don't widen it further (subdomains, other hosts). So DevCat calls into the page (`webview::call`: notes, highlight) only
   while the webview's top-level URL is the review's own (`channel::may_tell_page`): another site could define
   `window.__devcatReview` itself and read the notes.
 - **Desktop only**, like the SSH workbench and rooms: keep `review_*` out of `src-tauri/src/remote/dispatch.rs`,

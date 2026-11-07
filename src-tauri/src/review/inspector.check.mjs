@@ -183,6 +183,22 @@ const cfg = (o) => ({ origin: "http://localhost:9", review: "r1", secret: "s3cre
   run(f, cfg({ pagePrefix: "/f/r1/" }));
   eq([f.sent.length, f.root.children.length], [0, 0], "file review outside prefix: inert");
 }
+{ // sameSite: the rule channel.rs same_site applies too
+  const ok = [["http://google.com", "https://www.google.com"], ["https://www.example.com", "https://example.com"],
+    ["http://example.com", "http://www.example.com"], ["http://localhost:3000", "https://localhost:3000"]];
+  const no = [["https://example.com", "http://example.com"], ["https://example.com", "https://example.com:8443"],
+    ["https://example.com", "https://www.evil.com"], ["https://example.com", "https://wwwexample.com"],
+    ["https://example.com", "https://app.example.com"], ["https://example.com", "https://www.www.example.com"],
+    ["http://localhost", "http://www.localhost"], ["https://www.com", "https://com"], ["https://example.com", "null"]];
+  eq(ok.map(([a, b]) => lib.sameSite(a, b)), ok.map(() => true), "sameSite: redirects of the same site");
+  eq(no.map(([a, b]) => lib.sameSite(a, b)), no.map(() => false), "sameSite: anything else");
+  const w = fakeWorld("https://www.localhost.test", "/");
+  run(w, cfg({ origin: "http://localhost.test" }));
+  eq(typeof w.win.__devcatReview, "object", "web review after an https + www. redirect: active");
+  const f = fakeWorld("https://localhost:9", "/f/r1/index.html");
+  run(f, cfg({ pagePrefix: "/f/r1/" }));
+  eq(f.sent.length, 0, "file review: exact origin only");
+}
 { // no Tauri invoke: nothing
   const w = fakeWorld("http://localhost:9", "/");
   delete w.win.__TAURI_INTERNALS__;

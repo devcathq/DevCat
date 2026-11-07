@@ -136,7 +136,21 @@
     return null;
   }
 
+  // The page is on the review's site: its origin, or the same site after an http → https or
+  // `www.` redirect (same port, same host otherwise). channel.rs `same_site` is the same rule.
+  function sameSite(reviewOrigin, origin) {
+    if (typeof reviewOrigin !== "string" || typeof origin !== "string") return false;
+    if (reviewOrigin === origin) return true;
+    var re = /^(https?):\/\/([^/:\[\]]+)(?::(\d+))?$/;
+    var a = re.exec(reviewOrigin), b = re.exec(origin);
+    if (!a || !b) return false;
+    var schemeOk = a[1] === b[1] || (a[1] === "http" && b[1] === "https");
+    var www = function (x, y) { return x.indexOf("www.") === 0 && x.slice(4) === y && y.indexOf(".") !== -1; };
+    return schemeOk && (a[3] || "") === (b[3] || "") && (a[2] === b[2] || www(a[2], b[2]) || www(b[2], a[2]));
+  }
+
   var lib = {
+    sameSite: sameSite,
     isJunkClass: isJunkClass,
     isJunkId: isJunkId,
     selectorFor: selectorFor,
@@ -151,8 +165,9 @@
   // is read from the page except the DOM it shows, and the secret never leaves this closure.
   var W = window, D = document;
   var loc = W.location;
-  if (!loc || loc.origin !== CONFIG.origin) return undefined;
   var prefix = typeof CONFIG.pagePrefix === "string" ? CONFIG.pagePrefix : "";
+  // a file review is on the file server's exact origin; a web review follows https / www. redirects
+  if (!loc || !(prefix ? loc.origin === CONFIG.origin : sameSite(CONFIG.origin, loc.origin))) return undefined;
   if (prefix && String(loc.pathname).indexOf(prefix) !== 0) return undefined;
   var internals = W.__TAURI_INTERNALS__;
   if (!internals || typeof internals.invoke !== "function") return undefined;
