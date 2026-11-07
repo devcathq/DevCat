@@ -129,7 +129,7 @@ fn encode_segment(s: &str) -> String {
 }
 
 /// `%XX` decoded; `None` when malformed or not UTF-8.
-fn percent_decode(s: &str) -> Option<String> {
+pub fn percent_decode(s: &str) -> Option<String> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

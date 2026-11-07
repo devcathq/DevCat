@@ -1,6 +1,6 @@
 //! The text a review is saved as: one instruction line, then one line per note.
 
-use super::{ReviewDoc, ReviewNote, Target};
+use super::{serve, ReviewDoc, ReviewNote, Target};
 
 /// Backticks are escaped and line breaks become spaces, so a value can't break out of its line.
 fn esc(s: &str) -> String {
@@ -10,7 +10,12 @@ fn esc(s: &str) -> String {
 fn prefix(doc: &ReviewDoc, note: &ReviewNote) -> String {
     let mut parts = Vec::new();
     if note.page != doc.first_page {
-        parts.push(esc(&note.page));
+        // a file review names pages by their URL path; show the file's path, as the header does
+        let page = match &doc.target {
+            Target::File { .. } => serve::percent_decode(&note.page).unwrap_or_else(|| note.page.clone()),
+            Target::Url { .. } => note.page.clone(),
+        };
+        parts.push(esc(&page));
     }
     if note.width != doc.width {
         parts.push(format!("{}w", note.width));
@@ -148,6 +153,29 @@ UI review of http://localhost:5173/pricing (1280×800). Format: `selector` \"vis
         ));
         assert!(out.contains("\n\n1. `h1` \"Hi\" → x\n"));
         assert!(!out.contains("/work/proj"));
+    }
+
+    #[test]
+    fn file_page_prefix_is_decoded_like_the_header() {
+        let doc = ReviewDoc {
+            target: Target::File { root: "/work/proj".into(), rel: "docs/my page.html".into() },
+            first_page: "docs/my%20page.html".into(),
+            width: 1024,
+            height: 768,
+            notes: vec![
+                note(1, "docs/my%20page.html", 1024, "h1", "", "a"),
+                note(2, "docs/other%20page.html", 1024, "h1", "", "b"),
+                note(3, "docs/bad%zz.html", 1024, "h1", "", "c"),
+            ],
+        };
+        let out = render(&doc, false, "d");
+        assert!(out.contains("UI review of docs/my page.html ("));
+        assert!(out.contains("\n1. `h1` → a\n"));
+        assert!(out.contains("\n2. [docs/other page.html] `h1` → b\n"), "{out}");
+        assert!(out.contains("\n3. [docs/bad%zz.html] `h1` → c\n"), "malformed stays as it is");
+        // URL targets keep the path as the browser shows it
+        let doc = url_doc(vec![note(1, "/a%20b", 1280, "h1", "", "x")]);
+        assert!(render(&doc, false, "d").contains("1. [/a%20b] `h1`"));
     }
 
     #[test]
