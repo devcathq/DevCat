@@ -65,10 +65,10 @@ fn owned(id: &str, window: &Window) -> AppResult<Review> {
     review_store().get(id).filter(|r| r.window == window.label()).ok_or_else(no_review)
 }
 
-/// The review's webview, for the calling window's review.
-fn page(app: &AppHandle, window: &Window, id: &str) -> AppResult<tauri::Webview> {
-    owned(id, window)?;
-    find(app, id).ok_or_else(no_review)
+/// The review and its webview, for the calling window's review.
+fn page(app: &AppHandle, window: &Window, id: &str) -> AppResult<(Review, tauri::Webview)> {
+    let r = owned(id, window)?;
+    Ok((r, find(app, id).ok_or_else(no_review)?))
 }
 
 /// Creating and closing are serialized, so two quick calls don't both add the webview and a
@@ -114,7 +114,7 @@ pub async fn review_place(
 
 #[tauri::command]
 pub async fn review_nav(app: AppHandle, window: Window, id: String, action: NavAction) -> AppResult<()> {
-    let wv = page(&app, &window, &id)?;
+    let (_, wv) = page(&app, &window, &id)?;
     let err = |e: tauri::Error| AppError::Msg(format!("Couldn't go there: {e}"));
     match action {
         NavAction::Named(a) if a == "back" => wv.eval("history.back()").map_err(err),
@@ -130,15 +130,16 @@ pub async fn review_nav(app: AppHandle, window: Window, id: String, action: NavA
 
 #[tauri::command]
 pub async fn review_inspect(app: AppHandle, window: Window, id: String, on: bool) -> AppResult<()> {
-    call(&page(&app, &window, &id)?, "setInspect", &json!(on))
+    let (r, wv) = page(&app, &window, &id)?;
+    call(&wv, &r, "setInspect", &json!(on))
 }
 
 #[tauri::command]
 pub async fn review_highlight(app: AppHandle, window: Window, id: String, n: Option<u32>, scroll: bool) -> AppResult<()> {
-    let wv = page(&app, &window, &id)?;
+    let (r, wv) = page(&app, &window, &id)?;
     match n {
-        Some(n) if scroll => call(&wv, "scrollTo", &json!(n)),
-        _ => call(&wv, "highlight", &json!(n)),
+        Some(n) if scroll => call(&wv, &r, "scrollTo", &json!(n)),
+        _ => call(&wv, &r, "highlight", &json!(n)),
     }
 }
 
@@ -146,7 +147,7 @@ pub async fn review_highlight(app: AppHandle, window: Window, id: String, n: Opt
 fn changed(app: &AppHandle, id: &str) {
     let Some(r) = review_store().get(id) else { return };
     if let Some(wv) = find(app, id) {
-        let _ = call(&wv, "setNotes", &json!(r.doc.notes));
+        let _ = call(&wv, &r, "setNotes", &json!(r.doc.notes));
     }
     channel::emit_changed(app, &r);
 }

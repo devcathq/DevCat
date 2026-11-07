@@ -173,13 +173,15 @@ untrusted**: anyone's code can run in it. Keep these rules:
 - **Never serve review content from a custom URI scheme.** Tauri treats a page from a scheme the app registered as a
   local origin with full IPC. Local files go through the loopback file server (`serve.rs`: 127.0.0.1, an unguessable
   review id in the path, Host check, no CORS, no dotfiles or secret-like files).
-- **Refuse local targets** (`is_local_target`: `tauri:`, `ipc:`, `asset:`, our own scheme and the app's dev URL) when
-  a review starts and on every navigation.
-- **Everything from the inspector is data** (`intake.rs`, `MAX_NOTES`): lengths capped, control characters stripped,
+- **Refuse local targets** (`channel::is_local_target`: every scheme but http(s) and the inert `about:` / `data:` /
+  `blob:`, any `*.localhost` host, and the app's dev URL) when a review starts and on every navigation.
+- **Everything from the inspector is data** (`intake.rs`, `MAX_NOTES` in `review/mod.rs`): lengths capped, control characters stripped,
   backticks escaped (`format.rs`). Nothing is saved until Finish, and Finish saves exactly the text the user saw
   (`rev` must match), through `notes::save_checked`.
 - **The inspector stays inert on other origins**: it acts only on the origin the review was started for or navigated
-  to, never on a page that merely embeds it.
+  to, never on a page that merely embeds it. So DevCat calls into the page (`webview::call`: notes, highlight) only
+  while the webview's top-level URL is the review's own (`channel::may_tell_page`): another site could define
+  `window.__devcatReview` itself and read the notes.
 - **Desktop only**, like the SSH workbench and rooms: keep `review_*` out of `src-tauri/src/remote/dispatch.rs`,
   `mobile/` and the browser build.
 

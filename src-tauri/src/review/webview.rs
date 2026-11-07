@@ -70,8 +70,12 @@ pub fn inspector_script(r: &Review, file_origin: Option<&str>) -> String {
 }
 
 /// Calls `window.__devcatReview.<method>(<arg>)` in the page, if the inspector is there. `arg` is
-/// JSON, so nothing from a note can break out of it.
-pub fn call(webview: &Webview, method: &str, arg: &serde_json::Value) -> AppResult<()> {
+/// JSON, so nothing from a note can break out of it. Nothing is sent while the webview shows any
+/// page but the review's own (`channel::may_tell_page`): another site could define the global.
+pub fn call(webview: &Webview, r: &Review, method: &str, arg: &serde_json::Value) -> AppResult<()> {
+    if !channel::may_tell_page(r, webview.label(), webview.url().ok().as_ref(), serve::running_origin().as_deref()) {
+        return Ok(());
+    }
     webview
         .eval(format!("window.__devcatReview && window.__devcatReview.{method}({arg})"))
         .map_err(|e| AppError::Msg(format!("The review page didn't answer: {e}")))

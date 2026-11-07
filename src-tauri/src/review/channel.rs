@@ -43,6 +43,13 @@ pub fn caller_allowed(review: &Review, webview_label: &str, webview_url: &Url, f
     }
 }
 
+/// May DevCat call into the review webview (`window.__devcatReview.*`, which gets the notes)?
+/// Only while it shows the review's own page: on any other origin the inspector is inert, so that
+/// site could define `__devcatReview` itself. `webview_url` is `None` when it can't be read.
+pub fn may_tell_page(review: &Review, webview_label: &str, webview_url: Option<&Url>, file_origin: Option<&str>) -> bool {
+    webview_url.is_some_and(|url| caller_allowed(review, webview_label, url, file_origin))
+}
+
 #[cfg(feature = "gui")]
 pub use gui::{add_capability, emit_changed, plugin};
 
@@ -191,5 +198,21 @@ mod tests {
         assert!(!caller_allowed(&r, &label, &u(&format!("http://127.0.0.1:4001/f/{}/index.html", r.id)), fo));
         assert!(!caller_allowed(&r, &label, &u(&format!("http://localhost:4000/f/{}/index.html", r.id)), fo));
         assert!(!caller_allowed(&r, "review-rv-other", &at(&format!("/f/{}/index.html", r.id)), fo));
+    }
+
+    #[test]
+    fn devcat_tells_only_the_reviews_own_page() {
+        let r = review(Target::Url { origin: "http://localhost:5173".into() });
+        let label = format!("review-{}", r.id);
+        assert!(may_tell_page(&r, &label, Some(&u("http://localhost:5173/x")), None));
+        // navigated away: that site could define `__devcatReview` and read every note
+        assert!(!may_tell_page(&r, &label, Some(&u("https://evil.example/")), None));
+        assert!(!may_tell_page(&r, &label, None, None), "URL unknown");
+        assert!(!may_tell_page(&r, "review-rv-other", Some(&u("http://localhost:5173/x")), None));
+        let f = review(Target::File { root: "/tmp/site".into(), rel: "index.html".into() });
+        let fl = format!("review-{}", f.id);
+        let fo = Some("http://127.0.0.1:4000");
+        assert!(may_tell_page(&f, &fl, Some(&u(&format!("http://127.0.0.1:4000/f/{}/index.html", f.id))), fo));
+        assert!(!may_tell_page(&f, &fl, Some(&u("http://127.0.0.1:4000/f/rv-other/index.html")), fo));
     }
 }
