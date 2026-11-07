@@ -39,8 +39,9 @@ shows the intended interaction and the output format; it isn't code to keep.
    meanwhile, a new one is made). Include styles is fixed into the text when saved; Notes stores only the text.
    Closing the tab asks whether to discard only when there are notes not yet saved.
 7. In Notes, review notes (recognised by the title prefix `UI review ·`; no new `Note` field) get a visible
-   **Copy for agent** button that copies the body as is, the same text as the existing "Copy text" menu item,
-   which stays. It's a shortcut, not a different format. *(Builder's call, made in design.)*
+   **Copy review** button that copies the body as is, the same text as the existing "Copy text" menu item,
+   which stays. It's a shortcut, not a different format. *(Builder's call, made in design.)* The label and the
+   text never assume the reader is an agent: a product manager may copy a review to a developer just as well.
    Agents with DevCat's MCP can also just read the note (`devcat_notes`, `src-tauri/src/agent_notes.rs`):
    "fix the pricing review note".
 
@@ -49,7 +50,7 @@ shows the intended interaction and the output format; it isn't code to keep.
 Instruction once, then one line per note. No HTML; styles only when the reviewer ticks **Include styles**.
 
 ```
-UI review of http://localhost:5173/pricing (1280×800). Fix each item in this repo. Format: `selector` "visible text" (source) → comment. Grep the text/classes to find the source when none is given.
+UI review of http://localhost:5173/pricing (1280×800). Format: `selector` "visible text" (source) → comment. Search the code for the text or classes when no source is given.
 
 1. `h1` "Simple pricing for growing teams" (src/pages/Pricing.tsx:18) → too large on mobile, cap at 32px
 2. `.cta` "Start free trial" → use our Button component, not a span
@@ -123,8 +124,9 @@ The note's first line is its title: `UI review · <host><path> · <date>`; the i
   dispatcher (`src-tauri/src/remote/dispatch.rs`) and the browser version. Add a short section to `AGENTS.md`
   saying so and stating the "reviewed page is untrusted, no IPC" rule.
 - Closing the tab ends the review, and so does closing its window (`windows::on_destroyed` must clean up the
-  window's review webviews and state). If DevCat lets tabs move to another window, the review moves with its
-  state and its webview is recreated in the new window.
+  window's review webviews and state). Moving the tab to another window follows DevCat's rule for tabs with
+  unsaved changes: the tab is marked dirty while it has unsaved notes, DevCat warns that they aren't moved, and
+  the page opens fresh in the new window. *(Call made while planning.)*
 - Long-running animations: none needed. If a "pin placed" or highlight effect is added, follow the AGENTS.md
   animation rules (opacity/transform only, not on svg).
 
