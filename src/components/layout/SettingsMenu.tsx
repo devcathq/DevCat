@@ -1,9 +1,9 @@
 // Title bar: the phone (pairing) and keep-awake icons, then one Settings menu (appearance, AI memory,
-// new window, updates). The phone shows when it's on or a phone wants to pair; the cup, how long
+// new window, review page, updates). The phone shows when it's on or a phone wants to pair; the cup, how long
 // the computer is kept awake.
 // Tickets have their own view in the left bar.
 import clsx from "clsx";
-import { AppWindow, ArrowUpCircle, Bot, Brain, Compass, Palette, Settings, Smartphone, Wand2 } from "lucide-react";
+import { AppWindow, ArrowUpCircle, Bot, Brain, Compass, MousePointerClick, Palette, Settings, Smartphone, Wand2 } from "lucide-react";
 import { openSetup, startTour } from "../../features/onboarding/store";
 import { openIntegrations } from "../../features/integrations/store";
 import { openAppearance } from "../../features/appearance/AppearanceDialog";
@@ -11,6 +11,7 @@ import { useContextMenu, type MenuItem } from "../../features/connections/Contex
 import { KeepAwakeButton, useKeepAwake } from "../../features/keepawake/KeepAwakeButton";
 import { openMemory } from "../../features/memory/MemoryDialog";
 import { useMobile } from "../../features/mobile/store";
+import { openReviewDialog } from "../../features/review/ReviewUrlDialog";
 import { useUpdate } from "../../features/update/store";
 import { NEW_WINDOW_SHORTCUT, openNewWindow } from "../../lib/windows";
 import { useConnections } from "../../store/connections";
@@ -29,6 +30,7 @@ export function SettingsMenu() {
       { label: "Agent bots…", icon: <Bot className="size-3.5" />, onClick: openIntegrations },
       "separator",
       { label: "New window", icon: <AppWindow className="size-3.5" />, shortcut: NEW_WINDOW_SHORTCUT, onClick: () => void openNewWindow(useConnections.getState().focusProjectId) },
+      { label: "Review page…", icon: <MousePointerClick className="size-3.5" />, onClick: openReviewDialog },
       { label: "Check for updates…", icon: <ArrowUpCircle className="size-3.5" />, onClick: () => void useUpdate.getState().check(true) },
       "separator",
       { label: "Set up DevCat…", icon: <Wand2 className="size-3.5" />, onClick: openSetup },

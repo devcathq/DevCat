@@ -10,6 +10,7 @@ import type {
   ClaudeInfo, ClaudeProject, ClaudeStartOptions, FileEntry, FilePreview, FileVersions, GitStatus, SessionMeta,
   Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, McpSyncPlan, McpAuditEntry, Memory, MemoryKind, MemoryPlace, PlaceMemories, ClaudeImportPlan, MemorySyncReport, MemoryPeer, MemoryPeersStatus, MemoryTicket, MemoryPeerReport, MemorySyncActivity, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
   SavedQuery, SchemaSnapshot, TableDataPage, TableDataRequest, TableRef, TableStructure, TreeNode, Bookmark,
+  ReviewDoc, ReviewInfo, ReviewRendered,
 } from "./types";
 
 export const api = {
@@ -32,6 +33,24 @@ export const api = {
   notesList: () => invoke<Note[]>("notes_list"),
   noteSave: (note: Note) => invoke<Note>("note_save", { note }),
   noteDelete: (id: string) => invoke<void>("note_delete", { id }),
+
+  // page review (Review tab). Events: "review://changed" (ReviewChanged), "review://page" (ReviewPage)
+  reviewStart: (target: { url: string } | { path: string }, projectId?: string | null) =>
+    invoke<ReviewInfo>("review_start", { target, projectId: projectId ?? null }),
+  /** Logical px of the window; the first call creates the page. Hidden pages stay loaded. */
+  reviewPlace: (id: string, x: number, y: number, w: number, h: number, visible: boolean) =>
+    invoke<void>("review_place", { id, x, y, w, h, visible }),
+  reviewNav: (id: string, action: "back" | "reload" | { url: string }) => invoke<boolean>("review_nav", { id, action }),
+  reviewInspect: (id: string, on: boolean) => invoke<void>("review_inspect", { id, on }),
+  reviewHighlight: (id: string, n: number | null, scroll: boolean) => invoke<void>("review_highlight", { id, n, scroll }),
+  reviewEdit: (id: string, n: number, comment: string) => invoke<ReviewDoc>("review_edit", { id, n, comment }),
+  reviewRemove: (id: string, n: number) => invoke<ReviewDoc>("review_remove", { id, n }),
+  /** The text to show before saving, and its revision (pass it to reviewFinish). */
+  reviewRender: (id: string, styles: boolean) => invoke<ReviewRendered>("review_render", { id, styles }),
+  /** Saves exactly the text rendered for `rev`; fails when the review changed since (render again). */
+  reviewFinish: (id: string, styles: boolean, rev: number) => invoke<Note>("review_finish", { id, styles, rev }),
+  reviewClose: (id: string) => invoke<void>("review_close", { id }),
+  reviewClearData: () => invoke<void>("review_clear_data"),
 
   // projects
   listProjects: () => invoke<Project[]>("list_projects"),

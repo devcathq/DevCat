@@ -39,6 +39,8 @@ export type TabSpec =
   | { type: "room"; roomId: string }
   /** Jira / Trello / Linear boards whose tickets the agent works on (see features/tickets). */
   | { type: "tickets" }
+  /** Page review: a web page or a local .html file, commented element by element (see features/review). */
+  | { type: "review"; url?: string; path?: string }
   | { type: "git"; repo: string; view?: GitView; path?: string | null; sha?: string | null };
 
 export type GitView = "history" | "changes" | "branches" | "stashes";

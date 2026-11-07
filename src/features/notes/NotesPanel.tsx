@@ -1,10 +1,10 @@
 // Sidebar: notes grouped by project. In focus mode only the focused project's notes and the
 // General ones (not tied to a project) are listed.
 import clsx from "clsx";
-import { Copy, ExternalLink, FolderInput, Layers, NotebookPen, Pin, PinOff, Plus, Search, Trash2 } from "lucide-react";
+import { Copy, ExternalLink, FolderInput, Layers, MousePointerClick, NotebookPen, Pin, PinOff, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Spinner } from "../../components/ui";
+import { IconButton, Spinner } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import type { Note } from "../../lib/types";
 import { useConnections } from "../../store/connections";
@@ -13,7 +13,10 @@ import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
 import { confirmDialog } from "../connections/dialogs";
 import { copyText, relativeTime } from "../history/historyActions";
 import { useNow } from "../history/HistoryPanel";
+import { openReviewDialog } from "../review/ReviewUrlDialog";
 import { createNote, noteSnippet, noteTitle, openNote, useNotes } from "./store";
+
+const REVIEW_PREFIX = "UI review · ";
 
 interface Group { id: string | null; name: string; color?: string | null; notes: Note[] }
 
@@ -95,6 +98,9 @@ export default function NotesPanel() {
             className="h-6 w-full rounded border border-line bg-app pr-2 pl-7 text-xs text-fg placeholder:text-faint focus:border-accent focus:outline-none"
           />
         </div>
+        <IconButton title="Review page…" onClick={openReviewDialog}>
+          <MousePointerClick className="size-3.5" />
+        </IconButton>
       </div>
       {error && <div className="selectable border-b border-line bg-danger/10 px-3 py-2 text-xs text-danger">{error}</div>}
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -120,12 +126,13 @@ export default function NotesPanel() {
               </div>
             ) : g.notes.map((n) => {
               const snippet = noteSnippet(n.body);
+              const isReview = n.body.startsWith(REVIEW_PREFIX);
               return (
+                <div key={n.id} className="relative">
                 <button
-                  key={n.id}
                   onClick={() => openNote(n)}
                   onContextMenu={(e) => menu.show(e, noteMenu(n))}
-                  className={clsx("flex w-full flex-col gap-0.5 border-b border-line/40 px-3 py-1.5 text-left hover:bg-hover", activeId === `note:${n.id}` && "bg-accent/10")}
+                  className={clsx("flex w-full flex-col gap-0.5 border-b border-line/40 px-3 py-1.5 text-left hover:bg-hover", activeId === `note:${n.id}` && "bg-accent/10", isReview && "pb-6")}
                 >
                   <span className="flex w-full items-center gap-1.5">
                     {n.pinned ? <Pin className="size-3 shrink-0 text-accent" /> : <NotebookPen className="size-3 shrink-0 text-faint" />}
@@ -134,6 +141,16 @@ export default function NotesPanel() {
                   </span>
                   {snippet && <span className="truncate pl-[18px] text-[11px] text-muted">{snippet}</span>}
                 </button>
+                {isReview && (
+                  <button
+                    title="Copy review"
+                    onClick={(e) => { e.stopPropagation(); void copyText(n.body, "review"); }}
+                    className="absolute right-2 bottom-1 flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-muted hover:bg-hover hover:text-fg"
+                  >
+                    <Copy className="size-3" /> Copy review
+                  </button>
+                )}
+                </div>
               );
             })}
           </div>

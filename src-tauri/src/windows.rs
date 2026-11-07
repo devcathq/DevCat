@@ -87,6 +87,7 @@ pub fn on_destroyed(label: &str) {
     crate::claude::pty::close_owned_by(label);
     crate::infra::k8s::streams::stop_owned_by(label, None);
     crate::infra::k8s::release_window(label);
+    crate::review::on_window_destroyed(label);
     let label = label.to_string();
     crate::rt::spawn(async move { crate::claude::runner::stop_owned_by(&label).await });
 }

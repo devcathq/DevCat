@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Ghost, Layers, FolderPlus, GitBranch, ListTodo, LogOut, NotebookPen, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Shield, SquareArrowOutUpRight, Trash2, Users, X, Zap } from "lucide-react";
+import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Ghost, Layers, FolderPlus, GitBranch, ListTodo, LogOut, MousePointerClick, NotebookPen, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Shield, SquareArrowOutUpRight, Trash2, Users, X, Zap } from "lucide-react";
 import { isPinned, pin, unpin, usePins } from "../../features/files/pins";
 import { openGhostChat } from "../../features/agent/ghost";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -16,6 +16,7 @@ import "../../features/agent/schedule";
 import { AiConnectionsDialog, ProviderPicker } from "../../features/claude/AiProviders";
 import GitPanel from "../../features/git/GitPanel";
 import NotesPanel from "../../features/notes/NotesPanel";
+import { openReviewDialog, ReviewUrlDialog } from "../../features/review/ReviewUrlDialog";
 import { createNote, noteInFocus, useNotes } from "../../features/notes/store";
 import { inFocus, useConnections, useFocusProject } from "../../store/connections";
 import { useContextMenu, type MenuItem } from "../../features/connections/ContextMenu";
@@ -199,6 +200,7 @@ export default function AppShell() {
       <ShareToRoomDialog />
       <AppearanceDialog />
       <MemoryDialog />
+      <ReviewUrlDialog />
       <TicketsDialog />
       <MemoryPairPrompt />
       <PairPrompt />
@@ -335,6 +337,7 @@ function ProjectBar() {
         : []),
       "separator",
       { label: "New window", icon: <AppWindow className="size-3.5" />, shortcut: NEW_WINDOW_SHORTCUT, onClick: () => void openNewWindow() },
+      { label: "Review page…", icon: <MousePointerClick className="size-3.5" />, onClick: openReviewDialog },
       { label: "Check for updates…", icon: <ArrowUpCircle className="size-3.5" />, onClick: () => void useUpdate.getState().check(true) },
       ...(projects.length
         ? [{

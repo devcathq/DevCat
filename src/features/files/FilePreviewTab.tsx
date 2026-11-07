@@ -1,12 +1,13 @@
 // File preview tab: toolbar (path, size, kind, actions) + a viewer per FilePreview kind,
 // or git blame for text files inside a repository. Plain text files (code, config, …) open in an
 // editor (.html also gets a rendered Preview); markdown, pdf, images, sheets, csv and docx stay preview-only.
-import { Copy, Download, ExternalLink, Files, FolderSearch, History, Pin, RefreshCw, UserSearch } from "lucide-react";
+import { Copy, Download, ExternalLink, Files, FolderSearch, History, MousePointerClick, Pin, RefreshCw, UserSearch } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge, ErrorBox, IconButton, Spinner, Toolbar, Spin } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { FilePreview } from "../../lib/types";
 import { useTabs } from "../../store/tabs";
+import { openReview } from "../review/store";
 import type { Tab } from "../../tabs/types";
 import { BlameView } from "../git/BlameView";
 import { openGitRepo } from "../git/open";
@@ -118,6 +119,11 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
             <IconButton title={blame ? "Hide blame" : "Blame"} active={blame} onClick={() => setBlame(!blame)}><UserSearch className="size-3.5" /></IconButton>
             <IconButton title="File history" onClick={() => openGitRepo(repo, { path: tab.path })}><History className="size-3.5" /></IconButton>
           </>
+        )}
+        {/\.html?$/i.test(tab.path) && (
+          <IconButton title="Review" onClick={() => openReview({ path: tab.path })}>
+            <MousePointerClick className="size-3.5" />
+          </IconButton>
         )}
         <PinButton path={tab.path} root={tab.root ?? null} />
         <IconButton title="Refresh" onClick={() => { void load(); setReload((n) => n + 1); }}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
