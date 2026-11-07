@@ -18,6 +18,7 @@ import { useContextMenu } from "../connections/ContextMenu";
 import { confirmDialog } from "../connections/dialogs";
 import { useNotes } from "../notes/store";
 import { useOverlayCovers } from "./overlay";
+import { nextPlace, type Place } from "./place";
 
 type ReviewTabSpec = Extract<Tab, { type: "review" }>;
 
@@ -166,7 +167,7 @@ function UrlField({ st, fallback, onGo }: { st: State | null; fallback: string; 
       autoCapitalize="off"
       onChange={(e) => setDraft(e.target.value)}
       onKeyDown={(e) => {
-        if (e.key === "Enter" && !file && draft.trim()) onGo(draft.trim());
+        if (e.key === "Enter" && !e.nativeEvent.isComposing && !file && draft.trim()) onGo(draft.trim());
         if (e.key === "Escape") setDraft(shown);
       }}
       title={shown}
@@ -204,8 +205,9 @@ function PageArea({ tabId, id, error, onSize }:
     if (size.w > 0 && size.h > 0) onSize({ w: Math.round(size.w * zoom), h: Math.round(size.h * zoom) });
   }, [size, zoom, onSize]);
 
-  const want = useRef<{ id: string; x: number; y: number; w: number; h: number; visible: boolean } | null>(null);
-  const sent = useRef<string>("");
+  const want = useRef<Place | null>(null);
+  const sent = useRef<string>(""); // dedupe key of the last call; cleared when it failed, to retry
+  const everSent = useRef(false); // a place went out (maybe failed): from then on every hide is sent
   const busy = useRef(false);
   const frame = useRef(0);
 
@@ -217,6 +219,7 @@ function PageArea({ tabId, id, error, onSize }:
     if (key === sent.current) return;
     busy.current = true;
     sent.current = key;
+    everSent.current = true;
     api.reviewPlace(w.id, w.x, w.y, w.w, w.h, w.visible).then(
       () => { if (w.visible) setPlaced(true); },
       () => { sent.current = ""; }, // the review ended (or the window is closing): nothing to show
@@ -232,11 +235,8 @@ function PageArea({ tabId, id, error, onSize }:
     const r = el.getBoundingClientRect();
     const vis = active && !covered && r.width > 0 && r.height > 0;
     // Nothing is created until the page can show; after that a hidden tab keeps its last place.
-    if (!vis && !sent.current) return;
-    const prev = want.current;
-    want.current = vis
-      ? { id, x: r.left * zoom, y: r.top * zoom, w: r.width * zoom, h: r.height * zoom, visible: true }
-      : prev ? { ...prev, visible: false } : null;
+    want.current = nextPlace(want.current, vis ? { id, x: r.left * zoom, y: r.top * zoom, w: r.width * zoom, h: r.height * zoom } : null, everSent.current);
+    if (!want.current) { if (frame.current) { cancelAnimationFrame(frame.current); frame.current = 0; } return; }
     if (now) { if (frame.current) cancelAnimationFrame(frame.current); flush(); }
     else if (!frame.current) frame.current = requestAnimationFrame(flush);
   }, [id, active, covered, zoom, flush]);

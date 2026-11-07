@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { Copy, ExternalLink, FolderInput, Layers, MousePointerClick, NotebookPen, Pin, PinOff, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Button, Dialog, IconButton, Spinner } from "../../components/ui";
+import { IconButton, Spinner } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import type { Note } from "../../lib/types";
 import { useConnections } from "../../store/connections";
@@ -13,15 +13,10 @@ import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
 import { confirmDialog } from "../connections/dialogs";
 import { copyText, relativeTime } from "../history/historyActions";
 import { useNow } from "../history/HistoryPanel";
-import { openReview } from "../review/store";
+import { openReviewDialog } from "../review/ReviewUrlDialog";
 import { createNote, noteSnippet, noteTitle, openNote, useNotes } from "./store";
 
 const REVIEW_PREFIX = "UI review · ";
-const DEFAULT_REVIEW_URL = "http://localhost:5173";
-const lastUrlKey = (projectId: string | null) => `devcat.review.lastUrl.${projectId ?? "general"}`;
-function readLastUrl(projectId: string | null): string {
-  try { return localStorage.getItem(lastUrlKey(projectId)) || DEFAULT_REVIEW_URL; } catch { return DEFAULT_REVIEW_URL; }
-}
 
 interface Group { id: string | null; name: string; color?: string | null; notes: Note[] }
 
@@ -34,15 +29,6 @@ export default function NotesPanel() {
   const activeId = useTabs((s) => s.activeId);
   const [search, setSearch] = useState("");
   const menu = useContextMenu();
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [reviewUrl, setReviewUrl] = useState(DEFAULT_REVIEW_URL);
-  const startReview = () => {
-    const url = reviewUrl.trim();
-    if (!url) return;
-    try { localStorage.setItem(lastUrlKey(focus ?? null), url); } catch { /* remembering is optional */ }
-    setReviewOpen(false);
-    openReview({ url });
-  };
   useNow(60_000);
 
   const groups = useMemo((): Group[] => {
@@ -112,29 +98,10 @@ export default function NotesPanel() {
             className="h-6 w-full rounded border border-line bg-app pr-2 pl-7 text-xs text-fg placeholder:text-faint focus:border-accent focus:outline-none"
           />
         </div>
-        <IconButton title="Review a page…" onClick={() => { setReviewUrl(readLastUrl(focus ?? null)); setReviewOpen(true); }}>
+        <IconButton title="Review page…" onClick={openReviewDialog}>
           <MousePointerClick className="size-3.5" />
         </IconButton>
       </div>
-      <Dialog
-        open={reviewOpen}
-        onClose={() => setReviewOpen(false)}
-        title="Review a page"
-        width={420}
-        footer={<Button variant="primary" onClick={startReview} disabled={!reviewUrl.trim()}>Review</Button>}
-      >
-        <label className="flex flex-col gap-1 text-xs text-muted">
-          Page address
-          <input
-            autoFocus
-            value={reviewUrl}
-            onChange={(e) => setReviewUrl(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && startReview()}
-            spellCheck={false}
-            className="h-8 rounded border border-line bg-app px-2 font-mono text-xs text-fg focus:border-accent focus:outline-none"
-          />
-        </label>
-      </Dialog>
       {error && <div className="selectable border-b border-line bg-danger/10 px-3 py-2 text-xs text-danger">{error}</div>}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {!loaded ? (
