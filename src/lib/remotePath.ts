@@ -5,6 +5,9 @@ import { useConnections } from "../store/connections";
 
 export const isRemote = (p: string | null | undefined): p is string => !!p && p.startsWith("ssh://");
 
+/** A start folder for the native file dialog: local paths only (Windows refuses `ssh://…` with an error box). */
+export const localStart = (p: string | null | undefined): string | undefined => (p && !isRemote(p) ? p : undefined);
+
 export interface RemoteParts { dest: string; port: number | null; path: string }
 
 export function remoteParts(p: string): RemoteParts | null {
