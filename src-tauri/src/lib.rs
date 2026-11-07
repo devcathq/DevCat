@@ -38,6 +38,7 @@ mod notify;
 mod opened;
 mod projects;
 mod remote;
+mod review;
 mod rooms;
 mod rooms_agent;
 mod rooms_tools;
