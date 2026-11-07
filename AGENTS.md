@@ -159,6 +159,30 @@ so what comes from a room is untrusted input. Keep these rules:
   an agent's changes must be committed with `commit_by` so they show as the agent.
 - Rooms are desktop-only, like the SSH workbench: keep them out of the phone dispatcher.
 
+## Page review
+
+The Review tab (`src-tauri/src/review/`, `src/features/review/`) shows a web page (a dev server, a deployed site or a
+local `.html`) in a native child webview named `review-<id>`, with `inspector.js` injected. **The reviewed page is
+untrusted**: anyone's code can run in it. Keep these rules:
+
+- **The page webview gets no capability except one command**: the remote-scoped `plugin:devcat-review|msg`
+  (`channel.rs`), checked against the calling webview's label and top-level URL, then the per-review secret. Accepted
+  risk: a page that patches `fetch` can read the secret and forge notes, but only in its own review.
+- **`capabilities/default.json` matches `webviews`, not `windows`**: a capability matched by window reaches the child
+  webviews too, and with it every DevCat command. Keep it that way.
+- **Never serve review content from a custom URI scheme.** Tauri treats a page from a scheme the app registered as a
+  local origin with full IPC. Local files go through the loopback file server (`serve.rs`: 127.0.0.1, an unguessable
+  review id in the path, Host check, no CORS, no dotfiles or secret-like files).
+- **Refuse local targets** (`is_local_target`: `tauri:`, `ipc:`, `asset:`, our own scheme and the app's dev URL) when
+  a review starts and on every navigation.
+- **Everything from the inspector is data** (`intake.rs`, `MAX_NOTES`): lengths capped, control characters stripped,
+  backticks escaped (`format.rs`). Nothing is saved until Finish, and Finish saves exactly the text the user saw
+  (`rev` must match), through `notes::save_checked`.
+- **The inspector stays inert on other origins**: it acts only on the origin the review was started for or navigated
+  to, never on a page that merely embeds it.
+- **Desktop only**, like the SSH workbench and rooms: keep `review_*` out of `src-tauri/src/remote/dispatch.rs`,
+  `mobile/` and the browser build.
+
 ## Animations that run for a long time
 
 A "working" label or a spinner can stay on screen for hours, and the window draws every frame of it (160 times a
