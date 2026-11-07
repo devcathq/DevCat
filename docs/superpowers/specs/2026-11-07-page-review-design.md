@@ -195,7 +195,8 @@ merged: if C fails there, the channel decision is reopened. So:
   `invoke("plugin:devcat-review|msg", { review: "<id>", secret: "<hex>", msg: {…} })`, the same three fields the
   plan gave the HTTP body. The command also checks, in Rust, that the calling webview (`Webview` argument, its
   label and its native `url()`, not anything the page says) is that review's webview and on the review's origin
-  before it looks at the secret. That check is designed, not verified: the spike only printed the label and URL
+  before it looks at the secret. That URL is the webview's top-level page, not the calling frame's; frames are
+  kept out because Tauri's IPC and invoke-key scripts run in the main frame only. That check is designed, not verified: the spike only printed the label and URL
   the command received (they were right for all four pages), it didn't reject anything with them. Task 5 tests
   it. Replies (the current notes, on load) are the command's return value.
 - **Local `.html` files are served by B**, a loopback HTTP server that only serves files:

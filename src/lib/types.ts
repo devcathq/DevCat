@@ -64,6 +64,51 @@ export interface Note {
   updatedAt: number;
 }
 
+/** Page review (the Review tab). One comment on one element of the reviewed page. */
+export interface ReviewNote {
+  n: number;
+  /** Path of the page (URL review) or the file's relative path (file review). */
+  page: string;
+  /** Width of the page area when the note was made. */
+  width: number;
+  selector: string;
+  text: string;
+  source: string | null;
+  style: string | null;
+  comment: string;
+}
+
+export type ReviewTarget = { kind: "url"; origin: string } | { kind: "file"; root: string; rel: string };
+
+export interface ReviewDoc {
+  target: ReviewTarget;
+  firstPage: string;
+  width: number;
+  height: number;
+  notes: ReviewNote[];
+}
+
+export interface ReviewInfo {
+  id: string;
+  title: string;
+  doc: ReviewDoc;
+}
+
+/** `review://changed` payload. */
+export interface ReviewChanged {
+  id: string;
+  doc: ReviewDoc;
+  missing: number[];
+  saved: boolean;
+}
+
+/** `review://page` payload: a page finished loading; `inspectable` is false on other origins. */
+export interface ReviewPage {
+  id: string;
+  url: string;
+  inspectable: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;

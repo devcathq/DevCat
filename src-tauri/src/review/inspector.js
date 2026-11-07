@@ -174,6 +174,7 @@
   var hoverBox, hoverLabel, pinLayer, hlBox, box, area, errLine, saveBtn;
   var boxTarget = null, entries = [], missingNow = [], shownPage = null;
   var queued = false, helloTimer = 0, highlighted = null;
+  var reported = null; // the `missing` list DevCat last heard, as text
 
   function pageName() {
     var p = String(W.location.pathname);
@@ -196,7 +197,7 @@
   function send(msg) {
     try {
       return Promise.resolve(rawInvoke("plugin:devcat-review|msg", { review: review, secret: secret, msg: msg })).then(function (r) {
-        if (r && Array.isArray(r.notes)) { notes = cleanNotes(r.notes); renderPins(); }
+        if (r && Array.isArray(r.notes)) { notes = cleanNotes(r.notes); renderPins(); recheck(); }
         return r;
       });
     } catch (e) {
@@ -376,8 +377,15 @@
 
   function hello() {
     renderPins();
+    reported = missingNow.join(",");
     send({ kind: "hello", page: pageName(), width: Math.round(W.innerWidth), height: Math.round(W.innerHeight), missing: missingNow.slice() })
       .catch(function () {});
+  }
+
+  // The notes changed under the pins (a reply, or DevCat's list): tell DevCat when that changed
+  // which ones are missing. After a reload the first hello only knew the notes the page opened with.
+  function recheck() {
+    if (reported !== null && missingNow.join(",") !== reported) hello();
   }
 
   // Inspect mode --------------------------------------------------------------------------------
@@ -507,7 +515,7 @@
 
     var api = Object.freeze({
       setInspect: function (on) { setInspect(on); },
-      setNotes: function (list) { notes = cleanNotes(list); renderPins(); },
+      setNotes: function (list) { notes = cleanNotes(list); renderPins(); recheck(); },
       highlight: function (n) { highlighted = typeof n === "number" ? n : null; place(); },
       scrollTo: function (n) {
         var en = typeof n === "number" ? entryFor(n) : null;

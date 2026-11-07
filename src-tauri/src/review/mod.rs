@@ -4,17 +4,25 @@ pub mod channel;
 pub mod format;
 pub mod intake;
 pub mod serve;
+#[cfg(feature = "gui")]
+mod webview;
+#[cfg(feature = "gui")]
+pub mod commands;
+#[cfg(feature = "gui")]
+pub use webview::{on_window_destroyed, set_data_dir};
 
 pub use intake::InspectorMsg;
 
 /// Most comments one review holds.
 pub const MAX_NOTES: usize = 500;
 
-use serde::{Deserialize, Serialize};
 use crate::error::{AppError, AppResult};
+use crate::models::Project;
 use parking_lot::Mutex;
+use reqwest::Url;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 /// One comment on one element.
@@ -53,7 +61,6 @@ pub struct ReviewDoc {
 
 /// A review in progress. `saved` is true right after `set_saved` and false after any change.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // fields are read by later tasks
 pub struct Review {
     pub id: String,
     pub secret: String,
@@ -64,6 +71,8 @@ pub struct Review {
     /// Notes on the current page whose element wasn't found (from the last Hello).
     pub missing: Vec<u32>,
     pub saved: bool,
+    /// What the review webview opens first (set by `set_load_url`).
+    pub load_url: String,
 }
 
 /// Reviews in progress, in memory only.
@@ -123,8 +132,6 @@ fn remove_note(r: &mut Review, n: u32) -> AppResult<()> {
     Ok(())
 }
 
-// Later tasks (commands, file server) use the whole store.
-#[allow(dead_code)]
 impl ReviewStore {
     pub fn start(&self, target: Target, first_page: String, project_id: Option<String>, window: String) -> Review {
         let r = Review {
@@ -136,6 +143,7 @@ impl ReviewStore {
             window,
             missing: vec![],
             saved: false,
+            load_url: String::new(),
         };
         self.reviews.lock().insert(r.id.clone(), r.clone());
         r
@@ -187,6 +195,12 @@ impl ReviewStore {
         Ok(r.doc.clone())
     }
 
+    pub fn set_load_url(&self, id: &str, url: String) {
+        if let Some(r) = self.reviews.lock().get_mut(id) {
+            r.load_url = url;
+        }
+    }
+
     pub fn set_saved(&self, id: &str, note_id: String) {
         if let Some(r) = self.reviews.lock().get_mut(id) {
             r.note_id = Some(note_id);
@@ -212,6 +226,100 @@ impl ReviewStore {
 pub fn review_store() -> &'static ReviewStore {
     static STORE: OnceLock<ReviewStore> = OnceLock::new();
     STORE.get_or_init(ReviewStore::default)
+}
+
+/// A review about to start, worked out from what the user asked for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Start {
+    pub target: Target,
+    pub first_page: String,
+    pub title: String,
+    /// The URL to open (URL targets; file targets get theirs from the file server once the id exists).
+    pub load_url: String,
+}
+
+fn refuse(msg: &str) -> AppError {
+    AppError::Msg(msg.into())
+}
+
+/// An http(s) URL to review: `http://` is assumed when no scheme is given, and a URL that would
+/// be a local origin to Tauri (it would get every DevCat command) is refused.
+pub fn url_start(input: &str, dev_url: Option<&Url>) -> AppResult<Start> {
+    let input = input.trim();
+    // `localhost:5173/x` parses as scheme `localhost`: a scheme only when `://` follows, or for
+    // the one-part forms (`javascript:`, `mailto:`, `data:`), which are refused below
+    let has_scheme = input.contains("://")
+        || input.split_once(':').is_some_and(|(scheme, rest)| {
+            scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+                && !rest.starts_with(|c: char| c.is_ascii_digit())
+        });
+    let full = if has_scheme { input.to_string() } else { format!("http://{input}") };
+    let bad = || refuse("Enter a web address (http or https)");
+    let url = Url::parse(&full).map_err(|_| bad())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none_or(str::is_empty) {
+        return Err(bad());
+    }
+    if channel::is_local_target(&url, dev_url) {
+        return Err(refuse("DevCat's own pages can't be reviewed"));
+    }
+    let host = url.host_str().unwrap_or_default();
+    let host = match url.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    };
+    Ok(Start {
+        target: Target::Url { origin: url.origin().ascii_serialization() },
+        first_page: url.path().to_string(),
+        title: format!("Review · {host}"),
+        load_url: url.to_string(),
+    })
+}
+
+/// A local `.html` / `.htm` file to review. It's served from the code folder of the DevCat project
+/// that holds it (so `../assets/…` works inside a repo), else from its own folder.
+pub fn file_start(path: &str, projects: &[Project]) -> AppResult<Start> {
+    if path.starts_with("ssh://") {
+        return Err(refuse("Files on SSH hosts can't be reviewed"));
+    }
+    let p = Path::new(path);
+    let html = p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
+    if !p.is_absolute() || !html {
+        return Err(refuse("Choose an .html file"));
+    }
+    let file = p.canonicalize().ok().filter(|f| f.is_file()).ok_or_else(|| refuse("That file isn't there"))?;
+    let parent = file.parent().ok_or_else(|| refuse("That file isn't there"))?.to_path_buf();
+    let root = projects
+        .iter()
+        .flat_map(|p| p.folders.iter())
+        .filter_map(|f| Path::new(f).canonicalize().ok())
+        .filter(|f| file.starts_with(f))
+        .max_by_key(|f| f.components().count())
+        .unwrap_or(parent);
+    let inside = file.strip_prefix(&root).map_err(|_| refuse("That file isn't there"))?;
+    if serve::hidden_or_secret(inside) {
+        return Err(refuse("Files in hidden folders, and files that look like keys or passwords, can't be reviewed"));
+    }
+    let rel: Vec<String> = inside
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let rel = rel.join("/");
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(Start {
+        // the inspector names pages by their URL path, which is percent-encoded
+        first_page: serve::encode_path(&rel),
+        target: Target::File { root, rel },
+        title: format!("Review · {name}"),
+        load_url: String::new(),
+    })
+}
+
+/// The date in a saved review: `7 Nov 2026`.
+pub fn review_date(d: chrono::NaiveDate) -> String {
+    d.format("%-d %b %Y").to_string()
 }
 
 #[cfg(test)]
@@ -303,5 +411,80 @@ mod store_tests {
         }
         assert!(s.apply(&r.id, &r.secret, &add("x")).is_err());
         assert_eq!(s.get(&r.id).unwrap().doc.notes.len(), MAX_NOTES);
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+    use crate::models::Project;
+    use reqwest::Url;
+
+    #[test]
+    fn start_url_target_parses_origin() {
+        let s = url_start("localhost:5173/pricing?x=1", None).unwrap();
+        assert_eq!(s.target, Target::Url { origin: "http://localhost:5173".into() });
+        assert_eq!(s.first_page, "/pricing");
+        assert_eq!(s.load_url, "http://localhost:5173/pricing?x=1");
+        assert_eq!(s.title, "Review · localhost:5173");
+        let s = url_start("https://a.b/", None).unwrap();
+        assert_eq!(s.target, Target::Url { origin: "https://a.b".into() });
+        assert_eq!(s.first_page, "/");
+        assert_eq!(s.title, "Review · a.b");
+        let s = url_start("  example.com ", None).unwrap();
+        assert_eq!(s.load_url, "http://example.com/");
+        for bad in ["javascript:alert(1)", "file:///etc/passwd", "mailto:a@b.c", "data:text/html,x", "", "ftp://a.b/", "http://"] {
+            assert!(url_start(bad, None).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn start_refuses_local_targets() {
+        let dev = Url::parse("http://localhost:1420/").unwrap();
+        assert!(url_start("tauri://localhost", Some(&dev)).is_err());
+        assert!(url_start("http://localhost:1420/x", Some(&dev)).is_err());
+        assert!(url_start("localhost:1420", Some(&dev)).is_err());
+        assert!(url_start("http://tauri.localhost/", None).is_err());
+        assert!(url_start("http://localhost:1421/", Some(&dev)).is_ok());
+    }
+
+    fn tmp() -> PathBuf {
+        let d = std::env::temp_dir().join(format!("devcat-review-start-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(d.join("proj/site")).unwrap();
+        std::fs::create_dir_all(d.join("loose/.hidden")).unwrap();
+        std::fs::write(d.join("proj/site/index.html"), "<p>").unwrap();
+        std::fs::write(d.join("loose/page.HTM"), "<p>").unwrap();
+        std::fs::write(d.join("loose/notes.txt"), "x").unwrap();
+        std::fs::write(d.join("loose/.hidden/a.html"), "x").unwrap();
+        d.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn start_file_target_root() {
+        let d = tmp();
+        let projects = vec![Project { id: "p".into(), folders: vec![d.join("proj").to_string_lossy().into()], ..Default::default() }];
+        let s = file_start(&d.join("proj/site/index.html").to_string_lossy(), &projects).unwrap();
+        assert_eq!(s.target, Target::File { root: d.join("proj"), rel: "site/index.html".into() });
+        assert_eq!(s.first_page, "site/index.html");
+        assert_eq!(s.title, "Review · index.html");
+        let s = file_start(&d.join("loose/page.HTM").to_string_lossy(), &projects).unwrap();
+        assert_eq!(s.target, Target::File { root: d.join("loose"), rel: "page.HTM".into() });
+        // in no project: the file's own folder, even when that folder is hidden
+        let s = file_start(&d.join("loose/.hidden/a.html").to_string_lossy(), &projects).unwrap();
+        assert_eq!(s.target, Target::File { root: d.join("loose/.hidden"), rel: "a.html".into() });
+        // a hidden folder inside the project's folder is never served
+        let hidden = vec![Project { id: "p".into(), folders: vec![d.join("loose").to_string_lossy().into()], ..Default::default() }];
+        assert!(file_start(&d.join("loose/.hidden/a.html").to_string_lossy(), &hidden).is_err());
+        assert!(file_start(&d.join("loose/notes.txt").to_string_lossy(), &projects).is_err());
+        assert!(file_start(&d.join("loose/missing.html").to_string_lossy(), &projects).is_err());
+        assert!(file_start("site/index.html", &projects).is_err(), "relative");
+        assert!(file_start("ssh://devcat-x/home/a.html", &projects).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn dates_read_like_7_nov_2026() {
+        assert_eq!(review_date(chrono::NaiveDate::from_ymd_opt(2026, 11, 7).unwrap()), "7 Nov 2026");
+        assert_eq!(review_date(chrono::NaiveDate::from_ymd_opt(2027, 1, 23).unwrap()), "23 Jan 2027");
     }
 }

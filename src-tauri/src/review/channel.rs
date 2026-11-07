@@ -11,7 +11,6 @@ use reqwest::Url;
 /// serves those schemes); we can't know every registered scheme here, so any scheme but http(s)
 /// and the inert `about:` / `data:` / `blob:` counts, and so does every `*.localhost` host (but not
 /// plain `localhost`, which dev servers use). `dev_url` is DevCat's own `devUrl` (debug builds).
-#[allow(dead_code)] // Task 7 checks review URLs with it
 pub fn is_local_target(url: &Url, dev_url: Option<&Url>) -> bool {
     if dev_url.is_some_and(|dev| dev.origin().is_tuple() && dev.origin() == url.origin()) {
         return true;
@@ -23,9 +22,12 @@ pub fn is_local_target(url: &Url, dev_url: Option<&Url>) -> bool {
     }
 }
 
-/// Is the calling webview (its Rust-side label and native URL, nothing the page says) this
-/// review's webview, on the review's origin? For a file review, the file server's origin and
-/// this review's `/f/<id>/` folder; `file_origin` is the file server's origin when it's running.
+/// Is the calling webview this review's webview, on the review's origin? Checked from what Rust
+/// knows, never from what the page says: the webview's label and its top-level URL (the native
+/// webview's `url()`, not the URL of the frame that called). Frames can't call at all: Tauri's
+/// IPC and invoke-key scripts run in the main frame only. For a file review, the file server's
+/// origin and this review's `/f/<id>/` folder; `file_origin` is the file server's origin when
+/// it's running.
 pub fn caller_allowed(review: &Review, webview_label: &str, webview_url: &Url, file_origin: Option<&str>) -> bool {
     if webview_label != format!("review-{}", review.id) {
         return false;
@@ -42,11 +44,11 @@ pub fn caller_allowed(review: &Review, webview_label: &str, webview_url: &Url, f
 }
 
 #[cfg(feature = "gui")]
-pub use gui::{add_capability, plugin};
+pub use gui::{add_capability, emit_changed, plugin};
 
 #[cfg(feature = "gui")]
 mod gui {
-    use super::super::{no_review, review_store, serve, ReviewDoc, ReviewNote};
+    use super::super::{no_review, review_store, serve, Review, ReviewDoc, ReviewNote};
     use super::caller_allowed;
     use crate::error::AppResult;
     use serde::Serialize;
@@ -71,6 +73,12 @@ mod gui {
         saved: bool,
     }
 
+    /// Tells the review's window (its tab) that the review changed.
+    pub fn emit_changed(app: &AppHandle, r: &Review) {
+        let changed = ReviewChanged { id: &r.id, doc: &r.doc, missing: &r.missing, saved: r.saved };
+        let _ = app.emit_to(EventTarget::webview_window(r.window.as_str()), "review://changed", changed);
+    }
+
     /// `invoke("plugin:devcat-review|msg", { review, secret, msg })` from the inspector. The caller
     /// is checked before the secret is; every refusal is the same error as an unknown review.
     #[tauri::command]
@@ -82,8 +90,7 @@ mod gui {
         }
         review_store().apply(&review, &secret, &msg)?;
         let now = review_store().get(&review).ok_or_else(no_review)?;
-        let changed = ReviewChanged { id: &now.id, doc: &now.doc, missing: &now.missing, saved: now.saved };
-        let _ = webview.emit_to(EventTarget::webview_window(now.window.as_str()), "review://changed", changed);
+        emit_changed(webview.app_handle(), &now);
         Ok(MsgReply { notes: now.doc.notes })
     }
 
@@ -92,10 +99,12 @@ mod gui {
         tauri::plugin::Builder::new("devcat-review").invoke_handler(tauri::generate_handler![msg]).build()
     }
 
-    /// The only capability review webviews get: `msg`, from any http(s) page (`:*` so ports match).
+    /// The only capability review webviews get: `msg`, from any http(s) page (`:*` so ports match),
+    /// never from a local origin.
     pub fn add_capability(app: &AppHandle) -> tauri::Result<()> {
         app.add_capability(
             CapabilityBuilder::new("review")
+                .local(false)
                 .webview("review-*")
                 .remote("http://*:*".into())
                 .remote("https://*:*".into())

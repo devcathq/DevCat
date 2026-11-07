@@ -168,6 +168,7 @@ pub fn run() {
             events::set_app(app.handle().clone());
             // the page review inspector's one command, for review webviews only
             review::channel::add_capability(app.handle())?;
+            review::set_data_dir(dir.clone());
             init_backend(dir.clone());
             // scheduled DevCat Agent jobs run in the app (where they're managed), not in `devcat serve`
             agent_jobs::init(dir);
@@ -191,6 +192,18 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            // page review (the Review tab)
+            review::commands::review_start,
+            review::commands::review_place,
+            review::commands::review_nav,
+            review::commands::review_inspect,
+            review::commands::review_highlight,
+            review::commands::review_edit,
+            review::commands::review_remove,
+            review::commands::review_render,
+            review::commands::review_finish,
+            review::commands::review_close,
+            review::commands::review_clear_data,
             // keep awake
             keep_awake::keep_awake_status,
             fonts::fonts_list,

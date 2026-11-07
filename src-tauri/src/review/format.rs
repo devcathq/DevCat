@@ -23,7 +23,6 @@ fn prefix(doc: &ReviewDoc, note: &ReviewNote) -> String {
 }
 
 /// Renders the review. `date` comes from the caller.
-#[allow(dead_code)]
 pub fn render(doc: &ReviewDoc, styles: bool, date: &str) -> String {
     let (title_where, header_where) = match &doc.target {
         Target::Url { origin } => {

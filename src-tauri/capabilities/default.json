@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for every app window",
-  "windows": [
+  "webviews": [
     "main",
     "win-*"
   ],
