@@ -15,6 +15,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Review tab**: click elements on a page to comment on them, and save the review as a short note to copy to a
   developer or an agent. It works with a dev server, a deployed site, or an `.html` file on this computer or on an
   SSH host, and **Copy review** puts the note on the clipboard.
+- **Download button for every file on an SSH host**: a file from an SSH host that DevCat can still preview (an
+  HTML or text file too large to edit, an image, a PDF) had no way to download it; the Download button only showed
+  for files with no preview. It's now in the file's toolbar too.
 
 ## 0.22.0 - 2026-11-05
 
