@@ -232,7 +232,7 @@ console.log("review inspector: ok");
   latest size), `close_window_drops_its_reviews`.
 - [ ] **Step 2:** Run `cargo test review::`. Expected: FAIL.
 - [ ] **Step 3:** Implement. Secret: 32 random bytes hex (`rand` / `getrandom`, whichever the crate already
-  uses). Review ids: `rv-<12 hex>`.
+  uses). Review ids: `rv-<32 hex>` from a CSPRNG (an id is a read grant for the file server, Task 5).
 - [ ] **Step 4:** Run `cargo test review::`. Expected: PASS.
 - [ ] **Step 5:** Commit: `git commit -m "Page review: review store and inspector intake"`.
 
@@ -240,24 +240,44 @@ console.log("review inspector: ok");
 
 ### Task 5: Channel and scoped file server (Rust)
 
+Amended after Task 1: read the spec's "Channel (decided)" section first; it is binding for this task.
+
 **Files:**
-- Create: `src-tauri/src/review/channel.rs`
-- Modify: `src-tauri/src/lib.rs` (register the transport chosen in Task 1)
+- Create: `src-tauri/src/review/channel.rs` (inline plugin + command, runtime capability, origin checks),
+  `src-tauri/src/review/serve.rs` (loopback file server)
+- Modify: `src-tauri/build.rs` (`tauri_build::Attributes::new().plugin("devcat-review", InlinedPlugin::new().commands(&["msg"]))`),
+  `src-tauri/src/lib.rs` (register the plugin; add the runtime capability in `setup`)
 
 **Interfaces:**
-- Consumes: `review_store()`, `intake::parse` (Task 4); endpoint shape (Task 1).
-- Produces: `pub fn endpoint() -> String` (base URL the inspector posts to), `pub fn file_url(review: &str, rel: &str) -> String`,
-  `pub fn resolve_file(root: &Path, rel: &str) -> AppResult<PathBuf>`, and a Tauri event
-  `review://changed` with payload `{ id, doc, missing, saved }` emitted after every applied message.
+- Consumes: `review_store()`, `intake::parse` (Task 4).
+- Produces:
+  - The plugin `devcat-review` with command `msg(webview: Webview, review: String, secret: String, msg: serde_json::Value) -> AppResult<MsgReply>`
+    where `MsgReply { notes: Vec<ReviewNote> }` (camelCase). Before touching the secret it checks the calling
+    webview's label is `review-<review>` and its native `url()` origin equals the review's origin (Url targets)
+    or the file server's origin + `/f/<review>/` prefix (File targets); otherwise Err.
+  - `pub fn add_capability(app: &AppHandle) -> tauri::Result<()>`: `CapabilityBuilder::new("review").webview("review-*").remote("http://*:*").remote("https://*:*").permission("devcat-review:allow-msg")`.
+  - `pub fn is_local_target(url: &Url, dev_url: Option<&Url>) -> bool` (true for `tauri:`, `ipc:`, `asset:`, any
+    registered custom scheme, `http(s)://<scheme>.localhost`, and the dev URL's origin) — used at start and in
+    `on_navigation` by Task 7.
+  - `serve.rs`: `pub fn file_server() -> &'static FileServer` with `fn origin(&self) -> String`
+    (`http://127.0.0.1:<port>`), `fn url(&self, review: &str, rel: &str) -> String`, and
+    `pub fn resolve_file(root: &Path, rel: &str) -> AppResult<PathBuf>`. GET only, `/f/<reviewId>/<path>`, no CORS
+    or Private-Network headers, `Host` must equal `127.0.0.1:<port>`, `Cache-Control: no-store`, content type by
+    extension.
+  - Tauri event `review://changed` with payload `{ id, doc, missing, saved }`, emitted to the review's window only
+    after every applied message.
+- Residual risk accepted (see ledger ruling): a page that patches `fetch` can see the secret and forge notes in
+  its own review only. Write that sentence into the spec's open item, replacing "Open, for Task 5 to settle".
 
-- [ ] **Step 1: Write the failing tests** for `resolve_file`: `../secret` → Err; `/etc/passwd` → Err; a
-  symlink inside root pointing outside → Err; `assets/app.css` → Ok(root/assets/app.css); `""` → root/index.html
-  is not assumed (Err); URL-encoded `%2e%2e/` → Err.
-- [ ] **Step 2:** Run `cargo test review::channel`. Expected: FAIL.
-- [ ] **Step 3:** Implement `resolve_file` (canonicalize both, `starts_with`), the `/m` handler (JSON ≤ 16 KiB,
-  `store.apply`, emit `review://changed` to the review's window only, respond `204`, CORS for the review's origin
-  only), and `/f/<id>/<path>` (content type by extension, `Cache-Control: no-store`).
-- [ ] **Step 4:** Run `cargo test review::`. Expected: PASS.
+- [ ] **Step 1: Write the failing tests:** `resolve_file`: `../secret` → Err; `/etc/passwd` → Err; a symlink inside
+  root pointing outside → Err; `assets/app.css` → Ok(root/assets/app.css); `""` → Err; `%2e%2e/x` → Err.
+  `is_local_target`: `tauri://localhost` true, `ipc://localhost` true, `http://devcat-review.localhost/` true,
+  `http://localhost:1420/` with that dev URL true, `http://localhost:5173/` false, `https://example.com` false.
+  Server: a request with `Host: evil.test` → 403; an unknown review id → 404; response has no
+  `Access-Control-Allow-Origin`.
+- [ ] **Step 2:** Run `cd src-tauri && cargo test review::`. Expected: FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run `cargo test review::` and `cargo clippy --all-targets -- -D warnings`. Expected: PASS.
 - [ ] **Step 5:** Commit: `git commit -m "Page review: inspector channel and file server"`.
 
 ---
@@ -268,15 +288,18 @@ console.log("review inspector: ok");
 - Modify: `src-tauri/src/review/inspector.js`, `src-tauri/src/review/inspector.check.mjs`
 
 **Interfaces:**
-- Consumes: `lib` (Task 3); `CONFIG = { origin, endpoint, review, secret, notes: ReviewNote[] }` set by Rust.
+- Consumes: `lib` (Task 3); `CONFIG = { origin, review, secret, notes: ReviewNote[] }` set by Rust (`origin` is
+  the review's origin; for file reviews the file server origin). Messages go through
+  `invoke("plugin:devcat-review|msg", { review, secret, msg })`, with `window.__TAURI_INTERNALS__.invoke` captured
+  at init time; `Hello`'s reply carries the current notes (no `setNotes` needed on load).
 - Produces, for Rust → inspector calls via `webview.eval`: a frozen global `window.__devcatReview` (defined with
   `Object.defineProperty`, `configurable: false, writable: false`) with methods `setInspect(on: bool)`,
   `setNotes(notes)`, `highlight(n | null)`, `scrollTo(n)`. Nothing on it exposes the secret.
 
 - [ ] **Step 1: Write the failing check** "hostile page globals": evaluate the script with `CONFIG.test = false`
   in a fake `window` whose `location.origin` differs from `CONFIG.origin` → the script defines nothing and makes
-  no request; with matching origin and a page that pre-defined `window.__devcatReview` and replaced `fetch` →
-  ours still installs (ours is defined first in real life; here assert it uses the `fetch` captured at start).
+  no request; with matching origin and a page that pre-defined `window.__devcatReview` and replaced
+  `__TAURI_INTERNALS__.invoke` after init → ours still installs and sends through the `invoke` captured at start.
 - [ ] **Step 2:** Run `pnpm check:review`. Expected: FAIL.
 - [ ] **Step 3:** Implement the UI, behaving like the prototype: host element appended to
   `document.documentElement` with a closed shadow root and `all: initial`; hover box + label (`tag.classes W × H ·
@@ -316,21 +339,27 @@ console.log("review inspector: ok");
   ```
   Event `review://page` `{ id, url, inspectable }` from the webview's `on_page_load` (finished): `inspectable`
   is false on other origins, so the tab can say "Inspect is off on <host>".
+  File targets load `serve::file_server().url(id, rel)`.
   TS (`src/lib/api.ts`): `reviewStart`, `reviewPlace`, `reviewNav`, `reviewInspect`, `reviewHighlight`,
   `reviewEdit`, `reviewRemove`, `reviewRender`, `reviewFinish`, `reviewClose`, `reviewClearData` with the same
   argument names.
-- Child webview label: `review-<id>` (never `main` / `win-*`). File targets load `channel::file_url`.
+- Child webview label: `review-<id>` (never `main` / `win-*`). 
 
 - [ ] **Step 1: Write the failing test** `start_url_target_parses_origin` (`"localhost:5173/pricing?x=1"` →
   origin `http://localhost:5173`, first_page `/pricing`; `"https://a.b/"` → `/`; `"javascript:…"` and
   `"file:///…"` → Err) and `start_file_target_root` (file inside a project code folder → that folder as root,
-  else the file's parent; rel path relative to root).
+  else the file's parent; rel path relative to root), and `start_refuses_local_targets` (`tauri://localhost`,
+  the dev URL → Err).
 - [ ] **Step 2:** Run `cargo test review::`. Expected: FAIL.
 - [ ] **Step 3:** Implement the commands and `webview.rs`. The inspector script is
-  `include_str!("inspector.js")` + `(` + config JSON + `)`. Use the data folder decided in Task 1. After a
-  `review://changed` the Rust side also calls `__devcatReview.setNotes` on the webview. `on_window_destroyed`
-  closes the window's reviews and their webviews. Confirm `capabilities/default.json` does not grant anything
-  to `review-*` (add `"webviews": ["main", "win-*"]` scoping if Task 1 showed child webviews inherit it).
+  `include_str!("inspector.js")` + `(` + config JSON + `)`. Data store per the spec's "Review data store":
+  macOS 14+ `data_store_identifier` with the fixed id `b"devcat-review-p1"`, below 14 `incognito(true)`;
+  Windows/Linux `data_directory(<data>/review-profile)`. `review_clear_data` uses `clear_all_browsing_data`.
+  Refuse `channel::is_local_target` URLs in `review_start` and in `on_navigation` (return false). After an edit
+  or remove from the tab, call `__devcatReview.setNotes` on the webview. `on_window_destroyed` closes the
+  window's reviews and their webviews. Change `capabilities/default.json` `"windows": ["main", "win-*"]` to
+  `"webviews": ["main", "win-*"]` (Task 1 showed window-matched capabilities reach child webviews) and check the
+  app still works in the main window and a second window.
 - [ ] **Step 4:** Run `cargo test review::` and `cargo clippy --all-targets -- -D warnings`. Expected: PASS, no warnings.
 - [ ] **Step 5 (manual, "reload keeps notes"):** `pnpm tauri dev`, start a review of a Vite app from the dev
   console (`await window.__TAURI_INTERNALS__.invoke("review_start", …)` + `review_place`), add two notes, save a
