@@ -3,9 +3,13 @@ use std::path::Path;
 fn main() {
     embed_mobile_web();
     app_version();
-    // The CLI build (`--no-default-features`) has no Tauri app to generate.
+    // The CLI build (`--no-default-features`) has no Tauri app to generate. The inline plugin
+    // `devcat-review` is the page review inspector's one command (`msg`).
     if std::env::var_os("CARGO_FEATURE_GUI").is_some() {
-        tauri_build::build()
+        let review = tauri_build::InlinedPlugin::new().commands(&["msg"]);
+        if let Err(e) = tauri_build::try_build(tauri_build::Attributes::new().plugin("devcat-review", review)) {
+            panic!("error found during tauri-build: {e:#}");
+        }
     }
 }
 

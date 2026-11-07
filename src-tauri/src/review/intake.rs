@@ -1,8 +1,6 @@
 //! Everything the inspector sends comes from the reviewed page, which is untrusted: it is
 //! parsed, capped and stripped of control characters here before it reaches a review.
 
-#![allow(dead_code)] // later review tasks use these
-
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 

@@ -1,9 +1,10 @@
 //! Page review: reviewers click elements on a web page and comment; the review is saved as text.
 
+pub mod channel;
 pub mod format;
 pub mod intake;
+pub mod serve;
 
-#[allow(unused_imports)]
 pub use intake::InspectorMsg;
 
 /// Most comments one review holds.
@@ -208,7 +209,6 @@ impl ReviewStore {
     }
 }
 
-#[allow(dead_code)]
 pub fn review_store() -> &'static ReviewStore {
     static STORE: OnceLock<ReviewStore> = OnceLock::new();
     STORE.get_or_init(ReviewStore::default)

@@ -161,10 +161,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(review::channel::plugin())
         .setup(|app| {
             // `pnpm tauri dev --prod-data`: the installed DevCat's data
             let dir = devdata::prod_data_dir().unwrap_or_else(|| app.path().app_data_dir().expect("no app data dir"));
             events::set_app(app.handle().clone());
+            // the page review inspector's one command, for review webviews only
+            review::channel::add_capability(app.handle())?;
             init_backend(dir.clone());
             // scheduled DevCat Agent jobs run in the app (where they're managed), not in `devcat serve`
             agent_jobs::init(dir);
