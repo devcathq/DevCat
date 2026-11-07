@@ -100,7 +100,9 @@ The note's first line is its title: `UI review · <host><path> · <date>`; the i
 - **The reviewed page is untrusted** (it may be any website). It must never get DevCat's IPC or any app command.
   The review webview gets no Tauri capability. The inspector reports to DevCat over one narrow channel that only
   carries review messages (add / edit / remove note, hover info is local), authenticated with a per-review
-  secret that only the injected script holds (in a closure, set before page scripts run). The channel is the
+  secret the injected script holds in a closure, set before page scripts run. A page that targets DevCat can
+  still read it (accepted risk, see "Channel (decided)"); the secret stops casual forgery, not a determined page,
+  and the review's notes are all that page could reach. The channel is the
   builder's call: candidates are a dedicated custom URI scheme handler, a loopback endpoint with token like
   `agent_bridge.rs`, or a single remote-scoped command. Whatever is picked must hold on all three platforms,
   including from `https://` pages (mixed content, Private Network Access in WebView2). The first plan step is a
@@ -111,11 +113,14 @@ The note's first line is its title: `UI review · <host><path> · <date>`; the i
   through the normal notes path (`notes::save_checked`).
 - **The review state lives in Rust**, per review tab, so it survives reloads and navigation. The injected
   script asks for the current notes on each load and re-places pins by selector.
-- **Local `.html` files** are served to the review webview through a scoped protocol that can read only one
-  folder: the code folder of the DevCat project that contains the file, or the file's own folder when it's in
-  no project's folders (so `../assets/…` works inside a repo). Paths outside it, and symlinks leading out, are
-  refused. In the output, the header and `[path]` prefixes show the file's path relative to that folder, never
-  the protocol's internal URL. SSH-host files are out of scope (below). *(Call made in design.)*
+- **Local `.html` files** are served to the review webview by a loopback file server,
+  `http://127.0.0.1:<port>/f/<reviewId>/<path>`, that can read only one folder: the code folder of the DevCat
+  project that contains the file, or the file's own folder when it's in no project's folders (so `../assets/…`
+  works inside a repo). Paths outside it, and symlinks leading out, are refused. Not a custom URI scheme: Tauri
+  treats a page served by a scheme the app registered as a local origin, which gets every DevCat command (the
+  spike showed `notes_list` succeeding from one), while a loopback page is a remote origin and gets none. In
+  the output, the header and `[path]` prefixes show the file's path relative to that folder, never the
+  server's internal URL. SSH-host files are out of scope (below). *(Call made in design.)*
 - **Cookies and logins** persist between reviews in a review-only browser data store, separate from DevCat's
   own webview data (under `<data>/review-profile/`), so reviewers don't log in again every time. The review
   tab's toolbar menu has "Clear review browsing data". *(Call made in design.)*
@@ -136,7 +141,8 @@ Spike on 2026-11-07 (macOS 26, WKWebView, Tauri 2.12.3 with `unstable`, debug bu
 away). Four child webviews were added to the `main` window with `Window::add_child`, labels `review-spike-<n>`,
 each with an initialization script that probed IPC, sent a message over every candidate transport and reported
 back through a navigation Rust intercepted (`on_navigation`), so blocked transports were still seen. Pages:
-`http://localhost:5173/` (a static page from `python3 -m http.server`, the same origin rules as a Vite server),
+`http://localhost:5173/` (a static page from `python3 -m http.server`, not a Vite app: the same origin rules,
+but a dev server's HMR websocket and module loading were not exercised),
 `https://example.com/`, the test page served by transport A (`devcat-review://localhost/f/…`) and the test page
 served by transport B (`http://127.0.0.1:<port>/f/…`).
 
@@ -174,44 +180,49 @@ Notes on the results:
 - From an `https://` page WKWebView sends nothing to `http://127.0.0.1`, `http://localhost`, or a custom scheme
   (mixed content), not even Tauri's own `ipc://localhost` (`fetch` failed). Tauri's invoke still works there
   because it falls back to `window.ipc.postMessage` (WKScriptMessageHandler), which no mixed-content or CSP rule
-  touches. That's why C works from every page and B and A don't.
+  touches. That's why, on macOS, C works from every page and B and A don't.
 - Even with C's capability added, the reviewed pages still couldn't call `notes_list` or `plugin:app|version`:
   the review capability allows exactly one command.
 
 ### Decision
 
 The brief's rule was "A if it works from all three pages on both platforms, else B". Neither does: A gives
-pages it serves full IPC and is blocked from `https://`, B is blocked from `https://` on macOS. So:
+pages it serves full IPC and is blocked from `https://`, B is blocked from `https://` on macOS. C is
+**verified on macOS only; Windows is pending**, and the Windows run (below) is a gate before this branch is
+merged: if C fails there, the channel decision is reopened. So:
 
 - **Messages from the inspector go over C**, one remote-scoped plugin command:
   `invoke("plugin:devcat-review|msg", { review: "<id>", secret: "<hex>", msg: {…} })`, the same three fields the
   plan gave the HTTP body. The command also checks, in Rust, that the calling webview (`Webview` argument, its
   label and its native `url()`, not anything the page says) is that review's webview and on the review's origin
-  before it looks at the secret. Replies (the current notes, on load) are the command's return value.
+  before it looks at the secret. That check is designed, not verified: the spike only printed the label and URL
+  the command received (they were right for all four pages), it didn't reject anything with them. Task 5 tests
+  it. Replies (the current notes, on load) are the command's return value.
 - **Local `.html` files are served by B**, a loopback HTTP server that only serves files:
   `GET http://127.0.0.1:<port>/f/<reviewId>/<path>`. That page is a remote origin to Tauri, so it gets no IPC
   (row 4). B has no `/m` endpoint and sends **no** CORS or Private-Network headers, so other pages can't read
   through it; `<reviewId>` must be random and unguessable (it is a read grant for a folder to any process or
   browser tab on this computer that knows it); check the `Host` header is `127.0.0.1:<port>` (DNS rebinding);
-  the folder scoping and symlink rules of "Local `.html` files" above apply here. This replaces "scoped
-  protocol" in that bullet: it is a loopback server, not a custom scheme, because of the row-3 result.
+  the folder scoping and symlink rules of "Local `.html` files" above apply here. It is a loopback server, not a
+  custom scheme, because of the row-3 result.
   The port is random per launch, which resets `localStorage` of file pages between launches (cookies are not
   port-scoped and survived). Acceptable for v1.
 - **Task 5 implements**: the inline plugin and its command, the runtime capability for `review-*` webviews only,
-  and the file server. No `POST /m` endpoint.
+  and the file server. No `POST /m` endpoint. The `InlinedPlugin` goes in `build.rs` inside the existing
+  `CARGO_FEATURE_GUI` branch (`tauri_build::try_build(Attributes::new().plugin(…))` in place of
+  `tauri_build::build()`), and must not break the CLI build: check `cargo build --no-default-features` as well
+  as the app build.
 - **Refuse local origins as review URLs**: a review URL that Tauri would treat as local gets full IPC. In a
   debug build that is DevCat's own `devUrl` (`http://localhost:1420`); in any build `tauri://`, `ipc://` and any
   registered custom scheme (and `http(s)://<scheme>.localhost` on Windows). Task 5/7 must refuse these when the
   review starts and on navigation (`on_navigation` returning false), so a page can't navigate its webview to one.
 
-Open, for Task 5 to settle: **the secret can leak to a page that targets DevCat.** Tauri's invoke reads globals
-at call time (`fetch`, `Headers`, and on the fallback path `window.ipc.postMessage`; `window.ipc` itself is
-frozen and non-writable), so a page that patches `window.fetch` before the inspector sends sees the secret in
-the body. What that page could then do is limited to sending note add / edit / remove messages to its own review,
-which the user sees before Finish (and which are capped and escaped). Options: accept that and say so in the spec;
-or have the inspector capture `fetch`/`JSON.stringify` at init time and post the raw IPC message itself through
-`window.ipc.postMessage` with `AppHandle::invoke_key()` (public; the same key Tauri already places in every
-page's closure). Not tried in the spike.
+**The secret can leak to a page that targets DevCat: accepted.** Tauri's invoke reads globals at call time
+(`fetch`, `Headers`), so a page that patches `window.fetch` before the inspector sends can read the secret in the
+request. With it, that page could only add, edit or remove notes in its own review, which the user sees before
+pressing Finish, and which are capped and escaped like every inspector message. It gets no other command and no
+other review. We don't work around it by posting raw IPC messages through Tauri's internals (`window.ipc.postMessage`
+with the invoke key): that couples DevCat to Tauri's private message format for a small gain.
 
 ### Review data store
 
@@ -242,11 +253,12 @@ local-only. **Task 7 must** change `capabilities/default.json` from `"windows": 
 `"webviews": ["main", "win-*"]` (an app window's webview has the window's label) and check the app still works in
 the main window and in a `win-*` window; the review webview labels (`review-<id>`) must match neither.
 
-### Windows: to verify
+### Windows: to verify (gate before merge)
 
-Run the same spike build on Windows (the spike code isn't kept; the setup above is enough to rebuild it:
+Nothing here was run on Windows; what follows is what WebView2 is documented to do, not a result. Run the same
+spike build on Windows before the branch merges (the spike code isn't kept; the setup above is enough to rebuild it:
 four child webviews on those pages, probing `notes_list`, `plugin:app|version`, A, B and C, plus a restart for the
-cookie check). Expected from WebView2's documented behaviour: custom schemes appear as
+cookie check). Expected, from WebView2's documented behaviour: custom schemes appear as
 `http://devcat-review.localhost` and Tauri treats them as local there too, so A is out the same way;
 `http://127.0.0.1` is "potentially trustworthy" in Chromium so B isn't blocked as mixed content, but a fetch from
 a public `https://` page to loopback hits Private Network Access / Local Network Access (a preflight, or a
