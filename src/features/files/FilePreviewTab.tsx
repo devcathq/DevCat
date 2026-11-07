@@ -1,7 +1,7 @@
 // File preview tab: toolbar (path, size, kind, actions) + a viewer per FilePreview kind,
 // or git blame for text files inside a repository. Plain text files (code, config, …) open in an
 // editor (.html also gets a rendered Preview); markdown, pdf, images, sheets, csv and docx stay preview-only.
-import { Copy, ExternalLink, Files, FolderSearch, History, Pin, RefreshCw, UserSearch } from "lucide-react";
+import { Copy, Download, ExternalLink, Files, FolderSearch, History, Pin, RefreshCw, UserSearch } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge, ErrorBox, IconButton, Spinner, Toolbar, Spin } from "../../components/ui";
 import { api } from "../../lib/api";
@@ -13,6 +13,7 @@ import { openGitRepo } from "../git/open";
 import { useRepoRoot } from "../git/repoOf";
 import { FileIcon } from "./FileIcon";
 import { isPinned, togglePin, usePins } from "./pins";
+import { downloadRemoteFile } from "./download";
 import { copyFile, copyText, fmtSize, openExternally, relPath, revealPath, REVEAL_LABEL } from "./format";
 import { CsvViewer, SheetViewer } from "./viewers/SheetViewer";
 import { BinaryCard, DocxViewer, ImageViewer, MarkdownViewer } from "./viewers/simple";
@@ -121,7 +122,9 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
         <PinButton path={tab.path} root={tab.root ?? null} />
         <IconButton title="Refresh" onClick={() => { void load(); setReload((n) => n + 1); }}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
         <IconButton title="Copy path" onClick={() => void copyText(tab.path)}><Copy className="size-3.5" /></IconButton>
-        {!isRemote(tab.path) && (
+        {remote ? (
+          <IconButton title="Download to this computer" onClick={() => void downloadRemoteFile(tab.path)}><Download className="size-3.5" /></IconButton>
+        ) : (
           <>
             <IconButton title="Copy file (paste in Slack, Explorer, Finder)" onClick={() => void copyFile(tab.path)}><Files className="size-3.5" /></IconButton>
             <IconButton title="Open with default app" onClick={() => void openExternally(tab.path)}><ExternalLink className="size-3.5" /></IconButton>
