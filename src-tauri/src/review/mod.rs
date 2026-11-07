@@ -3,6 +3,7 @@
 pub mod format;
 pub mod intake;
 
+#[allow(unused_imports)]
 pub use intake::InspectorMsg;
 
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,7 @@ pub struct ReviewDoc {
 
 /// A review in progress. `saved` is true right after `set_saved` and false after any change.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // fields are read by later tasks
 pub struct Review {
     pub id: String,
     pub secret: String,
