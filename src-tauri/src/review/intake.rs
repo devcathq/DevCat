@@ -34,12 +34,18 @@ pub enum InspectorMsg {
     Remove { n: u32 },
 }
 
+/// Line/paragraph separators and Unicode format characters (bidi controls, zero-width marks).
+fn is_invisible(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+}
+
 /// Drop control characters (and the Unicode line/paragraph separators); with `keep_nl`, keep
 /// `\n` and turn `\r\n` / `\r` into it.
 pub fn clean(s: &str, keep_nl: bool) -> String {
     let s = if keep_nl { s.replace("\r\n", "\n").replace('\r', "\n") } else { s.to_string() };
     s.chars()
-        .filter(|&c| (keep_nl && c == '\n') || !(c.is_control() || c == '\u{2028}' || c == '\u{2029}'))
+        .filter(|&c| (keep_nl && c == '\n') || !(c.is_control() || is_invisible(c)))
         .collect()
 }
 
@@ -52,12 +58,12 @@ fn cut(s: String, max: usize) -> String {
 }
 
 fn field(s: &str, max: usize) -> String {
-    cut(clean(s, false), max)
+    cut(clean(s, false).trim().to_string(), max)
 }
 
 /// Visible text: at most `MAX_TEXT` chars, a cut text ends with `…`.
 fn text_field(s: &str) -> String {
-    let s = clean(s, false);
+    let s = clean(s, false).trim().to_string();
     if s.chars().count() <= MAX_TEXT {
         return s;
     }
@@ -164,5 +170,16 @@ mod tests {
         assert_eq!(m, InspectorMsg::Hello { page: "/".into(), width: 1, height: 10000, missing: vec![] });
         let InspectorMsg::Add { comment, .. } = parse(&add(json!({"comment": "é".repeat(2100)}))).unwrap() else { panic!() };
         assert_eq!(comment.chars().count(), 2000);
+    }
+
+    #[test]
+    fn intake_strips_format_chars_and_trims() {
+        let m = parse(&add(json!({
+            "comment": "a\u{202E}b\u{200B}c", "selector": "  d\u{200F}iv ", "text": " t\u{FEFF}x ", "page": " /p\u{2066} "
+        })))
+        .unwrap();
+        let InspectorMsg::Add { comment, selector, text, page, .. } = m else { panic!() };
+        assert_eq!((comment.as_str(), selector.as_str(), text.as_str(), page.as_str()), ("abc", "div", "tx", "/p"));
+        assert!(parse(&add(json!({"selector": " \u{200B} "}))).is_err());
     }
 }

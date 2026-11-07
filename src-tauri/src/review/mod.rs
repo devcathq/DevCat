@@ -6,6 +6,9 @@ pub mod intake;
 #[allow(unused_imports)]
 pub use intake::InspectorMsg;
 
+/// Most comments one review holds.
+pub const MAX_NOTES: usize = 500;
+
 use serde::{Deserialize, Serialize};
 use crate::error::{AppError, AppResult};
 use parking_lot::Mutex;
@@ -137,13 +140,14 @@ impl ReviewStore {
         r
     }
 
-    /// Applies a message the inspector sent; the secret proves it came from this review's page.
-    pub fn apply(&self, id: &str, secret: &str, msg: InspectorMsg) -> AppResult<ReviewDoc> {
+    /// Parses and applies a raw message the inspector sent (caps and cleaning happen here); the secret proves it came from this review's page.
+    pub fn apply(&self, id: &str, secret: &str, raw: &serde_json::Value) -> AppResult<ReviewDoc> {
         let mut map = self.reviews.lock();
         let r = map.get_mut(id).ok_or_else(no_review)?;
         if !same_secret(&r.secret, secret) {
             return Err(no_review());
         }
+        let msg = intake::parse(raw)?;
         match msg {
             InspectorMsg::Hello { width, height, missing, .. } => {
                 r.doc.width = width;
@@ -151,6 +155,9 @@ impl ReviewStore {
                 r.missing = missing;
             }
             InspectorMsg::Add { page, width, selector, text, source, style, comment } => {
+                if r.doc.notes.len() >= MAX_NOTES {
+                    return Err(AppError::Msg(format!("A review holds at most {MAX_NOTES} comments")));
+                }
                 let n = r.doc.notes.len() as u32 + 1;
                 r.doc.notes.push(ReviewNote { n, page, width, selector, text, source, style, comment });
                 r.saved = false;
@@ -214,11 +221,8 @@ mod store_tests {
     fn url() -> Target {
         Target::Url { origin: "http://localhost:3000".into() }
     }
-    fn add(c: &str) -> InspectorMsg {
-        InspectorMsg::Add {
-            page: "/".into(), width: 800, selector: "div".into(), text: "t".into(),
-            source: None, style: None, comment: c.into(),
-        }
+    fn add(c: &str) -> serde_json::Value {
+        serde_json::json!({"kind":"add","page":"/","width":800,"selector":"div","text":"t","comment":c})
     }
 
     #[test]
@@ -235,9 +239,9 @@ mod store_tests {
     fn apply_needs_secret() {
         let s = ReviewStore::default();
         let r = s.start(url(), "/".into(), None, "w".into());
-        assert!(s.apply(&r.id, "nope", add("x")).is_err());
+        assert!(s.apply(&r.id, "nope", &add("x")).is_err());
         assert!(s.get(&r.id).unwrap().doc.notes.is_empty());
-        assert_eq!(s.apply(&r.id, &r.secret, add("x")).unwrap().notes.len(), 1);
+        assert_eq!(s.apply(&r.id, &r.secret, &add("x")).unwrap().notes.len(), 1);
     }
 
     #[test]
@@ -245,9 +249,9 @@ mod store_tests {
         let s = ReviewStore::default();
         let r = s.start(url(), "/".into(), None, "w".into());
         for c in ["a", "b", "c"] {
-            s.apply(&r.id, &r.secret, add(c)).unwrap();
+            s.apply(&r.id, &r.secret, &add(c)).unwrap();
         }
-        let d = s.apply(&r.id, &r.secret, InspectorMsg::Remove { n: 2 }).unwrap();
+        let d = s.apply(&r.id, &r.secret, &serde_json::json!({"kind":"remove","n":2})).unwrap();
         let v: Vec<(u32, &str)> = d.notes.iter().map(|n| (n.n, n.comment.as_str())).collect();
         assert_eq!(v, vec![(1, "a"), (2, "c")]);
         assert!(s.remove(&r.id, 9).is_err());
@@ -257,10 +261,10 @@ mod store_tests {
     fn hello_updates_size_and_missing_but_not_saved() {
         let s = ReviewStore::default();
         let r = s.start(url(), "/".into(), None, "w".into());
-        let hello = |w, h| InspectorMsg::Hello { page: "/".into(), width: w, height: h, missing: vec![1] };
-        s.apply(&r.id, &r.secret, hello(800, 600)).unwrap();
+        let hello = |w: u32, h: u32| serde_json::json!({"kind":"hello","page":"/","width":w,"height":h,"missing":[1]});
+        s.apply(&r.id, &r.secret, &hello(800, 600)).unwrap();
         s.set_saved(&r.id, "note1".into());
-        let d = s.apply(&r.id, &r.secret, hello(400, 300)).unwrap();
+        let d = s.apply(&r.id, &r.secret, &hello(400, 300)).unwrap();
         assert_eq!((d.width, d.height), (400, 300));
         let g = s.get(&r.id).unwrap();
         assert!(g.saved);
@@ -272,7 +276,7 @@ mod store_tests {
     fn saved_clears_on_change() {
         let s = ReviewStore::default();
         let r = s.start(url(), "/".into(), None, "w".into());
-        s.apply(&r.id, &r.secret, add("a")).unwrap();
+        s.apply(&r.id, &r.secret, &add("a")).unwrap();
         s.set_saved(&r.id, "n".into());
         s.edit(&r.id, 1, "b").unwrap();
         assert!(!s.get(&r.id).unwrap().saved);
@@ -288,5 +292,16 @@ mod store_tests {
         assert!(s.get(&a.id).is_none() && s.get(&b.id).is_some());
         s.close(&b.id);
         assert!(s.get(&b.id).is_none());
+    }
+
+    #[test]
+    fn notes_are_capped() {
+        let s = ReviewStore::default();
+        let r = s.start(url(), "/".into(), None, "w".into());
+        for _ in 0..MAX_NOTES {
+            s.apply(&r.id, &r.secret, &add("x")).unwrap();
+        }
+        assert!(s.apply(&r.id, &r.secret, &add("x")).is_err());
+        assert_eq!(s.get(&r.id).unwrap().doc.notes.len(), MAX_NOTES);
     }
 }
