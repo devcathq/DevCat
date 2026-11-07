@@ -150,10 +150,21 @@ fn refused() -> AppError {
     AppError::Msg("That file can't be shown".into())
 }
 
+/// May `rel` (already percent-decoded, `/`-separated) be asked for at all? Only plain names
+/// (no `..`, no absolute path, no backslash or line break), none hidden or secret-looking.
+/// Checked by name only: where the file really is gets checked where it's read.
+pub fn check_rel(rel: &str) -> bool {
+    !rel.is_empty()
+        && !rel.contains(['\\', '\0', '\n', '\r'])
+        && !rel.starts_with('/')
+        && rel.split('/').all(|c| !c.is_empty() && c != "..")
+        && !hidden_or_secret(Path::new(rel))
+}
+
 /// `rel` (already percent-decoded) inside `root`, refusing anything that leads out of it:
 /// `..`, absolute paths, and symlinks whose target is outside. Only existing files.
 pub fn resolve_file(root: &Path, rel: &str) -> AppResult<PathBuf> {
-    if rel.is_empty() || rel.contains(['\\', '\0']) {
+    if !check_rel(rel) {
         return Err(refused());
     }
     // Windows: `name:stream` is an alternate data stream, `C:` a drive
@@ -161,7 +172,7 @@ pub fn resolve_file(root: &Path, rel: &str) -> AppResult<PathBuf> {
         return Err(refused());
     }
     let rel_path = Path::new(rel);
-    if !rel_path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) || hidden_or_secret(rel_path) {
+    if !rel_path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
         return Err(refused());
     }
     let root = root.canonicalize().map_err(|_| refused())?;
@@ -177,7 +188,14 @@ pub fn resolve_file(root: &Path, rel: &str) -> AppResult<PathBuf> {
 #[derive(Debug, PartialEq)]
 enum Reply {
     File(PathBuf),
+    /// A file on an SSH host: review id, the folder (`ssh://…`) and the checked `rel`.
+    Remote(String, String, String),
     Status(u16),
+}
+
+/// Is this review folder on an SSH host (`ssh://…`)? Such a root is the URI, not a local path.
+pub fn remote_root(root: &Path) -> Option<&str> {
+    root.to_str().filter(|r| r.starts_with(crate::claude::remote::SCHEME))
 }
 
 /// The answer to a request head: the `Host` check first, then the method, then the path.
@@ -203,8 +221,12 @@ fn route(head: &str, port: u16, root_of: impl Fn(&str) -> Option<PathBuf>) -> Re
     let Some(root) = (!id.is_empty()).then(|| root_of(id)).flatten() else {
         return Reply::Status(404);
     };
-    match percent_decode(rel).map(|rel| resolve_file(&root, &rel)) {
-        Some(Ok(file)) => Reply::File(file),
+    let Some(rel) = percent_decode(rel) else { return Reply::Status(404) };
+    if let Some(remote) = remote_root(&root) {
+        return if check_rel(&rel) { Reply::Remote(id.to_string(), remote.to_string(), rel) } else { Reply::Status(404) };
+    }
+    match resolve_file(&root, &rel) {
+        Ok(file) => Reply::File(file),
         _ => Reply::Status(404),
     }
 }
@@ -260,6 +282,12 @@ fn handle(mut stream: TcpStream, port: u16) {
     let reply = route(&head, port, root_of);
     let _ = match reply {
         Reply::File(path) => send_file(&mut stream, &path),
+        Reply::Remote(id, root, rel) => match crate::rt::block_on(super::remote::fetch(&id, &root, &rel)) {
+            Ok(super::remote::Answer::File(bytes)) => send_bytes(&mut stream, content_type(Path::new(&rel)), &bytes),
+            Ok(super::remote::Answer::TooBig) => send_status(&mut stream, 413),
+            Ok(super::remote::Answer::Missing) => send_status(&mut stream, 404),
+            Err(_) => send_status(&mut stream, 502),
+        },
         Reply::Status(code) => send_status(&mut stream, code),
     };
     let _ = stream.flush();
@@ -271,6 +299,8 @@ fn reason(code: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Too Large",
+        502 => "The SSH host didn't send it",
         _ => "Error",
     }
 }
@@ -290,6 +320,11 @@ fn send_status(stream: &mut TcpStream, code: u16) -> std::io::Result<()> {
     let body = reason(code);
     stream.write_all(head(code, "text/plain; charset=utf-8", body.len() as u64).as_bytes())?;
     stream.write_all(body.as_bytes())
+}
+
+fn send_bytes(stream: &mut TcpStream, content_type: &str, bytes: &[u8]) -> std::io::Result<()> {
+    stream.write_all(head(200, content_type, bytes.len() as u64).as_bytes())?;
+    stream.write_all(bytes)
 }
 
 fn send_file(stream: &mut TcpStream, path: &Path) -> std::io::Result<()> {
@@ -402,6 +437,20 @@ mod tests {
         assert_eq!(route(&get("/f/rv-a/index.html?x=1#y", h), 4000, &roots), Reply::File(canon.join("index.html")));
         assert_eq!(route(&get("/f/rv-a/assets/app%2Ecss", h), 4000, &roots), Reply::File(canon.join("assets/app.css")));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn routes_ssh_folders_to_the_host() {
+        let roots = |id: &str| (id == "rv-a").then(|| PathBuf::from("ssh://devcat-x/~/site"));
+        let h = "127.0.0.1:4000";
+        let remote = |rel: &str| Reply::Remote("rv-a".into(), "ssh://devcat-x/~/site".into(), rel.into());
+        assert_eq!(route(&get("/f/rv-a/index.html", h), 4000, roots), remote("index.html"));
+        assert_eq!(route(&get("/f/rv-a/a/my%20page.css?v=1", h), 4000, roots), remote("a/my page.css"));
+        assert_eq!(route(&get("/f/rv-a/index.html", "evil.test"), 4000, roots), Reply::Status(403));
+        for path in ["/f/rv-a/../x", "/f/rv-a/%2e%2e/x", "/f/rv-a/a/%2E%2E/%2E%2E/x", "/f/rv-a/.env", "/f/rv-a/%2Fetc%2Fpasswd",
+            "/f/rv-a/a%0Ab", "/f/rv-a/a//b", "/f/rv-a/id_rsa", "/f/rv-a/a%5Cb"] {
+            assert_eq!(route(&get(path, h), 4000, roots), Reply::Status(404), "{path}");
+        }
     }
 
     #[test]

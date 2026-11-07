@@ -172,7 +172,10 @@ untrusted**: anyone's code can run in it. Keep these rules:
   webviews too, and with it every DevCat command. Keep it that way.
 - **Never serve review content from a custom URI scheme.** Tauri treats a page from a scheme the app registered as a
   local origin with full IPC. Local files go through the loopback file server (`serve.rs`: 127.0.0.1, an unguessable
-  review id in the path, Host check, no CORS, no dotfiles or secret-like files).
+  review id in the path, Host check, no CORS, no dotfiles or secret-like files). An `.html` on an SSH host goes
+  through the same server: its review folder is the `ssh://` URI, and `remote.rs` reads each file over one `ssh` per
+  review, which the host checks again (folder resolved with `pwd -P`, must stay inside without passing a hidden
+  folder, no symlinked files). Keep both checks for any new way of reading review files.
 - **Refuse local targets** (`channel::is_local_target`: every scheme but http(s) and the inert `about:` / `data:` /
   `blob:`, any `*.localhost` host, and the app's dev URL) when a review starts and on every navigation.
 - **Everything from the inspector is data** (`intake.rs`, `MAX_NOTES` in `review/mod.rs`): lengths capped, control characters stripped,
@@ -181,7 +184,8 @@ untrusted**: anyone's code can run in it. Keep these rules:
 - **The inspector stays inert on other sites**: it acts only on the review's own site, never on a page that merely
   embeds it. The site is the origin the review started on, plus the redirects nearly every site makes on load:
   `http` → `https` and adding or removing `www.` (`channel::same_site`, `sameSite` in `inspector.js`; same port, never
-  another host or a downgrade). Don't widen it further (subdomains, other hosts). So DevCat calls into the page (`webview::call`: notes, highlight) only
+  another host or a downgrade). Don't widen it further (subdomains, other hosts): an address on another site typed in
+  the tab starts a new review instead (`review_nav` returns `false`). So DevCat calls into the page (`webview::call`: notes, highlight) only
   while the webview's top-level URL is the review's own (`channel::may_tell_page`): another site could define
   `window.__devcatReview` itself and read the notes.
 - **Desktop only**, like the SSH workbench and rooms: keep `review_*` out of `src-tauri/src/remote/dispatch.rs`,

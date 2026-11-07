@@ -13,8 +13,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 ## Unreleased
 
 - **Review tab**: click elements on a page to comment on them, and save the review as a short note to copy to a
-  developer or an agent. It works with a dev server, a deployed site or a local `.html` file, and **Copy review**
-  puts the note on the clipboard.
+  developer or an agent. It works with a dev server, a deployed site, or an `.html` file on this computer or on an
+  SSH host, and **Copy review** puts the note on the clipboard.
 
 ## 0.22.0 - 2026-11-05
 

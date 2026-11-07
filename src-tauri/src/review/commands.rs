@@ -56,6 +56,21 @@ pub async fn review_start(
         Target::File { rel, .. } => serve::file_server().url(&r.id, rel),
         Target::Url { .. } => start.load_url,
     };
+    // a file on an SSH host: connect now, so a login or a missing file is an error here, not a blank page
+    if let Target::File { root, rel } = &r.doc.target
+        && let Some(remote) = serve::remote_root(root)
+    {
+        let failed = match super::remote::fetch(&r.id, remote, rel).await {
+            Ok(super::remote::Answer::File(_)) => None,
+            Ok(super::remote::Answer::TooBig) => Some(AppError::Msg("That file is too big to review".into())),
+            Ok(super::remote::Answer::Missing) => Some(AppError::Msg("That file isn't there, or can't be shown".into())),
+            Err(e) => Some(e),
+        };
+        if let Some(e) = failed {
+            review_store().close(&r.id);
+            return Err(e);
+        }
+    }
     review_store().set_load_url(&r.id, load);
     Ok(ReviewInfo { id: r.id, title, doc: r.doc })
 }
@@ -113,17 +128,23 @@ pub async fn review_place(
 }
 
 #[tauri::command]
-pub async fn review_nav(app: AppHandle, window: Window, id: String, action: NavAction) -> AppResult<()> {
-    let (_, wv) = page(&app, &window, &id)?;
+/// Back, reload, or go to an address typed in the tab. A typed address on another site isn't
+/// opened here (the review stays on its own site, `channel::same_site`): `false` tells the tab to
+/// start a new review for it.
+pub async fn review_nav(app: AppHandle, window: Window, id: String, action: NavAction) -> AppResult<bool> {
+    let (r, wv) = page(&app, &window, &id)?;
     let err = |e: tauri::Error| AppError::Msg(format!("Couldn't go there: {e}"));
     match action {
-        NavAction::Named(a) if a == "back" => wv.eval("history.back()").map_err(err),
-        NavAction::Named(a) if a == "reload" => wv.reload().map_err(err),
+        NavAction::Named(a) if a == "back" => wv.eval("history.back()").map(|_| true).map_err(err),
+        NavAction::Named(a) if a == "reload" => wv.reload().map(|_| true).map_err(err),
         NavAction::Named(a) => Err(AppError::Msg(format!("Unknown action {a}"))),
         NavAction::Go { url } => {
             let to = url_start(&url, webview::dev_url(&app).as_ref())?.load_url;
             let to = reqwest::Url::parse(&to).map_err(|_| AppError::Msg("Enter a web address (http or https)".into()))?;
-            wv.navigate(to).map_err(err)
+            match &r.doc.target {
+                Target::Url { origin } if channel::same_site(origin, &to) => wv.navigate(to).map(|_| true).map_err(err),
+                _ => Ok(false),
+            }
         }
     }
 }

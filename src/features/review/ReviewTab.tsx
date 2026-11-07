@@ -12,6 +12,7 @@ import type { ReviewChanged, ReviewDoc, ReviewNote, ReviewPage, ReviewRendered }
 import type { Tab } from "../../tabs/types";
 import { setCloseGuard, useTabs } from "../../store/tabs";
 import { useConnections } from "../../store/connections";
+import { displayPath, isRemote } from "../../lib/remotePath";
 import { useFonts } from "../appearance/fonts";
 import { copyText } from "../claude/util";
 import { useContextMenu } from "../connections/ContextMenu";
@@ -19,6 +20,7 @@ import { confirmDialog } from "../connections/dialogs";
 import { useNotes } from "../notes/store";
 import { useOverlayCovers } from "./overlay";
 import { nextPlace, type Place } from "./place";
+import { openReview } from "./store";
 
 type ReviewTabSpec = Extract<Tab, { type: "review" }>;
 
@@ -93,6 +95,13 @@ export default function ReviewTab({ tab }: { tab: ReviewTabSpec }) {
   }, [dirty, tab.id, tab.title]);
 
   const run = useCallback((p: Promise<unknown>) => { p.then(() => setStatus(null), (e) => setStatus(errMsg(e))); }, []);
+  // An address on another site starts a review of its own: in this tab while it has no notes,
+  // else in a new tab, so the notes stay where they are.
+  const goTo = async (cur: State, url: string) => {
+    if (await api.reviewNav(cur.id, { url })) return;
+    openReview({ url });
+    if (cur.doc.notes.length === 0) useTabs.getState().close(tab.id);
+  };
   const toggleInspect = () => {
     if (!st) return;
     const on = !inspect;
@@ -125,7 +134,7 @@ export default function ReviewTab({ tab }: { tab: ReviewTabSpec }) {
       <Toolbar>
         <IconButton title="Back" disabled={!st} onClick={() => st && run(api.reviewNav(st.id, "back"))}><ArrowLeft className="size-3.5" /></IconButton>
         <IconButton title="Reload" disabled={!st} onClick={() => st && run(api.reviewNav(st.id, "reload"))}><RotateCw className="size-3.5" /></IconButton>
-        <UrlField st={st} fallback={tab.url ?? tab.path ?? ""} onGo={(url) => st && run(api.reviewNav(st.id, { url }))} />
+        <UrlField st={st} fallback={tab.url ?? tab.path ?? ""} onGo={(url) => st && run(goTo(st, url))} />
         {status && <span className="max-w-64 truncate text-[11px] text-muted" title={status}>{status}</span>}
         {st && !st.inspectable && st.url && <span className="shrink-0 text-[11px] text-warn">Inspect is off on {hostOf(st.url)}</span>}
         {area.w > 0 && <span className="shrink-0 px-1 font-mono text-[11px] text-faint" title="Size of the page area">{area.w} × {area.h}</span>}
@@ -183,7 +192,9 @@ function filePath(root: string, url: string, rel: string): string {
     const m = new URL(url).pathname.match(/^\/f\/[^/]+\/(.*)$/);
     if (m) page = decodeURIComponent(m[1]);
   } catch { /* not loaded yet */ }
-  return `${root.replace(/[\\/]$/, "")}/${page}`;
+  const path = `${root.replace(/[\\/]$/, "")}/${page}`;
+  // a file on an SSH host: `MacMini: ~/site/index.html`, as the file tree names it
+  return isRemote(root) ? displayPath(path) : path;
 }
 
 /**

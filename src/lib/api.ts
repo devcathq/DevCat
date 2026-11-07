@@ -40,7 +40,7 @@ export const api = {
   /** Logical px of the window; the first call creates the page. Hidden pages stay loaded. */
   reviewPlace: (id: string, x: number, y: number, w: number, h: number, visible: boolean) =>
     invoke<void>("review_place", { id, x, y, w, h, visible }),
-  reviewNav: (id: string, action: "back" | "reload" | { url: string }) => invoke<void>("review_nav", { id, action }),
+  reviewNav: (id: string, action: "back" | "reload" | { url: string }) => invoke<boolean>("review_nav", { id, action }),
   reviewInspect: (id: string, on: boolean) => invoke<void>("review_inspect", { id, on }),
   reviewHighlight: (id: string, n: number | null, scroll: boolean) => invoke<void>("review_highlight", { id, n, scroll }),
   reviewEdit: (id: string, n: number, comment: string) => invoke<ReviewDoc>("review_edit", { id, n, comment }),

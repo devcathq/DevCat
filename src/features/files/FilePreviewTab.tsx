@@ -119,7 +119,7 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
             <IconButton title="File history" onClick={() => openGitRepo(repo, { path: tab.path })}><History className="size-3.5" /></IconButton>
           </>
         )}
-        {!remote && /\.html?$/i.test(tab.path) && (
+        {/\.html?$/i.test(tab.path) && (
           <IconButton title="Review" onClick={() => openReview({ path: tab.path })}>
             <MousePointerClick className="size-3.5" />
           </IconButton>

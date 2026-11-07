@@ -3,6 +3,7 @@
 pub mod channel;
 pub mod format;
 pub mod intake;
+pub mod remote;
 pub mod serve;
 #[cfg(feature = "gui")]
 mod webview;
@@ -238,6 +239,7 @@ impl ReviewStore {
 
     pub fn close(&self, id: &str) {
         self.reviews.lock().remove(id);
+        remote::forget(id);
     }
 
     /// Drops every review of a window; returns the closed ids.
@@ -246,6 +248,7 @@ impl ReviewStore {
         let ids: Vec<String> = map.values().filter(|r| r.window == label).map(|r| r.id.clone()).collect();
         for id in &ids {
             map.remove(id);
+            remote::forget(id);
         }
         ids
     }
@@ -345,8 +348,8 @@ fn is_html(p: &Path) -> bool {
 /// A local `.html` / `.htm` file to review. It's served from the code folder of the DevCat project
 /// that holds it (so `../assets/…` works inside a repo), else from its own folder.
 pub fn file_start(path: &str, projects: &[Project]) -> AppResult<Start> {
-    if path.starts_with("ssh://") {
-        return Err(refuse("Files on SSH hosts can't be reviewed"));
+    if path.starts_with(crate::claude::remote::SCHEME) {
+        return remote_start(path, projects);
     }
     let p = Path::new(path);
     if !p.is_absolute() || !is_html(p) {
@@ -382,6 +385,40 @@ pub fn file_start(path: &str, projects: &[Project]) -> AppResult<Start> {
         // the inspector names pages by their URL path, which is percent-encoded
         first_page: serve::encode_path(&rel),
         target: Target::File { root, rel },
+        title: format!("Review · {name}"),
+        load_url: String::new(),
+    })
+}
+
+/// An `.html` file on an SSH host (`ssh://…`): the same rules as `file_start`, by name (the host
+/// checks where each file really is when it's read, `remote.rs`). Its root is the `ssh://` URI of
+/// the project folder that holds it, else of its own folder.
+fn remote_start(path: &str, projects: &[Project]) -> AppResult<Start> {
+    use crate::claude::remote::Target as SshTarget;
+    let file = SshTarget::parse(path).ok_or_else(|| refuse("That file isn't there"))?;
+    let fpath = file.path.trim_end_matches('/');
+    if !is_html(Path::new(fpath)) {
+        return Err(refuse("Choose an .html file"));
+    }
+    let same_host = |t: &SshTarget| t.dest == file.dest && t.port == file.port;
+    let (parent, _) = fpath.rsplit_once('/').ok_or_else(|| refuse("That file isn't there"))?;
+    let root = projects
+        .iter()
+        .flat_map(|p| p.folders.iter())
+        .filter_map(|f| SshTarget::parse(f))
+        .filter(|t| same_host(t))
+        .map(|t| t.path.trim_end_matches('/').to_string())
+        .filter(|r| fpath.strip_prefix(r.as_str()).is_some_and(|rest| rest.starts_with('/')))
+        .max_by_key(|r| r.len())
+        .unwrap_or_else(|| parent.to_string());
+    let rel = fpath.strip_prefix(root.as_str()).and_then(|r| r.strip_prefix('/')).ok_or_else(|| refuse("That file isn't there"))?;
+    if !serve::check_rel(rel) || rel.split('/').any(|c| c == ".") {
+        return Err(refuse("Files in hidden folders, and files that look like keys or passwords, can't be reviewed"));
+    }
+    let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
+    Ok(Start {
+        first_page: serve::encode_path(rel),
+        target: Target::File { root: PathBuf::from(file.uri(if root.is_empty() { "/" } else { &root })), rel: rel.to_string() },
         title: format!("Review · {name}"),
         load_url: String::new(),
     })
@@ -548,8 +585,33 @@ mod start_tests {
         assert!(file_start(&d.join("loose/notes.txt").to_string_lossy(), &projects).is_err());
         assert!(file_start(&d.join("loose/missing.html").to_string_lossy(), &projects).is_err());
         assert!(file_start("site/index.html", &projects).is_err(), "relative");
-        assert!(file_start("ssh://devcat-x/home/a.html", &projects).is_err());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn start_ssh_file_target_root() {
+        let p = |folders: &[&str]| vec![Project { id: "p".into(), folders: folders.iter().map(|f| f.to_string()).collect(), ..Default::default() }];
+        let projects = p(&["ssh://devcat-x/~/Claude/dnd/", "ssh://devcat-y/~/Claude", "/local/dnd"]);
+        let file = |root: &str, rel: &str| Target::File { root: PathBuf::from(root), rel: rel.into() };
+        let s = file_start("ssh://devcat-x/~/Claude/dnd/book.html", &projects).unwrap();
+        assert_eq!(s.target, file("ssh://devcat-x/~/Claude/dnd", "book.html"));
+        assert_eq!((s.first_page.as_str(), s.title.as_str()), ("book.html", "Review · book.html"));
+        let s = file_start("ssh://devcat-x/~/Claude/dnd/pages/my page.html", &projects).unwrap();
+        assert_eq!(s.target, file("ssh://devcat-x/~/Claude/dnd", "pages/my page.html"));
+        assert_eq!(s.first_page, "pages/my%20page.html");
+        // another host's project, a look-alike folder, or none: the file's own folder
+        let s = file_start("ssh://devcat-z/~/Claude/dnd/book.html", &projects).unwrap();
+        assert_eq!(s.target, file("ssh://devcat-z/~/Claude/dnd", "book.html"));
+        let s = file_start("ssh://devcat-x/~/Claude/dnd2/a.htm", &projects).unwrap();
+        assert_eq!(s.target, file("ssh://devcat-x/~/Claude/dnd2", "a.htm"));
+        let s = file_start("ssh://me@box:2222/srv/a.html", &projects).unwrap();
+        assert_eq!(s.target, file("ssh://me@box:2222/srv", "a.html"));
+        let s = file_start("ssh://box/a.html", &[]).unwrap();
+        assert_eq!(s.target, file("ssh://box/", "a.html"));
+        for bad in ["ssh://devcat-x/~/Claude/dnd/notes.txt", "ssh://devcat-x/~/Claude/dnd/.hidden/a.html",
+            "ssh://devcat-x/~/Claude/dnd/./a.html", "ssh://devcat-x/~/Claude/dnd/x/../a.html", "ssh://devcat-x/~/Claude/dnd/id_rsa.html"] {
+            assert!(file_start(bad, &projects).is_err(), "{bad}");
+        }
     }
 
     #[cfg(unix)]
