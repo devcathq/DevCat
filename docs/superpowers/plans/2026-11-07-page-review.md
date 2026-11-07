@@ -19,7 +19,8 @@ ES2020 JavaScript for the injected inspector.
 
 - No bundled or driven Chromium: no CDP, no headless browser. The page renders in the system webview.
 - The reviewed page must never reach DevCat's IPC or any app command; the page webview gets no capability.
-- Inspector messages need the per-review secret; the secret lives only in the injected script's closure.
+- Inspector messages need the per-review secret, held in the injected script's closure. Accepted risk: a page
+  that patches `fetch` can read it and forge notes in its own review only (the user sees all before Finish).
 - Intake caps: comment ≤ 2,000 chars, selector ≤ 300, text ≤ 40 (with `…`); control characters stripped;
   backticks in values escaped.
 - Nothing is saved to Notes until the user presses Finish and has seen the text.
