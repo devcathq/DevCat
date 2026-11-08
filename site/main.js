@@ -29,7 +29,7 @@ async function wireDownloads() {
   const main = document.getElementById("dl-main");
   main.href = asset.browser_download_url;
   main.textContent = `Download for ${me.name}`;
-  document.getElementById("dl-note").textContent = `DevCat ${rel.tag_name.replace(/^v/, "")}, ${(asset.size / 1048576).toFixed(0)} MB. No account needed.`;
+  document.getElementById("dl-note").textContent = `DevCat ${rel.tag_name.replace(/^v/, "")}, ${(asset.size / 1048576).toFixed(0)} MB.`;
   document.querySelector(`.dl[data-asset="${me.asset}"]`)?.classList.add("mine");
 }
 

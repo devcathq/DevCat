@@ -64,6 +64,8 @@ DevCat learns an agent's state from Claude Code hooks it adds to the terminals i
 [Scheduled DevCat Agent jobs](ai-connections.md#scheduled-jobs) notify you the same way when a run finishes or
 needs your OK.
 
+To answer and send requests from Telegram or Discord instead, see [Agent bots](agent-bots.md).
+
 ## Without the app window
 
 On a server, over SSH, or with the window closed, run [`devcat serve`](devcat-serve.md) instead. Phones pair and
