@@ -1,10 +1,10 @@
 [
   { "title": "Getting started", "pages": ["introduction", "install", "first-steps", "shortcuts"] },
-  { "title": "AI workspace", "pages": ["ai-workspace", "ai-connections", "sync-mcp", "agent-tools", "agent-walkthrough", "memory", "review-and-commit", "files", "ssh-folders"] },
+  { "title": "AI workspace", "pages": ["ai-workspace", "ai-connections", "sync-mcp", "agent-tools", "agent-walkthrough", "ghost-chats", "memory", "review-and-commit", "files", "ssh-folders"] },
   { "title": "Git", "pages": ["git"] },
   { "title": "Databases", "pages": ["connections", "sql-editor", "data-grid", "schema-tools", "mongodb", "redis"] },
   { "title": "Infrastructure", "pages": ["kubernetes", "docker", "rabbitmq", "vpn-tunnels"] },
   { "title": "Working together", "pages": ["rooms", "tickets"] },
-  { "title": "Phone and remote", "pages": ["mobile", "devcat-serve"] },
+  { "title": "Phone and remote", "pages": ["mobile", "agent-bots", "devcat-serve"] },
   { "title": "More", "pages": ["notes", "appearance", "updates-and-more", "troubleshooting"] }
 ]
