@@ -139,6 +139,11 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     const onPress = (e: MouseEvent) => { press.x = e.clientX; press.y = e.clientY; };
     host.current!.addEventListener("mousedown", onPress, true);
     const isClick = (e: MouseEvent) => !term.hasSelection() && Math.abs(e.clientX - press.x) < 4 && Math.abs(e.clientY - press.y) < 4;
+    term.options.linkHandler = {
+      activate(e, uri) {
+        if (isClick(e) && /^https?:\/\//i.test(uri)) void openUrl(uri).catch(() => {});
+      },
+    };
     term.loadAddon(new WebLinksAddon((e, uri) => { if (isClick(e)) void openUrl(uri).catch(() => {}); }));
     loadUnicode(term);
     term.open(host.current!);
@@ -195,11 +200,15 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     hostEl.addEventListener("contextmenu", onMenu, true);
 
     // File paths (src/foo.ts:12) → file preview tab (.html renders there); ⌘/Ctrl+click → the default app.
-    const open = (ev: MouseEvent, path: string) => {
+    const open = async (ev: MouseEvent, path: string) => {
       if (!isClick(ev)) return;
       const abs = resolvePath(cb.current.cwd, path);
       // the default app only for a file on this computer: not an SSH host's, not an unexpanded ~/…
       const local = !isRemote(cb.current.cwd) && !abs.startsWith("~");
+      if (local && !(await fileThere(abs))) {
+        toast.error(`File not found: ${path}`);
+        return;
+      }
       if ((IS_MAC ? ev.metaKey : ev.ctrlKey) && local) void openExternally(abs);
       else openFile(cb.current.cwd, path);
     };
@@ -220,7 +229,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
           taken.push([start, start + text.length]);
           const range = { start: at(start), end: at(start + text.length - 1) };
           if (range.end.y < y || range.start.y > y) continue;
-          out.push({ range, text, decorations: { underline: true, pointerCursor: true }, activate: (ev) => open(ev, path) });
+          out.push({ range, text, decorations: { underline: true, pointerCursor: true }, activate: (ev) => void open(ev, path) });
         }
         // Names with spaces: only on this computer, where it's quick to check the file is there.
         const cwd = cb.current.cwd;
@@ -233,7 +242,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
           names.forEach(({ start, text }, i) => {
             if (!there[i]) return;
             const range = { start: at(start), end: at(start + text.length - 1) };
-            out.push({ range, text, decorations: { underline: true, pointerCursor: true }, activate: (ev) => open(ev, text) });
+            out.push({ range, text, decorations: { underline: true, pointerCursor: true }, activate: (ev) => void open(ev, text) });
           });
           done(out.length ? out : undefined);
         });
