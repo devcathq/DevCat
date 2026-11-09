@@ -190,7 +190,7 @@ function RemoteTab() {
                   {browser && <Button size="sm" variant="ghost" onClick={() => void copy(pair.appLink, "App link")} title="For pasting into the app">Copy app link</Button>}
                   {pair.hostedLink && pair.webLink && <Button size="sm" variant="ghost" onClick={() => void copy(pair.webLink!, "Same-Wi-Fi link")} title="Opens the page served by this computer: faster, but only on the same network">Copy same-Wi-Fi link</Button>}
                   <Button size="sm" onClick={() => void newCode()}><RefreshCw className="size-3" />New code</Button>
-                  <span className="text-[11px] text-faint">Code <span className="font-mono text-muted">{pair.code}</span></span>
+                  <span className="text-[11px] text-faint" title={pair.webLink ? "Phones can also type this code on DevCat's page in their browser (or its Home Screen icon) instead of scanning" : undefined}>Code <span className="font-mono text-muted">{pair.code}</span>{pair.webLink && " · or type it on the phone"}</span>
                 </div>
               )}
               {pair && browser && !pair.hostedLink && status.addrs.length > 1 && (

@@ -24,6 +24,7 @@ mod gitx;
 mod history;
 mod infra;
 mod instance;
+mod serve_bg;
 mod integrations;
 mod keep_awake;
 mod mcp_audit;

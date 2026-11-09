@@ -12,11 +12,31 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+// What serve prints also goes to terminals attached with `devcat attach` (serve_bg.rs).
+macro_rules! println {
+    () => { $crate::serve_bg::say("\n") };
+    ($($t:tt)*) => { $crate::serve_bg::say(&format!("{}\n", format_args!($($t)*))) };
+}
+macro_rules! print {
+    ($($t:tt)*) => { $crate::serve_bg::say(&format!($($t)*)) };
+}
+/// Pairing codes: on the terminal and attached ones, never in the background service's log.
+macro_rules! private_println {
+    () => { $crate::serve_bg::say_private("\n") };
+    ($($t:tt)*) => { $crate::serve_bg::say_private(&format!("{}\n", format_args!($($t)*))) };
+}
+
 const HELP: &str = "\
 DevCat without a window: phones and browsers pair with this computer from the terminal.
 
 Usage:
-  devcat serve [options]   Share this computer with DevCat Mobile / the browser version
+  devcat serve [options]   Share this computer with DevCat Mobile / the browser version (if
+                           one is running already, e.g. the service: show that one here)
+  devcat service install [serve options]
+                           Keep `devcat serve` running in the background: starts at login and
+                           again if it crashes (`devcat service` for more)
+  devcat attach            Show the DevCat running in the background here (what `devcat serve`
+                           does when one is running); `detach` or Ctrl+C leave it running
   devcat stop [options]    Stop a DevCat that's using the port (e.g. a `devcat serve` left
                            running in the background or from before an update)
   devcat keeper [options]  Keep rooms' changes for members who are offline (a blind keeper:
@@ -42,7 +62,10 @@ Only for this run:
                            Who answers pairing requests: you in this terminal (ask, the
                            default) or nobody (every phone with a valid pairing code is
                            allowed with that access). Without a terminal it must be set.
-  --replace                Another DevCat is using the port: stop it without asking
+  --background             Run without a terminal, answering pairing requests from
+                           `devcat attach` (what `devcat service install` runs)
+  --replace                Another DevCat is using the port: stop it without asking (and
+                           don't just show the one already running)
   --data-dir <dir>         DevCat's data folder (default: the app's)
 
 Options for stop: --port <n>, --data-dir <dir>, --force (kill it if it won't stop)
@@ -51,7 +74,7 @@ Options for keeper: --port <n> (UDP, default any), --relay <public|off|url> (def
   --owner <id> (only keep rooms of this owner; repeat for several), --data-dir <dir>
 
 While it runs, type a command and press Enter:
-  pair (or just Enter)     A new pairing QR code
+  pair (or just Enter)     A new pairing code and QR code
   status                   Addresses, relay and connected phones
   devices                  Paired phones (numbered)
   access <n> full|readonly Change a phone's access
@@ -76,6 +99,20 @@ pub fn main(args: &[String]) -> Option<i32> {
         "stop" => {
             attach_console();
             stop_main(&args[1..])
+        }
+        "service" => {
+            attach_console();
+            match data_dir_arg(&args[1..]) {
+                Some(dir) => crate::serve_bg::service_main(&args[1..], &dir),
+                None => 1,
+            }
+        }
+        "attach" => {
+            attach_console();
+            match data_dir_arg(&args[1..]) {
+                Some(dir) => crate::serve_bg::attach_main(&dir),
+                None => 1,
+            }
         }
         // no console attached: stdin / stdout are the agent's pipes
         "mcp" => crate::mcp_server::main(&args[1..]),
@@ -130,6 +167,26 @@ struct Opts {
     tailscale: bool,
     replace: bool,
     force: bool,
+    background: bool,
+}
+
+/// `--data-dir <dir>` among `args`, or the app's.
+fn data_dir_arg(args: &[String]) -> Option<PathBuf> {
+    let given = args.iter().enumerate().find_map(|(i, a)| match a.strip_prefix("--data-dir=") {
+        Some(v) => Some(PathBuf::from(v)),
+        None if a == "--data-dir" => args.get(i + 1).map(PathBuf::from),
+        None => None,
+    });
+    let dir = given.or_else(default_data_dir);
+    if dir.is_none() {
+        eprintln!("Can't find a data folder: pass --data-dir");
+    }
+    dir
+}
+
+/// `devcat serve`'s options are valid (checked before installing them as a service).
+pub(crate) fn check_serve_args(args: &[String]) -> Result<(), String> {
+    parse(args).map(|_| ()).map_err(|e| if e.is_empty() { "--help isn't a serve option here".into() } else { e })
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
@@ -151,6 +208,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--tailscale" => o.tailscale = true,
             "--replace" => o.replace = true,
             "--force" => o.force = true,
+            "--background" => o.background = true,
             "--approve" => {
                 let v = value()?;
                 if !["ask", "full", "readonly"].contains(&v.as_str()) {
@@ -207,16 +265,27 @@ fn serve_main(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let interactive = std::io::stdin().is_terminal();
+    // In the background stdin isn't ours (the service's /dev/null); requests are answered from
+    // `devcat attach` instead.
+    let interactive = !o.background && std::io::stdin().is_terminal();
+    crate::serve_bg::set_background(o.background);
     let approve = o.approve.clone().unwrap_or_else(|| "ask".into());
-    if approve == "ask" && !interactive {
-        eprintln!("There's no terminal to approve phones in: start with --approve full or --approve readonly\n(a phone still needs the current pairing code).");
+    if approve == "ask" && !interactive && !o.background {
+        eprintln!("There's no terminal to approve phones in: start with --approve full or --approve readonly\n(a phone still needs the current pairing code), or --background to answer from `devcat attach`.");
         return 2;
     }
     let Some(dir) = o.data_dir.clone().or_else(default_data_dir) else {
         eprintln!("Can't find a data folder: pass --data-dir");
         return 1;
     };
+    // One is running already (the background service, or `devcat serve` in another terminal):
+    // show it here rather than stopping it to start a second (`--replace` does that).
+    if interactive && !o.replace {
+        let changes = o.port.is_some() || o.name.is_some() || o.relay.is_some() || o.public_addr.is_some() || o.web.is_some() || o.tailscale || o.approve.is_some();
+        if let Some(code) = crate::serve_bg::try_attach_noting(&dir, changes) {
+            return code;
+        }
+    }
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("Can't create {}: {e}", dir.display());
         return 1;
@@ -225,6 +294,7 @@ fn serve_main(args: &[String]) -> i32 {
     crate::init_backend(dir.clone());
     let code = crate::rt::block_on(serve(o, approve, interactive, dir.clone()));
     println!("Stopping…");
+    crate::serve_bg::close(&dir);
     crate::shutdown_backend();
     crate::instance::note_stopped(&dir);
     code
@@ -315,6 +385,8 @@ async fn take_over(o: &Opts, dir: &std::path::Path, interactive: bool, err: AppE
 enum Input {
     Line(String),
     Closed,
+    /// A terminal attached with `devcat attach`.
+    Attached,
 }
 
 async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32 {
@@ -368,6 +440,16 @@ async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32
         }
     });
     let (in_tx, mut in_rx) = mpsc::unbounded_channel::<Input>();
+    {
+        let (lines, hello) = (in_tx.clone(), in_tx.clone());
+        let listening = crate::serve_bg::listen(&dir, move |l| { let _ = lines.send(Input::Line(l)); }, move || { let _ = hello.send(Input::Attached); });
+        match listening {
+            Ok(()) => {}
+            Err(e) if o.background => println!("  `devcat attach` won't work: {e}"),
+            Err(_) => {}
+        }
+    }
+    let background = o.background;
     if interactive {
         std::thread::spawn(move || {
             for line in std::io::stdin().lock().lines() {
@@ -384,7 +466,11 @@ async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32
         });
     }
 
-    show_pairing(interactive).await;
+    if background {
+        println!("Running in the background: `devcat serve` in a terminal shows it (pairing codes, approving phones).");
+    } else {
+        show_pairing(interactive).await;
+    }
     if interactive {
         println!("Type `help` for commands.");
     }
@@ -424,8 +510,9 @@ async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32
                     println!("○ {c} disconnected");
                 }
                 clients = now;
-                // Requests answered elsewhere or timed out.
-                let pending: Vec<String> = payload.get("pending").and_then(Value::as_array).map(|a| a.iter().filter_map(|p| p.get("requestId").and_then(Value::as_str).map(String::from)).collect()).unwrap_or_default();
+                // Requests answered elsewhere or timed out. Read the list now, not the event's: an
+                // event sent before a request came in may be handled after it, and would drop it.
+                let pending: Vec<String> = crate::remote::status_now().map(|s| s.pending.into_iter().map(|p| p.request_id).collect()).unwrap_or_default();
                 if let Some(first) = asking.first().cloned() {
                     asking.retain(|r| pending.contains(&r.request_id));
                     if asking.first().map(|r| &r.request_id) != Some(&first.request_id) {
@@ -445,7 +532,10 @@ async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32
                 let live = crate::remote::status_now().ok().and_then(|s| s.pairing_expires).is_some();
                 if !live && !code_out && asking.is_empty() {
                     code_out = true;
-                    if interactive {
+                    if background {
+                        // Nobody may be looking: a new code only when someone asks (Enter in `devcat attach`).
+                        crate::serve_bg::clients_only(|| println!("The pairing code is used up or expired. Press Enter for a new one."));
+                    } else if interactive {
                         println!("The pairing code is used up or expired. Press Enter for a new one.");
                     } else {
                         show_pairing(false).await;
@@ -459,6 +549,17 @@ async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32
             Some(input) = in_rx.recv() => {
                 let line = match input {
                     Input::Line(l) => l,
+                    Input::Attached => {
+                        crate::serve_bg::clients_only(|| {
+                            println!("DevCat {} (data: {})", env!("DEVCAT_VERSION"), dir.display());
+                            print_status();
+                            match asking.first() {
+                                Some(r) => ask(r),
+                                None => println!("Press Enter for a pairing code, `help` for commands."),
+                            }
+                        });
+                        continue;
+                    }
                     // stdin closed (e.g. `devcat serve < /dev/null &`): keep serving, Ctrl+C / kill stops.
                     Input::Closed => continue,
                 };
@@ -548,8 +649,23 @@ fn print_status() {
     if s.clients.is_empty() {
         println!("  Connected: nobody");
     } else {
-        println!("  Connected: {}", s.clients.iter().map(|c| format!("{} ({})", c.name, access_word(&c.access))).collect::<Vec<_>>().join(", "));
+        println!(
+            "  Connected: {}",
+            s.clients.iter().map(|c| format!("{} ({}{})", c.name, access_word(&c.access), c.path.as_ref().map(|p| format!(", {}", path_label(p))).unwrap_or_default())).collect::<Vec<_>>().join(", ")
+        );
     }
+}
+
+/// "direct · 35 ms" or "through relay aps1-1 · 140 ms" (the app's `pathLabel`).
+fn path_label(p: &devcat_remote_proto::ConnPath) -> String {
+    let at = if p.direct {
+        "direct".to_string()
+    } else {
+        let relay = p.relay.as_deref().unwrap_or("");
+        let short = relay.trim_start_matches("https://").trim_start_matches("http://").split('.').next().unwrap_or("");
+        format!("through relay {short}").trim_end().to_string()
+    };
+    format!("{at} · {} ms", p.rtt_ms)
 }
 
 /// A new pairing code: QR + links (only the links when there's no terminal to draw in).
@@ -557,33 +673,38 @@ async fn show_pairing(qr: bool) {
     let p = match crate::remote::remote_pair_start(None).await {
         Ok(p) => p,
         Err(e) => {
-            println!("Couldn't make a pairing code: {e}");
+            private_println!("Couldn't make a pairing code: {e}");
             return;
         }
     };
+    let qr = qr || crate::serve_bg::attached();
     let mins = ((p.expires_at - chrono::Utc::now().timestamp_millis() + 59_999) / 60_000).max(1);
-    println!();
+    private_println!();
     if qr {
         match qr_text(&p.link) {
-            Some(q) => print!("{q}"),
-            None => println!("(The link is too long for a QR code here.)"),
+            Some(q) => crate::serve_bg::say_private(&q),
+            None => private_println!("(The link is too long for a QR code here.)"),
         }
-        println!("Scan with the phone's camera (or DevCat Mobile → Add computer). Valid for {mins} min.");
+        private_println!("Scan with the phone's camera (or DevCat Mobile → Scan QR code; + on Computers to add another). Valid for {mins} min.");
     } else {
-        println!("New pairing code (valid {mins} min):");
+        private_println!("New pairing code (valid {mins} min):");
     }
-    println!("  Code:     {}", p.code);
+    private_println!("  Code:     {}", p.code);
+    // The page the computer serves pairs with just the code (no photo of the QR needed).
+    if let Some(page) = p.web_link.as_deref().and_then(|w| w.split('#').next()) {
+        private_println!("  Or open {page} on the phone (or its Home Screen icon) and type the code");
+    }
     let tailnet = crate::remote::preferred_addr().is_some();
     if let (true, Some(w)) = (tailnet, &p.web_link) {
-        println!("  Browser (Tailscale): {w}");
+        private_println!("  Browser (Tailscale): {w}");
     }
     if let Some(h) = &p.hosted_link {
-        println!("  Browser (any network): {h}");
+        private_println!("  Browser (any network): {h}");
     }
     if let (false, Some(w)) = (tailnet, &p.web_link) {
-        println!("  Browser (same network): {w}");
+        private_println!("  Browser (same network): {w}");
     }
-    println!("  DevCat Mobile: {}", p.app_link);
+    private_println!("  DevCat Mobile (Paste pairing link): {}", p.app_link);
     let _ = std::io::stdout().flush();
 }
 
@@ -697,10 +818,14 @@ async fn list_devices() {
     if devices.is_empty() {
         println!("No paired phones yet");
     }
-    let online: Vec<String> = crate::remote::status_now().map(|s| s.clients.into_iter().map(|c| c.device_id).collect()).unwrap_or_default();
+    let online = crate::remote::status_now().map(|s| s.clients).unwrap_or_default();
     for (i, d) in devices.iter().enumerate() {
-        let seen = if online.contains(&d.id) {
-            "connected".to_string()
+        let here: Vec<_> = online.iter().filter(|c| c.device_id == d.id).collect();
+        let seen = if !here.is_empty() {
+            match here.iter().find_map(|c| c.path.as_ref()) {
+                Some(p) => format!("connected, {}", path_label(p)),
+                None => "connected".to_string(),
+            }
         } else {
             d.last_seen.and_then(chrono::DateTime::from_timestamp_millis).map(|t| format!("last seen {}", t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"))).unwrap_or_else(|| "never connected".into())
         };
