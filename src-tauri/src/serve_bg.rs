@@ -142,10 +142,27 @@ pub fn listen(dir: &Path, line: impl Fn(String) + Send + Sync + 'static, attache
 #[cfg(unix)]
 fn same_user(s: &std::os::unix::net::UnixStream) -> bool {
     use std::os::fd::AsRawFd;
-    let (mut uid, mut gid) = (0, 0);
-    // SAFETY: getpeereid on a connected Unix socket we own, writing two plain integers.
-    let ok = unsafe { libc::getpeereid(s.as_raw_fd(), &mut uid, &mut gid) } == 0;
-    ok && uid == unsafe { libc::geteuid() }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let uid = {
+        let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: SO_PEERCRED on a connected Unix socket we own, into a ucred of the given size.
+        let r = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&raw mut cred).cast(), &mut len) };
+        if r != 0 {
+            return false;
+        }
+        cred.uid
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let uid = {
+        let (mut uid, mut gid) = (0, 0);
+        // SAFETY: getpeereid on a connected Unix socket we own, writing two plain integers.
+        if unsafe { libc::getpeereid(s.as_raw_fd(), &mut uid, &mut gid) } != 0 {
+            return false;
+        }
+        uid
+    };
+    uid == unsafe { libc::geteuid() }
 }
 
 #[cfg(not(unix))]
