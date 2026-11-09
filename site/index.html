@@ -7,7 +7,7 @@
   <meta name="description" content="DevCat is a free desktop app for coding with AI agents: run Claude Code, Codex, Gemini or the built-in DevCat Agent, review what they changed, and work with your databases, Kubernetes clusters and VPNs in the same window. Build with your team in Rooms, and keep your agents going from your phone or Telegram and Discord.">
   <meta name="theme-color" content="#0f1114">
   <meta property="og:title" content="DevCat">
-  <meta property="og:description" content="Your agents, repos, databases and clusters. One window. Free for macOS, Windows and Linux.">
+  <meta property="og:description" content="Your agents, repos, databases and clusters. One window. No account. No server. Your machine, your keys, your agents.">
   <meta property="og:image" content="img/ai.png">
   <link rel="icon" href="img/icon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
@@ -18,6 +18,7 @@
   <a class="brand" href="./"><img src="img/icon.svg" width="28" height="28" alt="">DevCat</a>
   <nav aria-label="Main">
     <a href="#tour">Tour</a>
+    <a href="#tokens">Tokens</a>
     <a href="docs/">Docs</a>
     <a href="#install">Install</a>
     <a href="https://github.com/devcathq/DevCat">GitHub</a>
@@ -27,12 +28,13 @@
 <main>
   <section class="hero wrap">
     <h1>Your agents, repos, databases and clusters. One window.</h1>
+    <p class="tagline">No account. No server. Your machine, your keys, your agents.</p>
     <p class="lede">Run Claude Code, Codex, Gemini or the built-in DevCat Agent next to the diff, the commit graph, your SQL editor and your Kubernetes pods. Build with your team in Rooms, give every agent one memory, and keep them going from your phone or a chat app. A free download for macOS, Windows and Linux.</p>
     <div class="cta">
       <a class="btn primary" id="dl-main" href="https://github.com/devcathq/DevCat/releases/latest">Download DevCat</a>
       <a class="btn" href="#install">Other platforms and the CLI</a>
     </div>
-    <p class="fine" id="dl-note">Latest release on GitHub. No account needed.</p>
+    <p class="fine" id="dl-note">Latest release on GitHub.</p>
   </section>
 
   <!-- A live mock of the app, not a screenshot: the agent works, the diff appears, it gets committed. -->
@@ -80,6 +82,29 @@
       </div>
     </div>
   </div>
+
+  <section class="tokens wrap" id="tokens">
+    <h2>Pay for each token once</h2>
+    <p class="sub">An agent sends the whole conversation to the model again at every step. The DevCat Agent is built so the model provider can answer most of it from its prompt cache, which is billed at a fraction of the price.</p>
+    <div class="points">
+      <div>
+        <h3>The same prompt every step</h3>
+        <p>The system prompt and the tool list stay the same for the whole chat. Only the new tool results go in as fresh input.</p>
+      </div>
+      <div>
+        <h3>Uses each provider's cache</h3>
+        <p>A rolling cache point on Anthropic, a per-chat cache key on OpenAI, and cache hits counted for DeepSeek, GLM and Kimi too.</p>
+      </div>
+      <div>
+        <h3>You see what you paid</h3>
+        <p>The chat shows how much of its input came from the cache and estimates the cost at the cached price. Trace shows the tokens of every step.</p>
+      </div>
+      <div>
+        <h3>A context that stays small</h3>
+        <p>Long chats are summarized, long tool output is read in parts, and research helpers work in a fresh context of their own.</p>
+      </div>
+    </div>
+  </section>
 
   <section class="tour wrap" id="tour">
     <h2>What's in the window</h2>

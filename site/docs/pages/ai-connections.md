@@ -75,6 +75,21 @@ that tool until the chat closes.
   tokens, each tool call with its input, output and time, who approved it, hook messages and summaries. A bar
   shows where each step falls in its turn. Click a helper's call to see its own run. **Log** opens the session file.
 
+### Prompt cache
+
+At every step the agent sends the whole conversation to the model again. DevCat keeps that cheap by letting the
+provider answer most of it from its prompt cache, which costs a fraction of fresh input:
+
+- The system prompt and the tool list stay the same for the whole chat (they only change when the rule files they
+  read change), so the cached part stays valid from one step to the next.
+- With Anthropic, the system prompt and the newest message are marked for caching: each step reads the conversation
+  so far from the cache, and only the new tool results are fresh input.
+- With OpenAI (Chat Completions and the Responses API), each chat sends its own cache key, so its requests go to the
+  same cache.
+- Cache hits are counted for OpenAI, Anthropic, DeepSeek, Z.ai GLM and Kimi. The chat shows **N% cached** next to
+  the token meter, and **≈ $** counts cached tokens at the model's cached price. Trace shows the cached share of
+  every step.
+
 ### Sandbox
 
 **Sandbox** (next to the permission mode under the chat box) runs the agent's commands (`shell`, `git`) in the

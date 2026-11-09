@@ -68,6 +68,7 @@ code { font-family: var(--mono); font-size: .88em; }
 .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .btn.primary:hover { background: #ffb53d; }
 .fine { color: var(--muted); font-size: 14px; margin: 14px 0 0; }
+.tagline { font: 600 17px/1.4 var(--mono); color: var(--accent); letter-spacing: -.01em; margin: 20px 0 0; }
 
 /* ---- the live app mock ---- */
 .stage { margin-bottom: 120px; }
@@ -155,6 +156,13 @@ h3 { font: 700 22px/1.25 var(--sans); letter-spacing: -.01em; margin: 0 0 14px; 
 .sub { color: var(--muted); max-width: 62ch; margin: 16px 0 0; }
 .sub a { color: var(--fg); }
 
+/* ---- tokens ---- */
+.tokens { margin-bottom: 140px; }
+.points { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 40px; }
+.points > div { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 22px; }
+.points h3 { font-size: 18px; margin-bottom: 8px; }
+.points p { color: var(--muted); margin: 0; font-size: 15px; }
+
 /* ---- tour: CSS-only tabs (radio buttons), so it works without JavaScript ---- */
 .tour { margin-bottom: 140px; }
 .tabset { margin-top: 40px; }
@@ -224,5 +232,5 @@ h3 { font: 700 22px/1.25 var(--sans); letter-spacing: -.01em; margin: 0 0 14px; 
   .tablist label { white-space: nowrap; }
   .nav nav { gap: 18px; }
   .hero { padding-top: 40px; }
-  .stage, .tour, .install { margin-bottom: 80px; }
+  .stage, .tokens, .tour, .install { margin-bottom: 80px; }
 }
