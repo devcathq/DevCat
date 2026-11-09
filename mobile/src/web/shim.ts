@@ -3,6 +3,7 @@
 // WebHost (talks to the DevCat that served the page) or, in the hosted version, RelayHost
 // (through the computer's relay); camera and notifications are stubs (the QR code is scanned
 // with the phone's camera app, notifications come through ntfy).
+import { CODE_LINK } from "../lib/env";
 import { WebHost, carryPairing, deviceName, platform, saved as webSaved, setDeviceName } from "./client";
 import type { RelayHost, RelaySaved } from "./relay";
 
@@ -58,7 +59,15 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       case "m_info": return { deviceId: saved()?.deviceId ?? "", deviceName: deviceName(), platform: platform(), version: "web", online: host.online() && saved() ? [saved()!.hostId] : [] };
       case "m_set_name": setDeviceName(String(args.name ?? "").trim() || deviceName()); return null;
       case "m_machines": { const m = machine(); return m ? [m] : []; }
-      case "m_pair": await host.pair(String(args.link)); return machine();
+      case "m_pair": {
+        const link = String(args.link);
+        // "code:<code>": typed on the page the computer served (the hosted page has no computer to ask)
+        if (link.startsWith(CODE_LINK)) {
+          if (HOSTED) throw "Pairing by code works on the page served by the computer. Scan the QR code here instead.";
+          await (host as WebHost).pairCode(link.slice(CODE_LINK.length));
+        } else await host.pair(link);
+        return machine();
+      }
       case "m_connect": return host.connect();
       case "m_call": return host.call(String(args.cmd), args.args ?? null);
       case "m_disconnect": host.close(); return null;

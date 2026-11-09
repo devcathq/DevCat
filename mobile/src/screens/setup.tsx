@@ -1,11 +1,12 @@
 // First launch and pairing: welcome guide, QR scan, paste link, approval wait, computer list.
 import { Clipboard, Laptop, Monitor, Plus, QrCode, Smartphone } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { IS_HOSTED, IS_WEB, isPairLink } from "../lib/env";
+import { CAN_PAIR_BY_CODE, CODE_LINK, IS_HOSTED, IS_WEB, isPairLink } from "../lib/env";
 import { readQr } from "../lib/qr";
 import { errMsg, onPair, phone } from "../lib/rpc";
 import { loadMachines, nav, selectMachine, toast, useApp } from "../lib/store";
 import { appLink, parseLink } from "../web/client";
+import { normalizeCode } from "../web/crypto";
 import { Badge, Btn, Card, ErrorBox, Field, Input, Note, Screen, Spinner, TextArea, ago } from "../ui";
 
 const isPhone = () => /android|iphone|ipad/i.test(navigator.userAgent);
@@ -21,7 +22,33 @@ function StepRow({ n, title, meta }: { n: number; title: string; meta: string })
 
 /** Browser: pair from a photo of the QR code, right in this browser (no hand-over from the
  *  camera app's in-app browser, which doesn't keep the pairing). */
-function WebScan() {
+/** Browser version served by the computer: pair by typing the code it shows (no photo needed). */
+function CodeEntry() {
+  const [code, setCode] = useState("");
+  const ok = normalizeCode(code).length >= 6;
+  const go = () => { if (ok) nav.push({ s: "pairing", link: CODE_LINK + normalizeCode(code) }); };
+  return (
+    <form className="flex flex-col gap-2" onSubmit={(e) => { e.preventDefault(); go(); }}>
+      <Field label="Pairing code">
+        <Input
+          className="text-center font-mono text-[20px] tracking-[0.2em] uppercase"
+          placeholder="A1B2C3D4E5"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          autoCapitalize="characters"
+          autoComplete="one-time-code"
+          autoCorrect="off"
+          spellCheck={false}
+          inputMode="text"
+          maxLength={20}
+        />
+      </Field>
+      <Btn type="submit" variant="primary" block disabled={!ok}>Pair</Btn>
+    </form>
+  );
+}
+
+function WebScan({ secondary }: { secondary?: boolean }) {
   const picker = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const scan = async (file: File | undefined) => {
@@ -43,23 +70,32 @@ function WebScan() {
   return (
     <>
       <input ref={picker} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; void scan(f); }} />
-      <Btn variant="primary" block disabled={busy} onClick={() => picker.current?.click()}>{busy ? <Spinner /> : <QrCode className="size-5" />}Scan QR code</Btn>
+      <Btn variant={secondary ? undefined : "primary"} block disabled={busy} onClick={() => picker.current?.click()}>{busy ? <Spinner /> : <QrCode className="size-5" />}{secondary ? "Or take a photo of the QR code" : "Scan QR code"}</Btn>
     </>
   );
 }
 
+/** Opened from a Home Screen icon (its own storage, apart from Safari's). */
+const standalone = () => matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
+
 export function Welcome() {
   return (
-    <div className="flex h-full flex-col gap-3 px-5" style={{ paddingTop: "max(36px, env(safe-area-inset-top))", paddingBottom: "max(20px, env(safe-area-inset-bottom))" }}>
+    <div className="flex h-full flex-col gap-3 overflow-y-auto overscroll-contain px-5" style={{ paddingTop: "max(36px, env(safe-area-inset-top))", paddingBottom: "max(20px, env(safe-area-inset-bottom))" }}>
       <img src={`${import.meta.env.BASE_URL}icon.png`} alt="" className="size-14 rounded-2xl" />
       <div className="text-[24px] font-bold">DevCat Mobile</div>
       <div className="text-muted">Watch your AI agents and reach your databases, Redis, VPNs and clusters through DevCat on your computer.</div>
       <div className="pt-2 text-[10.5px] font-semibold tracking-wider text-faint uppercase">Set up in 3 steps</div>
       <StepRow n={1} title="Open DevCat on your computer" meta="Title bar → 📱 Mobile → turn on" />
       <StepRow n={2} title="Any network: Wi-Fi or mobile data" meta="through a relay (the default); with relays off, the same Wi-Fi" />
-      <StepRow n={3} title={IS_WEB ? "Scan the QR code with your camera" : "Scan the QR code it shows"} meta={IS_WEB ? "it opens this page, ready to pair" : "then click Allow on the computer"} />
+      <StepRow n={3} title={CAN_PAIR_BY_CODE ? "Type the pairing code it shows" : IS_WEB ? "Scan the QR code with your camera" : "Scan the QR code it shows"} meta={CAN_PAIR_BY_CODE ? "or scan its QR code with your camera" : IS_WEB ? "it opens this page, ready to pair" : "then click Allow on the computer"} />
       <div className="flex-1" />
-      {IS_WEB ? (
+      {CAN_PAIR_BY_CODE ? (
+        <>
+          <Note>This {standalone() ? "Home Screen app" : "browser"} isn't paired yet. Type the code DevCat shows on the computer (DevCat → 📱 Mobile, or <b>devcat serve</b> in a terminal: press Enter for a new one). Once paired it stays paired.</Note>
+          <CodeEntry />
+          <WebScan secondary />
+        </>
+      ) : IS_WEB ? (
         <>
           <Note>This browser isn't paired yet. On the computer click <b>Show pairing code</b>, then take a photo of the QR code here.</Note>
           <WebScan />
@@ -148,6 +184,7 @@ export function Pairing({ link, addr }: { link: string; addr?: string | null }) 
   const hostAddr = (() => {
     try {
       if (addr) return addr;
+      if (link.startsWith(CODE_LINK)) return location.host;
       if (/^https?:\/\//.test(link)) return new URL(link).host;
       return decodeURIComponent(/[?&]addr=([^&]*)/.exec(link)?.[1] ?? "");
     } catch { return ""; }
@@ -197,7 +234,7 @@ export function Pairing({ link, addr }: { link: string; addr?: string | null }) 
         <Btn variant="primary" block onClick={() => void go()}>{stage === "error" ? "Try again" : "Connect"}</Btn>
       ) : null}
       <Btn block onClick={() => nav.back()}>Cancel</Btn>
-      {stage === "error" && <Note>Codes work once and expire after 5 minutes. If it keeps failing, click <b>New code</b> on the computer and scan again, or see <button className="font-semibold text-accent" onClick={() => nav.push({ s: "help" })}>Help</button>.</Note>}
+      {stage === "error" && <Note>Codes work once and expire after 5 minutes{link.startsWith(CODE_LINK) ? "; five wrong tries cancel one" : ""}. If it keeps failing, show a new code on the computer (<b>New code</b>, or Enter in devcat serve) and {link.startsWith(CODE_LINK) ? "type it again" : "scan again"}, or see <button className="font-semibold text-accent" onClick={() => nav.push({ s: "help" })}>Help</button>.</Note>}
     </Screen>
   );
 }
@@ -260,7 +297,7 @@ export function WebLanding({ link }: { link: string }) {
     location.href = appLink(info);
   };
   return (
-    <div className="flex h-full flex-col gap-3 px-5" style={{ paddingTop: "max(36px, env(safe-area-inset-top))", paddingBottom: "max(20px, env(safe-area-inset-bottom))" }}>
+    <div className="flex h-full flex-col gap-3 overflow-y-auto overscroll-contain px-5" style={{ paddingTop: "max(36px, env(safe-area-inset-top))", paddingBottom: "max(20px, env(safe-area-inset-bottom))" }}>
       <img src={`${import.meta.env.BASE_URL}icon.png`} alt="" className="size-14 rounded-2xl" />
       <div className="text-[24px] font-bold">Pair with {info.name}</div>
       <div className="text-muted">Control DevCat on this computer from your phone: agents, databases, Redis, VPNs and clusters.</div>

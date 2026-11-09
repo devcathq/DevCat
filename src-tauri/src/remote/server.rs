@@ -344,6 +344,11 @@ impl Host {
         self.pairing.lock().as_ref().filter(|p| p.expires > Instant::now()).map(|p| p.web_secret)
     }
 
+    /// The code of the pairing in progress, if any (a browser pairing with a typed code).
+    pub(crate) fn pairing_code(&self) -> Option<String> {
+        self.pairing.lock().as_ref().filter(|p| p.expires > Instant::now()).map(|p| p.code.clone())
+    }
+
     /// A browser proved it has the secret: the pairing is used up.
     pub(crate) fn consume_pairing(&self) {
         *self.pairing.lock() = None;

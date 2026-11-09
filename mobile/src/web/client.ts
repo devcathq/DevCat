@@ -1,7 +1,7 @@
 // Browser connection to the DevCat that served this page: an encrypted WebSocket session
 // (crates/remote-proto/src/web.rs). The pairing secret comes from the QR link's fragment, which
 // browsers never send over the network; afterwards a device secret kept in this browser.
-import { b64url, b64urlDecode, browserKeys, randomBytes, type Half, type Mode } from "./crypto";
+import { b64url, b64urlDecode, browserKeys, codeKey, normalizeCode, randomBytes, type Half, type Mode } from "./crypto";
 
 export interface Saved {
   hostId: string;
@@ -214,14 +214,16 @@ export class WebHost {
     return !!this.conn && !this.conn.closed && !!this.conn.onSession;
   }
 
-  /** Open + challenge + encrypted hello. Resolves with the first session message. */
-  private async handshake(mode: Mode, secret: Uint8Array, deviceId: string | null): Promise<{ conn: Conn; first: HostMsg }> {
+  /** Open + challenge + encrypted hello. Resolves with the first session message. `secret` is a
+   *  typed code in mode `code` (the keys then come from X25519 and the code). */
+  private async handshake(mode: Mode, secret: Uint8Array | { code: string }, deviceId: string | null): Promise<{ conn: Conn; first: HostMsg }> {
     const conn = new Conn(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
     await conn.opened();
     const nonce = randomBytes(16);
-    conn.ws.send(JSON.stringify({ t: "open", device: deviceId, nonce: b64url(nonce) }));
+    const ck = secret instanceof Uint8Array ? null : codeKey();
+    conn.ws.send(JSON.stringify({ t: "open", device: deviceId, nonce: b64url(nonce), ...(ck ? { key: b64url(ck.public) } : {}) }));
     const ch = await conn.next(15000);
-    let challenge: { t: string; nonce?: string; reason?: string };
+    let challenge: { t: string; nonce?: string; key?: string; reason?: string };
     try { challenge = typeof ch === "string" ? JSON.parse(ch) : { t: "?" }; } catch { challenge = { t: "?" }; }
     if (challenge.t !== "challenge" || !challenge.nonce) {
       conn.ws.close();
@@ -229,7 +231,13 @@ export class WebHost {
       if (deviceId && challenge.t === "denied") throw new Refused(denial(ch));
       throw denial(ch);
     }
-    conn.keys = browserKeys(secret, nonce, b64urlDecode(challenge.nonce), mode);
+    let ikm: Uint8Array;
+    if (secret instanceof Uint8Array) ikm = secret;
+    else {
+      if (!challenge.key) { conn.ws.close(); throw "DevCat on this computer can't pair by code yet: update it, or scan the QR code instead."; }
+      try { ikm = ck!.secret(b64urlDecode(challenge.key), secret.code); } catch { conn.ws.close(); throw "The computer's answer wasn't usable. Try again."; }
+    }
+    conn.keys = browserKeys(ikm, nonce, b64urlDecode(challenge.nonce), mode);
     conn.send({ t: "hello", name: deviceName(), platform: platform(), appVersion: "web" });
     const first = await conn.next(mode === "pair" ? 20000 : 15000);
     if (!first || typeof first === "string" || first.t === "denied") {
@@ -273,20 +281,38 @@ export class WebHost {
     const l = parseLink(link);
     if (!l) throw "This link has no DevCat pairing details. Scan the QR code in DevCat → Mobile on the computer.";
     this.emit("m-pair", { stage: "connecting", hostName: l.name });
-    let { conn, first } = await this.handshake("pair", b64urlDecode(l.secret), null);
+    const { conn, first } = await this.handshake("pair", b64urlDecode(l.secret), null);
+    return this.finishPairing(conn, first, l.name, l.id);
+  }
+
+  /** Pair with the code shown on the computer (no QR link: this page came from that computer). */
+  async pairCode(code: string): Promise<Saved> {
+    const c = normalizeCode(code);
+    if (c.length < 6) throw "Type the pairing code shown on the computer.";
+    this.emit("m-pair", { stage: "connecting", hostName: "your computer" });
+    const { conn, first } = await this.handshake("code", { code: c }, null);
+    return this.finishPairing(conn, first, "DevCat", null);
+  }
+
+  /** After the hello: wait for approval, keep the device secret, start the session. Without a
+   *  link (`hostId` null) the computer's id comes from its welcome. */
+  private async finishPairing(conn: Conn, first: HostMsg, name: string, hostId: string | null): Promise<Saved> {
     if (first.t === "pairing") {
-      this.emit("m-pair", { stage: "waiting", hostName: first.hostName ?? l.name });
+      this.emit("m-pair", { stage: "waiting", hostName: first.hostName ?? name });
       const m = await conn.next(150000);
       if (!m || typeof m === "string" || m.t !== "paired") { conn.ws.close(); throw m === null ? "Nobody approved this phone on the computer in time. Try again." : denial(m); }
       first = m;
     }
     if (first.t !== "paired") { conn.ws.close(); throw denial(first); }
-    const s: Saved = { hostId: l.id, hostName: l.name, deviceId: first.deviceId, secret: first.secret, addedAt: Date.now() };
-    save(s);
+    const keep = (id: string, hostName: string) => save({ hostId: id, hostName, deviceId: first.deviceId, secret: first.secret, addedAt: Date.now() });
+    if (hostId) keep(hostId, name);
     const welcome = await conn.next(10000);
     if (!welcome || typeof welcome === "string" || welcome.t !== "welcome") { conn.ws.close(); throw denial(welcome); }
-    this.attach(conn, l.id, welcome);
-    this.emit("m-pair", { stage: "done", hostName: welcome.host?.name ?? l.name });
+    const id = hostId ?? welcome.host?.id;
+    if (!id) { conn.ws.close(); throw "The computer didn't say who it is. Try again."; }
+    if (!hostId) keep(id, welcome.host?.name ?? name);
+    this.attach(conn, id, welcome);
+    this.emit("m-pair", { stage: "done", hostName: welcome.host?.name ?? name });
     return saved()!;
   }
 

@@ -173,23 +173,37 @@ async fn session(host: Arc<Host>, ws: Ws, peer: String) {
     // 1. open → challenge
     let open = tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.next()).await.ok().flatten().and_then(Result::ok);
     let Some(Message::Text(t)) = open else { return };
-    let Ok(Handshake::Open { device, nonce }) = serde_json::from_str::<Handshake>(&t) else { return };
+    let Ok(Handshake::Open { device, nonce, key }) = serde_json::from_str::<Handshake>(&t) else { return };
     let Some(client_nonce) = w::b64url_decode(&nonce).filter(|n| n.len() == w::NONCE_LEN) else { return };
-    let (mode, secret, known) = match device {
-        Some(id) => match host.store.devices().into_iter().find(|d| d.id == id && d.kind == "web") {
+    let mut host_key = None;
+    let (mode, secret, known) = match (device, key) {
+        (Some(id), _) => match host.store.devices().into_iter().find(|d| d.id == id && d.kind == "web") {
             Some(d) => match d.secret.as_deref().and_then(w::b64url_decode) {
                 Some(s) => (Mode::Device, s, Some(d)),
-                None => return send_text(&mut sink, &deny("This browser's pairing is broken. Scan the QR code on the computer again.")).await,
+                None => return send_text(&mut sink, &deny("This browser's pairing is broken. Pair it again with a new code from the computer.")).await,
             },
-            None => return send_text(&mut sink, &deny("This browser isn't paired with the computer any more. Scan the QR code in DevCat → Mobile again.")).await,
+            None => return send_text(&mut sink, &deny("This browser isn't paired with the computer any more. Pair it again with a new code from the computer.")).await,
         },
-        None => match host.web_secret() {
+        // a typed code: X25519, then the code (devcat_remote_proto::web, mode `code`)
+        (None, Some(k)) => {
+            let Some(peer) = w::b64url_decode(&k).filter(|k| k.len() == 32) else { return };
+            let Some(code) = host.pairing_code() else {
+                return send_text(&mut sink, &deny("No pairing code is active, or it expired or was used. Show a new code on the computer (DevCat → Mobile → New code, or press Enter in devcat serve).")).await;
+            };
+            let mine = w::CodeKey::new();
+            host_key = Some(w::b64url(&mine.public));
+            match mine.secret(&peer, &code) {
+                Some(s) => (Mode::Code, s, None),
+                None => return,
+            }
+        }
+        (None, None) => match host.web_secret() {
             Some(s) => (Mode::Pair, s.to_vec(), None),
             None => return send_text(&mut sink, &deny("The pairing code expired or was used. On the computer click New code and scan again.")).await,
         },
     };
     let host_nonce: [u8; w::NONCE_LEN] = super::store::random_bytes();
-    send_text(&mut sink, &Handshake::Challenge { nonce: w::b64url(&host_nonce) }).await;
+    send_text(&mut sink, &Handshake::Challenge { nonce: w::b64url(&host_nonce), key: host_key }).await;
     let w::HostKeys { send, recv } = w::host_keys(&secret, &client_nonce, &host_nonce, mode);
     let stop = Arc::new(Notify::new());
     let mut rx = WebRx { stream, keys: recv, stop: stop.clone() };
@@ -198,10 +212,11 @@ async fn session(host: Arc<Host>, ws: Ws, peer: String) {
     // 2. the first encrypted frame proves the secret
     let hello = tokio::time::timeout(HANDSHAKE_TIMEOUT, rx.recv()).await.ok().flatten();
     let Some(ClientMsg::Hello { name, platform, .. }) = hello else {
-        if mode == Mode::Pair {
+        if mode != Mode::Device {
             host.pairing_attempt_failed();
         }
-        return send_text(&mut tx.sink, &deny("Couldn't verify this link. Scan the QR code on the computer again.")).await;
+        let why = if mode == Mode::Code { "That code doesn't match the one on the computer. Check it and try again." } else { "Couldn't verify this link. Scan the QR code on the computer again." };
+        return send_text(&mut tx.sink, &deny(why)).await;
     };
     let device = match known {
         Some(d) => d,
@@ -252,11 +267,11 @@ mod tests {
     async fn browser(port: u16, device: Option<&str>, secret: &[u8]) -> Result<(Client, w::BrowserKeys), String> {
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws")).await.unwrap();
         let nonce: [u8; 16] = crate::remote::store::random_bytes();
-        let open = Handshake::Open { device: device.map(str::to_string), nonce: w::b64url(&nonce) };
+        let open = Handshake::Open { device: device.map(str::to_string), nonce: w::b64url(&nonce), key: None };
         ws.send(Message::Text(serde_json::to_string(&open).unwrap().into())).await.unwrap();
         let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("no challenge") };
         let host_nonce = match serde_json::from_str::<Handshake>(&t).unwrap() {
-            Handshake::Challenge { nonce } => w::b64url_decode(&nonce).unwrap(),
+            Handshake::Challenge { nonce, .. } => w::b64url_decode(&nonce).unwrap(),
             Handshake::Denied { reason } => return Err(reason),
             h => panic!("{h:?}"),
         };
@@ -265,6 +280,65 @@ mod tests {
         let hello = ClientMsg::Hello { name: "Safari on iPhone".into(), platform: "ios".into(), app_version: "web".into(), pair_code: None };
         ws.send(Message::Binary(keys.send.seal(&serde_json::to_vec(&hello).unwrap()).into())).await.unwrap();
         Ok((ws, keys))
+    }
+
+    /// A browser pairing with a typed code: its X25519 key in the open, the host's in the challenge.
+    async fn browser_code(port: u16, code: &str) -> Result<(Client, w::BrowserKeys), String> {
+        let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws")).await.unwrap();
+        let nonce: [u8; 16] = crate::remote::store::random_bytes();
+        let mine = w::CodeKey::new();
+        let open = Handshake::Open { device: None, nonce: w::b64url(&nonce), key: Some(w::b64url(&mine.public)) };
+        ws.send(Message::Text(serde_json::to_string(&open).unwrap().into())).await.unwrap();
+        let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("no challenge") };
+        let (host_nonce, host_key) = match serde_json::from_str::<Handshake>(&t).unwrap() {
+            Handshake::Challenge { nonce, key } => (w::b64url_decode(&nonce).unwrap(), w::b64url_decode(&key.expect("host key")).unwrap()),
+            Handshake::Denied { reason } => return Err(reason),
+            h => panic!("{h:?}"),
+        };
+        let secret = mine.secret(&host_key, code).unwrap();
+        let mut keys = w::browser_keys(&secret, &nonce, &host_nonce, Mode::Code);
+        let hello = ClientMsg::Hello { name: "iPhone browser".into(), platform: "ios".into(), app_version: "web".into(), pair_code: None };
+        ws.send(Message::Binary(keys.send.seal(&serde_json::to_vec(&hello).unwrap()).into())).await.unwrap();
+        Ok((ws, keys))
+    }
+
+    #[tokio::test]
+    async fn browser_pairs_with_a_typed_code() {
+        let backend = Arc::new(TestBackend { allow: true, events: Mutex::new(vec![]) });
+        let host = Host::new(tmp_store(), backend);
+        let port = free_port();
+        host.start(port, true, None).await.unwrap();
+
+        // No code shown: refused before any crypto.
+        assert!(browser_code(port, "ABCD").await.err().unwrap().contains("No pairing code"));
+
+        // A wrong code doesn't decrypt; five wrong ones end the pairing.
+        let (code, _, _) = host.pair_start();
+        for _ in 0..5 {
+            let (mut ws, mut k) = browser_code(port, "WRONG2345X").await.unwrap();
+            assert!(next_msg(&mut ws, &mut k).await.unwrap_err().contains("doesn't match"));
+        }
+        assert!(host.pairing_code().is_none(), "too many wrong tries");
+        assert!(browser_code(port, &code).await.err().unwrap().contains("No pairing code"));
+
+        // The right code, typed with spaces and lower case: pairing → approval → welcome with the
+        // host's id (the page has no link to take it from).
+        let (code, _, _) = host.pair_start();
+        let typed = format!("{} {}", &code[..5], &code[5..]).to_lowercase();
+        let (mut ws, mut k) = browser_code(port, &typed).await.unwrap();
+        assert!(matches!(next_msg(&mut ws, &mut k).await.unwrap(), HostMsg::Pairing { .. }));
+        let HostMsg::Paired { device_id, secret: dev_secret } = next_msg(&mut ws, &mut k).await.unwrap() else { panic!() };
+        let HostMsg::Welcome { host: info, device } = next_msg(&mut ws, &mut k).await.unwrap() else { panic!() };
+        assert_eq!(device.id, device_id);
+        // the app's backend fills in the id (`host_info_now`); the page saves the pairing under it
+        assert_eq!(info.name, "Test Mac");
+        assert!(host.pairing_code().is_none(), "pairing used up");
+
+        // Later it reconnects like any paired browser.
+        let raw = w::b64url_decode(&dev_secret).unwrap();
+        let (mut ws2, mut k2) = browser(port, Some(&device_id), &raw).await.unwrap();
+        assert!(matches!(next_msg(&mut ws2, &mut k2).await.unwrap(), HostMsg::Welcome { .. }));
+        host.stop().await;
     }
 
     async fn next_msg(ws: &mut Client, keys: &mut w::BrowserKeys) -> Result<HostMsg, String> {

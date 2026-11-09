@@ -12,8 +12,14 @@
 //!
 //! Keys: `prk = HKDF-SHA256-Extract(salt = browser nonce ‖ host nonce, ikm = secret)`;
 //! `key = HKDF-Expand(prk, "devcat-web/1 <mode> <dir>", 32)`, mode `pair` (secret = the 32-byte
-//! pairing secret in the QR link) or `device` (secret = the device secret from `paired`), dir
-//! `c2h` / `h2c`. A wrong secret fails to decrypt the first frame. The page itself comes over
+//! pairing secret in the QR link), `device` (secret = the device secret from `paired`) or `code`,
+//! dir `c2h` / `h2c`. A wrong secret fails to decrypt the first frame.
+//!
+//! Pairing with just the code someone typed (mode `code`, no QR link, so no 32-byte secret): the
+//! open carries `key`, a fresh X25519 public key, and the challenge the host's own; the secret is
+//! `X25519 shared secret ‖ the code` ([`normalize_code`]). Someone watching the network can't
+//! compute the shared secret, so can't test guesses of the code offline either; a wrong code fails
+//! to decrypt the hello and counts as a wrong try (five end the pairing). The page itself comes over
 //! plain HTTP, so this protects against people *watching* the network, not against one able to
 //! *change* traffic (it could alter the page); the app has no such gap.
 use serde::{Deserialize, Serialize};
@@ -25,8 +31,19 @@ pub const SECRET_LEN: usize = 32;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
 pub enum Handshake {
-    Open { device: Option<String>, nonce: String },
-    Challenge { nonce: String },
+    Open {
+        device: Option<String>,
+        nonce: String,
+        /// Pairing by code: the browser's X25519 public key (b64url).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+    Challenge {
+        nonce: String,
+        /// Pairing by code: the host's X25519 public key (b64url).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
     Denied { reason: String },
 }
 
@@ -35,6 +52,13 @@ pub enum Handshake {
 pub enum Mode {
     Pair,
     Device,
+    /// Pairing with a typed code (see the module docs).
+    Code,
+}
+
+/// A pairing code as typed: letters and digits only, upper case (`ab3k-7q` → `AB3K7Q`).
+pub fn normalize_code(code: &str) -> String {
+    code.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_uppercase()).collect()
 }
 
 pub fn b64url(bytes: &[u8]) -> String {
@@ -92,7 +116,32 @@ pub use crypto::*;
 mod crypto {
     use super::Mode;
     use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
+    use ring::agreement::{EphemeralPrivateKey, UnparsedPublicKey, X25519, agree_ephemeral};
     use ring::hkdf::{HKDF_SHA256, KeyType, Salt};
+    use ring::rand::SystemRandom;
+
+    /// One side's X25519 key for pairing by code (used once).
+    pub struct CodeKey {
+        private: EphemeralPrivateKey,
+        pub public: [u8; 32],
+    }
+
+    impl CodeKey {
+        #[allow(clippy::new_without_default)]
+        pub fn new() -> Self {
+            let private = EphemeralPrivateKey::generate(&X25519, &SystemRandom::new()).expect("x25519 key");
+            let mut public = [0u8; 32];
+            public.copy_from_slice(private.compute_public_key().expect("x25519 public key").as_ref());
+            Self { private, public }
+        }
+
+        /// The secret `code` mode's keys come from: the shared secret ‖ the code. `None` when
+        /// the other side's key isn't a usable X25519 key.
+        pub fn secret(self, peer: &[u8], code: &str) -> Option<Vec<u8>> {
+            let code = super::normalize_code(code);
+            agree_ephemeral(self.private, &UnparsedPublicKey::new(&X25519, peer), |shared| [shared, code.as_bytes()].concat()).ok()
+        }
+    }
 
     struct Len32;
     impl KeyType for Len32 {
@@ -169,6 +218,7 @@ mod crypto {
         let m = match mode {
             Mode::Pair => "pair",
             Mode::Device => "device",
+            Mode::Code => "code",
         };
         (derive(secret, &salt, &format!("devcat-web/1 {m} c2h")), derive(secret, &salt, &format!("devcat-web/1 {m} h2c")))
     }
@@ -222,6 +272,30 @@ mod crypto {
         }
 
         pub const KNOWN_FRAME: &str = "AAAAAAAAAABO6TjSdXFSiXF7k2BZrBtoGllhdWPwQkElkhpx";
+
+        /// Code mode, from a fixed shared secret and a code typed with a dash and lower case:
+        /// mirrored by the browser's check (normalising, joining and the `code` label).
+        #[test]
+        fn known_answer_code() {
+            let secret = [&[7u8; 32][..], crate::web::normalize_code("ab3k-7q").as_bytes()].concat();
+            let mut phone = browser_keys(&secret, &[1u8; 16], &[2u8; 16], Mode::Code);
+            let f = phone.send.seal(b"{\"t\":\"ping\"}");
+            assert_eq!(super::super::b64url(&f), KNOWN_CODE_FRAME, "update the browser check if this changes on purpose");
+        }
+
+        pub const KNOWN_CODE_FRAME: &str = "AAAAAAAAAADzgV6usRZ3cRk_v3g6W1E3C2ad5DH-i0PUJO2O";
+
+        /// Both sides of a code pairing get the same secret only with the same code.
+        #[test]
+        fn code_keys_agree() {
+            let (a, b) = (CodeKey::new(), CodeKey::new());
+            let (pa, pb) = (a.public, b.public);
+            assert_eq!(a.secret(&pb, "AB3K 7Q").unwrap(), b.secret(&pa, "ab3k7q").unwrap());
+            let (a, b) = (CodeKey::new(), CodeKey::new());
+            let (pa, pb) = (a.public, b.public);
+            assert_ne!(a.secret(&pb, "AB3K7Q").unwrap(), b.secret(&pa, "AB3K7R").unwrap());
+            assert!(CodeKey::new().secret(&[0u8; 32], "AB3K7Q").is_none(), "low-order key refused");
+        }
     }
 }
 
@@ -243,7 +317,10 @@ mod tests {
     #[test]
     fn handshake_shapes() {
         let h: Handshake = serde_json::from_str(r#"{"t":"open","device":null,"nonce":"AQID"}"#).unwrap();
-        assert_eq!(h, Handshake::Open { device: None, nonce: "AQID".into() });
-        assert_eq!(serde_json::to_string(&Handshake::Challenge { nonce: "x".into() }).unwrap(), r#"{"t":"challenge","nonce":"x"}"#);
+        assert_eq!(h, Handshake::Open { device: None, nonce: "AQID".into(), key: None });
+        assert_eq!(serde_json::to_string(&Handshake::Challenge { nonce: "x".into(), key: None }).unwrap(), r#"{"t":"challenge","nonce":"x"}"#);
+        let h: Handshake = serde_json::from_str(r#"{"t":"open","device":null,"nonce":"AQID","key":"Ag"}"#).unwrap();
+        assert_eq!(h, Handshake::Open { device: None, nonce: "AQID".into(), key: Some("Ag".into()) });
+        assert_eq!(normalize_code(" ab3k-7q "), "AB3K7Q");
     }
 }
