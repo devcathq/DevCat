@@ -12,12 +12,25 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.23.0 - 2026-11-09
+
 - **Review tab**: click elements on a page to comment on them, and save the review as a short note to copy to a
   developer or an agent. It works with a dev server, a deployed site, or an `.html` file on this computer or on an
   SSH host, and **Copy review** puts the note on the clipboard.
 - **Download button for every file on an SSH host**: a file from an SSH host that DevCat can still preview (an
   HTML or text file too large to edit, an image, a PDF) had no way to download it; the Download button only showed
   for files with no preview. It's now in the file's toolbar too.
+- **Pair a phone by typing a code** (#143): on the browser version the computer serves, type the code DevCat shows
+  instead of photographing the QR code. A wrong code can't be tested offline, and five wrong tries end the pairing.
+- **`devcat serve` in the background** (#143): `devcat service install [serve options]` runs it as a launchd agent
+  (macOS) or systemd user unit (Linux) that starts at login and restarts after a crash (also `service uninstall`,
+  `start` and `status`). `devcat serve` in a terminal now shows the one already running instead of taking over its
+  port, and `detach`, Ctrl+D or Ctrl+C leave it running; `devcat attach` does the same without ever starting one.
+  Pairing codes never go to the service's log.
+- **Home Screen app on iPhone** (#143): typing the pairing code no longer flickers or hides behind the keyboard, and
+  the page no longer sits under the blurred status bar.
+- **Links in terminals** (#136): clicking a link printed with an OSC 8 hyperlink opens it in the browser, and
+  clicking a path to a file that isn't there says "File not found" instead of opening an empty tab.
 
 ## 0.22.0 - 2026-11-05
 
