@@ -536,12 +536,19 @@ function Workspace() {
       </div>
       {menu.element}
       <div className="relative min-h-0 flex-1">
-        {/* Keep every tab mounted so editors and grids preserve their state. */}
-        {allTabs.map((t) => (
-          <div key={t.id} className={clsx("absolute inset-0", (t.id !== activeId || !tabs.includes(t)) && "hidden")}>
-            <TabContent tab={t} />
-          </div>
-        ))}
+        {/* Keep every tab mounted so editors and grids preserve their state. A hidden tab isn't
+            `display: none`: that drops its layout, and with it every scroll position (an HTML
+            preview's frame, a long file) once the tab shows again. `content-visibility: hidden`
+            keeps the layout but skips its rendering work (animations included), `invisible` is the
+            fallback where it isn't supported, and `inert` takes focus and clicks away from it. */}
+        {allTabs.map((t) => {
+          const hidden = t.id !== activeId || !tabs.includes(t);
+          return (
+            <div key={t.id} inert={hidden} className={clsx("absolute inset-0", hidden && "invisible [content-visibility:hidden]")}>
+              <TabContent tab={t} />
+            </div>
+          );
+        })}
       </div>
     </div>
   );
