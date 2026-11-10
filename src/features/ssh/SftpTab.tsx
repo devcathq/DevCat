@@ -6,7 +6,7 @@ import { homeDir } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
 import clsx from "clsx";
 import {
-  ArrowLeft, ArrowRight, ArrowUp, Check, Copy, Eye, EyeOff, FolderPlus, Loader2, Monitor, Pencil, RefreshCw, Server, SquareTerminal, Trash2, X,
+  ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, ChevronUp, Copy, Eye, EyeOff, FolderPlus, Loader2, Monitor, Pencil, RefreshCw, Server, SquareTerminal, Trash2, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
@@ -42,6 +42,37 @@ interface Job {
 }
 
 const isRemotePath = (p: string) => p.startsWith("ssh://");
+
+type SortKey = "name" | "size" | "modified";
+interface Sort { key: SortKey; desc: boolean }
+const SORT_KEY = (side: Side) => `devcat.sftp.sort.${side}`;
+const SORT_KEYS: SortKey[] = ["name", "size", "modified"];
+
+function loadSort(side: Side): Sort {
+  try {
+    const v = JSON.parse(localStorage.getItem(SORT_KEY(side)) ?? "null") as Partial<Sort> | null;
+    if (v && SORT_KEYS.includes(v.key as SortKey)) return { key: v.key as SortKey, desc: !!v.desc };
+  } catch { /* not saved, or storage is off */ }
+  return { key: "name", desc: false };
+}
+
+const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }).compare;
+const mtime = (e: FileEntry) => { const t = e.modified ? Date.parse(e.modified) : NaN; return Number.isNaN(t) ? null : t; };
+
+/** Folders first (as in Explorer / Finder), then by the column; ties and folders' sizes fall back to the name. */
+function sortEntries(list: FileEntry[], { key, desc }: Sort): FileEntry[] {
+  const dir = desc ? -1 : 1;
+  return [...list].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    if (key === "size" && !a.isDir && a.size !== b.size) return (a.size - b.size) * dir;
+    if (key === "modified") {
+      const ta = mtime(a), tb = mtime(b);
+      // unknown times go last whichever way
+      if (ta !== tb) return ta === null ? 1 : tb === null ? -1 : (ta - tb) * dir;
+    }
+    return byName(a.name, b.name) * (key === "name" ? dir : 1);
+  });
+}
 
 /** Parent folder, for local paths and ssh:// URIs alike (null at the top). */
 function parentOf(p: string): string | null {
@@ -234,7 +265,17 @@ function FilePane({ side, title, dir, error, setDir, reload, showHidden, active,
     return () => { cancelled = true; };
   }, [dir, reload, nonce, side]);
 
-  const visible = useMemo(() => (entries ?? []).filter((e) => showHidden || !e.name.startsWith(".")), [entries, showHidden]);
+  const [sort, setSortState] = useState(() => loadSort(side));
+  const sortBy = (key: SortKey) => {
+    // the same column flips its order; a new one starts A→Z for names, newest / largest first otherwise
+    const next = { key, desc: sort.key === key ? !sort.desc : key !== "name" };
+    setSortState(next);
+    try { localStorage.setItem(SORT_KEY(side), JSON.stringify(next)); } catch { /* kept for this tab only */ }
+  };
+  const visible = useMemo(
+    () => sortEntries((entries ?? []).filter((e) => showHidden || !e.name.startsWith(".")), sort),
+    [entries, showHidden, sort],
+  );
   const refresh = () => setNonce((n) => n + 1);
 
   const go = (text: string) => {
@@ -369,7 +410,22 @@ function FilePane({ side, title, dir, error, setDir, reload, showHidden, active,
         </IconButton>
       </div>
       <div className="grid shrink-0 grid-cols-[1fr_72px_88px] gap-2 border-b border-line px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-faint">
-        <span>Name</span><span className="text-right">Size</span><span className="text-right">Modified</span>
+        {(["name", "size", "modified"] as const).map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => sortBy(k)}
+            title={`Sort by ${k}`}
+            className={clsx(
+              "flex min-w-0 items-center gap-0.5 uppercase tracking-wide hover:text-fg",
+              k !== "name" && "justify-end",
+              sort.key === k && "text-muted",
+            )}
+          >
+            {k}
+            {sort.key === k && (sort.desc ? <ChevronDown className="size-3 shrink-0" /> : <ChevronUp className="size-3 shrink-0" />)}
+          </button>
+        ))}
       </div>
       <div className="min-h-0 flex-1 overflow-auto" onContextMenu={(ev) => { if (ev.target === ev.currentTarget) paneMenu(ev); }} onMouseDown={(ev) => { if (ev.target === ev.currentTarget) setSelected(new Set()); }}>
         {shownError ? (
