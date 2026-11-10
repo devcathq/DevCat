@@ -486,6 +486,16 @@ function Workspace() {
     if (!tabs.some((t) => t.id === activeId) && tabs.length) activate(tabs[tabs.length - 1].id);
   }, [tabs, activeId, activate]);
   const { barRef, drag, startDrag } = useTabDrag();
+  // Bring the active tab into view when it changes (a new tab opens at the end of a full bar).
+  // Only the bar scrolls: scrollIntoView would also move the containers around it.
+  useEffect(() => {
+    const bar = barRef.current;
+    const el = bar?.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(activeId ?? "")}"]`);
+    if (!bar || !el) return;
+    const b = bar.getBoundingClientRect(), r = el.getBoundingClientRect();
+    if (r.left < b.left) bar.scrollLeft -= b.left - r.left;
+    else if (r.right > b.left + bar.clientWidth) bar.scrollLeft += r.right - (b.left + bar.clientWidth);
+  }, [activeId, tabs.length, barRef]);
   return (
     <div className="flex h-full flex-col bg-panel">
       <div ref={barRef} data-tour="tabs" className="no-select flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-line bg-app">
