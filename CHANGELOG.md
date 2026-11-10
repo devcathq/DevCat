@@ -12,6 +12,23 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.24.0 - 2026-11-11
+
+- **SSH session variants** (#151): right-click an SSH session and choose **New variant…** to add a child that
+  changes only what it sets, such as another address for the same machine (LAN or Tailscale) or another tmux
+  session. Anything a variant leaves empty comes from its session. Port forwards are never inherited.
+- **Sort SFTP panes** (#149): click Name, Size or Modified to sort a pane, and click again to reverse it. Folders
+  stay on top, and each side remembers its choice.
+- **Links in HTML previews** (#148): clicking a link to another file opens it in a tab instead of blanking the
+  preview, and `http(s)` and `mailto` links open in the browser.
+- **New-window links in a review** (#146): a `target="_blank"` link or `window.open()` in a reviewed page opens a
+  new Review tab. On Windows it did nothing before.
+- **Tabs keep their scroll position** (#145) when you switch away and back, and the tab bar scrolls to show the
+  active tab (#147).
+- **Terminal after a dropped connection** (#150): when a program like tmux dies without cleaning up, DevCat turns
+  off the modes it left on, so the terminal no longer fills with mouse junk and the saved SSH password is typed
+  again on reconnect.
+
 ## 0.23.0 - 2026-11-09
 
 - **Review tab**: click elements on a page to comment on them, and save the review as a short note to copy to a
