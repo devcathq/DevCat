@@ -4,10 +4,12 @@
 
 use super::{channel, review_store, serve, Review, Target};
 use crate::error::{AppError, AppResult};
+use parking_lot::Mutex;
 use reqwest::Url;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Emitter, EventTarget, LogicalPosition, LogicalSize, Manager, Webview, WebviewBuilder, WebviewUrl, Window, Wry};
 
@@ -81,6 +83,16 @@ pub fn call(webview: &Webview, r: &Review, method: &str, arg: &serde_json::Value
         .map_err(|e| AppError::Msg(format!("The review page didn't answer: {e}")))
 }
 
+/// `review://new-window`: the page asked to open `url` in a new window; the tab opens a new review.
+#[derive(Serialize, Clone)]
+struct NewWindow {
+    id: String,
+    url: String,
+}
+
+/// The shortest time between two new review tabs one page may open.
+const NEW_TAB_EVERY: Duration = Duration::from_secs(1);
+
 /// `review://page`, when a page finished loading.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -132,21 +144,25 @@ pub fn create(window: &Window, r: &Review, pos: LogicalPosition<f64>, size: Logi
     let dev = dev_url(&app);
     let dev_new = dev.clone();
     let wv_label = label(&r.id);
-    let new_label = wv_label.clone();
+    let new_id = r.id.clone();
+    let last_new: Mutex<Option<Instant>> = Mutex::new(None);
     let open_app = app.clone();
     let script = inspector_script(r, serve::running_origin().as_deref());
     let id = r.id.clone();
     let builder = WebviewBuilder::new(wv_label, WebviewUrl::External(url))
         .initialization_script(script)
         .on_navigation(move |u| may_navigate(u, dev.as_ref()))
-        // a link to a new window opens in the review webview itself
+        // a link or `window.open` asking for a new window opens a new review tab, as a browser
+        // opens a new tab (same review browser data, so sign-ins carry over); at most one a
+        // second, so a page can't flood the window with tabs
         .on_new_window(move |u, _| {
-            if may_open(&u, dev_new.as_ref())
-                && let Some(wv) = open_app.get_webview(&new_label)
-            {
-                crate::rt::spawn(async move {
-                    let _ = wv.navigate(u);
-                });
+            let mut last = last_new.lock();
+            if may_open(&u, dev_new.as_ref()) && last.is_none_or(|t| t.elapsed() >= NEW_TAB_EVERY) {
+                *last = Some(Instant::now());
+                if let Some(r) = review_store().get(&new_id) {
+                    let ev = NewWindow { id: r.id.clone(), url: u.to_string() };
+                    let _ = open_app.emit_to(EventTarget::webview_window(r.window.as_str()), "review://new-window", ev);
+                }
             }
             NewWindowResponse::Deny
         })

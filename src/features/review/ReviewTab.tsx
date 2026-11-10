@@ -77,6 +77,10 @@ export default function ReviewTab({ tab }: { tab: ReviewTabSpec }) {
         setSt((s) => s && { ...s, url: p.url, inspectable: p.inspectable });
         if (p.inspectable) setInspectOn(true); // every page load starts the inspector on
       }),
+      // a link or window.open asking for a new window: a new review tab, like a browser's new tab
+      win.listen<{ id: string; url: string }>("review://new-window", ({ payload: p }) => {
+        if (p.id === idRef.current) openReview({ url: p.url });
+      }),
     ];
     return () => offs.forEach((off) => void off.then((f) => f()).catch(() => {}));
   }, []);
