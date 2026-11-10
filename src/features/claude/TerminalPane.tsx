@@ -55,6 +55,13 @@ function nameCandidates(line: string, keys: string[]): { start: number; text: st
   return out;
 }
 
+/** Turns off what a program that didn't exit cleanly (tmux over a dropped ssh) left on: mouse reports
+ *  (moving the mouse would type `ESC[<35;99;27M…` into the next run, the password prompt included,
+ *  and count as typing so the saved password isn't sent), focus reports, bracketed paste, the
+ *  alternate screen and a hidden cursor; then DECSTR for the rest (keypad / cursor-key modes, scroll
+ *  region, colours). DECSTR alone leaves the mouse modes on in xterm.js. */
+const RESET_MODES = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[?1049l\x1b[?25h\x1b[!p";
+
 /** Whether a file is there (a few seconds' memory, so hovering doesn't ask again and again). */
 const seen = new Map<string, { there: boolean; at: number }>();
 async function fileThere(abs: string): Promise<boolean> {
@@ -330,7 +337,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
             exitedRef.current = true;
             cb.current.onPty?.(null);
             cb.current.onTitle?.("");
-            t.term.write(`\r\n\x1b[2m[${name} exited${code ? ` with code ${code}` : ""} — press Enter to restart]\x1b[0m\r\n`);
+            t.term.write(`${RESET_MODES}\r\n\x1b[2m[${name} exited${code ? ` with code ${code}` : ""} — press Enter to restart]\x1b[0m\r\n`);
           },
         );
         if (visible) t.term.focus();
