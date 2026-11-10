@@ -6,10 +6,11 @@ import { remoteUri, sessionIdOf } from "../../lib/remotePath";
 import { openTab } from "../../store/tabs";
 import { useConnections } from "../../store/connections";
 import { openClaudeWorkspace } from "../claude/open";
+import { effectiveConfig } from "./variants";
 
 /** A folder of the session (default: its start folder, else home). */
 export const sessionUri = (c: ConnectionConfig, dir?: string | null) =>
-  remoteUri(`devcat-${c.id}`, null, dir || c.options.startDir || "~");
+  remoteUri(`devcat-${c.id}`, null, dir || effectiveConfig(c).options.startDir || "~");
 
 /** A new terminal tab logged in to the session (each call opens another, like Xshell). */
 export function openSshTerminal(c: ConnectionConfig) {

@@ -11,9 +11,10 @@ interface UiState {
   /** Sidebar hidden (the activity bar stays). */
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (v: boolean) => void;
-  /** Connection dialog: null = closed; id = edit, else new (optionally preselecting kind / project). */
-  connectionDialog: { id: string | null; kind?: string; projectId?: string | null } | null;
-  openConnectionDialog: (id?: string | null, kind?: string, projectId?: string | null) => void;
+  /** Connection dialog: null = closed; id = edit, else new (optionally preselecting kind / project,
+   *  or `parentId`: a new variant of that SSH session). */
+  connectionDialog: { id: string | null; kind?: string; projectId?: string | null; parentId?: string | null } | null;
+  openConnectionDialog: (id?: string | null, kind?: string, projectId?: string | null, parentId?: string | null) => void;
   closeConnectionDialog: () => void;
   /** Status bar message */
   status: string;
@@ -29,7 +30,7 @@ export const useUi = create<UiState>((set) => ({
     set({ sidebarCollapsed });
   },
   connectionDialog: null,
-  openConnectionDialog: (id = null, kind, projectId) => set({ connectionDialog: { id, kind, projectId } }),
+  openConnectionDialog: (id = null, kind, projectId, parentId) => set({ connectionDialog: { id, kind, projectId, parentId } }),
   closeConnectionDialog: () => set({ connectionDialog: null }),
   status: "Ready",
   setStatus: (status) => set({ status }),

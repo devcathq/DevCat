@@ -6,6 +6,10 @@
 //! A saved SSH session (an `ssh` connection in the sidebar) is written `ssh://devcat-<id>/path`:
 //! its host, user, port, key, jump host and password come from the saved connection (`Session`).
 //!
+//! A session can be a *variant* of another one (`parent`): any setting it leaves empty is its
+//! parent's, read each time it connects, so it differs only where it says so (another host, a
+//! tmux session…). See `effective_config`.
+//!
 //! On macOS / Linux one master connection per host is shared (OpenSSH ControlMaster), so file
 //! operations are quick and a password typed once in a terminal covers them too. File commands
 //! never prompt (BatchMode): without a key or agent, open a terminal first. A session with a saved
@@ -93,14 +97,62 @@ impl Session {
         })
     }
 
-    /// The saved session `devcat-<id>` (with its password from the keychain).
+    /// The saved session `devcat-<id>` (with its password from the keychain; a variant laid over
+    /// its parent).
     pub(crate) fn load(alias: &str) -> Option<Session> {
         let id = alias.strip_prefix(SESSION_PREFIX)?;
         let st = crate::state::St::try_get()?;
         let c = st.store.get(id).ok().filter(|c| c.kind == ConnectionKind::Ssh)?;
-        Session::from_config(&c).ok()
+        Session::from_config(&effective_config(&c, |id| st.store.get(id)).ok()?).ok()
     }
 
+}
+
+/// A variant's option naming its parent session.
+pub const PARENT: &str = "parent";
+
+/// `c` as it connects: a variant laid over its parent (`get` loads a saved connection, with its
+/// password), any other connection as it is. Each setting the variant leaves empty is the
+/// parent's (host, port, user, password, colour, every option); its name and project are its own
+/// and its parent's. Port forwards are the exception: never inherited, their ports would clash.
+pub fn effective_config(c: &ConnectionConfig, get: impl Fn(&str) -> AppResult<ConnectionConfig>) -> AppResult<ConnectionConfig> {
+    let Some(pid) = opt(c, PARENT) else { return Ok(c.clone()) };
+    if pid == c.id {
+        return Err(AppError::msg("A session can't be a variant of itself"));
+    }
+    let p = get(&pid).map_err(|_| AppError::msg("This variant's session was deleted"))?;
+    if p.kind != ConnectionKind::Ssh {
+        return Err(AppError::msg("A variant must belong to an SSH session"));
+    }
+    if opt(&p, PARENT).is_some() {
+        return Err(AppError::msg("A variant can't have variants of its own"));
+    }
+    let mut out = p;
+    out.id = c.id.clone();
+    out.name = c.name.clone();
+    if !c.host.trim().is_empty() {
+        out.host = c.host.clone();
+    }
+    if let Some(port) = c.port.filter(|p| *p != 0) {
+        out.port = Some(port);
+    }
+    if !c.user.trim().is_empty() {
+        out.user = c.user.clone();
+    }
+    if let Some(pw) = c.password.clone().filter(|p| !p.is_empty()) {
+        out.password = Some(pw);
+    }
+    if c.color.is_some() {
+        out.color = c.color.clone();
+    }
+    out.options.remove("forwards");
+    for (k, v) in &c.options {
+        if !v.trim().is_empty() {
+            out.options.insert(k.clone(), v.clone());
+        }
+    }
+    out.options.insert(PARENT.into(), pid);
+    Ok(out)
 }
 
 /// A folder or file on an SSH host.
@@ -1068,7 +1120,11 @@ fn parse_transcripts(out: &[u8]) -> (Vec<String>, Vec<Transcript>) {
 
 /// Log in to a (possibly unsaved) session: "user on host (Linux 6.8 x86_64)".
 pub async fn test_session(c: &ConnectionConfig) -> AppResult<String> {
-    let mut s = Session::from_config(c)?;
+    let c = match crate::state::St::try_get() {
+        Some(st) => effective_config(c, |id| st.store.get(id))?,
+        None => c.clone(),
+    };
+    let mut s = Session::from_config(&c)?;
     if s.id.is_empty() {
         s.id = "test".into();
     }
@@ -1445,5 +1501,45 @@ printf 'hello\n' > README.md && printf 'fn main() {}\n' > src/main.rs && git add
         assert_eq!(s[0], vec!["/home/me"]);
         assert_eq!(s[1].len(), 2);
         assert_eq!(s[2], vec!["src"]);
+    }
+
+    fn ssh_cfg(v: serde_json::Value) -> ConnectionConfig {
+        let mut base = serde_json::json!({ "id": "", "name": "s", "kind": "ssh", "options": {}, "readOnly": false });
+        base.as_object_mut().unwrap().extend(v.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+
+    #[test]
+    fn variants_change_only_what_they_set() {
+        let parent = ssh_cfg(serde_json::json!({
+            "id": "p", "name": "mini", "host": "192.168.2.1", "port": 22, "user": "me", "password": "pw", "color": "#ef4444", "projectId": "proj",
+            "options": { "keyPath": "~/.ssh/k", "networkId": "vpn", "startup": "tmux new -A -s main", "startDir": "~/src", "forwards": "[{\"kind\":\"local\",\"localPort\":3000,\"remoteHost\":\"localhost\",\"remotePort\":3000}]" },
+        }));
+        let get = |id: &str| if id == "p" { Ok(parent.clone()) } else { Err(AppError::msg("not found")) };
+
+        // Another address of the same machine: everything else is the parent's.
+        let ts = ssh_cfg(serde_json::json!({ "id": "ts", "name": "mini · tailscale", "host": "100.64.0.2", "user": "", "password": "", "options": { "parent": "p", "startup": "" } }));
+        let e = effective_config(&ts, get).unwrap();
+        let s = Session::from_config(&e).unwrap();
+        assert_eq!((s.id.as_str(), s.name.as_str(), s.host.as_str(), s.port, s.user.as_deref(), s.password.as_deref()), ("ts", "mini · tailscale", "100.64.0.2", Some(22), Some("me"), Some("pw")));
+        assert_eq!((s.startup.as_deref(), s.start_dir.as_deref(), s.network_id.as_deref()), (Some("tmux new -A -s main"), Some("~/src"), Some("vpn")));
+        assert!(s.key_path.as_deref().is_some_and(|k| k.ends_with(".ssh/k")));
+        assert!(s.forwards.is_empty(), "forwards aren't inherited: their ports would clash");
+        assert_eq!(e.color.as_deref(), Some("#ef4444"));
+
+        // Another tmux session, user and password; its own forwards.
+        let b = ssh_cfg(serde_json::json!({ "id": "b", "name": "build", "user": "ci", "password": "pw2", "color": "#22c55e", "options": { "parent": "p", "startup": "tmux new -A -s build", "forwards": "[{\"kind\":\"dynamic\",\"localPort\":1080,\"remoteHost\":\"\",\"remotePort\":0}]" } }));
+        let e = effective_config(&b, get).unwrap();
+        let s = Session::from_config(&e).unwrap();
+        assert_eq!((s.host.as_str(), s.user.as_deref(), s.password.as_deref(), s.startup.as_deref()), ("192.168.2.1", Some("ci"), Some("pw2"), Some("tmux new -A -s build")));
+        assert_eq!((s.forwards.len(), e.color.as_deref()), (1, Some("#22c55e")));
+
+        // No loops, no variants of variants, no missing parent.
+        assert!(effective_config(&ssh_cfg(serde_json::json!({ "id": "p", "options": { "parent": "p" } })), get).is_err());
+        assert!(effective_config(&ssh_cfg(serde_json::json!({ "id": "w", "options": { "parent": "gone" } })), get).is_err());
+        let nested = ssh_cfg(serde_json::json!({ "id": "p", "host": "h", "options": { "parent": "q" } }));
+        assert!(effective_config(&ts, |_| Ok(nested.clone())).is_err());
+        // Not a variant: as it is.
+        assert_eq!(effective_config(&parent, get).unwrap().host, "192.168.2.1");
     }
 }

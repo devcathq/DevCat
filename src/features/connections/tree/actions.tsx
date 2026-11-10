@@ -11,6 +11,7 @@ import { qualifiedName } from "../../table/sqlDialect";
 import { isInfra, redisKeyOf, refOf, type NodeCtx } from "./rows";
 import { useTree } from "./store";
 import { openSshTerminal } from "../../ssh/open";
+import { variantsOf } from "../../ssh/variants";
 
 const tree = () => useTree.getState();
 
@@ -95,9 +96,12 @@ export async function duplicateConnection(conn: ConnectionConfig) {
 }
 
 export async function deleteConnection(conn: ConnectionConfig) {
+  const variants = variantsOf(conn.id);
   const ok = await confirmDialog({
     title: "Delete connection",
-    message: <>Delete the connection <b>{conn.name}</b>? Saved credentials for it are removed too. This cannot be undone.</>,
+    message: variants.length
+      ? <>Delete the session <b>{conn.name}</b> and its {variants.length === 1 ? <>variant <b>{variants[0].name}</b></> : <>{variants.length} variants</>}? They log in through it, so they go too. Saved credentials are removed. This cannot be undone.</>
+      : <>Delete the connection <b>{conn.name}</b>? Saved credentials for it are removed too. This cannot be undone.</>,
     confirmLabel: "Delete",
     danger: true,
   });
@@ -105,6 +109,7 @@ export async function deleteConnection(conn: ConnectionConfig) {
   try {
     await useConnections.getState().remove(conn.id);
     tree().clearConn(conn.id);
+    for (const v of variants) tree().clearConn(v.id);
     toast.success(`Deleted ${conn.name}`);
   } catch (e) {
     toast.error(`Delete failed: ${errMsg(e)}`);

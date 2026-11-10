@@ -167,20 +167,36 @@ export function buildRows({ connections, projects, nodes, collapsedProjects, que
   };
 
   const rootCtx: NodeCtx = { database: null, schema: null, folder: null };
+  const byId = new Map(connections.map((c) => [c.id, c]));
+  const byName = (a: ConnectionConfig, b: ConnectionConfig) => a.name.localeCompare(b.name);
 
-  const emitConn = (conn: ConnectionConfig, depth: number, parentId: string | null) => {
-    const nameMatch = !q || conn.name.toLowerCase().includes(q);
+  // SSH session variants sit under their session (features/ssh/variants.ts), wherever it is.
+  const parentOf = (c: ConnectionConfig) => {
+    const p = c.kind === "ssh" ? c.options?.parent : undefined;
+    return p && byId.get(p)?.kind === "ssh" ? p : null;
+  };
+  const variants = new Map<string, ConnectionConfig[]>();
+  for (const c of connections) {
+    const p = parentOf(c);
+    if (p) variants.set(p, [...(variants.get(p) ?? []), c]);
+  }
+
+  /** `all`: show it and its variants whatever the search (its project's name matched). */
+  const emitConn = (conn: ConnectionConfig, depth: number, parentId: string | null, all = false) => {
+    const nameMatch = all || !q || conn.name.toLowerCase().includes(q);
+    const subs = (variants.get(conn.id) ?? []).sort(byName);
+    const shownSubs = nameMatch ? subs : subs.filter((v) => v.name.toLowerCase().includes(q));
     const below = !!q && !nameMatch && !isInfra(conn) && descMatches(conn.id, [], false);
-    if (!nameMatch && !below) return;
+    if (!nameMatch && !below && !shownSubs.length) return;
     const root = nodes[nodeKey(conn.id, [])];
     const expanded = !isInfra(conn) && (below || !!root?.expanded);
     const id = connRowId(conn.id);
     rows.push({ type: "conn", id, conn, depth, expanded, parentId });
     if (expanded) emitChildren(conn, [], rootCtx, depth + 1, id, below, false);
+    for (const v of shownSubs) rows.push({ type: "conn", id: connRowId(v.id), conn: v, depth: depth + 1, expanded: false, parentId: id });
   };
 
   // Bookmarks first, for connections that are visible (focus mode) and still exist.
-  const byId = new Map(connections.map((c) => [c.id, c]));
   const shown: { bookmark: Bookmark; conn: ConnectionConfig }[] = [];
   for (const bookmark of bookmarks) {
     const conn = byId.get(bookmark.connectionId);
@@ -196,10 +212,10 @@ export function buildRows({ connections, projects, nodes, collapsedProjects, que
     }
   }
 
-  const byName = (a: ConnectionConfig, b: ConnectionConfig) => a.name.localeCompare(b.name);
   const known = new Set(projects.map((p) => p.id));
   const members = new Map<string, ConnectionConfig[]>();
-  for (const c of connections) {
+  const top = connections.filter((c) => !parentOf(c));
+  for (const c of top) {
     if (c.projectId && known.has(c.projectId)) members.set(c.projectId, [...(members.get(c.projectId) ?? []), c]);
   }
 
@@ -217,12 +233,7 @@ export function buildRows({ connections, projects, nodes, collapsedProjects, que
         if (!q) rows.push({ type: "empty", id: `x:${pid}`, depth: 1, parentId: pid, text: "Empty — drag a connection here or right-click to add one" });
       } else if (projectMatch && q) {
         // project name matched: show all members unfiltered by the search
-        for (const c of list) {
-          const id = connRowId(c.id);
-          const expanded = !isInfra(c) && !!nodes[nodeKey(c.id, [])]?.expanded;
-          rows.push({ type: "conn", id, conn: c, depth: 1, expanded, parentId: pid });
-          if (expanded) emitChildren(c, [], rootCtx, 2, id, false, false);
-        }
+        for (const c of list) emitConn(c, 1, pid, true);
       } else {
         for (const c of list) emitConn(c, 1, pid);
       }
@@ -230,6 +241,6 @@ export function buildRows({ connections, projects, nodes, collapsedProjects, que
     // Drop the project header if nothing in it matched the search.
     if (q && rows.length === at + 1 && !projectMatch) rows.pop();
   }
-  for (const c of connections.filter((c) => !c.projectId || !known.has(c.projectId)).sort(byName)) emitConn(c, 0, null);
+  for (const c of top.filter((c) => !c.projectId || !known.has(c.projectId)).sort(byName)) emitConn(c, 0, null);
   return rows;
 }
