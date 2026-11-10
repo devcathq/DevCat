@@ -21,8 +21,10 @@ type Monaco = Parameters<OnMount>[1];
 
 const CONFLICT = "CONFLICT:";
 
-export function TextEditor({ preview, slot, tabId, hidden, reload, onDirty, onSaved }: {
+export function TextEditor({ preview, root, slot, tabId, hidden, reload, onDirty, onSaved }: {
   preview: FilePreview;
+  /** the tab's folder: files opened from the HTML preview's links keep it */
+  root: string | null;
   slot: HTMLElement | null;
   tabId: string;
   /** blame is shown instead; stay mounted so edits survive */
@@ -196,7 +198,7 @@ export function TextEditor({ preview, slot, tabId, hidden, reload, onDirty, onSa
           <Button size="sm" variant="ghost" onClick={() => setSaveError(null)}>Dismiss</Button>
         </Banner>
       )}
-      {showPreview && <HtmlPreview html={previewText} scripts={scripts} setScripts={setScripts} title={basename(path)} />}
+      {showPreview && <HtmlPreview html={previewText} scripts={scripts} setScripts={setScripts} title={basename(path)} path={path} root={root} />}
       {/* stays mounted while previewing so edits (and undo) survive */}
       <div className={showPreview ? "hidden" : "min-h-0 flex-1"}>
         <Editor

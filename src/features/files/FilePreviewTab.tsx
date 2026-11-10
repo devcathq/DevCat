@@ -152,6 +152,7 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
               <TextEditor
                 key={tab.path}
                 preview={preview}
+                root={tab.root ?? null}
                 slot={slot}
                 tabId={tab.id}
                 hidden={blame}

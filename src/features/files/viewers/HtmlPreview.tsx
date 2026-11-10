@@ -2,10 +2,15 @@
 // unless the user turns them on; even then the frame has an opaque origin, so the page can't
 // reach DevCat or the file system. Relative assets (css, images) aren't resolved: use
 // "Open with default app" for the full page. A page that has scripts says so while they're off:
-// pages built by JavaScript would otherwise just look empty.
+// pages built by JavaScript would otherwise just look empty. Links open the file in a tab or the URL
+// in the browser (`previewDoc`); `#` links scroll the page.
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { ScrollText, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Button, IconButton } from "../../../components/ui";
+import { resolvePath } from "../../claude/util";
+import { dirname, openFilePreview } from "../format";
 
 const SCRIPTS_KEY = "devcat.preview.htmlScripts";
 
@@ -30,23 +35,87 @@ export function countScripts(html: string): number {
 /**
  * A srcdoc frame resolves relative URLs against the *parent's* address (http://tauri.localhost/),
  * so `<a href="#why">` would navigate the frame to DevCat's own page (blank, scripts off) instead
- * of scrolling. `<base href="about:srcdoc">` makes `#why` a same-document jump, and other relative
- * links fail to resolve rather than load DevCat. A page with its own `<base href>` keeps it.
+ * of scrolling. `<base href="about:srcdoc">` makes `#why` a same-document jump. A page with its own
+ * `<base href>` keeps it.
+ *
+ * Links to anything else (`../index.html`, `https://…`) can't load in the frame: it would go blank.
+ * A small script of ours catches those clicks and hands the raw `href` to DevCat (`linkTarget`),
+ * which opens the file in a tab or the URL in the browser. The frame always may run scripts for it,
+ * so with the page's scripts off a CSP that only allows our nonce blocks the rest (`<script>`,
+ * `onclick=…`, `javascript:` links). Our script keeps its token in a closure and removes itself
+ * before the page's own scripts run, and it acts only on real clicks, so a page with scripts on
+ * can't make DevCat open things by itself.
  */
-export function withSrcdocBase(html: string): string {
-  if (/<base\b[^>]*\bhref\s*=/i.test(html)) return html;
-  const base = '<base href="about:srcdoc">';
-  // after <head> (or the doctype): a tag before the doctype would put the page in quirks mode
-  const at = html.match(/<head\b[^>]*>/i) ?? html.match(/<!doctype\b[^>]*>/i);
-  if (!at || at.index === undefined) return base + html;
-  const end = at.index + at[0].length;
-  return html.slice(0, end) + base + html.slice(end);
+export function previewDoc(html: string, { scripts, token }: { scripts: boolean; token: string }): string {
+  const nonce = token.replace(/[^\w-]/g, "");
+  const head =
+    (scripts ? "" : `<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-${nonce}'; object-src 'none'">`) +
+    (/<base\b[^>]*\bhref\s*=/i.test(html) ? "" : '<base href="about:srcdoc">') +
+    `<script nonce="${nonce}">(function(){var t=${JSON.stringify(token)},p=parent;document.currentScript.remove();` +
+    `addEventListener("click",function(e){if(!e.isTrusted||e.defaultPrevented||e.button!==0)return;` +
+    `var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a)return;var h=(a.getAttribute("href")||"").trim();` +
+    `if(!h||h.charAt(0)==="#"||/^javascript:/i.test(h))return;e.preventDefault();p.postMessage({devcatPreview:t,href:h},"*");});})();</script>`;
+  // Right after the doctype (or first): before anything that could run, and a tag before the
+  // doctype would put the page in quirks mode. The parser moves these into <head> by itself.
+  const dt = html.match(/<!doctype\b[^>]*>/i);
+  if (!dt || dt.index === undefined || /<script\b/i.test(html.slice(0, dt.index))) return head + html;
+  const end = dt.index + dt[0].length;
+  return html.slice(0, end) + head + html.slice(end);
 }
 
-export function HtmlPreview({ html, scripts, setScripts, title }: { html: string; scripts: boolean; setScripts: (v: boolean) => void; title: string }) {
+/** What a clicked link in the preview of `file` opens: a URL in the browser, or a file (fragment and query dropped). */
+export function linkTarget(file: string, href: string): { url: string } | { path: string } | null {
+  if (/^(https?:|mailto:)/i.test(href)) return { url: href };
+  if (href.startsWith("//")) return { url: `https:${href}` };
+  const local = href.replace(/^file:\/\//i, "");
+  if (/^[a-z][a-z0-9+.-]+:/i.test(local) && !/^[A-Za-z]:[\\/]/.test(local)) return null; // another scheme
+  let rel = local.replace(/[#?].*$/, "");
+  if (!rel) return null;
+  try { rel = decodeURIComponent(rel); } catch { /* keep it as written */ }
+  return { path: normalizePath(resolvePath(dirname(file), rel)) };
+}
+
+/** Collapse `.` and `..` segments, so `sessions/../index.html` is the same tab as `index.html`. */
+function normalizePath(p: string): string {
+  const m = p.match(/^([a-z][a-z0-9+.-]*:\/\/[^/]*|[A-Za-z]:)?([\s\S]*)$/i)!;
+  const lead = m[1] ?? "", rest = m[2];
+  const sep = rest.includes("\\") && !rest.includes("/") ? "\\" : "/";
+  const abs = /^[\\/]/.test(rest);
+  const out: string[] = [];
+  for (const seg of rest.split(/[\\/]+/)) {
+    if (!seg || seg === ".") continue;
+    if (seg === ".." && out.length && out[out.length - 1] !== "..") out.pop();
+    else if (seg !== ".." || !abs) out.push(seg);
+  }
+  return lead + (abs ? sep : "") + out.join(sep);
+}
+
+export function HtmlPreview({ html, scripts, setScripts, title, path, root }: {
+  html: string;
+  scripts: boolean;
+  setScripts: (v: boolean) => void;
+  title: string;
+  /** the file shown, for its relative links */
+  path: string;
+  root: string | null;
+}) {
   const count = useMemo(() => countScripts(html), [html]);
-  const doc = useMemo(() => withSrcdocBase(html), [html]);
+  const token = useMemo(() => crypto.randomUUID(), [html, scripts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const doc = useMemo(() => previewDoc(html, { scripts, token }), [html, scripts, token]);
   const [dismissed, setDismissed] = useState(false);
+  const frame = useRef<HTMLIFrameElement>(null);
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      const d = e.data as { devcatPreview?: unknown; href?: unknown } | null;
+      if (!frame.current || e.source !== frame.current.contentWindow || d?.devcatPreview !== token || typeof d.href !== "string") return;
+      const to = linkTarget(path, d.href);
+      if (!to) return;
+      if ("url" in to) void openUrl(to.url).catch((err) => toast.error(String(err)));
+      else openFilePreview(to.path, root);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [token, path, root]);
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-white">
       {!scripts && count > 0 && !dismissed && (
@@ -62,9 +131,11 @@ export function HtmlPreview({ html, scripts, setScripts, title }: { html: string
       <iframe
         // re-create the frame when the sandbox changes (browsers don't apply it to a loaded page)
         key={scripts ? "js" : "static"}
+        ref={frame}
         title={title}
         srcDoc={doc}
-        sandbox={scripts ? "allow-scripts allow-popups allow-forms allow-modals" : "allow-popups"}
+        // scripts are always allowed for our link script; with the page's off, previewDoc's CSP blocks them
+        sandbox={scripts ? "allow-scripts allow-popups allow-forms allow-modals" : "allow-scripts allow-popups"}
         className="min-h-0 w-full flex-1 border-0"
       />
     </div>
