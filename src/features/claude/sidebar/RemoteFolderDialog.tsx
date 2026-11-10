@@ -11,6 +11,7 @@ import { isRemote, remoteHost, remoteParts, remoteUri, sessionIdOf } from "../..
 import type { ConnectionConfig, FileEntry, SshConfigHost } from "../../../lib/types";
 import { useConnections } from "../../../store/connections";
 import { useWorkspace } from "./workspace";
+import { effectiveConfig } from "../../ssh/variants";
 
 export const useRemoteDialog = create<{ open: boolean; set: (o: boolean) => void }>((set) => ({ open: false, set: (open) => set({ open }) }));
 
@@ -99,7 +100,7 @@ export function RemoteFolderDialog() {
   };
 
   const pickSession = (c: ConnectionConfig) => {
-    const start = c.options.startDir?.trim() || "~";
+    const start = effectiveConfig(c).options.startDir?.trim() || "~";
     setSession(c);
     setHost(c.name);
     setPath(start);

@@ -77,4 +77,16 @@ eq(labels({ bookmarks: both, bookmarksOnly: true, connections: [conn("other")] }
 
 eq([bookmarkHint(users, conn("pg")), bookmarkHint(analytics, conn("pg"))], ["pg · app", "pg"], "bookmark hints");
 
+// SSH session variants: under their session, wherever it is; on their own if it's gone.
+const ssh = (id: string, parent?: string, projectId: string | null = null): ConnectionConfig =>
+  ({ ...conn(id), kind: "ssh", projectId, options: parent ? { parent } : {} });
+const sshConns = [ssh("mini", undefined, "home"), ssh("mini-build", "mini", "home"), ssh("mini-agent", "mini", "home"), ssh("lost", "gone")];
+const sshRows = (query = "") => run({ connections: sshConns, query, projects: [{ id: "home", name: "home" } as never] });
+eq(sshRows().map((r) => `${label(r)}@${r.depth}`), ["project@0", "conn:mini@1", "conn:mini-agent@2", "conn:mini-build@2", "conn:lost@0"], "variants nested under their session");
+eq(sshRows().find((r) => r.id === "c:mini-build")?.parentId, "c:mini", "a variant's tree parent is its session");
+eq(sshRows("build").map(label), ["project", "conn:mini", "conn:mini-build"], "search finds a variant and shows its session");
+eq(sshRows("mini-a").map(label), ["project", "conn:mini", "conn:mini-agent"], "only matching variants");
+eq(sshRows("home").map(label), ["project", "conn:mini", "conn:mini-agent", "conn:mini-build"], "project match: all of it");
+eq((sshRows()[0] as Extract<Row, { type: "project" }>).count, 1, "a project counts sessions, not their variants");
+
 console.log("tree rows: all checks passed");

@@ -1,12 +1,13 @@
 // Form sections of the connection dialog. Each section edits a slice of ConnectionConfig.
 import clsx from "clsx";
-import { Check, FolderPlus, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, FolderPlus, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Checkbox, IconButton, Input, Select, Spinner } from "../../../components/ui";
 import { KIND_META } from "../../../components/ui/KindIcon";
 import { api, errMsg } from "../../../lib/api";
 import type { ConnectionConfig, ConnectionKind, McpAccess, SessionForward, SshConfig, SshConfigHost } from "../../../lib/types";
 import { parseForwards } from "../../ssh/forwards";
+import { sessionWhere } from "../../ssh/variants";
 import { useConnections } from "../../../store/connections";
 import { createProject } from "../tree/projectActions";
 import { NET_KIND_META } from "../../network/meta";
@@ -44,6 +45,12 @@ const URL_PLACEHOLDER: Partial<Record<ConnectionKind, string>> = {
 export function suggestName(cfg: ConnectionConfig): string {
   if (cfg.kind === "sqlite") return cfg.filePath?.split(/[\\/]/).pop() ?? "";
   if (cfg.kind === "kubernetes") return cfg.options.context || "Kubernetes";
+  if (cfg.kind === "ssh" && cfg.options.parent) {
+    // "mini · build" for a variant that attaches tmux session "build", "mini · 100.64.0.2" for another host
+    const p = useConnections.getState().byId(cfg.options.parent);
+    const tmux = cfg.options.startup?.match(/-s\s+(\S+)/)?.[1];
+    return p ? `${p.name} · ${tmux ?? (cfg.host.trim() || "variant")}` : "";
+  }
   if (cfg.kind === "ssh") return cfg.host ? `${cfg.user ? `${cfg.user}@` : ""}${cfg.host}` : "";
   if (cfg.url) {
     try { return new URL(cfg.url).hostname; } catch { return ""; }
@@ -54,7 +61,8 @@ export function suggestName(cfg: ConnectionConfig): string {
 
 const NEW_PROJECT = "\u0000new";
 
-export function IdentitySection({ cfg, set }: SectionProps) {
+/** `noProject`: an SSH session variant (it lives in its session's project). */
+export function IdentitySection({ cfg, set, noProject }: SectionProps & { noProject?: boolean }) {
   const projects = useConnections((s) => s.projects);
   const pickProject = async (value: string) => {
     if (value !== NEW_PROJECT) return set({ projectId: value || null });
@@ -87,7 +95,7 @@ export function IdentitySection({ cfg, set }: SectionProps) {
           ))}
         </div>
       </Row>
-      <Row label="Project">
+      {!noProject && <Row label="Project">
         <div className="flex items-center gap-1.5">
           <Select value={cfg.projectId ?? ""} onChange={(e) => void pickProject(e.target.value)} className="min-w-0 flex-1">
             <option value="">No project</option>
@@ -98,7 +106,7 @@ export function IdentitySection({ cfg, set }: SectionProps) {
             <FolderPlus className="size-3.5" />
           </IconButton>
         </div>
-      </Row>
+      </Row>}
     </>
   );
 }
@@ -288,17 +296,41 @@ export function parseRabbitUrl(text: string): Partial<ConnectionConfig> & { tls:
   };
 }
 
-/** SSH session (Xshell-style): how to log in, and where the terminal starts. */
+/** Back to the session's value (a variant's field that overrides it). */
+function Reset({ show, onClick }: { show: boolean; onClick: () => void }) {
+  if (!show) return null;
+  return (
+    <IconButton type="button" title="Use the session's value" onClick={onClick}>
+      <RotateCcw className="size-3.5" />
+    </IconButton>
+  );
+}
+
+/** SSH session (Xshell-style): how to log in, and where the terminal starts. For a variant
+ *  (`options.parent`) every field left empty is the session's, shown greyed as its placeholder. */
 export function SshSessionSection({ cfg, set, setOpt }: SectionProps) {
   const [hosts, setHosts] = useState<SshConfigHost[]>([]);
   useEffect(() => { api.netSshConfigHosts().then(setHosts).catch(() => {}); }, []);
+  const parentId = cfg.options.parent;
+  const parent = useConnections((s) => (parentId ? s.connections.find((c) => c.id === parentId) : undefined));
+  if (parentId && !parent) return <div className="text-[12px] text-warn">The session this is a variant of was deleted.</div>;
+  const po = parent?.options ?? {};
   // Picking a ~/.ssh/config alias: ssh applies that entry (user, key, jump…) itself.
-  const alias = hosts.find((h) => h.alias === cfg.host.trim());
+  const alias = hosts.find((h) => h.alias === (cfg.host.trim() || parent?.host));
+  const optReset = (k: string) => <Reset show={!!parent && !!cfg.options[k]} onClick={() => setOpt(k, null)} />;
   return (
     <>
+      {parent && (
+        <Row label="Variant of" hint="Greyed values are this session's: fill in a field to change it for this variant only.">
+          <div className="flex h-7 min-w-0 items-baseline gap-2 text-[13px]">
+            <span className="shrink-0 font-medium">{parent.name}</span>
+            <span className="min-w-0 truncate font-mono text-[11px] text-muted">{sessionWhere(parent)}</span>
+          </div>
+        </Row>
+      )}
       <Row label="Host" hint={alias ? <>Uses <span className="font-mono">{alias.alias}</span> from ~/.ssh/config ({alias.user ? `${alias.user}@` : ""}{alias.host}{alias.port && alias.port !== 22 ? `:${alias.port}` : ""}); fields below override it.</> : "A host name, an IP, or a Host alias from ~/.ssh/config."}>
         <div className="flex gap-1.5">
-          <Input value={cfg.host} list="devcat-ssh-hosts" placeholder="server.example.com" onChange={(e) => set({ host: e.target.value })} />
+          <Input value={cfg.host} list="devcat-ssh-hosts" placeholder={parent?.host || "server.example.com"} onChange={(e) => set({ host: e.target.value })} />
           <datalist id="devcat-ssh-hosts">
             {hosts.map((h) => <option key={h.alias} value={h.alias}>{h.user ? `${h.user}@` : ""}{h.host}</option>)}
           </datalist>
@@ -306,29 +338,48 @@ export function SshSessionSection({ cfg, set, setOpt }: SectionProps) {
             className="w-24! shrink-0"
             inputMode="numeric"
             value={cfg.port ?? ""}
-            placeholder={alias ? "" : "22"}
+            placeholder={parent?.port ? String(parent.port) : alias ? "" : "22"}
             onChange={(e) => { const n = parseInt(e.target.value, 10); set({ port: Number.isFinite(n) ? n : null }); }}
           />
+          <Reset show={!!parent && (!!cfg.host.trim() || !!cfg.port)} onClick={() => set({ host: "", port: null })} />
         </div>
       </Row>
       <Row label="User">
-        <Input value={cfg.user} placeholder={alias?.user ?? "root"} onChange={(e) => set({ user: e.target.value })} />
+        <div className="flex gap-1.5">
+          <Input value={cfg.user} placeholder={parent?.user || alias?.user || "root"} onChange={(e) => set({ user: e.target.value })} />
+          <Reset show={!!parent && !!cfg.user.trim()} onClick={() => set({ user: "" })} />
+        </div>
       </Row>
-      <Row label="Password" hint="Optional. Kept in the OS keychain and typed into ssh's login prompt for you.">
-        <PasswordInput value={cfg.password ?? ""} placeholder="(use a key or ssh-agent)" onChange={(v) => set({ password: v })} />
+      <Row label="Password" hint={parent ? "Empty: the session's saved password, if it has one." : "Optional. Kept in the OS keychain and typed into ssh's login prompt for you."}>
+        <div className="flex gap-1.5">
+          <PasswordInput value={cfg.password ?? ""} placeholder={parent ? "(the session's)" : "(use a key or ssh-agent)"} onChange={(v) => set({ password: v })} />
+          <Reset show={!!parent && !!cfg.password} onClick={() => set({ password: "" })} />
+        </div>
       </Row>
       <Row label="Private key" hint="Optional. Without one, ssh-agent and your ~/.ssh keys are tried.">
-        <FileInput value={cfg.options.keyPath ?? ""} placeholder={alias?.identityFile ?? "~/.ssh/id_ed25519"} onChange={(v) => setOpt("keyPath", v || null)} />
+        <div className="flex gap-1.5">
+          <FileInput value={cfg.options.keyPath ?? ""} placeholder={po.keyPath || alias?.identityFile || "~/.ssh/id_ed25519"} onChange={(v) => setOpt("keyPath", v || null)} />
+          {optReset("keyPath")}
+        </div>
       </Row>
       <Row label="Jump host" hint="Optional ProxyJump: user@bastion:22, or several separated by commas.">
-        <Input value={cfg.options.jump ?? ""} placeholder="bastion.example.com" onChange={(e) => setOpt("jump", e.target.value || null)} />
+        <div className="flex gap-1.5">
+          <Input value={cfg.options.jump ?? ""} placeholder={po.jump || "bastion.example.com"} onChange={(e) => setOpt("jump", e.target.value || null)} />
+          {optReset("jump")}
+        </div>
       </Row>
       <div className="my-1 h-px bg-line" />
       <Row label="Start folder">
-        <Input className="font-mono text-xs!" value={cfg.options.startDir ?? ""} placeholder="~" onChange={(e) => setOpt("startDir", e.target.value || null)} />
+        <div className="flex gap-1.5">
+          <Input className="font-mono text-xs!" value={cfg.options.startDir ?? ""} placeholder={po.startDir || "~"} onChange={(e) => setOpt("startDir", e.target.value || null)} />
+          {optReset("startDir")}
+        </div>
       </Row>
       <Row label="Run on login" hint="Optional. Runs before your shell starts, e.g. tmux new -A -s main. It can't change the shell's environment.">
-        <Input className="font-mono text-xs!" value={cfg.options.startup ?? ""} placeholder="tmux new -A -s main" onChange={(e) => setOpt("startup", e.target.value || null)} />
+        <div className="flex gap-1.5">
+          <Input className="font-mono text-xs!" value={cfg.options.startup ?? ""} placeholder={po.startup || (parent ? "tmux new -A -s build" : "tmux new -A -s main")} onChange={(e) => setOpt("startup", e.target.value || null)} />
+          {optReset("startup")}
+        </div>
       </Row>
       <div className="my-1 h-px bg-line" />
       <SessionForwards cfg={cfg} setOpt={setOpt} />
@@ -572,17 +623,20 @@ export function SshSection({ cfg, set }: SectionProps) {
 }
 
 /** Managed option keys edited by dedicated fields; hidden from the raw editor. */
-const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards"]);
+const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards", "parent"]);
 
 /** VPN / SSH tunnel profile that is connected before this connection opens (options.networkId). */
 function NetworkRow({ cfg, setOpt }: SectionProps) {
   const profiles = useNetProfiles();
   const id = cfg.options.networkId ?? "";
   const missing = !!id && !profiles.some((p) => p.id === id);
+  // An SSH session variant: empty = its session's network.
+  const parent = useConnections((s) => (cfg.options.parent ? s.connections.find((c) => c.id === cfg.options.parent) : undefined));
+  const inherited = parent && profiles.find((p) => p.id === parent.options.networkId);
   return (
     <Row label="Network" hint={missing ? <span className="text-warn">The selected VPN / tunnel no longer exists.</span> : "Connected automatically before this connection opens. Manage profiles in the VPN & SSH tunnels sidebar."}>
       <Select value={id} onChange={(e) => setOpt("networkId", e.target.value || null)} className="w-72!">
-        <option value="">None (direct)</option>
+        <option value="">{parent ? `Same as ${parent.name} (${inherited?.name ?? "direct"})` : "None (direct)"}</option>
         {missing && <option value={id}>(missing profile)</option>}
         {profiles.map((p) => <option key={p.id} value={p.id}>{p.name} — {NET_KIND_META[p.kind].label}</option>)}
       </Select>

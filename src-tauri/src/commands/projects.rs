@@ -61,7 +61,12 @@ pub async fn move_connections(state: St, ids: Vec<String>, project_id: Option<St
         }
     }
     state.store.update_all(|c| {
-        if ids.contains(&c.id) {
+        // An SSH session's variants stay in its project: they move with it, never alone.
+        let moved = match c.options.get(crate::claude::remote::PARENT) {
+            Some(parent) => ids.contains(parent),
+            None => ids.contains(&c.id),
+        };
+        if moved {
             c.project_id = project_id.clone();
         }
     })

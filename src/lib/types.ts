@@ -43,7 +43,8 @@ export interface ConnectionConfig {
   /** Project (sidebar folder) this connection belongs to. */
   projectId?: string | null;
   /** Kubernetes: { context }. RabbitMQ: { managementPort, useTls }. Docker: { context } (`host`, when set, overrides it).
-   *  SSH: { keyPath, jump, startDir, startup } (host = name, IP or ~/.ssh/config alias). */
+   *  SSH: { keyPath, jump, startDir, startup, forwards, parent (a variant of that session:
+   *  features/ssh/variants.ts) } (host = name, IP or ~/.ssh/config alias). */
   options: Record<string, string>;
   readOnly: boolean;
   /** What agents may do with it: off (hidden from every agent), read (MCP agents only read) or full.

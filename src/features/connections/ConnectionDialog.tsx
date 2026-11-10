@@ -15,6 +15,7 @@ import {
   AdvancedSection, DockerSection, IdentitySection, KubernetesSection, RabbitSection, ServerSection, SqliteSection, SshSection, SshSessionSection,
   SslSection, SSH_KINDS, SSL_KINDS, suggestName, URL_KINDS, emptySsh,
 } from "./dialog/sections";
+import { isVariant } from "../ssh/variants";
 import { DialogHost } from "./dialogs";
 import { McpActivityDialog } from "./mcp/McpActivityDialog";
 import { McpSyncDialog } from "./mcp/McpSyncDialog";
@@ -24,7 +25,7 @@ export default function ConnectionDialog() {
   const state = useUi((s) => s.connectionDialog);
   return (
     <>
-      {state && <ConnectionDialogInner key={`${state.id ?? "new"}:${state.kind ?? ""}:${state.projectId ?? ""}`} id={state.id} kind={state.kind as ConnectionKind | undefined} projectId={state.projectId ?? (state.id ? null : useConnections.getState().focusProjectId)} />}
+      {state && <ConnectionDialogInner key={`${state.id ?? "new"}:${state.kind ?? ""}:${state.projectId ?? ""}:${state.parentId ?? ""}`} id={state.id} kind={state.kind as ConnectionKind | undefined} projectId={state.projectId ?? (state.id ? null : useConnections.getState().focusProjectId)} parentId={state.parentId ?? null} />}
       <McpSyncDialog />
       <McpActivityDialog />
       <ProjectAgentsDialog />
@@ -51,8 +52,16 @@ const KIND_BLURB: Record<ConnectionKind, string> = {
 type Section = "general" | "ssl" | "ssh" | "advanced";
 type TestState = { status: "idle" } | { status: "testing" } | { status: "ok"; message: string } | { status: "error"; message: string };
 
-function freshConfig(kind: ConnectionKind, projectId: string | null): ConnectionConfig {
+/** `parentId`: a new variant of that SSH session. */
+function freshConfig(kind: ConnectionKind, projectId: string | null, parentId: string | null = null): ConnectionConfig {
   const c = newConnection(kind, projectId);
+  if (kind === "ssh" && parentId) {
+    c.host = "";
+    c.port = null;
+    c.password = null;
+    c.options = { parent: parentId };
+    return c;
+  }
   c.port = KIND_META[kind].defaultPort ?? null;
   if (kind === "sqlite" || kind === "kubernetes" || kind === "docker" || kind === "ssh") c.host = "";
   // Empty = 22, or the port of a ~/.ssh/config alias.
@@ -65,12 +74,12 @@ function freshConfig(kind: ConnectionKind, projectId: string | null): Connection
   return c;
 }
 
-function ConnectionDialogInner({ id, kind, projectId }: { id: string | null; kind?: ConnectionKind; projectId: string | null }) {
+function ConnectionDialogInner({ id, kind, projectId, parentId }: { id: string | null; kind?: ConnectionKind; projectId: string | null; parentId: string | null }) {
   const close = useUi((s) => s.closeConnectionDialog);
   const editing = !!id;
   const validKind = kind && KINDS.includes(kind) ? kind : undefined;
 
-  const [cfg, setCfg] = useState<ConnectionConfig | null>(() => (!editing && validKind ? freshConfig(validKind, projectId) : null));
+  const [cfg, setCfg] = useState<ConnectionConfig | null>(() => (!editing && validKind ? freshConfig(validKind, projectId, parentId) : null));
   const [loadError, setLoadError] = useState<string | null>(null);
   const [useUrl, setUseUrl] = useState(false);
   const [section, setSection] = useState<Section>("general");
@@ -140,7 +149,7 @@ function ConnectionDialogInner({ id, kind, projectId }: { id: string | null; kin
       out.host = c.host.trim();
       out.user = c.user.trim();
       out.readOnly = false;
-      // Empty fields mean "not set" (ssh / ~/.ssh/config defaults apply).
+      // Empty fields mean "not set" (ssh / ~/.ssh/config defaults apply; a variant's: its session's).
       for (const k of ["keyPath", "jump", "startDir", "startup"]) {
         const v = out.options[k]?.trim();
         if (v) out.options[k] = v; else delete out.options[k];
@@ -221,6 +230,8 @@ function ConnectionDialogInner({ id, kind, projectId }: { id: string | null; kin
     );
   }
 
+  const variant = isVariant(cfg);
+  const variantOf = variant ? useConnections.getState().byId(cfg.options.parent)?.name : undefined;
   const sections: { id: Section; label: string }[] = [
     { id: "general", label: "General" },
     ...(SSL_KINDS.includes(cfg.kind) && !(useUrl && URL_KINDS.includes(cfg.kind)) ? [{ id: "ssl" as const, label: "SSL / TLS" }] : []),
@@ -238,7 +249,9 @@ function ConnectionDialogInner({ id, kind, projectId }: { id: string | null; kin
         </button>
       )}
       <KindIcon kind={cfg.kind} />
-      {editing ? `Edit ${cfg.name || "connection"}` : `New ${KIND_META[cfg.kind].label} connection`}
+      {editing ? `Edit ${cfg.name || (variant ? "variant" : "connection")}`
+        : variant ? `New variant of ${variantOf ?? "session"}`
+        : `New ${KIND_META[cfg.kind].label} connection`}
     </span>
   );
 
@@ -283,7 +296,7 @@ function ConnectionDialogInner({ id, kind, projectId }: { id: string | null; kin
         <div className="flex flex-col gap-2.5">
           {activeSection === "general" && (
             <>
-              <IdentitySection {...sp} />
+              <IdentitySection {...sp} noProject={variant} />
               {nameError && <div className="pl-[144px] text-[11px] text-danger">Name is required.</div>}
               <div className="my-1 h-px bg-line" />
               {cfg.kind === "sqlite" ? <SqliteSection {...sp} />

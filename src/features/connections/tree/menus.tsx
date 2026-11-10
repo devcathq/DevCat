@@ -1,7 +1,7 @@
 // Context menu builders for every tree row type.
 import {
   Activity, AppWindow, ArrowDown, Cable, FolderCode, ArrowDownUp, ArrowLeftRight, Bot, Crosshair, LogOut, ArrowUp, Check, Code, Copy, CopyPlus, Eraser, ExternalLink, FilePlus, Folder, FolderInput,
-  FolderMinus, FolderPlus, GitCompare, Network, Palette, Pencil, PencilRuler, Play, Plug, Plus, RefreshCw, SquareTerminal,
+  FolderMinus, FolderPlus, GitCompare, GitFork, Network, Palette, Pencil, PencilRuler, Play, Plug, Plus, RefreshCw, SquareTerminal,
   Star, StarOff, Table2, Trash2, Unplug,
 } from "lucide-react";
 import type { Project } from "../../../lib/types";
@@ -27,6 +27,7 @@ import { isSqlKind, selectTop } from "../../table/sqlDialect";
 import { askableKind, openConnectionAgent } from "../../agent/connection";
 import { openSftp, openSshAgent, openSshTerminal, sessionUri } from "../../ssh/open";
 import { forwardsActive, parseForwards, startForwards, stopForwards, useForwards } from "../../ssh/forwards";
+import { isVariant } from "../../ssh/variants";
 import {
   activateConnection, copyText, deleteConnection, deleteRedisKey, disconnect, dropCollection, dropObject,
   duplicateConnection, refreshAll, truncateTable,
@@ -103,9 +104,11 @@ function projectMenu(row: Extract<Row, { type: "project" }>): MenuItem[] {
 }
 
 function connectionMenu(conn: ConnectionConfig): MenuItem[] {
+  // A variant of an SSH session lives in its session's project: it isn't moved on its own.
+  const variant = isVariant(conn);
   const edit: MenuItem[] = [
-    { label: "Edit connection…", icon: ic(Pencil), onClick: () => useUi.getState().openConnectionDialog(conn.id) },
-    moveToProjectMenu(conn),
+    { label: variant ? "Edit variant…" : "Edit connection…", icon: ic(Pencil), onClick: () => useUi.getState().openConnectionDialog(conn.id) },
+    ...(variant ? [] : [moveToProjectMenu(conn)]),
     { label: "Duplicate", icon: ic(CopyPlus), onClick: () => duplicateConnection(conn) },
     { label: "Delete", icon: ic(Trash2), danger: true, onClick: () => deleteConnection(conn) },
   ];
@@ -116,6 +119,9 @@ function connectionMenu(conn: ConnectionConfig): MenuItem[] {
       { label: "AI workspace on this host", icon: ic(Bot), onClick: () => openSshAgent(conn) },
       ...forwardItems(conn),
       "separator",
+      ...(variant
+        ? []
+        : [{ label: "New variant…", icon: ic(GitFork), onClick: () => useUi.getState().openConnectionDialog(null, "ssh", conn.projectId ?? null, conn.id) } as MenuItem]),
       ...edit,
     ];
   }
