@@ -12,7 +12,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-## 0.24.0 - 2026-11-10
+## 0.24.0 - 2026-11-11
 
 - **SSH session variants** (#151): right-click an SSH session and choose **New variant…** to add a child that
   changes only what it sets, such as another address for the same machine (LAN or Tailscale) or another tmux
