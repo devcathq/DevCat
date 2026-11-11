@@ -334,7 +334,7 @@ fn send_file(stream: &mut TcpStream, path: &Path) -> std::io::Result<()> {
     std::io::copy(&mut (&mut file).take(len), stream).map(|_| ())
 }
 
-fn content_type(path: &Path) -> &'static str {
+pub fn content_type(path: &Path) -> &'static str {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "html" | "htm" => "text/html; charset=utf-8",

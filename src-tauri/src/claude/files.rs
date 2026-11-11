@@ -718,6 +718,69 @@ pub async fn fs_preview(path: String) -> AppResult<FilePreview> {
     crate::rt::spawn_blocking(move || preview_sync(&path)).await.map_err(|e| AppError::msg(e.to_string()))?
 }
 
+const ASSET_CAP: u64 = 10 * 1024 * 1024;
+const ASSETS_TOTAL_CAP: u64 = 40 * 1024 * 1024;
+
+/// The files an HTML preview's page loads (stylesheets, scripts, images), as `data:` URLs, so the
+/// sandboxed `srcdoc` frame can show the page as it looks. `refs` are relative to the page's folder
+/// (`/`-separated, already decoded); each must stay inside `root` (the tab's folder when the page is
+/// in it, else the page's own folder), and hidden or secret-looking files are refused, as the Review
+/// tab's file server does (`review::serve::resolve_file`): with scripts on the page could send what
+/// it gets elsewhere. `None` for a ref that can't be loaded. Local files only.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn fs_html_assets(file: String, root: Option<String>, refs: Vec<String>) -> AppResult<Vec<Option<String>>> {
+    if super::remote::Target::parse(&file).is_some() {
+        return Err(AppError::msg("Not for a file on an SSH host"));
+    }
+    crate::rt::spawn_blocking(move || Ok(html_assets_sync(Path::new(&file), root.as_deref().map(Path::new), &refs)))
+        .await
+        .map_err(|e| AppError::msg(e.to_string()))?
+}
+
+fn html_assets_sync(file: &Path, root: Option<&Path>, refs: &[String]) -> Vec<Option<String>> {
+    let Some(dir) = file.parent() else { return vec![None; refs.len()] };
+    let root = root.filter(|r| dir.starts_with(r)).unwrap_or(dir);
+    // the page's folder below the root, as `/`-separated parts
+    let base: Vec<String> = match dir.strip_prefix(root) {
+        Ok(r) => r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect(),
+        Err(_) => return vec![None; refs.len()],
+    };
+    let mut total = 0u64;
+    refs.iter()
+        .map(|r| {
+            let rel = join_rel(&base, r)?;
+            let path = crate::review::serve::resolve_file(root, &rel).ok()?;
+            let len = fs::metadata(&path).ok()?.len();
+            if len > ASSET_CAP || total + len > ASSETS_TOTAL_CAP {
+                return None;
+            }
+            total += len;
+            let bytes = fs::read(&path).ok()?;
+            let mime = crate::review::serve::content_type(&path).replace(' ', "");
+            Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+        })
+        .collect()
+}
+
+/// `r` (relative, `/`-separated) from the folder `base`, with `.` and `..` applied; `None` when
+/// it leads above the root or isn't relative.
+fn join_rel(base: &[String], r: &str) -> Option<String> {
+    if r.is_empty() || r.starts_with('/') || r.contains(['\\', '\0']) {
+        return None;
+    }
+    let mut out: Vec<&str> = base.iter().map(String::as_str).collect();
+    for seg in r.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop()?;
+            }
+            s => out.push(s),
+        }
+    }
+    (!out.is_empty()).then(|| out.join("/"))
+}
+
 /// A cheap change stamp of a local file (modification time and size), None when it isn't there.
 /// An open file tab polls it, to show a file that appears or changes while it's open (an agent
 /// saying where it writes an image, then writing it).
@@ -825,6 +888,28 @@ mod tests {
     use super::super::git::tests::TempRepo;
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn html_assets_stay_inside_the_folder() {
+        let repo = TempRepo::new("htmlassets");
+        repo.write("web/index.html", "<p>");
+        repo.write("web/style.css", "p{}");
+        repo.write("shared/app.js", "1");
+        repo.write("web/.env", "SECRET=1");
+        repo.write("web/id_rsa", "key");
+        let page = repo.dir.join("web/index.html");
+        let refs: Vec<String> = ["style.css", "./style.css", "../shared/app.js", ".env", "id_rsa", "../../x", "/etc/hosts", "missing.css"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let got = html_assets_sync(&page, Some(&repo.dir), &refs);
+        assert_eq!(got[0].as_deref(), Some("data:text/css;charset=utf-8;base64,cHt9"));
+        assert_eq!(got[1], got[0]);
+        assert_eq!(got[2].as_deref(), Some("data:text/javascript;charset=utf-8;base64,MQ=="));
+        assert!(got[3..].iter().all(Option::is_none), "{got:?}");
+        // without the tab's folder only the page's own folder is reachable
+        assert!(html_assets_sync(&page, None, &refs)[2].is_none());
+    }
 
     fn names(entries: &[FileEntry]) -> Vec<&str> {
         entries.iter().map(|e| e.name.as_str()).collect()
