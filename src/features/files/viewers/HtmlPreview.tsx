@@ -1,7 +1,7 @@
 // Rendered HTML in a sandboxed iframe (the built-in webview, no extra engine). Scripts are off
 // unless the user turns them on; even then the frame has an opaque origin, so the page can't
-// reach DevCat or the file system. Relative assets (css, images) aren't resolved: use
-// "Open with default app" for the full page. A page that has scripts says so while they're off:
+// reach DevCat or the file system. Relative assets (css, images, scripts) can't load in a srcdoc
+// frame, so `inlineLocalAssets` swaps them for data: URLs first (local pages only). A page that has scripts says so while they're off:
 // pages built by JavaScript would otherwise just look empty. Links open the file in a tab or the URL
 // in the browser (`previewDoc`); `#` links scroll the page.
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -9,8 +9,10 @@ import { ScrollText, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button, IconButton } from "../../../components/ui";
+import { api } from "../../../lib/api";
 import { resolvePath } from "../../claude/util";
 import { dirname, openFilePreview } from "../format";
+import { inlineAssets, type Load } from "./htmlAssets";
 
 const SCRIPTS_KEY = "devcat.preview.htmlScripts";
 
@@ -90,6 +92,31 @@ function normalizePath(p: string): string {
   return lead + (abs ? sep : "") + out.join(sep);
 }
 
+/** `inlineAssets` for the page `file` (a local path) shown from the tab's folder `root`. */
+/** `inlineAssets` for the local page `file` shown from the tab's folder `root`; the files are read in batches (`fs_html_assets`). */
+function inlineLocalAssets(html: string, file: string, root: string | null, scripts: boolean): Promise<string> {
+  if (/^[a-z][a-z0-9+.-]+:\/\//i.test(file)) return Promise.resolve(html); // ssh:// and the like
+  // a page with its own <base href> resolves its references elsewhere
+  if (/<base\b[^>]*\bhref\s*=/i.test(html)) return Promise.resolve(html);
+  type Batch = { refs: string[]; waiters: ((u: string | null) => void)[] };
+  let batch: Batch | null = null;
+  const load: Load = (ref) => new Promise((resolve) => {
+    if (!batch) {
+      const b: Batch = { refs: [], waiters: [] };
+      batch = b;
+      queueMicrotask(() => {
+        batch = null;
+        api.fsHtmlAssets(file, root, b.refs)
+          .then((urls) => b.waiters.forEach((w, k) => w(urls[k] ?? null)))
+          .catch(() => b.waiters.forEach((w) => w(null)));
+      });
+    }
+    (batch as Batch).refs.push(ref);
+    (batch as Batch).waiters.push(resolve);
+  });
+  return inlineAssets(html, scripts, load);
+}
+
 export function HtmlPreview({ html, scripts, setScripts, title, path, root }: {
   html: string;
   scripts: boolean;
@@ -100,8 +127,18 @@ export function HtmlPreview({ html, scripts, setScripts, title, path, root }: {
   root: string | null;
 }) {
   const count = useMemo(() => countScripts(html), [html]);
-  const token = useMemo(() => crypto.randomUUID(), [html, scripts]); // eslint-disable-line react-hooks/exhaustive-deps
-  const doc = useMemo(() => previewDoc(html, { scripts, token }), [html, scripts, token]);
+  // the page with its local css / images / scripts inlined; the raw page until they're read
+  const [full, setFull] = useState<{ html: string; scripts: boolean; out: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    inlineLocalAssets(html, path, root, scripts)
+      .then((out) => { if (live) setFull({ html, scripts, out }); })
+      .catch(() => { if (live) setFull({ html, scripts, out: html }); });
+    return () => { live = false; };
+  }, [html, path, root, scripts]);
+  const ready = full && full.html === html && full.scripts === scripts ? full.out : null;
+  const token = useMemo(() => crypto.randomUUID(), [ready, scripts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const doc = useMemo(() => (ready === null ? "" : previewDoc(ready, { scripts, token })), [ready, scripts, token]);
   const [dismissed, setDismissed] = useState(false);
   const frame = useRef<HTMLIFrameElement>(null);
   useEffect(() => {

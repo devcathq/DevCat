@@ -172,6 +172,9 @@ export const api = {
   fsPreview: (path: string) => invoke<FilePreview>("fs_preview", { path }),
   /** Modification time and size of a local file (null: it isn't there); changes when the file does. */
   fsStamp: (path: string) => invoke<string | null>("fs_stamp", { path }),
+  /** Files an HTML page next to `file` loads (page-relative refs) as data: URLs, null where refused (HTML preview). */
+  fsHtmlAssets: (file: string, root: string | null, refs: string[]) =>
+    invoke<(string | null)[]>("fs_html_assets", { file, root, refs }),
   // SSH hosts (desktop only, see AGENTS.md)
   /** Copy an image (base64 `data`, else the OS clipboard's) to the SSH host of `cwd`; its path
    *  there, or null when the clipboard has no image. */
