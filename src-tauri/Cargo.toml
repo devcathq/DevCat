@@ -12,7 +12,10 @@ edition = "2024"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "devcat_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# rlib only: the desktop app and the CLI are binaries. staticlib / cdylib are what Tauri's mobile
+# targets link, and DevCat Mobile is its own crate (mobile/src-tauri); here they only added a
+# second LTO of the whole library to every release build (~1 min).
+crate-type = ["rlib"]
 
 [features]
 # The app with its windows. Without it (`cargo build --no-default-features`): the CLI alone

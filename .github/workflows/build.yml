@@ -32,21 +32,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Every build names its --target, like the CLI's: the same target/<triple> directory,
+          # so the app and CLI jobs share one cache (release-cache.yml).
           - platform: macos-latest
-            args: --target aarch64-apple-darwin
-            rust_targets: aarch64-apple-darwin
+            target: aarch64-apple-darwin
             label: macos-arm64
           - platform: macos-latest
-            args: --target x86_64-apple-darwin
-            rust_targets: x86_64-apple-darwin
+            target: x86_64-apple-darwin
             label: macos-x64
           - platform: windows-latest
-            args: ""
-            rust_targets: ""
+            target: x86_64-pc-windows-msvc
             label: windows-x64
           - platform: ubuntu-22.04
-            args: ""
-            rust_targets: ""
+            target: x86_64-unknown-linux-gnu
             label: linux-x64
     runs-on: ${{ matrix.platform }}
     permissions:
@@ -70,11 +68,15 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust_targets }}
+          targets: ${{ matrix.target }}
+      # Restore only: a cache saved on a tag is invisible to the next tag. release-cache.yml saves
+      # it on master (same inputs there, or the key differs).
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          key: ${{ matrix.label }}
+          key: release-${{ matrix.target }}
+          add-job-id-key: false
+          save-if: false
       - run: pnpm install --frozen-lockfile
 
       # The OpenVPN DevCat ships on macOS (scripts/build-openvpn-macos.sh, run by the macOS
@@ -115,7 +117,7 @@ jobs:
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: --target ${{ matrix.target }}
 
       - name: Check the macOS signature
         if: runner.os == 'macOS' && env.HAS_SIGNING_CERT == 'true'
@@ -221,10 +223,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # Restore only: a cache saved on a tag is invisible to the next tag. release-cache.yml saves
+      # it on master (same inputs there, or the key differs).
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          key: cli-${{ matrix.target }}
+          key: release-${{ matrix.target }}
+          add-job-id-key: false
+          save-if: false
       - run: pnpm install --frozen-lockfile
       # The browser version phones open is served by `devcat serve` (embedded at build time).
       - run: pnpm mobile:web
