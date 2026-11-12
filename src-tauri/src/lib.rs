@@ -158,7 +158,11 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             opened::accept(app, opened::from_args(&argv, Some(std::path::Path::new(&cwd))));
         }))
-        .plugin(tauri_plugin_opener::init())
+        // Without the plugin's link-click script: it goes into every webview, the page review's
+        // too, where it took target="_blank" / Ctrl / Shift clicks (preventDefault, then an
+        // `opener|open_url` the review page may not call), so those links did nothing and the
+        // inspector's new-tab report never ran. DevCat's own links open themselves (`openUrl`).
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

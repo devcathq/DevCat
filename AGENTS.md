@@ -168,6 +168,9 @@ untrusted**: anyone's code can run in it. Keep these rules:
 - **The page webview gets no capability except one command**: the remote-scoped `plugin:devcat-review|msg`
   (`channel.rs`), checked against the calling webview's label and top-level URL, then the per-review secret. Accepted
   risk: a page that patches `fetch` can read the secret and forge notes, but only in its own review.
+- **No plugin page scripts that act on clicks.** A plugin's `js_init_script` goes into every webview, the review's
+  too, and runs before the inspector: the opener plugin's link-click script took every `target="_blank"` / Ctrl
+  click there and did nothing with it. It stays off (`open_js_links_on_click(false)`, `lib.rs`).
 - **`capabilities/default.json` matches `webviews`, not `windows`**: a capability matched by window reaches the child
   webviews too, and with it every DevCat command. Keep it that way.
 - **Never serve review content from a custom URI scheme.** Tauri treats a page from a scheme the app registered as a

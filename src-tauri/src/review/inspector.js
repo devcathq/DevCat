@@ -219,7 +219,9 @@
     return null;
   }
   // after the page's own handlers (bubbling to window), so its click handlers run first and a
-  // link the page handles itself (preventDefault) is left alone
+  // link the page handles itself (preventDefault) is left alone. A plugin script registered before
+  // this one would run first too: the opener plugin's link-click script did, taking every new-tab
+  // click, so it stays off (`lib.rs`).
   function onLinkClick(e) {
     if (inspect || e.defaultPrevented) return;
     var a = linkOf(e.target);
