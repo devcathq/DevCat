@@ -112,6 +112,15 @@ mod gui {
         if !caller_allowed(&r, webview.label(), &url, serve::running_origin().as_deref()) {
             return Err(no_review());
         }
+        // a link or window.open asking for a new tab: the inspector reports it itself, since WebView2
+        // doesn't always tell DevCat (see `webview::open_new_tab`); nothing in the review changes
+        if msg.get("kind").and_then(|k| k.as_str()) == Some("newWindow") {
+            let url = review_store().new_window(&review, &secret, &msg)?;
+            if let Ok(url) = reqwest::Url::parse(&url) {
+                super::super::webview::open_new_tab(webview.app_handle(), &r.id, &url);
+            }
+            return Ok(MsgReply { notes: r.doc.notes });
+        }
         review_store().apply(&review, &secret, &msg)?;
         let now = review_store().get(&review).ok_or_else(no_review)?;
         emit_changed(webview.app_handle(), &now);

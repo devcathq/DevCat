@@ -183,8 +183,23 @@ impl ReviewStore {
             }
             InspectorMsg::Edit { n, comment } => edit_note(r, n, &comment)?,
             InspectorMsg::Remove { n } => remove_note(r, n)?,
+            // not a change to the review: `new_window` takes it
+            InspectorMsg::NewWindow { .. } => return Err(AppError::Msg("That message doesn't change the review".into())),
         }
         Ok(r.doc.clone())
+    }
+
+    /// A `newWindow` message from the review's inspector: the address it asks to open. Checked
+    /// like `apply` (the secret, then the message); the address itself is checked by the caller.
+    pub fn new_window(&self, id: &str, secret: &str, raw: &serde_json::Value) -> AppResult<String> {
+        let r = self.get(id).ok_or_else(no_review)?;
+        if !same_secret(&r.secret, secret) {
+            return Err(no_review());
+        }
+        match intake::parse(raw)? {
+            InspectorMsg::NewWindow { url } => Ok(url),
+            _ => Err(AppError::Msg("Not a new-window message".into())),
+        }
     }
 
     pub fn get(&self, id: &str) -> Option<Review> {
