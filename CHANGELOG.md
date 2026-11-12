@@ -12,6 +12,14 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.24.1 - 2026-11-12
+
+- **HTML previews load their own files** (#153): a page's relative stylesheets, images, icons and (with **Run
+  scripts** on) scripts now load in the Preview, so pages no longer show unstyled or empty. Only files in the
+  page's folder or the project are read, never hidden or secret-looking ones.
+- **New-tab links in a review on Windows** (#154): a `target="_blank"` link, a Ctrl or middle click, or
+  `window.open()` in a reviewed page now opens a new Review tab on Windows too.
+
 ## 0.24.0 - 2026-11-11
 
 - **SSH session variants** (#151): right-click an SSH session and choose **New variant…** to add a child that
