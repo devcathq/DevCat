@@ -7,6 +7,7 @@ use crate::error::{AppError, AppResult};
 use parking_lot::Mutex;
 use reqwest::Url;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -93,6 +94,33 @@ struct NewWindow {
 /// The shortest time between two new review tabs one page may open.
 const NEW_TAB_EVERY: Duration = Duration::from_secs(1);
 
+/// When each review last opened a new tab (`open_new_tab`).
+static LAST_NEW_TAB: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+/// The review's page asked to open `url` in a new window: a new review tab, as a browser opens a
+/// new tab (same review browser data, so sign-ins carry over). Reported by the webview
+/// (`on_new_window`) and by the inspector (`newWindow`, for the review's own site), so a click
+/// can come both ways: at most one tab a second per review, so a page can't flood the window
+/// with tabs and one click opens one tab. Only http(s), never a local target; the new tab starts
+/// through the normal review start, which checks the address again.
+pub(super) fn open_new_tab(app: &AppHandle, review_id: &str, url: &Url) {
+    if !may_open(url, dev_url(app).as_ref()) {
+        return;
+    }
+    {
+        let mut last = LAST_NEW_TAB.get_or_init(Default::default).lock();
+        last.retain(|_, t| t.elapsed() < NEW_TAB_EVERY);
+        if last.contains_key(review_id) {
+            return;
+        }
+        last.insert(review_id.to_string(), Instant::now());
+    }
+    if let Some(r) = review_store().get(review_id) {
+        let ev = NewWindow { id: r.id.clone(), url: url.to_string() };
+        let _ = app.emit_to(EventTarget::webview_window(r.window.as_str()), "review://new-window", ev);
+    }
+}
+
 /// `review://page`, when a page finished loading.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -142,28 +170,18 @@ pub fn create(window: &Window, r: &Review, pos: LogicalPosition<f64>, size: Logi
     let app = window.app_handle().clone();
     let url = Url::parse(&r.load_url).map_err(|_| AppError::Msg("The review has no page to open".into()))?;
     let dev = dev_url(&app);
-    let dev_new = dev.clone();
     let wv_label = label(&r.id);
     let new_id = r.id.clone();
-    let last_new: Mutex<Option<Instant>> = Mutex::new(None);
     let open_app = app.clone();
     let script = inspector_script(r, serve::running_origin().as_deref());
     let id = r.id.clone();
     let builder = WebviewBuilder::new(wv_label, WebviewUrl::External(url))
         .initialization_script(script)
         .on_navigation(move |u| may_navigate(u, dev.as_ref()))
-        // a link or `window.open` asking for a new window opens a new review tab, as a browser
-        // opens a new tab (same review browser data, so sign-ins carry over); at most one a
-        // second, so a page can't flood the window with tabs
+        // a link or `window.open` asking for a new window opens a new review tab (WebView2 doesn't
+        // always report it here; the inspector reports it too, see `open_new_tab`)
         .on_new_window(move |u, _| {
-            let mut last = last_new.lock();
-            if may_open(&u, dev_new.as_ref()) && last.is_none_or(|t| t.elapsed() >= NEW_TAB_EVERY) {
-                *last = Some(Instant::now());
-                if let Some(r) = review_store().get(&new_id) {
-                    let ev = NewWindow { id: r.id.clone(), url: u.to_string() };
-                    let _ = open_app.emit_to(EventTarget::webview_window(r.window.as_str()), "review://new-window", ev);
-                }
-            }
+            open_new_tab(&open_app, &new_id, &u);
             NewWindowResponse::Deny
         })
         .on_page_load(move |wv, p| {

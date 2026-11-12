@@ -11,6 +11,8 @@ pub const MAX_SOURCE: usize = 200;
 pub const MAX_STYLE: usize = 200;
 pub const MAX_PAGE: usize = 500;
 const MAX_MISSING: usize = 10_000;
+/// Longest address a page may ask to open in a new tab.
+pub const MAX_URL: usize = 8192;
 
 /// A message from the inspector script in the reviewed page.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -30,6 +32,10 @@ pub enum InspectorMsg {
     },
     Edit { n: u32, comment: String },
     Remove { n: u32 },
+    /// The page asked for a new window (a `target="_blank"` link, Ctrl / middle click, or
+    /// `window.open`): DevCat opens a new review tab there, after the same checks as a new window
+    /// the webview itself reports (`webview::open_new_tab`).
+    NewWindow { url: String },
 }
 
 /// Line/paragraph separators and Unicode format characters (bidi controls, zero-width marks).
@@ -113,6 +119,13 @@ pub fn parse(raw: &serde_json::Value) -> AppResult<InspectorMsg> {
         }
         InspectorMsg::Edit { n, comment } => InspectorMsg::Edit { n, comment: comment_field(&comment)? },
         m @ InspectorMsg::Remove { .. } => m,
+        InspectorMsg::NewWindow { url } => {
+            let url = clean(&url, false);
+            if url.chars().count() > MAX_URL {
+                return Err(AppError::Msg("That address is too long".into()));
+            }
+            InspectorMsg::NewWindow { url }
+        }
     })
 }
 
@@ -160,6 +173,15 @@ mod tests {
         assert!(parse(&add(json!({"selector": "\u{0}"}))).is_err());
         assert!(parse(&add(json!({"comment": " \n "}))).is_err());
         assert!(parse(&json!({"kind":"edit","n":1,"comment":""})).is_err());
+    }
+
+    #[test]
+    fn intake_new_window_is_capped_and_cleaned() {
+        let m = parse(&json!({"kind":"newWindow","url":"http://localhost:3000/scope/\u{0}1"})).unwrap();
+        assert_eq!(m, InspectorMsg::NewWindow { url: "http://localhost:3000/scope/1".into() });
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URL));
+        assert!(parse(&json!({"kind":"newWindow","url":long})).is_err());
+        assert!(parse(&json!({"kind":"newWindow"})).is_err());
     }
 
     #[test]

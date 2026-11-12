@@ -185,6 +185,56 @@
   var notes = cleanNotes(CONFIG.notes);
   CONFIG = null;
 
+  // A new window (a target=_blank link, Ctrl / Shift / middle click on a link, window.open) opens a
+  // new review tab. The webview reports it to DevCat too, but WebView2 doesn't always, so on the
+  // review's own site the inspector reports it itself and the page gets no native window (DevCat
+  // checks the address and opens at most one tab a second either way).
+  var URLCtor = W.URL, nativeOpen = W.open;
+  function webAddress(raw) {
+    try {
+      var u = new URLCtor(String(raw), String(W.location.href));
+      return u.protocol === "http:" || u.protocol === "https:" ? String(u.href) : null;
+    } catch (_) { return null; }
+  }
+  function openTab(url) {
+    try {
+      Promise.resolve(rawInvoke("plugin:devcat-review|msg", { review: review, secret: secret, msg: { kind: "newWindow", url: url } }))
+        .catch(function () {});
+    } catch (_) {}
+  }
+  // window.open(url) / window.open(url, "_blank"): a named target or no address (opened empty,
+  // then filled) goes the native way.
+  if (typeof nativeOpen === "function") {
+    W.open = function (url, target) {
+      var t = target == null ? "" : String(target).trim().toLowerCase();
+      var to = url == null || url === "" ? null : webAddress(url);
+      if (to && (t === "" || t === "_blank")) { openTab(to); return null; }
+      return nativeOpen.apply(W, arguments);
+    };
+  }
+  function linkOf(el) {
+    for (var n = el; n; n = n.parentNode || (n.nodeType === 11 ? n.host : null)) {
+      if (n.nodeType === 1 && (n.localName === "a" || n.localName === "area") && n.hasAttribute("href")) return n;
+    }
+    return null;
+  }
+  // after the page's own handlers (bubbling to window), so its click handlers run first and a
+  // link the page handles itself (preventDefault) is left alone
+  function onLinkClick(e) {
+    if (inspect || e.defaultPrevented) return;
+    var a = linkOf(e.target);
+    if (!a || a.hasAttribute("download")) return;
+    var t = String(a.getAttribute("target") || "").trim().toLowerCase();
+    var newTab = e.type === "auxclick"
+      ? e.button === 1
+      : e.button === 0 && (t === "_blank" || e.ctrlKey || e.metaKey || e.shiftKey);
+    if (!newTab) return;
+    var to = webAddress(a.href);
+    if (!to) return;
+    e.preventDefault();
+    openTab(to);
+  }
+
   var inspect = true, hovered = null, host = null, shadow = null;
   var hoverBox, hoverLabel, pinLayer, hlBox, box, area, errLine, saveBtn;
   var boxTarget = null, entries = [], missingNow = [], shownPage = null;
@@ -552,6 +602,8 @@
     ["click", "mousedown", "mouseup", "pointerdown", "pointerup", "auxclick", "contextmenu", "dblclick"].forEach(function (t) {
       W.addEventListener(t, t === "click" ? onClick : swallow, cap);
     });
+    W.addEventListener("click", onLinkClick, false);
+    W.addEventListener("auxclick", onLinkClick, false);
     if (inspect) setTouch(true);
     W.addEventListener("keydown", onKey, cap);
     W.addEventListener("scroll", schedule, { capture: true, passive: true });
