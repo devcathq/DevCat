@@ -67,6 +67,8 @@ jobs:
         with:
           workspaces: src-tauri -> target
           key: check
+          # PR runs restore master's cache but don't save their own (the repository has 10 GB).
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       # generate_context! needs frontendDist to exist; the check doesn't use its contents.
       - run: mkdir -p dist
       - name: cargo check

@@ -1,0 +1,72 @@
+# Warms the Rust caches the release build (build.yml) restores. build.yml runs on a tag, and a run
+# can only restore caches saved on its own ref or on master, so a cache saved by one release is
+# invisible to the next one: every release built all dependencies from scratch (~40 min a job).
+# This builds the same dependencies on master, where every tag finds them; build.yml only
+# restores. One cache per target, shared by the app job and the CLI job of that target (the
+# same `key`, `add-job-id-key: false`, the same `--target` directory).
+#
+# Runs when the dependencies change, weekly (a new stable Rust changes the cache key), and by hand.
+name: release-cache
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/Cargo.toml"
+      - "crates/*/Cargo.toml"
+      - ".github/workflows/release-cache.yml"
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cache
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macos-latest, target: aarch64-apple-darwin, app: true }
+          - { platform: macos-latest, target: x86_64-apple-darwin, app: true }
+          - { platform: windows-latest, target: x86_64-pc-windows-msvc, app: true }
+          - { platform: ubuntu-22.04, target: x86_64-unknown-linux-gnu, app: true }
+          - { platform: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, app: false }
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          if [ "${{ matrix.app }}" = true ]; then
+            sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libwebkit2gtk-4.1-dev \
+              libappindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev pkg-config
+          else
+            sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libdbus-1-dev pkg-config
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # Must match build.yml's rust-cache inputs exactly, or the key differs.
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: release-${{ matrix.target }}
+          add-job-id-key: false
+      # generate_context! needs frontendDist to exist; the dependencies don't depend on its contents.
+      - run: mkdir -p dist
+      # What `tauri build` runs (it adds tauri/custom-protocol), then the CLI (build.yml `cli`).
+      - name: Build the app
+        if: matrix.app
+        working-directory: src-tauri
+        run: cargo build --release --locked --features tauri/custom-protocol --target ${{ matrix.target }}
+      - name: Build the CLI
+        working-directory: src-tauri
+        run: cargo build --release --locked --no-default-features --bin devcat --target ${{ matrix.target }}

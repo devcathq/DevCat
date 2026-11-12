@@ -28,5 +28,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: crates/harness -> target
+          # PR runs restore master's cache but don't save their own (the repository has 10 GB).
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
