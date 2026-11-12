@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.24.2 - 2026-11-12
+
+- **New-tab links in a review open again** (#157): in a reviewed page, a `target="_blank"` link (such as a menu
+  item that opens in a new tab) and a Ctrl or Shift click on a link now open a new Review tab. In 0.24.1 they still
+  did nothing.
+
 ## 0.24.1 - 2026-11-12
 
 - **HTML previews load their own files** (#153): a page's relative stylesheets, images, icons and (with **Run
