@@ -109,7 +109,7 @@ pub struct FilePreview {
     pub text: Option<String>,
     /// Monaco language id for text.
     pub language: Option<String>,
-    /// image / pdf bytes, base64.
+    /// image / pdf / docx bytes, base64.
     pub data_base64: Option<String>,
     pub sheets: Option<Vec<SheetData>>,
     pub truncated: bool,
