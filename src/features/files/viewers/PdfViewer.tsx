@@ -145,6 +145,15 @@ const PdfPage = memo(function PdfPage({ doc, n, scale, estW, estH, root }: {
     return () => { live = false; task?.cancel(); };
   }, [visible, doc, n, scale]);
 
+  // Out of view (scrolled away, or its tab hidden): drop the page's bitmap. A page canvas at fit
+  // width on a HiDPI screen is ~30 MB, so keeping every page drawn once grew a long PDF past 1 GB.
+  useEffect(() => {
+    if (visible) return;
+    const c = canvas.current;
+    if (c && c.width) { c.width = 0; c.height = 0; }
+    page.current?.cleanup();
+  }, [visible]);
+
   // Pages can differ in size: use the real one once known at this scale, else the first page's.
   const known = size?.s === scale ? size : null;
   const w = known?.w ?? estW;
