@@ -47,6 +47,7 @@
     "@xterm/xterm": "^6.0.0",
     "@xyflow/react": "^12.12.0",
     "clsx": "^2.1.1",
+    "docx-preview": "0.4.1",
     "html-to-image": "^1.11.13",
     "jsqr": "1.4.0",
     "loro-crdt": "1.16.2",

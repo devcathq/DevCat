@@ -2,7 +2,7 @@
 import Editor from "@monaco-editor/react";
 import clsx from "clsx";
 import { Code, Download, Eye, ExternalLink, FileQuestion, Maximize, Minimize, WrapText, ZoomIn, ZoomOut } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Button, IconButton } from "../../../components/ui";
 import type { FilePreview } from "../../../lib/types";
@@ -127,10 +127,113 @@ export function ImageViewer({ preview, slot }: ViewerProps) {
   );
 }
 
-export function DocxViewer({ preview }: ViewerProps) {
-  const paragraphs = useMemo(() => (preview.text ?? "").split(/\n{1,}/), [preview.text]);
+const DOCX_ZOOMS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+const DOCX_ZOOM_KEY = "devcat.preview.docxZoom";
+const DOCX_MODE_KEY = "devcat.preview.docxMode";
+
+/** Word documents laid out like Word (pages, tables, fonts, images, headers/footers) with docx-preview;
+ *  the extracted text is the fallback (too big to ship the bytes, or the layout failed). */
+export function DocxViewer({ preview, slot }: ViewerProps) {
+  const [mode, setMode] = useState<"page" | "text">(() => (localStorage.getItem(DOCX_MODE_KEY) === "text" ? "text" : "page"));
+  const [zoom, setZoom] = useState(() => Number(localStorage.getItem(DOCX_ZOOM_KEY)) || 1);
+  const [failed, setFailed] = useState<string | null>(null);
+  const canRender = !!preview.dataBase64 && !failed;
+  const showPages = canRender && mode === "page";
+  useEffect(() => { localStorage.setItem(DOCX_ZOOM_KEY, String(zoom)); }, [zoom]);
+  useEffect(() => { localStorage.setItem(DOCX_MODE_KEY, mode); }, [mode]);
+  useEffect(() => setFailed(null), [preview.dataBase64]);
+  const step = (dir: 1 | -1) => setZoom((z) => {
+    const i = DOCX_ZOOMS.findIndex((v) => v >= z - 0.001);
+    return DOCX_ZOOMS[Math.max(0, Math.min(DOCX_ZOOMS.length - 1, (i < 0 ? DOCX_ZOOMS.length - 1 : i) + dir))];
+  });
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {slot && createPortal(
+        <>
+          {showPages && (
+            <>
+              <IconButton title="Zoom out" onClick={() => step(-1)}><ZoomOut className="size-3.5" /></IconButton>
+              <button className="w-10 text-center font-mono text-[11px] text-muted hover:text-fg" title="Reset zoom" onClick={() => setZoom(1)}>
+                {Math.round(zoom * 100)}%
+              </button>
+              <IconButton title="Zoom in" onClick={() => step(1)}><ZoomIn className="size-3.5" /></IconButton>
+            </>
+          )}
+          {canRender && (
+            <IconButton title={mode === "page" ? "Show plain text" : "Show pages (Word layout)"} active={mode === "text"} onClick={() => setMode(mode === "page" ? "text" : "page")}>
+              {mode === "page" ? <Code className="size-3.5" /> : <Eye className="size-3.5" />}
+            </IconButton>
+          )}
+        </>,
+        slot,
+      )}
+      {failed && <TruncatedBanner text={`Couldn't lay out this document like Word (${failed}); showing its text.`} />}
+      {showPages
+        ? <DocxPages data={preview.dataBase64!} zoom={zoom} onZoom={step} onError={setFailed} />
+        : <DocxText preview={preview} />}
+    </div>
+  );
+}
+
+function DocxPages({ data, zoom, onZoom, onError }: { data: string; zoom: number; onZoom: (dir: 1 | -1) => void; onError: (e: string) => void }) {
+  const host = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    const el = host.current;
+    if (!el) return;
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const [{ renderAsync }, buf] = await Promise.all([
+          import("docx-preview"),
+          // fetch() decodes the data URL natively, much faster than atob() for big files
+          fetch(`data:application/octet-stream;base64,${data}`).then((r) => r.arrayBuffer()),
+        ]);
+        if (cancelled) return;
+        el.replaceChildren();
+        await renderAsync(buf, el, el, {
+          className: "docx",
+          inWrapper: true,
+          breakPages: true,
+          ignoreLastRenderedPageBreak: false,
+          renderHeaders: true,
+          renderFooters: true,
+          renderFootnotes: true,
+          renderEndnotes: true,
+          renderComments: false,
+          renderChanges: false,
+          useBase64URL: true,
+          experimental: true,
+        });
+        // links open in the browser, never navigate the app window
+        el.querySelectorAll("a[href]").forEach((a) => {
+          const href = a.getAttribute("href") ?? "";
+          if (/^(https?:|mailto:)/i.test(href)) { a.setAttribute("target", "_blank"); a.setAttribute("rel", "noreferrer"); }
+        });
+      } catch (e) {
+        if (!cancelled) onError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [data, onError]);
+  return (
+    <div
+      className="docx-host relative min-h-0 flex-1 overflow-auto bg-[#3b3f45]"
+      onWheel={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); onZoom(e.deltaY < 0 ? 1 : -1); } }}
+    >
+      {loading && <div className="absolute inset-x-0 top-8 text-center text-xs text-white/70">Laying out document…</div>}
+      <div ref={host} className="selectable" style={{ zoom }} />
+    </div>
+  );
+}
+
+function DocxText({ preview }: { preview: FilePreview }) {
+  const paragraphs = useMemo(() => (preview.text ?? "").split(/\n{1,}/), [preview.text]);
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
       {preview.truncated && <TruncatedBanner text="The document is long; only its beginning is shown." />}
       <div className="min-h-0 flex-1 overflow-auto bg-app py-8">
         <div className="selectable mx-auto max-w-[760px] rounded-sm border border-line bg-raised px-14 py-12 font-serif text-[14px] leading-relaxed text-fg/90 shadow-xl">

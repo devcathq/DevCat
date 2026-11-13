@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Word documents look like Word**: a `.docx` opens as pages laid out the way Word shows them (fonts, headings,
+  lists, tables, images, headers and footers) instead of plain text. Zoom with the toolbar or Ctrl+wheel; the text
+  button still shows the plain text. Files over 40 MB keep the plain-text view.
+
 ## 0.24.2 - 2026-11-12
 
 - **New-tab links in a review open again** (#157): in a reviewed page, a `target="_blank"` link (such as a menu

@@ -13,6 +13,8 @@ const IMAGE_CAP: u64 = 30 * 1024 * 1024;
 const PDF_CAP: u64 = 50 * 1024 * 1024;
 const SHEET_FILE_CAP: u64 = 100 * 1024 * 1024;
 const DOCX_FILE_CAP: u64 = 100 * 1024 * 1024;
+/// Up to this size a .docx also ships its bytes, so the viewer can lay it out like Word.
+const DOCX_RENDER_CAP: u64 = 40 * 1024 * 1024;
 const SHEET_MAX_ROWS: usize = 5000;
 const SHEET_MAX_COLS: usize = 200;
 const SNIFF_LEN: usize = 8192;
@@ -691,6 +693,9 @@ fn preview_kind(path: &str, size: u64) -> AppResult<FilePreview> {
                 pv.truncated = true;
             }
             pv.text = Some(text);
+            if size <= DOCX_RENDER_CAP {
+                pv.data_base64 = Some(base64::engine::general_purpose::STANDARD.encode(fs::read(p)?));
+            }
             return Ok(pv);
         }
         _ => {}
@@ -1157,9 +1162,11 @@ mod tests {
         .unwrap();
         zip.finish().unwrap();
 
-        let pv = fs_preview(path).await.unwrap();
+        let pv = fs_preview(path.clone()).await.unwrap();
         assert_eq!(pv.kind, "docx");
         assert_eq!(pv.text.as_deref(), Some("Hello & world\nA\tB\nCA\n"));
+        let bytes = pv.data_base64.as_deref().map(|b| base64::engine::general_purpose::STANDARD.decode(b).unwrap());
+        assert_eq!(bytes, Some(fs::read(&path).unwrap()));
         assert!(fs_preview(fx.file("bad.docx", b"not a zip")).await.is_err());
     }
 

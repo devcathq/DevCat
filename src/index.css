@@ -93,3 +93,12 @@ select option, select optgroup { background-color: var(--solid-panel, var(--colo
 .room-claim { background: rgba(139, 92, 246, 0.16); border-bottom: 1px dashed rgba(139, 92, 246, 0.7); }
 .room-suggestion { background: rgba(245, 158, 11, 0.12); border-bottom: 2px wavy rgba(245, 158, 11, 0.8); }
 .room-suggestion-stale { border-bottom: 2px dotted rgba(148, 163, 184, 0.7); }
+
+/* Word documents (docx-preview, FilePreview DocxViewer): white pages on the dark backdrop, and undo the
+   Tailwind preflight resets that would change the document's own layout. */
+.docx-host .docx-wrapper { background: transparent; padding: 32px 24px 8px; }
+.docx-host .docx-wrapper > section.docx { box-shadow: 0 2px 14px rgb(0 0 0 / 0.45); margin-bottom: 24px; }
+.docx-host section.docx img, .docx-host section.docx svg { display: inline; max-width: none; height: auto; }
+.docx-host section.docx table { border-collapse: collapse; }
+.docx-host section.docx a { color: #0563c1; text-decoration: underline; }
+.docx-host section.docx ::selection { background: #b4d5fe; color: inherit; }
