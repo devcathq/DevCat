@@ -12,7 +12,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-- **Word documents look like Word**: a `.docx` opens as pages laid out the way Word shows them (fonts, headings,
+## 0.25.0 - 2026-11-13
+
+- **Word documents look like Word** (#159): a `.docx` opens as pages laid out the way Word shows them (fonts, headings,
   lists, tables, images, headers and footers) instead of plain text. Zoom with the toolbar or Ctrl+wheel; the text
   button still shows the plain text. Files over 40 MB keep the plain-text view.
 
