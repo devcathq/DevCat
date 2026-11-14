@@ -12,6 +12,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.25.1 - 2026-11-15
+
+- **A new icon** (#162): DevCat's cat now has a `>_` face and a ring of the tools it works with, in the app, the DEV
+  build, DevCat Mobile (with a proper home-screen icon on iPhone and Android) and the website.
+- **PDFs use far less memory** (#161): pages you scroll past let go of their image and draw again when they come back,
+  so a few long PDFs no longer grow DevCat's window to gigabytes.
+
 ## 0.25.0 - 2026-11-13
 
 - **Word documents look like Word** (#159): a `.docx` opens as pages laid out the way Word shows them (fonts, headings,

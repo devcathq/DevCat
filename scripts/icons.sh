@@ -77,6 +77,8 @@ webp assets/icon.png 128 mobile/public/icon.webp
 # Elsewhere: the promo video, and the images to upload by hand (GitHub avatar, the repo's social
 # preview: Settings → Social preview, 1280×640).
 cp assets/icon.png promo/public/icon.png
+# The README's logo (shown at 112px): small, and its own file so GitHub doesn't show a cached old icon.
+png assets/icon.png 224 assets/logo.png
 mkdir -p assets/brand
 png "$tmp/bleed.png" 1024 assets/brand/avatar.png
 rsvg-convert -w 1280 -h 640 assets/brand/social-preview.svg -o "$tmp/social-text.png"
