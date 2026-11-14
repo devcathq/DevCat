@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <!-- The text and background of social-preview.png; scripts/icons.sh puts the icon on the left. -->
+  <defs>
+    <radialGradient id="glow" cx="0.27" cy="0.5" r="0.55">
+      <stop offset="0" stop-color="#2a1a05"/>
+      <stop offset="1" stop-color="#0a0610"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" fill="#f5f2ea">
+    <text x="590" y="260" font-size="112" font-weight="800" letter-spacing="-2">DevCat</text>
+    <text x="594" y="330" font-size="34" fill="#c9c3b8">Your agents, repos, databases</text>
+    <text x="594" y="375" font-size="34" fill="#c9c3b8">and clusters. One window.</text>
+    <text x="594" y="450" font-size="28" fill="#FFC24D">No account. No server.</text>
+    <text x="594" y="490" font-size="28" fill="#FFC24D">Your machine, your keys, your agents.</text>
+  </g>
+</svg>

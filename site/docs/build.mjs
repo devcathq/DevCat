@@ -84,14 +84,16 @@ function layout(page, { html, toc }) {
   <title>${esc(page.title)} · DevCat docs</title>
   <meta name="description" content="${esc(page.summary)}">
   <meta name="theme-color" content="#0f1114">
-  <link rel="icon" href="../img/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="../img/favicon.ico" sizes="48x48">
+  <link rel="icon" href="../img/icon-192.png" type="image/png" sizes="192x192">
+  <link rel="apple-touch-icon" href="../img/apple-touch-icon.png">
   <link rel="preload" href="../fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="../style.css">
   <link rel="stylesheet" href="docs.css">
 </head>
 <body class="docs">
 <header class="nav docs-nav">
-  <a class="brand" href="../"><img src="../img/icon.svg" width="28" height="28" alt="">DevCat</a>
+  <a class="brand" href="../"><img src="../img/icon.webp" width="28" height="28" alt="">DevCat</a>
   <nav aria-label="Main">
     <a href="index.html" aria-current="true">Docs</a>
     <a href="../#install">Download</a>

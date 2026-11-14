@@ -36,7 +36,7 @@ export default function Welcome() {
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-4xl px-8 py-12">
         <div className="flex items-center gap-4">
-          <img src="/icon.svg" alt="" className="size-14" />
+          <img src="/icon.png" alt="" className="size-14" />
           <div>
             <h1 className="text-3xl font-bold tracking-tight">DevCat</h1>
             <p className="mt-0.5 text-[15px] text-fg/90">Your agents, repos, databases and clusters. One window.</p>

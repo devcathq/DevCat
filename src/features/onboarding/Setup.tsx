@@ -38,7 +38,7 @@ export function Setup() {
     // under the dialogs it opens (they start at z-50)
     <div className="fixed inset-0 z-40 flex flex-col bg-app">
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-5">
-        <img src="/icon.svg" alt="" className="size-6" />
+        <img src="/icon.png" alt="" className="size-6" />
         <span className="font-semibold">Set up DevCat</span>
         <div className="ml-6 flex items-center gap-1.5">
           {STEPS.map((s, n) => (
@@ -87,7 +87,7 @@ function Title({ kicker, title, children }: { kicker: string; title: string; chi
 function WelcomeStep({ onNext }: { onNext: () => void }) {
   return (
     <div className="flex flex-col items-center pt-10 text-center">
-      <img src="/icon.svg" alt="" className="size-20" />
+      <img src="/icon.png" alt="" className="size-20" />
       <h1 className="mt-6 text-4xl font-bold tracking-tight">Welcome to DevCat</h1>
       <p className="mt-3 text-[17px] text-fg/90">Your agents, repos, databases and clusters. One window.</p>
       <p className="mt-2 max-w-lg text-[13.5px] text-muted">A minute to set it up: pick the coding agent you use, a project folder, and anything you'd like to connect. You can skip any of it and change it all later.</p>
