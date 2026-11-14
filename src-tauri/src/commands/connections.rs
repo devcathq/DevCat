@@ -30,6 +30,8 @@ pub async fn save_connection(state: St, config: ConnectionConfig) -> AppResult<C
         crate::claude::remote::Session::from_config(&full)?;
     }
     crate::claude::remote::forget_session(&config.id).await;
+    // a JDBC driver jar is code DevCat runs: remember which ones the user chose
+    crate::db::jdbc::pin_jars(&mut config)?;
     config.group = None;
     if let Some(pid) = &config.project_id {
         if !state.projects.exists(pid)? {

@@ -685,7 +685,7 @@ export function SshSection({ cfg, set }: SectionProps) {
 }
 
 /** Managed option keys edited by dedicated fields; hidden from the raw editor. */
-const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards", "parent", "driverJars", "driverClass", "javaPath", "schema", "properties"]);
+const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards", "parent", "driverJars", "driverClass", "javaPath", "schema", "properties", "jarHashes"]);
 
 /** VPN / SSH tunnel profile that is connected before this connection opens (options.networkId). */
 function NetworkRow({ cfg, setOpt }: SectionProps) {

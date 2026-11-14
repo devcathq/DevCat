@@ -89,9 +89,14 @@ or outside the database's network, uses JDBC). Keep these rules:
 - **A JDBC connection runs programs**: its Java path and its driver jars. So agents can't add one
   (`agent_tools::workspace::KINDS`), as with a kubeconfig or VPN config an agent names, and nothing that comes from
   outside (a room, a chat app, the phone) may create or change one without the user in the window.
-- **Read-only is enforced twice**: DevCat checks each statement's words (`Dialect::Generic`), and the helper's
-  read-only session turns auto-commit off and rolls back after every statement, because `setReadOnly` is only a
-  hint to most drivers.
+- **Driver jars are pinned**: saving the connection (`save_connection` → `jdbc::pin_jars`) records the sha-256 of
+  every jar on this computer, and a jar that changed or appeared in a jar folder since isn't run (`pinned_jars`),
+  so an agent that can write next to the jars can't get its code run by a query. The Java program isn't pinned
+  (a JDK updates itself); jars on an SSH host are that host's.
+- **Read-only can't trust one database's lexing**: `jdbc::read_only_sql` refuses `$`, `\`, `` ` ``, `[`, a `;`
+  between statements and any writing or transaction word outside quotes (agents, a read-only phone and read-only
+  connections all go through it). The helper's read-only session also rolls back after every statement, but that's
+  a backstop only: DDL and an embedded `COMMIT` commit anyway.
 - **Never ship a driver jar**: drivers are the vendors' (SQLBase's has its own licence). The user points at one.
 - **Change the Java, rebuild the jar**: run `src-tauri/jdbc-bridge/build.sh` (needs a JDK 17+) and commit the jar
   with the source; bump `PROTOCOL` on both sides when the requests change. Building DevCat itself needs no Java.

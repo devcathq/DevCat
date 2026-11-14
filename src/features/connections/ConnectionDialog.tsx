@@ -128,6 +128,8 @@ function ConnectionDialogInner({ id, kind, projectId, parentId }: { id: string |
     const out: ConnectionConfig = { ...c, options: { ...c.options } };
     out.name = c.name.trim() || suggestName(c);
     if (c.kind === "jdbc") out.url = c.url?.trim() || null;
+    // DevCat fingerprints the driver jars itself when it saves; the dialog's Test uses what's named
+    if (c.kind === "jdbc") delete out.options.jarHashes;
     else if (!URL_KINDS.includes(c.kind) || !useUrl) out.url = null;
     else out.url = c.url?.trim() || null;
     if (!SSH_KINDS.includes(c.kind)) out.ssh = null;

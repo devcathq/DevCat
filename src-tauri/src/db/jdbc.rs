@@ -134,6 +134,114 @@ impl Settings {
 }
 
 // -------------------------------------------------------------------------------------------------
+// Driver jars on this computer: pinned when the user saves the connection
+
+/// The jar files `jars` names on this computer (a folder: every `*.jar` in it), sorted.
+fn local_jar_files(jars: &[String]) -> AppResult<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for j in jars {
+        let p = super::ssh::expand_home(j);
+        if p.is_dir() {
+            for e in std::fs::read_dir(&p)?.flatten() {
+                let f = e.path();
+                if f.is_file() && f.extension().is_some_and(|x| x.eq_ignore_ascii_case("jar")) {
+                    out.push(f);
+                }
+            }
+        } else if p.is_file() {
+            out.push(p);
+        } else {
+            return Err(AppError::msg(format!("JDBC: driver jar not found: {}", p.display())));
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn hashes_of(files: &[PathBuf]) -> AppResult<Map<String, Value>> {
+    let mut m = Map::new();
+    for f in files {
+        let bytes = std::fs::read(f).map_err(|e| AppError::msg(format!("JDBC: can't read {}: {e}", f.display())))?;
+        m.insert(f.display().to_string(), json!(hex::encode(sha2::Sha256::digest(&bytes))));
+    }
+    Ok(m)
+}
+
+/// When the user saves a JDBC connection that runs on this computer: remember the sha-256 of
+/// every driver jar (`options.jarHashes`). A jar is code DevCat runs, so one that changes later
+/// (an agent writing into that folder, say) isn't run until the user saves the connection again.
+pub fn pin_jars(cfg: &mut ConnectionConfig) -> AppResult<()> {
+    cfg.options.remove("jarHashes");
+    if cfg.kind != ConnectionKind::Jdbc || cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
+        return Ok(());
+    }
+    let settings = Settings::of(cfg)?;
+    let pinned = hashes_of(&local_jar_files(&settings.jars)?)?;
+    cfg.options.insert("jarHashes".into(), Value::Object(pinned).to_string());
+    Ok(())
+}
+
+/// The jar files to load: exactly the pinned ones, unchanged. A connection not saved yet (the
+/// dialog's Test) has no pins and uses what it names.
+fn pinned_jars(cfg: &ConnectionConfig, settings: &Settings) -> AppResult<Vec<String>> {
+    let files = local_jar_files(&settings.jars)?;
+    if let Some(saved) = cfg.options.get("jarHashes").filter(|h| !h.trim().is_empty()) {
+        let saved: Map<String, Value> = serde_json::from_str(saved).map_err(|_| AppError::msg("JDBC: the saved jar fingerprints are damaged; save the connection again"))?;
+        let now = hashes_of(&files)?;
+        if now != saved {
+            let changed: Vec<String> = now
+                .iter()
+                .filter(|(k, v)| saved.get(*k) != Some(*v))
+                .map(|(k, _)| k.clone())
+                .chain(saved.keys().filter(|k| !now.contains_key(*k)).cloned())
+                .collect();
+            return Err(AppError::msg(format!(
+                "JDBC: the driver jars changed since this connection was saved ({}). DevCat runs them as code, so it won't until you open the connection and save it again.",
+                changed.join(", ")
+            )));
+        }
+    }
+    Ok(files.into_iter().map(|f| f.display().to_string()).collect())
+}
+
+/// Whether `sql` (one statement, or a whole script) only reads, judged strictly enough for any
+/// database behind JDBC. DevCat can't know each one's quoting and comment rules, and many drivers
+/// run several statements from one call, so anything it can't read for sure is refused: `$`
+/// and `\` (dollar quoting, backslash escapes), `` ` `` and `[`, a `;` between statements, and words that write or end a
+/// transaction anywhere outside '…' / "…" (comments are not taken out: refusing more is fine).
+pub fn read_only_sql(sql: &str) -> bool {
+    let sql = sql.trim().trim_end_matches(|c: char| c == ';' || c.is_whitespace());
+    // `…` and […] are names in MySQL / SQL Server, and a ' inside one would throw off the scan
+    if sql.is_empty() || sql.contains(['$', '\\', '`', '[']) {
+        return false;
+    }
+    let mut words_src = String::with_capacity(sql.len());
+    let mut quote = None;
+    for c in sql.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None => words_src.push(c.to_ascii_uppercase()),
+        }
+    }
+    if quote.is_some() || words_src.contains(';') {
+        return false;
+    }
+    let words: Vec<&str> = words_src.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).collect();
+    const FIRST: &[&str] = &["SELECT", "WITH", "VALUES", "TABLE", "SHOW", "EXPLAIN", "DESCRIBE", "DESC"];
+    const NEVER: &[&str] = &[
+        "INSERT", "UPDATE", "DELETE", "MERGE", "UPSERT", "REPLACE", "CREATE", "DROP", "ALTER", "TRUNCATE", "RENAME", "GRANT",
+        "REVOKE", "INTO", "COMMIT", "ROLLBACK", "SAVEPOINT", "BEGIN", "END", "START", "CALL", "EXEC", "EXECUTE", "DO", "SET",
+        "RESET", "LOCK", "UNLOCK", "COPY", "LOAD", "UNLOAD", "IMPORT", "EXPORT", "ATTACH", "DETACH", "DECLARE", "GO", "USE",
+        "KILL", "SHUTDOWN", "ANALYZE", "VACUUM", "REFRESH", "COMMENT", "PREPARE", "DEALLOCATE", "OUTFILE", "DUMPFILE", "GET",
+        "PUT", "UPDATING", "SHUTDOWN", "RUNSCRIPT", "SCRIPT", "BACKUP", "CHECKPOINT",
+    ];
+    words.first().is_some_and(|w| FIRST.contains(w)) && !words.iter().any(|w| NEVER.contains(w))
+}
+
+// -------------------------------------------------------------------------------------------------
 // Starting the helper
 
 /// The helper's stdin and stdout, and what keeps the process (or the SSH session) alive.
@@ -162,6 +270,19 @@ fn push_tail(buf: &parking_lot::Mutex<String>, bytes: &[u8]) {
     }
 }
 
+/// `java` in each JDK under `<base>/<vendor>/<version>` (as Windows installers lay them out),
+/// newest version first.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn vendor_javas(base: &Path, exe: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for vendor in ["Eclipse Adoptium", "Java", "Microsoft", "Zulu", "Amazon Corretto", "BellSoft"] {
+        let mut homes: Vec<PathBuf> = std::fs::read_dir(base.join(vendor)).into_iter().flatten().flatten().map(|e| e.path()).collect();
+        homes.sort();
+        out.extend(homes.iter().rev().map(|h| h.join("bin").join(exe)));
+    }
+    out
+}
+
 /// Java programs to try on this computer, best first.
 fn java_candidates(java: Option<&str>) -> Vec<PathBuf> {
     let exe = if cfg!(windows) { "java.exe" } else { "java" };
@@ -182,6 +303,20 @@ fn java_candidates(java: Option<&str>) -> Vec<PathBuf> {
         if !home.is_empty() {
             out.push(from_home(Path::new(&home)));
         }
+    }
+    // A Mac app started from the Dock doesn't get the shell's PATH or JAVA_HOME: where package
+    // managers put a JDK that `java_home` doesn't list.
+    #[cfg(target_os = "macos")]
+    for p in ["/opt/homebrew/opt/openjdk/bin/java", "/usr/local/opt/openjdk/bin/java", "/opt/homebrew/opt/openjdk@21/bin/java", "/opt/homebrew/opt/openjdk@17/bin/java"] {
+        out.push(PathBuf::from(p));
+    }
+    if let Some(home) = dirs::home_dir() {
+        out.push(home.join(".sdkman/candidates/java/current/bin").join(exe));
+    }
+    // JDK installers on Windows: the newest version folder of each vendor
+    #[cfg(windows)]
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        out.extend(vendor_javas(Path::new(&pf), exe));
     }
     // Java that comes with database tools people already have.
     #[cfg(target_os = "macos")]
@@ -316,12 +451,26 @@ fn ps_encoded(script: &str) -> String {
 /// Commands that put the helper on the SSH host (reading it from stdin; nothing if it's
 /// there already) and run it.
 pub fn remote_commands(shell: Shell, name: &str, java: Option<&str>) -> (String, String) {
+    let size = HELPER_JAR.len();
     match shell {
         Shell::Posix => {
+            // in sh whatever the login shell is (fish, tcsh); a part file of its own, kept only when
+            // all of it arrived (a dropped connection must not leave half a jar behind)
             let install = format!(
-                "d=\"$HOME/.devcat/jdbc\"; f=\"$d/{name}\"; if [ -s \"$f\" ]; then echo have; else mkdir -p \"$d\" && cat > \"$f.part\" && mv \"$f.part\" \"$f\" && echo wrote; fi"
+                "exec sh -c {}",
+                sh_quote(&format!(
+                    "d=\"$HOME/.devcat/jdbc\"; f=\"$d/{name}\"; p=\"$f.$$.part\"; \
+                     if [ \"$(wc -c < \"$f\" 2>/dev/null | tr -d ' ')\" = \"{size}\" ]; then cat > /dev/null; echo have; \
+                     else mkdir -p \"$d\" && cat > \"$p\" && [ \"$(wc -c < \"$p\" | tr -d ' ')\" = \"{size}\" ] && mv -f \"$p\" \"$f\" && echo wrote; rm -f \"$p\"; fi"
+                ))
             );
-            let java = java.map(sh_quote).unwrap_or_else(|| "java".into());
+            // `~/…` as the host's home (quoted, it wouldn't expand)
+            let java = java
+                .map(|j| match j.strip_prefix("~/") {
+                    Some(rest) => format!("\"$HOME\"/{}", sh_quote(rest)),
+                    None => sh_quote(j),
+                })
+                .unwrap_or_else(|| "java".into());
             // a login shell, for a PATH set in the profile
             let run = format!("exec sh -lc {}", sh_quote(&format!("exec {java} -Xss4m -jar \"$HOME/.devcat/jdbc/{name}\"")));
             (install, run)
@@ -329,16 +478,18 @@ pub fn remote_commands(shell: Shell, name: &str, java: Option<&str>) -> (String,
         Shell::Cmd | Shell::Pwsh => {
             let install = ps_encoded(&format!(
                 "$d = Join-Path $env:USERPROFILE '.devcat\\jdbc'; $f = Join-Path $d '{name}'; \
-                 if ((Test-Path $f) -and (Get-Item $f).Length -gt 0) {{ 'have' }} else {{ \
-                 New-Item -ItemType Directory -Force -Path $d | Out-Null; \
-                 $i = [Console]::OpenStandardInput(); $o = [IO.File]::Create($f + '.part'); $i.CopyTo($o); $o.Close(); \
-                 Move-Item -Force ($f + '.part') $f; 'wrote' }}"
+                 if ((Test-Path $f) -and (Get-Item $f).Length -eq {size}) {{ 'have' }} else {{ \
+                 New-Item -ItemType Directory -Force -Path $d | Out-Null; $p = $f + '.' + $PID + '.part'; \
+                 $i = [Console]::OpenStandardInput(); $o = [IO.File]::Create($p); $i.CopyTo($o); $o.Close(); \
+                 if ((Get-Item $p).Length -eq {size}) {{ Move-Item -Force $p $f; 'wrote' }} else {{ Remove-Item -Force $p }} }}"
             ));
             let java = java.map(|j| format!("\"{}\"", j.replace('"', ""))).unwrap_or_else(|| "java".into());
             let run = if shell == Shell::Cmd {
                 format!("{java} -Xss4m -jar \"%USERPROFILE%\\.devcat\\jdbc\\{name}\"")
             } else {
-                format!("& {java} -Xss4m -jar \"$env:USERPROFILE\\.devcat\\jdbc\\{name}\"")
+                // single quotes: nothing in the path is expanded
+                let java = java.trim_matches('"').replace('\'', "''");
+                format!("& '{java}' -Xss4m -jar \"$env:USERPROFILE\\.devcat\\jdbc\\{name}\"")
             };
             (install, run)
         }
@@ -502,6 +653,11 @@ impl Bridge {
         }
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(id, tx);
+        // the reader sets `gone` before it fails what's pending: look again now that ours is in
+        if let Some(why) = self.gone.lock().clone() {
+            self.pending.lock().remove(&id);
+            return Err(AppError::msg(why));
+        }
         let mut line = serde_json::to_vec(&req)?;
         line.push(b'\n');
         {
@@ -521,6 +677,16 @@ impl Bridge {
             Ok(Err(e)) => Err(AppError::msg(e)),
             Err(_) => Err(AppError::msg(self.gone.lock().clone().unwrap_or_else(|| "JDBC: the helper stopped".into()))),
         }
+    }
+
+    fn is_gone(&self) -> bool {
+        self.gone.lock().is_some() || self.closed.load(Ordering::SeqCst)
+    }
+
+    /// Stop using this helper (its database connection was lost): the next call starts another.
+    async fn retire(&self, why: &str) {
+        self.gone.lock().get_or_insert_with(|| why.to_string());
+        self.close().await;
     }
 
     async fn close(&self) {
@@ -699,7 +865,12 @@ fn nz(s: &str) -> Option<String> {
 // The driver
 
 pub struct JdbcDriver {
-    bridge: Bridge,
+    /// The helper in use; replaced when it stops or loses its database connection.
+    bridge: parking_lot::Mutex<Arc<Bridge>>,
+    reconnecting: tokio::sync::Mutex<()>,
+    cfg: ConnectionConfig,
+    /// Primary keys by table, for paging and grid edits (asked once per table).
+    keys: parking_lot::Mutex<HashMap<TableRef, Vec<String>>>,
     info: Info,
     settings: Settings,
     read_only: bool,
@@ -709,11 +880,28 @@ pub struct JdbcDriver {
 impl JdbcDriver {
     pub async fn connect(cfg: &ConnectionConfig) -> AppResult<Self> {
         let settings = Settings::of(cfg)?;
+        let (bridge, info) = Self::open(cfg, &settings).await?;
+        Ok(JdbcDriver {
+            bridge: parking_lot::Mutex::new(Arc::new(bridge)),
+            reconnecting: tokio::sync::Mutex::new(()),
+            cfg: cfg.clone(),
+            keys: parking_lot::Mutex::new(HashMap::new()),
+            info,
+            settings,
+            read_only: cfg.read_only,
+            default_catalog: cfg.database.clone().filter(|d| !d.trim().is_empty()),
+        })
+    }
+
+    /// Start a helper and connect it to the database.
+    async fn open(cfg: &ConnectionConfig, settings: &Settings) -> AppResult<(Bridge, Info)> {
         let remote = cfg.ssh.as_ref().is_some_and(|s| s.enabled);
-        let launched = if remote { launch_remote(cfg, &settings).await? } else { launch_local(&settings).await? };
+        // jars on this computer must be the ones the user saved (see `pinned_jars`)
+        let jars = if remote { settings.jars.clone() } else { pinned_jars(cfg, settings)? };
+        let launched = if remote { launch_remote(cfg, settings).await? } else { launch_local(settings).await? };
         let bridge = Bridge::start(launched).await?;
         let req = json!({
-            "jars": settings.jars,
+            "jars": jars,
             "driverClass": settings.driver_class,
             "url": settings.url,
             "user": cfg.user,
@@ -722,20 +910,47 @@ impl JdbcDriver {
             "readOnly": cfg.read_only,
         });
         let info = match tokio::time::timeout(Duration::from_secs(90), bridge.call("connect", req)).await {
-            Ok(r) => r?,
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                bridge.close().await;
+                return Err(e);
+            }
             Err(_) => {
                 bridge.close().await;
                 return Err(AppError::msg("JDBC: the driver didn't connect within 90 seconds"));
             }
         };
-        let info: Info = serde_json::from_value(info)?;
-        Ok(JdbcDriver {
-            bridge,
-            info,
-            settings,
-            read_only: cfg.read_only,
-            default_catalog: cfg.database.clone().filter(|d| !d.trim().is_empty()),
-        })
+        Ok((bridge, serde_json::from_value(info)?))
+    }
+
+    /// The helper to send to: the current one, or a new one if it stopped (SSH dropped, the
+    /// computer slept, the database closed an idle connection).
+    async fn live(&self) -> AppResult<Arc<Bridge>> {
+        let b = self.bridge.lock().clone();
+        if !b.is_gone() {
+            return Ok(b);
+        }
+        let _one = self.reconnecting.lock().await;
+        let b = self.bridge.lock().clone();
+        if !b.is_gone() {
+            return Ok(b);
+        }
+        let (fresh, _) = Self::open(&self.cfg, &self.settings).await?;
+        let fresh = Arc::new(fresh);
+        *self.bridge.lock() = fresh.clone();
+        Ok(fresh)
+    }
+
+    async fn call(&self, op: &str, req: Value) -> AppResult<Value> {
+        let b = self.live().await?;
+        let r = b.call(op, req).await;
+        // SQLState class 08: the database connection is gone; the next call reconnects
+        if let Err(e) = &r
+            && e.to_string().contains("[SQLState 08")
+        {
+            b.retire("JDBC: the database connection was lost").await;
+        }
+        r
     }
 
     /// An identifier quoted the way the driver says (`getIdentifierQuoteString`); bare when it
@@ -743,7 +958,9 @@ impl JdbcDriver {
     fn q(&self, ident: &str) -> String {
         match self.info.quote.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
             Some(q) => format!("{q}{}{q}", ident.replace(q, &format!("{q}{q}"))),
-            None => ident.to_string(),
+            // a name that isn't a plain word goes in standard quotes: never into SQL as it is
+            None if !ident.is_empty() && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => ident.to_string(),
+            None => format!("\"{}\"", ident.replace('"', "\"\"")),
         }
     }
 
@@ -761,7 +978,6 @@ impl JdbcDriver {
 
     async fn exec_one(&self, sql: &str, catalog: Option<&str>, schema: Option<&str>, max_rows: usize, skip: u64) -> AppResult<Vec<JResult>> {
         let v = self
-            .bridge
             .call("exec", json!({ "sql": sql, "catalog": catalog, "schema": schema, "maxRows": max_rows, "skip": skip }))
             .await?;
         Ok(serde_json::from_value(v)?)
@@ -769,7 +985,6 @@ impl JdbcDriver {
 
     async fn structure(&self, t: &TableRef) -> AppResult<JStructure> {
         let v = self
-            .bridge
             .call("structure", json!({ "catalog": self.catalog_of(t.database.as_deref()), "schema": t.schema, "table": t.name }))
             .await?;
         Ok(serde_json::from_value(v)?)
@@ -899,7 +1114,7 @@ impl JdbcDriver {
     }
 
     async fn list<T: for<'de> Deserialize<'de>>(&self, op: &str, req: Value) -> AppResult<Vec<T>> {
-        Ok(serde_json::from_value(self.bridge.call(op, req).await?)?)
+        Ok(serde_json::from_value(self.call(op, req).await?)?)
     }
 }
 
@@ -914,7 +1129,11 @@ impl Driver for JdbcDriver {
     }
 
     async fn server_version(&self) -> AppResult<String> {
-        self.bridge.call("ping", json!({})).await?;
+        if self.call("ping", json!({})).await? == Value::Bool(false) {
+            let b = self.bridge.lock().clone();
+            b.retire("JDBC: the database connection was lost").await;
+            return Err(AppError::msg("JDBC: the database connection was lost; try again to reconnect"));
+        }
         let i = &self.info;
         let product = [i.product.as_deref(), i.product_version.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" ");
         let driver = [i.driver.as_deref(), i.driver_version.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" ");
@@ -1078,7 +1297,7 @@ impl Driver for JdbcDriver {
             return Ok(vec![]);
         }
         if self.read_only
-            && let Some(i) = stmts.iter().position(|s| !sc::is_read_only_statement(D, &s.sql))
+            && let Some(i) = stmts.iter().position(|s| !read_only_sql(&s.sql))
         {
             return Err(sc::read_only_error(i + 1));
         }
@@ -1100,13 +1319,21 @@ impl Driver for JdbcDriver {
         let started = Instant::now();
         let filter = req.filter.as_deref().map(str::trim).filter(|f| !f.is_empty());
         if let Some(f) = filter
-            && (sc::split_statements(D, f).len() > 1 || !sc::is_read_only_statement(D, &format!("SELECT 1 FROM t WHERE {f}")))
+            && (sc::split_statements(D, f).len() > 1 || (self.read_only && !read_only_sql(&format!("SELECT 1 FROM t WHERE {f}"))))
         {
             return Err(AppError::msg("The filter must be a single read-only SQL expression"));
         }
         let qn = self.qualified(&req.table);
         let catalog = self.catalog_of(req.table.database.as_deref());
-        let pk = self.structure(&req.table).await.map(|s| s.primary_key.columns).unwrap_or_default();
+        let cached = self.keys.lock().get(&req.table).cloned();
+        let pk = match cached {
+            Some(pk) => pk,
+            None => {
+                let pk = self.structure(&req.table).await.map(|s| s.primary_key.columns).unwrap_or_default();
+                self.keys.lock().insert(req.table.clone(), pk.clone());
+                pk
+            }
+        };
         let where_sql = sc::where_clause(filter);
         let order: Vec<String> = if req.sort.is_empty() {
             pk.iter().map(|c| self.q(c)).collect()
@@ -1154,7 +1381,6 @@ impl Driver for JdbcDriver {
             statements.push(json!({ "sql": sql, "params": params, "expectOne": expect_one }));
         }
         let n = self
-            .bridge
             .call("batch", json!({ "catalog": self.catalog_of(table.database.as_deref()), "statements": statements }))
             .await?;
         Ok(n.as_u64().unwrap_or(0))
@@ -1229,7 +1455,7 @@ impl Driver for JdbcDriver {
             tables: Vec<JStructure>,
         }
         let snap: Snap = serde_json::from_value(
-            self.bridge.call("snapshot", json!({ "catalog": catalog, "schema": schema, "types": types, "limit": 1000 })).await?,
+            self.call("snapshot", json!({ "catalog": catalog, "schema": schema, "types": types, "limit": 1000 })).await?,
         )?;
         Ok(SchemaSnapshot {
             tables: snap.tables.into_iter().map(|t| self.to_structure(catalog.clone(), schema.clone(), t)).collect(),
@@ -1238,11 +1464,14 @@ impl Driver for JdbcDriver {
     }
 
     async fn cancel(&self) -> AppResult<()> {
-        self.bridge.call("cancel", json!({})).await.map(|_| ())
+        // the helper running the query, not a new one
+        let b = self.bridge.lock().clone();
+        b.call("cancel", json!({})).await.map(|_| ())
     }
 
     async fn close(&self) {
-        self.bridge.close().await;
+        let b = self.bridge.lock().clone();
+        b.close().await;
     }
 }
 
@@ -1300,7 +1529,7 @@ mod tests {
     #[test]
     fn remote_commands_per_shell() {
         let (install, run) = remote_commands(Shell::Posix, "devcat-jdbc-abc.jar", None);
-        assert!(install.contains("$HOME/.devcat/jdbc") && install.contains("cat > \"$f.part\""), "{install}");
+        assert!(install.starts_with("exec sh -c '") && install.contains("$HOME/.devcat/jdbc") && install.contains(&format!("= \"{}\" ]", HELPER_JAR.len())), "{install}");
         assert_eq!(run, "exec sh -lc 'exec java -Xss4m -jar \"$HOME/.devcat/jdbc/devcat-jdbc-abc.jar\"'");
         let (_, run) = remote_commands(Shell::Posix, "x.jar", Some("/opt/my java/bin/java"));
         assert_eq!(run, "exec sh -lc 'exec '\\''/opt/my java/bin/java'\\'' -Xss4m -jar \"$HOME/.devcat/jdbc/x.jar\"'");
@@ -1308,13 +1537,96 @@ mod tests {
         assert!(install.starts_with("powershell -NoProfile -NonInteractive -EncodedCommand "), "{install}");
         assert_eq!(run, "java -Xss4m -jar \"%USERPROFILE%\\.devcat\\jdbc\\x.jar\"");
         let (_, run) = remote_commands(Shell::Pwsh, "x.jar", Some("C:\\Java\\bin\\java.exe"));
-        assert_eq!(run, "& \"C:\\Java\\bin\\java.exe\" -Xss4m -jar \"$env:USERPROFILE\\.devcat\\jdbc\\x.jar\"");
+        assert_eq!(run, "& 'C:\\Java\\bin\\java.exe' -Xss4m -jar \"$env:USERPROFILE\\.devcat\\jdbc\\x.jar\"");
+        let (_, run) = remote_commands(Shell::Pwsh, "x.jar", Some("C:\\J$x\\java.exe"));
+        assert!(run.starts_with("& 'C:\\J$x\\java.exe'"), "no $ expansion: {run}");
+        let (_, run) = remote_commands(Shell::Posix, "x.jar", Some("~/jdk/bin/java"));
+        assert!(run.contains("exec \"$HOME\"/'\\''jdk/bin/java'\\'' -Xss4m"), "~ is the host's home: {run}");
         // the encoded script is UTF-16LE base64 of what PowerShell runs
         use base64::Engine;
         let b64 = install.rsplit(' ').next().unwrap();
         let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
         let script = String::from_utf16(&bytes.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()).unwrap();
         assert!(script.contains("'x.jar'") && script.contains("OpenStandardInput"), "{script}");
+    }
+
+    #[test]
+    fn finds_vendor_jdks_newest_first() {
+        let base = std::env::temp_dir().join(format!("devcat-jdks-{}", uuid::Uuid::new_v4()));
+        for d in ["Eclipse Adoptium/jdk-17.0.9", "Eclipse Adoptium/jdk-21.0.5", "Zulu/zulu-11"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let found = vendor_javas(&base, "java.exe");
+        let rel: Vec<String> = found.iter().map(|p| p.strip_prefix(&base).unwrap().to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(rel, ["Eclipse Adoptium/jdk-21.0.5/bin/java.exe", "Eclipse Adoptium/jdk-17.0.9/bin/java.exe", "Zulu/zulu-11/bin/java.exe"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Read-only over JDBC can't trust any one database's lexing: what's ambiguous is refused.
+    #[test]
+    fn jdbc_read_only_is_strict() {
+        for ok in [
+            "SELECT * FROM t",
+            "select a, 'it''s; delete' AS x from t where b = \"Update\";",
+            "WITH c AS (SELECT 1 AS n) SELECT n FROM c",
+            "SELECT COUNT(*) FROM SYSADM.SYSTABLES",
+            "EXPLAIN SELECT 1",
+        ] {
+            assert!(read_only_sql(ok), "{ok}");
+        }
+        for bad in [
+            // the review's bypasses: dollar quoting, a hidden COMMIT, T-SQL without `;`
+            "SELECT $$'$$; DELETE FROM t; COMMIT; SELECT ''",
+            "SELECT $$'$$; DROP TABLE t; SELECT ''",
+            "SELECT 1 DELETE FROM t COMMIT",
+            "BEGIN DELETE FROM t END",
+            // backslash escapes (MySQL): '\'' is one string there, two here
+            "SELECT '\\'' ; DELETE FROM t; ''",
+            // `--x` isn't a comment in MySQL
+            "SELECT 1 --x; DELETE FROM t",
+            "SELECT 1; SELECT 2",
+            "SELECT `x'` ; DELETE FROM t; SELECT ''",
+            "SELECT [x'] DELETE FROM t SELECT ''",
+            "SELECT * INTO new_t FROM t",
+            "SELECT 1 FROM t FOR UPDATE",
+            "CALL p()",
+            "SET SCHEMA x",
+            "UPDATE t SET a = 1",
+            "SELECT 'open",
+            "",
+        ] {
+            assert!(!read_only_sql(bad), "{bad}");
+        }
+        // what agents and a read-only phone are checked with
+        assert!(crate::remote::readonly::allowed(Some(ConnectionKind::Jdbc), "SELECT 1; SELECT 2"));
+        assert!(!crate::remote::readonly::allowed(Some(ConnectionKind::Jdbc), "SELECT $$'$$; DELETE FROM t; COMMIT; SELECT ''"));
+    }
+
+    /// Jars are pinned when the connection is saved; a changed or added one isn't run.
+    #[test]
+    fn changed_jars_are_refused() {
+        let dir = std::env::temp_dir().join(format!("devcat-jars-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("driver.jar"), b"one").unwrap();
+        let mut c = cfg(json!({ "options": { "driverJars": dir.display().to_string() } }));
+        pin_jars(&mut c).unwrap();
+        let s = Settings::of(&c).unwrap();
+        assert_eq!(pinned_jars(&c, &s).unwrap(), vec![dir.join("driver.jar").display().to_string()]);
+        std::fs::write(dir.join("driver.jar"), b"two").unwrap();
+        assert!(pinned_jars(&c, &s).unwrap_err().to_string().contains("changed since this connection was saved"));
+        std::fs::write(dir.join("driver.jar"), b"one").unwrap();
+        std::fs::write(dir.join("extra.jar"), b"evil").unwrap();
+        assert!(pinned_jars(&c, &s).unwrap_err().to_string().contains("extra.jar"), "an added jar in the folder");
+        // saving again trusts what's there now; unsaved (no pins) uses what it names
+        pin_jars(&mut c).unwrap();
+        assert_eq!(pinned_jars(&c, &s).unwrap().len(), 2);
+        c.options.remove("jarHashes");
+        assert_eq!(pinned_jars(&c, &s).unwrap().len(), 2);
+        // over SSH the jars are the host's: nothing to pin here
+        c.ssh = Some(crate::models::SshConfig { enabled: true, host: "h".into(), ..Default::default() });
+        pin_jars(&mut c).unwrap();
+        assert!(!c.options.contains_key("jarHashes"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1524,6 +1836,20 @@ mod tests {
         assert!(r.is_err(), "cancelled");
         // the session still works afterwards
         assert_eq!(d.execute("SELECT 1", &opts()).await.unwrap()[0].rows[0][0], json!(1));
+
+        // a schema the session switched to itself (USE / SET SCHEMA) doesn't fool a later request
+        d.execute("CREATE SCHEMA a; CREATE SCHEMA b; CREATE TABLE a.t(v VARCHAR(5)); CREATE TABLE b.t(v VARCHAR(5)); INSERT INTO a.t VALUES ('A'); INSERT INTO b.t VALUES ('B')", &opts()).await.unwrap();
+        let in_a = ExecOptions { schema: Some("A".into()), ..opts() };
+        assert_eq!(d.execute("SELECT v FROM t", &in_a).await.unwrap()[0].rows[0][0], json!("A"));
+        d.execute("SET SCHEMA B", &opts()).await.unwrap();
+        assert_eq!(d.execute("SELECT v FROM t", &in_a).await.unwrap()[0].rows[0][0], json!("A"), "back in A");
+
+        // the helper dies: the next call starts another one
+        let old = d.bridge.lock().clone();
+        old.close().await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(d.execute("SELECT v FROM a.t", &opts()).await.unwrap()[0].rows[0][0], json!("A"), "reconnected");
+        assert!(!Arc::ptr_eq(&old, &d.bridge.lock().clone()));
         d.close().await;
 
         // a jar that isn't there, a URL no driver takes

@@ -163,7 +163,11 @@ pub fn allowed(kind: Option<ConnectionKind>, script: &str) -> bool {
         Some(ConnectionKind::Mysql) => sql_read_only(Dialect::Mysql, script),
         Some(ConnectionKind::Sqlite) => sql_read_only(Dialect::Sqlite, script),
         Some(ConnectionKind::Mssql) => sql_read_only(Dialect::Mssql, script),
-        Some(ConnectionKind::Jdbc) => sql_read_only(Dialect::Generic, script),
+        // any database behind JDBC: its own strict check (see the function)
+        Some(ConnectionKind::Jdbc) => {
+            let stmts = sc::split_statements(Dialect::Generic, script);
+            !stmts.is_empty() && stmts.iter().all(|s| crate::db::jdbc::read_only_sql(s))
+        }
         Some(ConnectionKind::Redis) => redis_read_only(script),
         Some(ConnectionKind::Mongodb) => mongo_read_only(script),
         _ => false,

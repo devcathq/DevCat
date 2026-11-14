@@ -33,8 +33,6 @@ public final class DevcatJdbc {
     static Connection conn;
     static boolean readOnly;
     static volatile Statement running;
-    static String catalogNow;
-    static String schemaNow;
 
     public static void main(String[] args) throws Exception {
         out = new PrintStream(new FileOutputStream(FileDescriptor.out), false, "UTF-8");
@@ -187,7 +185,7 @@ public final class DevcatJdbc {
                 // drivers already on the class path (or registered the old way)
                 try { driver = DriverManager.getDriver(url); } catch (SQLException ignored) {}
             }
-            if (driver == null) throw new IllegalArgumentException("no driver in the jars accepts " + url + "; set the driver class");
+            if (driver == null) throw new IllegalArgumentException("no driver in the jars accepts this URL; check its jdbc:<name>: prefix, or set the driver class");
         }
         Properties props = new Properties();
         Map<String, Object> extra = obj(req, "props");
@@ -198,7 +196,7 @@ public final class DevcatJdbc {
         if (password != null && !password.isEmpty()) props.setProperty("password", password);
         DriverManager.setLoginTimeout(30);
         Connection c = driver.connect(url, props);
-        if (c == null) throw new IllegalArgumentException("the driver " + driver.getClass().getName() + " doesn't accept " + url);
+        if (c == null) throw new IllegalArgumentException("the driver " + driver.getClass().getName() + " doesn't accept this URL");
         readOnly = Boolean.TRUE.equals(req.get("readOnly"));
         if (readOnly) {
             // A hint many drivers ignore; every statement also runs in a transaction that is
@@ -220,8 +218,8 @@ public final class DevcatJdbc {
         info.put("schemaTerm", safe(md::getSchemaTerm));
         info.put("catalogs", bool(md::supportsCatalogsInDataManipulation) || bool(md::supportsCatalogsInTableDefinitions));
         info.put("schemas", bool(md::supportsSchemasInDataManipulation) || bool(md::supportsSchemasInTableDefinitions));
-        info.put("catalog", catalogNow = safe(c::getCatalog));
-        info.put("schema", schemaNow = safe(c::getSchema));
+        info.put("catalog", safe(c::getCatalog));
+        info.put("schema", safe(c::getSchema));
         info.put("user", safe(md::getUserName));
         List<Object> types = new ArrayList<>();
         try (ResultSet rs = md.getTableTypes()) {
@@ -270,18 +268,17 @@ public final class DevcatJdbc {
         return b != null && b;
     }
 
-    /** Point the session at `catalog` / `schema` when asked and different. */
+    /**
+     * Point the session at `catalog` / `schema` when asked. Compared with what the connection
+     * says now, never a remembered value: a query may have run `USE` / `SET SCHEMA` since.
+     */
     static void context(Map<String, Object> req) throws SQLException {
         String cat = str(req, "catalog");
-        if (cat != null && !cat.isEmpty() && !cat.equals(catalogNow)) {
-            conn.setCatalog(cat);
-            catalogNow = cat;
-        }
+        if (cat != null && !cat.isEmpty() && !cat.equals(safe(conn::getCatalog))) conn.setCatalog(cat);
         String sch = str(req, "schema");
-        if (sch != null && !sch.isEmpty() && !sch.equals(schemaNow)) {
+        if (sch != null && !sch.isEmpty() && !sch.equals(safe(conn::getSchema))) {
             try {
                 conn.setSchema(sch);
-                schemaNow = sch;
             } catch (SQLFeatureNotSupportedException | AbstractMethodError ignored) {}
         }
     }
@@ -474,6 +471,7 @@ public final class DevcatJdbc {
             case Types.BIGINT: {
                 Object o = rs.getObject(i);
                 if (o == null) return null;
+                if (o instanceof BigInteger) return plain(new BigDecimal((BigInteger) o)); // BIGINT UNSIGNED
                 if (o instanceof Number && !(o instanceof BigDecimal) && !(o instanceof Double) && !(o instanceof Float)) return ((Number) o).longValue();
                 if (o instanceof BigDecimal) return plain((BigDecimal) o);
                 return o.toString();
@@ -576,6 +574,19 @@ public final class DevcatJdbc {
     // ---------------------------------------------------------------------------------------------
     // Metadata
 
+    /** `name` as a metadata search pattern that matches only itself (`_` and `%` escaped). */
+    static String pattern(String name) {
+        if (name == null) return null;
+        String esc = safe(() -> need().getMetaData().getSearchStringEscape());
+        if (esc == null || esc.isEmpty()) return name;
+        return name.replace(esc, esc + esc).replace("_", esc + "_").replace("%", esc + "%");
+    }
+
+    /** A metadata row's catalog / schema is the one asked for (or none was asked for). */
+    static boolean same(String asked, String got) {
+        return asked == null || got == null || asked.equals(got);
+    }
+
     static String nz(String s) {
         return s == null || s.isEmpty() ? null : s;
     }
@@ -616,8 +627,10 @@ public final class DevcatJdbc {
         List<Object> typesIn = req.get("types") instanceof List ? list(req, "types") : null;
         String[] types = typesIn == null ? null : typesIn.stream().map(String::valueOf).toArray(String[]::new);
         List<Object> out = new ArrayList<>();
-        try (ResultSet rs = need().getMetaData().getTables(nz(str(req, "catalog")), nz(str(req, "schema")), "%", types)) {
+        String cat = nz(str(req, "catalog")), sch = nz(str(req, "schema"));
+        try (ResultSet rs = need().getMetaData().getTables(cat, pattern(sch), "%", types)) {
             while (rs.next()) {
+                if (!same(sch, rs.getString("TABLE_SCHEM")) || !same(cat, rs.getString("TABLE_CAT"))) continue; // `_` is a pattern
                 Map<String, Object> t = new LinkedHashMap<>();
                 t.put("catalog", rs.getString("TABLE_CAT"));
                 t.put("schema", rs.getString("TABLE_SCHEM"));
@@ -634,10 +647,11 @@ public final class DevcatJdbc {
 
     static List<Object> columns(String catalog, String schema, String table) throws SQLException {
         List<Object> out = new ArrayList<>();
-        try (ResultSet rs = need().getMetaData().getColumns(nz(catalog), nz(schema), table, "%")) {
+        try (ResultSet rs = need().getMetaData().getColumns(nz(catalog), pattern(nz(schema)), pattern(table), "%")) {
             while (rs.next()) {
                 String t = rs.getString("TABLE_NAME");
                 if (table != null && t != null && !t.equals(table)) continue; // `_` in the name is a pattern
+                if (!same(nz(schema), rs.getString("TABLE_SCHEM")) || !same(nz(catalog), rs.getString("TABLE_CAT"))) continue;
                 out.add(column(rs));
             }
         } finally {
@@ -787,8 +801,8 @@ public final class DevcatJdbc {
         @SuppressWarnings("unchecked") List<Object> tables = (List<Object>) tables(req);
         // columns for all tables at once: one metadata call instead of one per table
         Map<String, List<Object>> colsBy = new HashMap<>();
-        try (ResultSet rs = need().getMetaData().getColumns(nz(catalog), nz(schema), "%", "%")) {
-            while (rs.next()) colsBy.computeIfAbsent(rs.getString("TABLE_SCHEM") + "\u0000" + rs.getString("TABLE_NAME"), k -> new ArrayList<>()).add(column(rs));
+        try (ResultSet rs = need().getMetaData().getColumns(nz(catalog), pattern(nz(schema)), "%", "%")) {
+            while (rs.next()) if (same(nz(schema), rs.getString("TABLE_SCHEM"))) colsBy.computeIfAbsent(rs.getString("TABLE_SCHEM") + "\u0000" + rs.getString("TABLE_NAME"), k -> new ArrayList<>()).add(column(rs));
         } catch (Exception ignored) {
         } finally {
             finish();
