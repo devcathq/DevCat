@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/icon.png" width="112" alt="DevCat logo"></p>
+<p align="center"><img src="assets/logo.png" width="112" alt="DevCat logo"></p>
 
 <h1 align="center">DevCat</h1>
 
