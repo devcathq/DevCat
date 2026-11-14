@@ -81,7 +81,7 @@ const standalone = () => matchMedia("(display-mode: standalone)").matches || (na
 export function Welcome() {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto overscroll-contain px-5" style={{ paddingTop: "max(36px, env(safe-area-inset-top))", paddingBottom: "max(20px, env(safe-area-inset-bottom))" }}>
-      <img src={`${import.meta.env.BASE_URL}icon.png`} alt="" className="size-14 rounded-2xl" />
+      <img src={`${import.meta.env.BASE_URL}icon.webp`} alt="" className="size-14 rounded-2xl" />
       <div className="text-[24px] font-bold">DevCat Mobile</div>
       <div className="text-muted">Watch your AI agents and reach your databases, Redis, VPNs and clusters through DevCat on your computer.</div>
       <div className="pt-2 text-[10.5px] font-semibold tracking-wider text-faint uppercase">Set up in 3 steps</div>
@@ -298,7 +298,7 @@ export function WebLanding({ link }: { link: string }) {
   };
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto overscroll-contain px-5" style={{ paddingTop: "max(36px, env(safe-area-inset-top))", paddingBottom: "max(20px, env(safe-area-inset-bottom))" }}>
-      <img src={`${import.meta.env.BASE_URL}icon.png`} alt="" className="size-14 rounded-2xl" />
+      <img src={`${import.meta.env.BASE_URL}icon.webp`} alt="" className="size-14 rounded-2xl" />
       <div className="text-[24px] font-bold">Pair with {info.name}</div>
       <div className="text-muted">Control DevCat on this computer from your phone: agents, databases, Redis, VPNs and clusters.</div>
       <Card>

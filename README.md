@@ -348,7 +348,8 @@ pnpm tauri dev          # run the app with hot reload
 
 Dev builds run as **DevCat Dev** (identifier `dev.devcat.app.dev`, a green DEV band on the icon), so they run
 next to an installed DevCat with their own data folder and keychain entries, and don't share its connections or
-settings. The DEV icons in `src-tauri/icons/dev/` come from `assets/icon-dev.svg` (`scripts/dev-icons.sh`).
+settings. Every icon (the app's, the DEV build's in `src-tauri/icons/dev/`, the phone's and the website's)
+comes from `assets/icon-source.png` (`scripts/icons.sh`).
 
 ```bash
 pnpm dev:copy-data         # copy your installed DevCat's data and saved passwords into DevCat Dev, once

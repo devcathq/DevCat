@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The DEV band drawn over assets/icon.png for dev builds' icon (`pnpm tauri dev`, scripts/icons.sh). -->
+  <defs>
+    <clipPath id="tile">
+      <rect x="66" y="66" width="892" height="892" rx="200"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect x="0" y="806" width="1024" height="160" fill="#22C55E"/>
+  </g>
+  <text x="512" y="916" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="800" font-size="118" letter-spacing="22" fill="#0b1a10">DEV</text>
+</svg>
