@@ -12,7 +12,7 @@ import type { ConnectionConfig, ConnectionKind } from "../../lib/types";
 import { newConnection, useConnections } from "../../store/connections";
 import { useUi } from "../../store/ui";
 import {
-  AdvancedSection, DockerSection, IdentitySection, KubernetesSection, RabbitSection, ServerSection, SqliteSection, SshSection, SshSessionSection,
+  AdvancedSection, DockerSection, IdentitySection, JdbcSection, KubernetesSection, RabbitSection, ServerSection, SqliteSection, SshSection, SshSessionSection,
   SslSection, SSH_KINDS, SSL_KINDS, suggestName, URL_KINDS, emptySsh,
 } from "./dialog/sections";
 import { isVariant } from "../ssh/variants";
@@ -47,6 +47,7 @@ const KIND_BLURB: Record<ConnectionKind, string> = {
   rabbitmq: "Management HTTP API",
   docker: "Containers, images, volumes: this computer or a remote engine",
   ssh: "Terminal, SFTP and agents on a server",
+  jdbc: "Any database with a JDBC driver: SQLBase, Oracle, Db2…",
 };
 
 type Section = "general" | "ssl" | "ssh" | "advanced";
@@ -63,7 +64,7 @@ function freshConfig(kind: ConnectionKind, projectId: string | null, parentId: s
     return c;
   }
   c.port = KIND_META[kind].defaultPort ?? null;
-  if (kind === "sqlite" || kind === "kubernetes" || kind === "docker" || kind === "ssh") c.host = "";
+  if (kind === "sqlite" || kind === "kubernetes" || kind === "docker" || kind === "ssh" || kind === "jdbc") c.host = "";
   // Empty = 22, or the port of a ~/.ssh/config alias.
   if (kind === "ssh") c.port = null;
   if (kind === "redis") c.database = "0";
@@ -126,7 +127,8 @@ function ConnectionDialogInner({ id, kind, projectId, parentId }: { id: string |
   const finalize = (c: ConnectionConfig): ConnectionConfig => {
     const out: ConnectionConfig = { ...c, options: { ...c.options } };
     out.name = c.name.trim() || suggestName(c);
-    if (!URL_KINDS.includes(c.kind) || !useUrl) out.url = null;
+    if (c.kind === "jdbc") out.url = c.url?.trim() || null;
+    else if (!URL_KINDS.includes(c.kind) || !useUrl) out.url = null;
     else out.url = c.url?.trim() || null;
     if (!SSH_KINDS.includes(c.kind)) out.ssh = null;
     else if (out.ssh && !out.ssh.enabled && !out.ssh.host) out.ssh = null;
@@ -181,6 +183,10 @@ function ConnectionDialogInner({ id, kind, projectId, parentId }: { id: string |
     }
     if (out.kind === "sqlite" && !out.filePath) {
       toast.error("Choose a database file");
+      return;
+    }
+    if (out.kind === "jdbc" && (!out.url || !out.options.driverJars?.trim())) {
+      toast.error("Give the JDBC URL and the driver's jar");
       return;
     }
     setSaving(true);
@@ -304,6 +310,7 @@ function ConnectionDialogInner({ id, kind, projectId, parentId }: { id: string |
                 : cfg.kind === "rabbitmq" ? <RabbitSection {...sp} />
                 : cfg.kind === "docker" ? <DockerSection {...sp} />
                 : cfg.kind === "ssh" ? <SshSessionSection {...sp} />
+                : cfg.kind === "jdbc" ? <JdbcSection {...sp} />
                 : <ServerSection {...sp} useUrl={useUrl} setUseUrl={(v) => { setUseUrl(v); setTest({ status: "idle" }); }} />}
             </>
           )}

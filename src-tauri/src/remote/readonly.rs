@@ -163,6 +163,7 @@ pub fn allowed(kind: Option<ConnectionKind>, script: &str) -> bool {
         Some(ConnectionKind::Mysql) => sql_read_only(Dialect::Mysql, script),
         Some(ConnectionKind::Sqlite) => sql_read_only(Dialect::Sqlite, script),
         Some(ConnectionKind::Mssql) => sql_read_only(Dialect::Mssql, script),
+        Some(ConnectionKind::Jdbc) => sql_read_only(Dialect::Generic, script),
         Some(ConnectionKind::Redis) => redis_read_only(script),
         Some(ConnectionKind::Mongodb) => mongo_read_only(script),
         _ => false,

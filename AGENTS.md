@@ -77,6 +77,27 @@ tool with the same scope (`tools_for(…, in_app)`); with DevCat closed it runs 
 (`network::set_passive`: it never starts networks), and tools that need DevCat say so. Sync MCP and the bridge are
 about this computer, so they stay out of the phone dispatcher, like the SSH workbench above.
 
+## JDBC connections
+
+A `jdbc` connection (`src-tauri/src/db/jdbc.rs`) reaches a database through a driver jar the user supplies. DevCat has
+no Java in it: it embeds a small helper (`src-tauri/jdbc-bridge/DevcatJdbc.java`, built into the committed
+`devcat-jdbc.jar` by `build.sh`, Java 11 bytecode, no dependencies) and starts it with a Java that's already there,
+speaking one JSON line each way over its stdin / stdout. With SSH on, DevCat logs in itself, copies the helper to
+`~/.devcat/jdbc/` on that host and runs it there: the database is reached from that host (how a computer without Java,
+or outside the database's network, uses JDBC). Keep these rules:
+
+- **A JDBC connection runs programs**: its Java path and its driver jars. So agents can't add one
+  (`agent_tools::workspace::KINDS`), as with a kubeconfig or VPN config an agent names, and nothing that comes from
+  outside (a room, a chat app, the phone) may create or change one without the user in the window.
+- **Read-only is enforced twice**: DevCat checks each statement's words (`Dialect::Generic`), and the helper's
+  read-only session turns auto-commit off and rolls back after every statement, because `setReadOnly` is only a
+  hint to most drivers.
+- **Never ship a driver jar**: drivers are the vendors' (SQLBase's has its own licence). The user points at one.
+- **Change the Java, rebuild the jar**: run `src-tauri/jdbc-bridge/build.sh` (needs a JDK 17+) and commit the jar
+  with the source; bump `PROTOCOL` on both sides when the requests change. Building DevCat itself needs no Java.
+- **stdout is the protocol**: the helper points `System.out` at stderr so a driver that prints can't break it, and
+  DevCat skips any line that isn't JSON (a login banner over SSH).
+
 ## Ghost chats
 
 A ghost chat (`agent_open` with `ghost_window`, `features/agent/ghost.ts`, a window with only the chat:

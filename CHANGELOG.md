@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **JDBC connections**: any database with a JDBC driver (SQLBase, Oracle, Db2, Informix, H2…) as a connection, with
+  its tree, table data, grid edits, queries and export, and for agents over MCP like any other database. DevCat stays
+  free of Java: its small helper runs on a Java you already have (JAVA_HOME, an installed JDK, the one in DBeaver or
+  DataGrip), or, with SSH on, on another computer that has Java and can reach the database. You bring the driver's
+  jar.
+
 ## 0.25.1 - 2026-11-15
 
 - **A new icon** (#162): DevCat's cat now has a `>_` face and a ring of the tools it works with, in the app, the DEV

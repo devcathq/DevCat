@@ -13,7 +13,8 @@ type Format = "csv" | "tsv" | "json" | "jsonl" | "sql" | "xlsx";
 const EXT: Record<Format, string> = { csv: "csv", tsv: "tsv", json: "json", jsonl: "jsonl", sql: "sql", xlsx: "xlsx" };
 const FORMAT_LABEL: Record<Format, string> = { csv: "CSV", tsv: "TSV (tab separated)", json: "JSON (array)", jsonl: "JSON Lines", sql: "SQL INSERT statements", xlsx: "Excel (.xlsx)" };
 const DIALECTS = [["", "Same as source"], ["postgres", "PostgreSQL"], ["mysql", "MySQL / MariaDB"], ["sqlite", "SQLite"], ["mssql", "SQL Server"]] as const;
-const KINDS: ConnectionKind[] = [...SQL_KINDS, "mongodb"];
+// JDBC: export only (its tables can be read, but DevCat doesn't write SQL for it)
+const KINDS: ConnectionKind[] = [...SQL_KINDS, "mongodb", "jdbc"];
 
 interface FmtOpts {
   delimiter: string; header: boolean; quote: string; nullText: string; lineEnding: "\n" | "\r\n"; bom: boolean; jsonPretty: boolean;

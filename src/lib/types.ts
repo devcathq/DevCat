@@ -6,9 +6,11 @@ export type ConnectionKind =
   /** A Docker engine, through the `docker` CLI: this computer's, a context, or a remote host. */
   | "docker"
   /** Saved SSH login (terminal, SFTP, agents on the host). Desktop only: see AGENTS.md. */
-  | "ssh";
+  | "ssh"
+  /** Any database with a JDBC driver jar, through DevCat's Java helper (src-tauri/src/db/jdbc.rs). */
+  | "jdbc";
 
-export const DATABASE_KINDS: ConnectionKind[] = ["postgres", "mysql", "sqlite", "mssql", "mongodb", "redis"];
+export const DATABASE_KINDS: ConnectionKind[] = ["postgres", "mysql", "sqlite", "mssql", "mongodb", "redis", "jdbc"];
 export const INFRA_KINDS: ConnectionKind[] = ["kubernetes", "rabbitmq", "docker", "ssh"];
 
 export interface SshConfig {
@@ -330,11 +332,13 @@ export type RowChange =
   | { op: "update"; key: Record<string, CellValue>; values: Record<string, CellValue> }
   | { op: "delete"; key: Record<string, CellValue> };
 
-export type Dialect = "postgres" | "mysql" | "sqlite" | "mssql" | "none";
+/** `generic`: standard SQL, for JDBC databases. */
+export type Dialect = "postgres" | "mysql" | "sqlite" | "mssql" | "generic" | "none";
 
 export function dialectOf(kind: ConnectionKind): Dialect {
   switch (kind) {
     case "postgres": case "mysql": case "sqlite": case "mssql": return kind;
+    case "jdbc": return "generic";
     default: return "none";
   }
 }

@@ -86,6 +86,7 @@ pub fn main(args: &[String]) -> i32 {
     crate::secrets::follow_data_dir(&dir);
     crate::network::init(dir.clone());
     crate::db::ssh::init(dir.clone());
+    crate::db::jdbc::init(dir.clone());
     crate::network::set_passive();
     // with DevCat open, tool calls run there (agent_bridge.rs)
     crate::agent_bridge::use_from(dir.clone());

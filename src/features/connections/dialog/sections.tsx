@@ -2,7 +2,7 @@
 import clsx from "clsx";
 import { Check, FolderPlus, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Checkbox, IconButton, Input, Select, Spinner } from "../../../components/ui";
+import { Checkbox, IconButton, Input, Select, Spinner, Textarea } from "../../../components/ui";
 import { KIND_META } from "../../../components/ui/KindIcon";
 import { api, errMsg } from "../../../lib/api";
 import type { ConnectionConfig, ConnectionKind, McpAccess, SessionForward, SshConfig, SshConfigHost } from "../../../lib/types";
@@ -32,7 +32,7 @@ export const COLOR_PRESETS: { value: string | null; label: string }[] = [
 ];
 
 export const URL_KINDS: ConnectionKind[] = ["postgres", "mysql", "mongodb", "redis"];
-export const SSH_KINDS: ConnectionKind[] = ["postgres", "mysql", "mssql", "mongodb", "redis"];
+export const SSH_KINDS: ConnectionKind[] = ["postgres", "mysql", "mssql", "mongodb", "redis", "jdbc"];
 export const SSL_KINDS: ConnectionKind[] = ["postgres", "mysql", "mssql", "mongodb", "redis"];
 
 const URL_PLACEHOLDER: Partial<Record<ConnectionKind, string>> = {
@@ -52,11 +52,24 @@ export function suggestName(cfg: ConnectionConfig): string {
     return p ? `${p.name} · ${tmux ?? (cfg.host.trim() || "variant")}` : "";
   }
   if (cfg.kind === "ssh") return cfg.host ? `${cfg.user ? `${cfg.user}@` : ""}${cfg.host}` : "";
+  if (cfg.kind === "jdbc") return jdbcName(cfg.url ?? "");
   if (cfg.url) {
     try { return new URL(cfg.url).hostname; } catch { return ""; }
   }
   if (!cfg.host) return "";
   return cfg.database && cfg.kind !== "redis" && cfg.kind !== "rabbitmq" ? `${cfg.database}@${cfg.host}` : cfg.host;
+}
+
+/** "SQLBase · 192.168.0.3" from jdbc:sqlbase://192.168.0.3:2155/DB, "H2" from jdbc:h2:~/data. */
+export function jdbcName(url: string): string {
+  const u = url.trim();
+  const sub = u.match(/^jdbc:([a-z0-9]+)/i)?.[1]?.toLowerCase();
+  if (!sub) return "";
+  const pretty: Record<string, string> = { sqlbase: "SQLBase", oracle: "Oracle", db2: "Db2", as400: "IBM i", informix: "Informix", sybase: "Sybase", jtds: "jTDS", firebirdsql: "Firebird", h2: "H2", hsqldb: "HSQLDB", derby: "Derby", sap: "SAP HANA", teradata: "Teradata", snowflake: "Snowflake", vertica: "Vertica", exa: "Exasol", ingres: "Ingres" };
+  const name = pretty[sub] ?? sub;
+  // //host…, or Oracle's @host / @//host
+  const host = u.match(/\/\/([^:/;?\s@]+)/)?.[1] ?? u.match(/@([^:/;?\s@]+)/)?.[1];
+  return host ? `${name} · ${host}` : name;
 }
 
 const NEW_PROJECT = "\u0000new";
@@ -159,6 +172,55 @@ export function ServerSection({ cfg, set, useUrl, setUseUrl }: SectionProps & { 
           )}
         </>
       )}
+    </>
+  );
+}
+
+/** A database through a JDBC driver jar: the driver runs in DevCat's small Java helper, on this
+ *  computer or, with SSH on, on the SSH host (src-tauri/src/db/jdbc.rs). */
+export function JdbcSection({ cfg, set, setOpt }: SectionProps) {
+  const remote = !!cfg.ssh?.enabled;
+  const where = remote ? `on ${cfg.ssh?.host || "the SSH host"}` : "on this computer";
+  return (
+    <>
+      <Row label="JDBC URL" hint="As the driver's documentation gives it.">
+        <Input className="font-mono text-xs!" value={cfg.url ?? ""} placeholder="jdbc:sqlbase://192.168.0.3:2155/MYDB" onChange={(e) => set({ url: e.target.value })} />
+      </Row>
+      <Row label="Driver jar" hint={<>The vendor's driver, {where}. Several jars: separate them with <span className="font-mono">;</span>. A folder means every jar in it.</>}>
+        {remote ? (
+          <Input className="font-mono text-xs!" value={cfg.options.driverJars ?? ""} placeholder="C:\drivers\SQLBaseJDBC.jar" onChange={(e) => setOpt("driverJars", e.target.value || null)} />
+        ) : (
+          <FileInput value={cfg.options.driverJars ?? ""} placeholder="~/drivers/SQLBaseJDBC.jar" filters={[{ name: "Java archive", extensions: ["jar"] }, { name: "All files", extensions: ["*"] }]} onChange={(v) => setOpt("driverJars", v || null)} />
+        )}
+      </Row>
+      <Row label="Driver class" hint="Optional: found in the jar when it registers itself.">
+        <Input className="font-mono text-xs!" value={cfg.options.driverClass ?? ""} placeholder="jdbc.gupta.sqlbase.SqlbaseDriver" onChange={(e) => setOpt("driverClass", e.target.value || null)} />
+      </Row>
+      <Row label="User">
+        <Input value={cfg.user} onChange={(e) => set({ user: e.target.value })} />
+      </Row>
+      <Row label="Password">
+        <PasswordInput value={cfg.password ?? ""} onChange={(v) => set({ password: v })} />
+      </Row>
+      <Row label="Catalog / schema" hint="Optional defaults for queries; the tree shows them all.">
+        <div className="flex gap-1.5">
+          <Input value={cfg.database ?? ""} placeholder="catalog" onChange={(e) => set({ database: e.target.value || null })} />
+          <Input value={cfg.options.schema ?? ""} placeholder="schema" onChange={(e) => setOpt("schema", e.target.value || null)} />
+        </div>
+      </Row>
+      <div className="my-1 h-px bg-line" />
+      <Row label="Java" hint={remote
+        ? "Java 11 or newer on the SSH host: empty uses its java on the PATH."
+        : "Java 11 or newer: empty finds one (JAVA_HOME, an installed JDK, the one in DBeaver or DataGrip). No Java here? Turn on SSH to run the driver on a computer that has it."}>
+        {remote ? (
+          <Input className="font-mono text-xs!" value={cfg.options.javaPath ?? ""} placeholder="java" onChange={(e) => setOpt("javaPath", e.target.value || null)} />
+        ) : (
+          <FileInput value={cfg.options.javaPath ?? ""} placeholder="(found automatically)" onChange={(v) => setOpt("javaPath", v || null)} />
+        )}
+      </Row>
+      <Row label="Driver properties" hint="Optional key=value lines, passed to the driver.">
+        <Textarea rows={2} className="font-mono text-xs!" value={cfg.options.properties ?? ""} placeholder={"loginTimeout=10"} onChange={(e) => setOpt("properties", e.target.value || null)} />
+      </Row>
     </>
   );
 }
@@ -593,8 +655,8 @@ export function SshSection({ cfg, set }: SectionProps) {
   const up = (p: Partial<SshConfig>) => set({ ssh: { ...ssh, ...p } });
   return (
     <>
-      <Row label="">
-        <Checkbox label="Connect through an SSH tunnel" checked={ssh.enabled} onChange={(v) => up({ enabled: v })} />
+      <Row label="" hint={cfg.kind === "jdbc" ? "The driver then runs on the SSH host, with its Java: DevCat copies its small helper to ~/.devcat/jdbc there. The database is reached from that host." : undefined}>
+        <Checkbox label={cfg.kind === "jdbc" ? "Run the driver on another computer over SSH" : "Connect through an SSH tunnel"} checked={ssh.enabled} onChange={(v) => up({ enabled: v })} />
       </Row>
       <fieldset disabled={!ssh.enabled} className={clsx("flex flex-col gap-2.5", !ssh.enabled && "opacity-50")}>
         <Row label="SSH host">
@@ -623,7 +685,7 @@ export function SshSection({ cfg, set }: SectionProps) {
 }
 
 /** Managed option keys edited by dedicated fields; hidden from the raw editor. */
-const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards", "parent"]);
+const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards", "parent", "driverJars", "driverClass", "javaPath", "schema", "properties"]);
 
 /** VPN / SSH tunnel profile that is connected before this connection opens (options.networkId). */
 function NetworkRow({ cfg, setOpt }: SectionProps) {
@@ -668,7 +730,8 @@ function AiAccessRow({ cfg, set }: Pick<SectionProps, "cfg" | "set">) {
 }
 
 export function AdvancedSection({ cfg, set, setOpt }: SectionProps) {
-  const isDb = cfg.kind !== "kubernetes" && cfg.kind !== "rabbitmq" && cfg.kind !== "docker" && cfg.kind !== "ssh";
+  // JDBC options are all in its own fields (its properties too)
+  const isDb = cfg.kind !== "kubernetes" && cfg.kind !== "rabbitmq" && cfg.kind !== "docker" && cfg.kind !== "ssh" && cfg.kind !== "jdbc";
   const entries = Object.entries(cfg.options).filter(([k]) => !MANAGED_OPTIONS.has(k));
   const [newKey, setNewKey] = useState("");
   const addKey = () => {

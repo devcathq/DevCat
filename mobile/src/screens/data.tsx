@@ -12,10 +12,10 @@ import { Btn, Card, Confirm, Dot, Empty, ErrorBox, Field, IconBtn, Input, Item, 
 // SSH sessions never reach the phone (the computer leaves them out: see AGENTS.md); named for the type only.
 const KIND_LABEL: Record<ConnectionKind, string> = {
   postgres: "PostgreSQL", mysql: "MySQL", sqlite: "SQLite", mssql: "SQL Server", mongodb: "MongoDB", redis: "Redis", kubernetes: "Kubernetes", rabbitmq: "RabbitMQ", docker: "Docker",
-  ssh: "SSH session",
+  ssh: "SSH session", jdbc: "JDBC",
 };
-const KIND_ICON: Record<string, string> = { postgres: "🐘", mysql: "🐬", sqlite: "🪶", mssql: "🗄", mongodb: "🍃", redis: "🟥", kubernetes: "☸", rabbitmq: "🐇", docker: "🐳" };
-const SQL_KINDS: ConnectionKind[] = ["postgres", "mysql", "sqlite", "mssql"];
+const KIND_ICON: Record<string, string> = { postgres: "🐘", mysql: "🐬", sqlite: "🪶", mssql: "🗄", mongodb: "🍃", redis: "🟥", kubernetes: "☸", rabbitmq: "🐇", docker: "🐳", jdbc: "☕" };
+const SQL_KINDS: ConnectionKind[] = ["postgres", "mysql", "sqlite", "mssql", "jdbc"];
 
 function useConnections() {
   return useLoad(async () => {

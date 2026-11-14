@@ -44,7 +44,7 @@ export default function QueryToolbar(p: Props) {
   const scoped = current && !connections.includes(current) ? [current, ...connections] : connections;
   const dbConns = scoped.filter((c) => DATABASE_KINDS.includes(c.kind));
   const menu = useContextMenu();
-  const canExplain = p.kind !== "redis" && p.kind !== "mssql";
+  const canExplain = p.kind !== "redis" && p.kind !== "mssql" && p.kind !== "jdbc";
   const hasAnalyze = p.kind === "postgres" || p.kind === "mysql" || p.kind === "mongodb";
   const dbs = p.tab.database && !p.databases.includes(p.tab.database) ? [p.tab.database, ...p.databases] : p.databases;
   const schemas = p.tab.schema && !p.schemas.includes(p.tab.schema) ? [p.tab.schema, ...p.schemas] : p.schemas;

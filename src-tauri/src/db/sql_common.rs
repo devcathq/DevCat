@@ -23,7 +23,7 @@ pub fn quote_ident(d: Dialect, ident: &str) -> String {
 /// - MSSQL: `[database].[schema].[name]`
 pub fn qualified_name(d: Dialect, t: &TableRef) -> String {
     let parts: Vec<&str> = match d {
-        Dialect::Postgres => [t.schema.as_deref(), Some(t.name.as_str())].into_iter().flatten().collect(),
+        Dialect::Postgres | Dialect::Generic => [t.schema.as_deref(), Some(t.name.as_str())].into_iter().flatten().collect(),
         Dialect::Mysql => [t.database.as_deref(), Some(t.name.as_str())].into_iter().flatten().collect(),
         Dialect::Sqlite => [t.database.as_deref().or(t.schema.as_deref()), Some(t.name.as_str())]
             .into_iter()

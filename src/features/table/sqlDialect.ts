@@ -18,6 +18,7 @@ export function qualifiedName(d: Dialect, t: TableRef): string {
   switch (d) {
     case "postgres":
     case "mssql":
+    case "generic":
       return t.schema ? `${q(t.schema)}.${q(t.name)}` : q(t.name);
     case "mysql":
       return t.database ? `${q(t.database)}.${q(t.name)}` : q(t.name);
@@ -44,6 +45,8 @@ export function sqlLiteral(d: Dialect, v: CellValue | undefined): string {
 export function selectTop(d: Dialect, t: TableRef, n = 100): string {
   const name = qualifiedName(d, t);
   if (d === "mssql") return `SELECT TOP ${n} * FROM ${name};`;
+  // JDBC: no row limit every database knows; the query tab caps the rows it fetches
+  if (d === "generic") return `SELECT * FROM ${name};`;
   return `SELECT * FROM ${name} LIMIT ${n};`;
 }
 
@@ -59,12 +62,12 @@ export function formatterLanguage(d: Dialect): "postgresql" | "mysql" | "sqlite"
 }
 
 export function isSqlKind(k: ConnectionKind): boolean {
-  return k === "postgres" || k === "mysql" || k === "sqlite" || k === "mssql";
+  return k === "postgres" || k === "mysql" || k === "sqlite" || k === "mssql" || k === "jdbc";
 }
 
 /** Kinds that have a schema level beneath databases. */
 export function hasSchemas(k: ConnectionKind): boolean {
-  return k === "postgres" || k === "mssql";
+  return k === "postgres" || k === "mssql" || k === "jdbc";
 }
 
 export function defaultSchema(k: ConnectionKind): string | null {
