@@ -133,7 +133,7 @@ public final class DevcatJdbc {
     static Object handle(String op, Map<String, Object> req) throws Exception {
         switch (op == null ? "" : op) {
             case "connect": return connect(req);
-            case "ping": return need().isValid(10);
+            case "ping": return ping();
             case "exec": return exec(req);
             case "batch": return batch(req);
             case "catalogs": return catalogs();
@@ -144,6 +144,24 @@ public final class DevcatJdbc {
             case "procedures": return procedures(str(req, "catalog"), str(req, "schema"));
             case "snapshot": return snapshot(req);
             default: throw new IllegalArgumentException("unknown op " + op);
+        }
+    }
+
+    // isValid first; but some drivers answer false whatever the state (SQLBase's isValid is a stub that
+    // returns false) or don't have it, so before calling the connection lost, ask the server something real
+    static boolean ping() {
+        Connection c = need();
+        try {
+            if (c.isValid(10)) return true;
+        } catch (SQLException | RuntimeException | AbstractMethodError ignored) {}
+        try {
+            if (c.isClosed()) return false;
+            try (ResultSet rs = c.getMetaData().getTables(null, null, "DEVCAT_PING_", null)) {
+                rs.next();
+            }
+            return true;
+        } catch (SQLException | RuntimeException e) {
+            return false;
         }
     }
 
@@ -305,7 +323,9 @@ public final class DevcatJdbc {
         if (sch != null && !sch.isEmpty() && !sch.equals(safe(conn::getSchema))) {
             try {
                 conn.setSchema(sch);
-            } catch (SQLFeatureNotSupportedException | AbstractMethodError ignored) {}
+            } catch (SQLException | AbstractMethodError ignored) {
+                // can't switch (SQLBase's says "Unsupported method"); DevCat qualifies names with the schema
+            }
         }
     }
 
@@ -620,7 +640,11 @@ public final class DevcatJdbc {
     static Object catalogs() throws SQLException {
         List<Object> out = new ArrayList<>();
         try (ResultSet rs = need().getMetaData().getCatalogs()) {
-            while (rs.next()) out.add(rs.getString(1));
+            // SQLBase's lists one null catalog: a database without catalogs
+            while (rs.next()) {
+                String c = rs.getString(1);
+                if (c != null && !c.isEmpty() && !out.contains(c)) out.add(c);
+            }
         } finally {
             finish();
         }
@@ -633,7 +657,8 @@ public final class DevcatJdbc {
         ResultSet rs;
         try {
             rs = md.getSchemas(nz(catalog), null);
-        } catch (SQLFeatureNotSupportedException | AbstractMethodError e) {
+        } catch (SQLException | AbstractMethodError e) {
+            // JDBC 3 drivers (SQLBase's: a plain SQLException "Unsupported method") have only the old form
             rs = md.getSchemas();
         }
         try (ResultSet r = rs) {
