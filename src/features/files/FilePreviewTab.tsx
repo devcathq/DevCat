@@ -6,7 +6,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { Badge, ErrorBox, IconButton, Spinner, Toolbar, Spin } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { FilePreview } from "../../lib/types";
-import { useTabs } from "../../store/tabs";
+import { isTabVisible, useTabVisible, useTabs } from "../../store/tabs";
 import { openReview } from "../review/store";
 import type { Tab } from "../../tabs/types";
 import { BlameView } from "../git/BlameView";
@@ -66,7 +66,7 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
   // An agent often names a file before it has written it, and rewrites an image or a PDF while it's
   // open: while this tab shows, look every second, and load the file again once a change has
   // settled (the same stamp twice). Text waits for the window's focus (below): it may be edited here.
-  const active = useTabs((s) => s.activeId === tab.id);
+  const active = useTabVisible(tab.id);
   const watch = active && !remote && preview?.kind !== "text";
   useEffect(() => {
     if (!watch) return;
@@ -88,7 +88,7 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
   const isText = preview?.kind === "text";
   useEffect(() => {
     if (!isText) return;
-    const onFocus = () => { if (!dirty.current && useTabs.getState().activeId === tab.id) void load(); };
+    const onFocus = () => { if (!dirty.current && isTabVisible(tab.id)) void load(); };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [isText, load, tab.id]);

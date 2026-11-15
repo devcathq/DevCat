@@ -17,7 +17,7 @@ import type { AiProvider, ClaudePermissionMode } from "../../lib/types";
 import { useContextMenu } from "../connections/ContextMenu";
 import { providerMenu } from "./AiProviders";
 import { openGhostChat } from "../agent/ghost";
-import { useTabs } from "../../store/tabs";
+import { useTabVisible, useTabs } from "../../store/tabs";
 import type { Tab } from "../../tabs/types";
 import { CopyButton, CodeBlock } from "./Markdown";
 import { DiffView } from "./DiffView";
@@ -199,7 +199,7 @@ function SessionChip({ tabId }: { tabId: string }) {
   );
 }
 
-function ChatPane({ tabId, cwd, visible, provider }: { tabId: string; cwd: string; visible: boolean; provider: AiProvider }) {
+function ChatPane({ tabId, cwd, visible, focus, provider }: { tabId: string; cwd: string; visible: boolean; focus: boolean; provider: AiProvider }) {
   const isClaude = provider.kind === "claude";
   const startSeq = useClaude((s) => s.tabs[tabId]?.startSeq ?? 0);
   const ptyId = useClaude((s) => s.tabs[tabId]?.ptyId ?? null);
@@ -213,6 +213,7 @@ function ChatPane({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
           name={isClaude ? "claude" : provider.name}
           startKey={startSeq}
           visible={visible}
+          focus={visible && focus}
           shiftEnterNewline={isClaude}
           activityId={tabId}
           getArgs={() => claudeLaunchArgs(tabId)}
@@ -237,7 +238,9 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
   const agentBusy = useAgent((s) => !!s.chats[tabId]?.busy);
   const agent = isClaude ? "Claude" : provider?.name ?? "the agent";
   useLayoutEffect(() => { if (ready && provider) setTabIsClaude(tabId, isClaude); }, [ready, provider, isClaude, tabId]);
-  const active = useTabs((s) => s.activeId === tabId);
+  // on screen (several are, with split panes) vs where the user is (keyboard focus, shortcuts)
+  const active = useTabVisible(tabId);
+  const focused = useTabs((s) => s.activeId === tabId) && active;
   const activity = useTabActivity(tabId);
   // "Seen" = the tab is shown in a focused window; clears the finished marker / Dock badge.
   useEffect(() => {
@@ -273,9 +276,9 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
     return () => clearInterval(t);
   }, [active, tabId]);
 
-  // ⌥⇧⌘1/2/3 (Ctrl+Alt+Shift elsewhere) — only for the active tab.
+  // ⌥⇧⌘1/2/3 (Ctrl+Alt+Shift elsewhere) — only for the tab the user is in.
   useEffect(() => {
-    if (!active) return;
+    if (!focused) return;
     const h = (e: KeyboardEvent) => {
       if (!e.altKey || !e.shiftKey || !(e.metaKey || e.ctrlKey)) return;
       if (e.code === "KeyT") {
@@ -290,7 +293,7 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [active, setView, views, tab.cwd]);
+  }, [focused, setView, views, tab.cwd]);
 
   // Claude: structured review run (Code Review view). Others: ask the agent in its terminal.
   const reviewNow = () => {
@@ -400,9 +403,9 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
             isClaude ? <InstallHelp onRetry={() => void loadInfo(true)} error={infoError} /> : <AgentInstallHelp provider={provider} />
           ) : (
             isAgent ? (
-              <AgentChat tabId={tabId} cwd={tab.cwd} connId={tab.connId ?? null} ghost={!!tab.ghost} provider={provider} visible={active && view === "chat"} onReview={() => setView("diff")} />
+              <AgentChat tabId={tabId} cwd={tab.cwd} connId={tab.connId ?? null} ghost={!!tab.ghost} provider={provider} visible={focused && view === "chat"} onReview={() => setView("diff")} />
             ) : (
-              <ChatPane tabId={tabId} cwd={tab.cwd} visible={active && view === "chat"} provider={provider} />
+              <ChatPane tabId={tabId} cwd={tab.cwd} visible={active && view === "chat"} focus={focused} provider={provider} />
             )
           )}
         </div>

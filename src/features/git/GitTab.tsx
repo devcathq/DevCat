@@ -9,7 +9,7 @@ import { AiTerminalIcon } from "../../components/ui/AppIcons";
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { Button, ErrorBox, IconButton, Spin } from "../../components/ui";
 import { api } from "../../lib/api";
-import { useTabs } from "../../store/tabs";
+import { useTabVisible, useTabs } from "../../store/tabs";
 import type { GitView, Tab } from "../../tabs/types";
 import { ChangesPanel } from "../claude/DiffView";
 import { openClaudeWorkspace } from "../claude/open";
@@ -41,7 +41,7 @@ const SWITCHER_MAX = 20;
 export default function GitTab({ tab }: { tab: GitTabT }) {
   const repo = tab.repo;
   const view = tab.view ?? "history";
-  const active = useTabs((s) => s.activeId === tab.id);
+  const active = useTabVisible(tab.id);
   const { refs, refsError, status, loading } = useRepo(repo);
   const { dlg, element } = useGitDialogs();
   // Views mount on first visit and then stay mounted (keeps scroll / selection).

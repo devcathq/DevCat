@@ -12,7 +12,7 @@ import { toast } from "sonner";
 import { Button, IconButton, Input, Select, Spinner } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { useConnections } from "../../store/connections";
-import { openTab, useTabs } from "../../store/tabs";
+import { openTab, useTabVisible } from "../../store/tabs";
 import type { Tab } from "../../tabs/types";
 import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
 import { confirmDialog } from "../connections/dialogs";
@@ -50,7 +50,7 @@ export default function DockerTab({ tab }: { tab: Extract<Tab, { type: "docker" 
   const [panel, setPanel] = useState<Panel | null>(null);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
   // each refresh runs `docker`: not while the tab is in the background, and at once when it's back
-  const active = useTabs((s) => s.activeId === tab.id);
+  const active = useTabVisible(tab.id);
   const shown = useRef(active);
   useEffect(() => {
     if (active && !shown.current) refresh();
