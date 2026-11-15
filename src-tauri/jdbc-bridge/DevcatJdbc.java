@@ -17,6 +17,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.lang.reflect.Field;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -240,6 +241,47 @@ public final class DevcatJdbc {
         if (!Charset.defaultCharset().equals(cs)) throw new IllegalStateException("couldn't switch Java's text encoding to " + cs.name());
     }
 
+    /**
+     * SQLBase's driver sends SQL that holds non-ASCII text as UTF-8 (with a BOM) to any server from
+     * 11.5 on, decided by the server's version alone. A database kept in a legacy code page (a
+     * Japanese one in Shift-JIS) drops the connection on a UTF-8 string literal ("compile():
+     * java.io.EOFException", DBeaver too). With a text encoding set, the connection's text is in
+     * that code page, so send SQL in it, as SQLWindows clients do: the driver is told the server is
+     * older than 11.5. That's all its version decides besides capping a string parameter at 254
+     * characters instead of 900. Not SQLBase's driver: nothing to do.
+     */
+    static void sqlbaseLegacyText(Connection c) {
+        try {
+            Field sf = field(c.getClass(), "Session");
+            if (sf == null || !sf.getType().getName().endsWith(".SqlbaseSession")) return;
+            Object session = sf.get(c);
+            java.lang.reflect.Method gv = session.getClass().getDeclaredMethod("getSqlbaseVersion");
+            gv.setAccessible(true);
+            Object v = gv.invoke(session);
+            Field major = field(v.getClass(), "major"), minor = field(v.getClass(), "minor");
+            if (major == null || minor == null) return;
+            int was = major.getInt(v);
+            if (was > 11 || (was == 11 && minor.getInt(v) >= 5)) {
+                log("SQLBase " + was + "." + minor.getInt(v) + ": sending SQL text in " + Charset.defaultCharset().name() + " (as a server before 11.5), not UTF-8");
+                major.setInt(v, 11);
+                minor.setInt(v, 0);
+            }
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            log("couldn't switch SQLBase's driver to legacy SQL text: " + e);
+        }
+    }
+
+    static Field field(Class<?> k, String name) {
+        for (; k != null; k = k.getSuperclass()) {
+            try {
+                Field f = k.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException ignored) {}
+        }
+        return null;
+    }
+
     static Object connect(Map<String, Object> req) throws Exception {
         if (conn != null) throw new IllegalStateException("already connected");
         String enc = str(req, "encoding");
@@ -288,6 +330,7 @@ public final class DevcatJdbc {
         DriverManager.setLoginTimeout(30);
         Connection c = driver.connect(url, props);
         if (c == null) throw new IllegalArgumentException("the driver " + driver.getClass().getName() + " doesn't accept this URL");
+        if (enc != null && !enc.isBlank()) sqlbaseLegacyText(c);
         readOnly = Boolean.TRUE.equals(req.get("readOnly"));
         if (readOnly) {
             // A hint many drivers ignore; every statement also runs in a transaction that is

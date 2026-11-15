@@ -102,7 +102,10 @@ or outside the database's network, uses JDBC). Keep these rules:
   (`JdbcDriver` over `JdbcOne`). The names may only be letters, digits and `_-$#@`: nothing that could end the name
   or add a URL property. A request naming another database is refused, not tried.
 - **Old drivers bend JDBC**: SQLBase's `isValid` always says false, `setSchema` / `getSchemas(c, p)` throw a plain
-  `SQLException`, and it decodes text with Java's default charset (the connection's text encoding sets it). Fall back
+  `SQLException`, it decodes text with Java's default charset (the connection's text encoding sets it), and from
+  server 11.5 on sends SQL holding non-ASCII as UTF-8, which a Shift-JIS database drops the connection over (a
+  Japanese string literal): with a text encoding set, the helper makes it send SQL in that encoding
+  (`sqlbaseLegacyText`). Fall back
   on any `SQLException` where a call is optional, and test against such a driver, not only H2.
 - **Never ship a driver jar**: drivers are the vendors' (SQLBase's has its own licence). The user points at one.
 - **Change the Java, rebuild the jar**: run `src-tauri/jdbc-bridge/build.sh` (needs a JDK 17+) and commit the jar
