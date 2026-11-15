@@ -129,7 +129,7 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
         <IconButton title="Refresh" onClick={() => { void load(); setReload((n) => n + 1); }}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
         <IconButton title="Copy path" onClick={() => void copyText(tab.path)}><Copy className="size-3.5" /></IconButton>
         {remote ? (
-          <IconButton title="Download to this computer" onClick={() => void downloadRemoteFile(tab.path)}><Download className="size-3.5" /></IconButton>
+          <IconButton title="Download to this computer" onClick={() => void downloadRemoteFile(tab.path, preview?.path === tab.path ? preview.size : undefined)}><Download className="size-3.5" /></IconButton>
         ) : (
           <>
             <IconButton title="Copy file (paste in Slack, Explorer, Finder)" onClick={() => void copyFile(tab.path)}><Files className="size-3.5" /></IconButton>

@@ -267,6 +267,11 @@ fn parent_of(p: &str) -> String {
 pub struct TransferItem {
     pub src: String,
     pub dst_dir: String,
+    /// Download only: `src` is one file of about this size (its preview said so), so it's copied
+    /// without listing it on the host first: one `ssh` login less, which is seconds on Windows
+    /// (no shared master connection there).
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 static JOBS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> = Lazy::new(Default::default);
@@ -346,7 +351,10 @@ async fn run_job(job: &str, items: &[TransferItem], cancel: &AtomicBool) -> AppR
             }
             (Some(src), None) => {
                 src.ready().await?;
-                let tree = remote::list_tree(&src).await?;
+                let tree = match it.size {
+                    Some(size) => vec![remote::TreeItem { rel: remote_name(&src.path).to_string(), is_dir: false, size }],
+                    None => remote::list_tree(&src).await?,
+                };
                 plans.push((src, false, plan_download(&tree, &parent_of_remote(&it.src), Path::new(&it.dst_dir))));
             }
             _ => return Err(AppError::msg("Copy between this computer and an SSH host")),
@@ -393,6 +401,22 @@ async fn run_job(job: &str, items: &[TransferItem], cancel: &AtomicBool) -> AppR
 /// The remote parent folder of an `ssh://` item (its tree's paths are relative to it).
 fn parent_of_remote(uri: &str) -> String {
     Target::parse(uri).map(|t| parent_of(&t.path)).unwrap_or_else(|| "/".into())
+}
+
+/// The last part of a remote path (`/srv/a.txt` → `a.txt`).
+fn remote_name(path: &str) -> &str {
+    let p = path.trim_end_matches('/');
+    p.rsplit_once('/').map_or(p, |(_, name)| name)
+}
+
+/// Is there already a `name` in the local folder `dir`? Asked before a download, to offer
+/// replacing it: one lookup, where listing the folder (a big Downloads on Windows) took seconds.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn sftp_local_exists(dir: String, name: String) -> AppResult<bool> {
+    if Target::parse(&dir).is_some() || !plain_local_name(&name) {
+        return Err(AppError::msg("Not a file name in a folder on this computer"));
+    }
+    Ok(tokio::fs::symlink_metadata(Path::new(&dir).join(name)).await.is_ok())
 }
 
 /// Local file / folder → steps with remote destinations under `dst_dir`.
@@ -554,7 +578,9 @@ async fn download_file(t: &Target, src: &str, dst: &Path, p: &mut Progress<'_>, 
         let _ = stderr.read_to_end(&mut b).await;
         b
     });
-    let mut file = create_replacing(dst).await.map_err(|e| AppError::msg(format!("{}: {e}", dst.display())))?;
+    // The file is created when the first bytes arrive: a download that fails before (no login,
+    // no such file on the host) leaves a file already there as it was.
+    let mut file: Option<tokio::fs::File> = None;
     let mut buf = vec![0u8; CHUNK];
     let label = dst.to_string_lossy().into_owned();
     let copied: AppResult<()> = async {
@@ -566,13 +592,19 @@ async fn download_file(t: &Target, src: &str, dst: &Path, p: &mut Progress<'_>, 
             if n == 0 {
                 return Ok(());
             }
-            file.write_all(&buf[..n]).await?;
+            let f = match &mut file {
+                Some(f) => f,
+                None => file.insert(create_replacing(dst).await.map_err(|e| AppError::msg(format!("{}: {e}", dst.display())))?),
+            };
+            f.write_all(&buf[..n]).await?;
             p.bytes += n as u64;
             p.report(&label, false);
         }
     }
     .await;
-    file.flush().await?;
+    if let Some(f) = &mut file {
+        f.flush().await?;
+    }
     if copied.is_err() {
         let _ = child.kill().await;
     }
@@ -582,7 +614,12 @@ async fn download_file(t: &Target, src: &str, dst: &Path, p: &mut Progress<'_>, 
     if copied.is_ok() || (!status.success() && !cancel.load(Ordering::Relaxed)) {
         check_exit(t, status, &stderr)?;
     }
-    copied
+    copied?;
+    if file.is_none() {
+        // an empty file on the host
+        create_replacing(dst).await.map_err(|e| AppError::msg(format!("{}: {e}", dst.display())))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -642,6 +679,65 @@ mod tests {
         assert!(steps.contains(&Step::File { src: dir.join("sub").join("b.txt").to_string_lossy().into_owned(), dst: format!("~/up/{name}/sub/b.txt"), size: 2 }));
         let one = plan_upload(&dir.join("a.txt"), "/srv").unwrap();
         assert_eq!(one, vec![Step::File { src: dir.join("a.txt").to_string_lossy().into_owned(), dst: "/srv/a.txt".into(), size: 3 }]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn remote_names() {
+        assert_eq!(remote_name("/srv/app/a.txt"), "a.txt");
+        assert_eq!(remote_name("~/a b.msi"), "a b.msi");
+        assert_eq!(remote_name("/srv/app/"), "app");
+    }
+
+    #[tokio::test]
+    async fn local_exists_checks_one_name() {
+        let dir = std::env::temp_dir().join(format!("devcat-sftp-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("here.msi"), "x").unwrap();
+        let d = dir.to_string_lossy().into_owned();
+        assert!(sftp_local_exists(d.clone(), "here.msi".into()).await.unwrap());
+        assert!(!sftp_local_exists(d.clone(), "gone.msi".into()).await.unwrap());
+        for bad in ["..", "", "a/b", "/etc"] {
+            assert!(sftp_local_exists(d.clone(), bad.into()).await.is_err(), "{bad}");
+        }
+        assert!(sftp_local_exists("ssh://h/tmp".into(), "a".into()).await.is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A download of one file whose size the preview gave: no listing on the host first, and a
+    /// file that isn't there (or ssh failing) leaves the local file as it was.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn downloads_one_file_by_size() {
+        let dir = std::env::temp_dir().join(format!("devcat-sftp-test-{}", uuid::Uuid::new_v4().simple()));
+        let (host, local) = (dir.join("host"), dir.join("local"));
+        std::fs::create_dir_all(&host).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(host.join("app.msi"), vec![7u8; 600_000]).unwrap();
+        std::fs::write(host.join("empty"), "").unwrap();
+        std::fs::write(local.join("app.msi"), "old").unwrap();
+        let src = |name: &str| format!("ssh://{}{}", remote::LOCAL_TEST_HOST, host.join(name).display());
+        let dst = local.to_string_lossy().into_owned();
+        let cancel = AtomicBool::new(false);
+
+        std::fs::write(local.join("keep.msi"), "mine").unwrap();
+        let missing = vec![TransferItem { src: src("keep.msi"), dst_dir: dst.clone(), size: Some(3) }];
+        assert!(run_job("t-missing", &missing, &cancel).await.is_err());
+        assert_eq!(std::fs::read_to_string(local.join("keep.msi")).unwrap(), "mine");
+
+        let one = vec![TransferItem { src: src("app.msi"), dst_dir: dst.clone(), size: Some(600_000) }];
+        run_job("t-one", &one, &cancel).await.unwrap();
+        assert_eq!(std::fs::read(local.join("app.msi")).unwrap(), vec![7u8; 600_000]);
+
+        let empty = vec![TransferItem { src: src("empty"), dst_dir: dst.clone(), size: Some(0) }];
+        run_job("t-empty", &empty, &cancel).await.unwrap();
+        assert_eq!(std::fs::read(local.join("empty")).unwrap(), Vec::<u8>::new());
+
+        // and the old way (no size: listed on the host first) still works
+        std::fs::write(local.join("app.msi"), "old").unwrap();
+        let listed = vec![TransferItem { src: src("app.msi"), dst_dir: dst, size: None }];
+        run_job("t-listed", &listed, &cancel).await.unwrap();
+        assert_eq!(std::fs::metadata(local.join("app.msi")).unwrap().len(), 600_000);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -718,13 +814,13 @@ mod host_tests {
         let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
         std::fs::write(local.join("sub/big.bin"), &big).unwrap();
         let cancel = AtomicBool::new(false);
-        let up = vec![TransferItem { src: local.to_string_lossy().into_owned(), dst_dir: base.into() }];
+        let up = vec![TransferItem { src: local.to_string_lossy().into_owned(), dst_dir: base.into(), size: None }];
         run_job("t1", &up, &cancel).await.unwrap();
         let tree = remote::list_tree(&Target::parse(&format!("{base}/up")).unwrap()).await.unwrap();
         assert!(tree.iter().any(|i| i.rel == "up/sub/big.bin" && i.size == big.len() as u64), "{tree:?}");
         let dl = data.join("dl");
         std::fs::create_dir_all(&dl).unwrap();
-        let down = vec![TransferItem { src: format!("{base}/up"), dst_dir: dl.to_string_lossy().into_owned() }];
+        let down = vec![TransferItem { src: format!("{base}/up"), dst_dir: dl.to_string_lossy().into_owned(), size: None }];
         run_job("t2", &down, &cancel).await.unwrap();
         assert_eq!(std::fs::read(dl.join("up/sub/big.bin")).unwrap(), big);
         assert_eq!(std::fs::read_to_string(dl.join("up/one.txt")).unwrap(), "first file\n");

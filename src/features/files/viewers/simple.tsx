@@ -257,7 +257,7 @@ export function BinaryCard({ preview }: ViewerProps) {
           {fmtSize(preview.size)}{preview.mime ? ` · ${preview.mime}` : ""}
         </div>
         {isRemote(preview.path)
-          ? <Button className="mt-2" onClick={() => void downloadRemoteFile(preview.path)}><Download className="size-3.5" /> Download</Button>
+          ? <Button className="mt-2" onClick={() => void downloadRemoteFile(preview.path, preview.size)}><Download className="size-3.5" /> Download</Button>
           : <Button className="mt-2" onClick={() => void openExternally(preview.path)}><ExternalLink className="size-3.5" /> Open externally</Button>}
       </div>
     </div>

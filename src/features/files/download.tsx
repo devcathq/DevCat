@@ -11,7 +11,8 @@ import { REVEAL_LABEL, basename, fmtSize, revealPath } from "./format";
 
 const LAST_DIR_KEY = "devcat.download.dir";
 
-export async function downloadRemoteFile(path: string): Promise<void> {
+/** `size`: the file's size when a preview already knows it (then the host isn't asked first). */
+export async function downloadRemoteFile(path: string, size?: number): Promise<void> {
   const name = basename(remoteParts(path)?.path ?? path);
   let start: string | undefined;
   try { start = localStorage.getItem(LAST_DIR_KEY) ?? (await downloadDir()); } catch { /* no default */ }
@@ -19,8 +20,8 @@ export async function downloadRemoteFile(path: string): Promise<void> {
   if (typeof dir !== "string") return;
   try { localStorage.setItem(LAST_DIR_KEY, dir); } catch { /* not remembered */ }
 
-  const existing = await api.fsList(dir, true).catch(() => []);
-  if (existing.some((e) => e.name === name)) {
+  const exists = await api.sftpLocalExists(dir, name).catch(() => false);
+  if (exists) {
     const ok = await confirmDialog({
       title: "Replace file?",
       message: <>{name} already exists in {basename(dir) || dir}. Replace it?</>,
@@ -38,7 +39,7 @@ export async function downloadRemoteFile(path: string): Promise<void> {
     listen<{ jobId: string; bytes: number; bytesTotal: number }>("sftp-progress", (e) => {
       const p = e.payload;
       if (p.jobId !== jobId || !p.bytesTotal) return;
-      toast.loading(`Downloading ${name}… ${Math.floor((p.bytes / p.bytesTotal) * 100)}%`, {
+      toast.loading(`Downloading ${name}… ${Math.min(100, Math.floor((p.bytes / p.bytesTotal) * 100))}%`, {
         id: t,
         description: `${fmtSize(p.bytes)} of ${fmtSize(p.bytesTotal)}`,
       });
@@ -61,7 +62,7 @@ export async function downloadRemoteFile(path: string): Promise<void> {
   ];
   try {
     await Promise.all(offs);
-    await api.sftpTransfer(jobId, [{ src: path, dstDir: dir }]);
+    await api.sftpTransfer(jobId, [{ src: path, dstDir: dir, size }]);
   } catch (e) {
     offs.forEach((o) => void o.then((f) => f()));
     toast.error(errMsg(e), { id: t, description: undefined, action: undefined });
