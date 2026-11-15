@@ -60,6 +60,7 @@ Android Studio (SDK, NDK, Java 17), then:
 ```sh
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 pnpm tauri android init        # once; writes src-tauri/gen/android
+scripts/android-icons.sh        # after each init: the DevCat launcher icon
 pnpm tauri android dev         # on a connected phone or emulator
 pnpm tauri android build --apk # release APK (sign it; see .github/workflows/mobile.yml)
 ```
