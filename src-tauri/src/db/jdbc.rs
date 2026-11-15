@@ -273,8 +273,21 @@ enum Keep {
     Remote(#[allow(dead_code)] Arc<super::ssh::SshSession>, #[allow(dead_code)] tokio::task::JoinHandle<()>),
 }
 
-/// Keep the last few KB of the helper's stderr, for errors.
+/// Keep the last few KB of the helper's stderr, for errors, and the whole of it in
+/// `<data>/jdbc/helper.log` (a driver's own messages, and requests that ran long, with where the
+/// helper was stuck), started over past 2 MB.
 fn push_tail(buf: &parking_lot::Mutex<String>, bytes: &[u8]) {
+    if let Ok(dir) = data_dir() {
+        let path = dir.join("jdbc").join("helper.log");
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 2 << 20) {
+            let _ = std::fs::rename(&path, path.with_extension("log.1"));
+        }
+        let _ = std::fs::create_dir_all(dir.join("jdbc"));
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write;
+            let _ = f.write_all(bytes);
+        }
+    }
     let mut b = buf.lock();
     b.push_str(&String::from_utf8_lossy(bytes));
     if b.len() > 8192 {

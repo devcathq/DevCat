@@ -34,6 +34,11 @@ public final class DevcatJdbc {
     static Connection conn;
     static boolean readOnly;
     static volatile Statement running;
+    // what the worker is doing, for the watchdog: a request stuck in a driver shows in the log
+    static volatile String doing;
+    static volatile long since;
+    static volatile Thread workerThread;
+    static final long SLOW_MS = 20_000;
 
     public static void main(String[] args) throws Exception {
         out = new PrintStream(new FileOutputStream(FileDescriptor.out), false, "UTF-8");
@@ -42,8 +47,10 @@ public final class DevcatJdbc {
         ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "devcat-jdbc-worker");
             t.setDaemon(true);
+            workerThread = t;
             return t;
         });
+        watchdog();
         Map<String, Object> ready = new LinkedHashMap<>();
         ready.put("ready", true);
         ready.put("protocol", PROTOCOL);
@@ -73,10 +80,17 @@ public final class DevcatJdbc {
             }
             if ("close".equals(op)) break;
             worker.submit(() -> {
+                String sql = str(req, "sql");
+                doing = op + (sql == null ? "" : ": " + (sql.length() > 500 ? sql.substring(0, 500) + "…" : sql));
+                since = System.currentTimeMillis();
                 try {
                     answer(id, handle(op, req), null);
                 } catch (Throwable e) {
                     answer(id, null, message(e));
+                } finally {
+                    long took = System.currentTimeMillis() - since;
+                    if (took >= SLOW_MS) log("finished after " + took / 1000 + " s: " + doing);
+                    doing = null;
                 }
             });
         }
@@ -87,6 +101,39 @@ public final class DevcatJdbc {
         worker.awaitTermination(5, TimeUnit.SECONDS);
         if (conn != null) try { if (readOnly) conn.rollback(); conn.close(); } catch (Exception ignored) {}
         System.exit(0);
+    }
+
+    /**
+     * Every few seconds: a request running for SLOW_MS goes to stderr (DevCat keeps it in
+     * <data>/jdbc/helper.log) with where the worker is, then again each minute. A driver that
+     * hangs (waiting on the server, a lock, a loop) shows where.
+     */
+    static void watchdog() {
+        Thread w = new Thread(() -> {
+            long told = 0;
+            String toldFor = null;
+            while (true) {
+                try { Thread.sleep(5000); } catch (InterruptedException e) { return; }
+                String d = doing;
+                if (d == null) { toldFor = null; continue; }
+                long took = System.currentTimeMillis() - since;
+                if (took < SLOW_MS) continue;
+                if (d.equals(toldFor) && took - told < 60_000) continue;
+                toldFor = d;
+                told = took;
+                StringBuilder b = new StringBuilder("still running after " + took / 1000 + " s: " + d);
+                Thread t = workerThread;
+                if (t != null) for (StackTraceElement e : t.getStackTrace()) b.append("\n    at ").append(e);
+                log(b.toString());
+            }
+        }, "devcat-jdbc-watchdog");
+        w.setDaemon(true);
+        w.start();
+    }
+
+    static void log(String m) {
+        System.err.println("[devcat-jdbc " + ProcessHandle.current().pid() + " " + java.time.LocalDateTime.now().withNano(0) + "] " + m);
+        System.err.flush();
     }
 
     static synchronized void send(Map<String, Object> m) {
