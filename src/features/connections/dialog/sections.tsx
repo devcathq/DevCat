@@ -178,6 +178,19 @@ export function ServerSection({ cfg, set, useUrl, setUseUrl }: SectionProps & { 
 
 /** A database through a JDBC driver jar: the driver runs in DevCat's small Java helper, on this
  *  computer or, with SSH on, on the SSH host (src-tauri/src/db/jdbc.rs). */
+// Java charset names for databases that store text in a legacy code page
+const JDBC_ENCODINGS: [string, string][] = [
+  ["MS932", "Japanese, Windows Shift-JIS"],
+  ["Shift_JIS", "Japanese, strict Shift-JIS"],
+  ["EUC-JP", "Japanese, EUC"],
+  ["GBK", "Chinese, simplified"],
+  ["Big5", "Chinese, traditional"],
+  ["MS949", "Korean"],
+  ["windows-1252", "Western European"],
+  ["ISO-8859-1", "Latin-1"],
+  ["UTF-8", "Unicode"],
+];
+
 export function JdbcSection({ cfg, set, setOpt }: SectionProps) {
   const remote = !!cfg.ssh?.enabled;
   const where = remote ? `on ${cfg.ssh?.host || "the SSH host"}` : "on this computer";
@@ -217,6 +230,10 @@ export function JdbcSection({ cfg, set, setOpt }: SectionProps) {
         ) : (
           <FileInput value={cfg.options.javaPath ?? ""} placeholder="(found automatically)" onChange={(v) => setOpt("javaPath", v || null)} />
         )}
+      </Row>
+      <Row label="Text encoding" hint="For older databases that don't store Unicode, such as a Japanese SQLBase in MS932 (Shift-JIS). Empty: the driver's default.">
+        <Input className="font-mono text-xs!" list="jdbc-encodings" value={cfg.options.encoding ?? ""} placeholder="(driver default)" onChange={(e) => setOpt("encoding", e.target.value.trim() || null)} />
+        <datalist id="jdbc-encodings">{JDBC_ENCODINGS.map(([v, label]) => <option key={v} value={v} label={label} />)}</datalist>
       </Row>
       <Row label="Driver properties" hint="Optional key=value lines, passed to the driver.">
         <Textarea rows={2} className="font-mono text-xs!" value={cfg.options.properties ?? ""} placeholder={"loginTimeout=10"} onChange={(e) => setOpt("properties", e.target.value || null)} />
@@ -685,7 +702,7 @@ export function SshSection({ cfg, set }: SectionProps) {
 }
 
 /** Managed option keys edited by dedicated fields; hidden from the raw editor. */
-const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards", "parent", "driverJars", "driverClass", "javaPath", "schema", "properties", "jarHashes"]);
+const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards", "parent", "driverJars", "driverClass", "javaPath", "schema", "properties", "jarHashes", "encoding"]);
 
 /** VPN / SSH tunnel profile that is connected before this connection opens (options.networkId). */
 function NetworkRow({ cfg, setOpt }: SectionProps) {

@@ -42,7 +42,7 @@ use tokio::sync::oneshot;
 /// The helper, built by `jdbc-bridge/build.sh` (Java 11 bytecode).
 const HELPER_JAR: &[u8] = include_bytes!("../../jdbc-bridge/devcat-jdbc.jar");
 /// The protocol the helper speaks (its `ready` line says which).
-const PROTOCOL: u64 = 1;
+const PROTOCOL: u64 = 2;
 const D: Dialect = Dialect::Generic;
 
 /// Name of the helper on disk: changes with its content, so an old copy is never run.
@@ -96,6 +96,8 @@ pub struct Settings {
     pub java: Option<String>,
     pub schema: Option<String>,
     pub props: Map<String, Value>,
+    /// a Java charset (MS932, EUC-JP…) the helper makes the JVM's default before loading the driver
+    pub encoding: Option<String>,
 }
 
 fn opt(cfg: &ConnectionConfig, k: &str) -> Option<String> {
@@ -129,7 +131,14 @@ impl Settings {
                 _ => return Err(AppError::msg(format!("JDBC: driver property {line:?} isn't key=value"))),
             }
         }
-        Ok(Settings { url, jars, driver_class: opt(cfg, "driverClass"), java: opt(cfg, "javaPath"), schema: opt(cfg, "schema"), props })
+        let encoding = opt(cfg, "encoding");
+        if let Some(e) = &encoding {
+            // Java charset names: letters, digits and . _ : - +
+            if e.len() > 40 || !e.chars().all(|c| c.is_ascii_alphanumeric() || ".:_-+".contains(c)) {
+                return Err(AppError::msg(format!("JDBC: {e:?} isn't a text encoding name (for example MS932 or EUC-JP)")));
+            }
+        }
+        Ok(Settings { url, jars, driver_class: opt(cfg, "driverClass"), java: opt(cfg, "javaPath"), schema: opt(cfg, "schema"), props, encoding })
     }
 }
 
@@ -908,6 +917,7 @@ impl JdbcDriver {
             "password": cfg.password.clone().unwrap_or_default(),
             "props": settings.props,
             "readOnly": cfg.read_only,
+            "encoding": settings.encoding,
         });
         let info = match tokio::time::timeout(Duration::from_secs(90), bridge.call("connect", req)).await {
             Ok(Ok(v)) => v,
@@ -1487,6 +1497,15 @@ mod tests {
             }
         }
         serde_json::from_value(base).unwrap()
+    }
+
+    #[test]
+    fn text_encoding_setting() {
+        let enc = |e: &str| Settings::of(&cfg(json!({ "options": { "driverJars": "/a.jar", "encoding": e } }))).map(|s| s.encoding);
+        assert_eq!(enc(" MS932 ").unwrap().as_deref(), Some("MS932"));
+        assert_eq!(enc("").unwrap(), None);
+        assert_eq!(enc("EUC-JP").unwrap().as_deref(), Some("EUC-JP"));
+        assert!(enc("MS932 -jar x").is_err() && enc("a\"b").is_err());
     }
 
     #[test]

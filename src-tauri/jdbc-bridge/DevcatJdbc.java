@@ -17,6 +17,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.sql.*;
@@ -24,7 +25,7 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public final class DevcatJdbc {
-    static final int PROTOCOL = 1;
+    static final int PROTOCOL = 2;
     static final int MAX_BINARY = 4096;
     static final int MAX_TEXT = 1_000_000;
     static final int MAX_RESULTS = 100;
@@ -151,8 +152,33 @@ public final class DevcatJdbc {
         return conn;
     }
 
+    // Older drivers turn bytes into text with the JVM's default charset (new String(bytes), getBytes()),
+    // and SQLBase's does so for column and table names, values and the SQL it sends. Java 18+ fixes that
+    // default to UTF-8 and ignores -Dfile.encoding=MS932, so for a database in a legacy code page the
+    // helper sets it itself, before the driver loads. The jar's manifest opens java.nio.charset for this.
+    static void defaultCharset(String name) {
+        Charset cs;
+        try {
+            cs = Charset.forName(name);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("this Java doesn't know the text encoding " + name);
+        }
+        System.setProperty("file.encoding", cs.name());
+        if (Charset.defaultCharset().equals(cs)) return;
+        try {
+            java.lang.reflect.Field f = Charset.class.getDeclaredField("defaultCharset");
+            f.setAccessible(true);
+            f.set(null, cs);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            throw new IllegalStateException("couldn't switch Java's text encoding to " + cs.name() + " (" + e + ")");
+        }
+        if (!Charset.defaultCharset().equals(cs)) throw new IllegalStateException("couldn't switch Java's text encoding to " + cs.name());
+    }
+
     static Object connect(Map<String, Object> req) throws Exception {
         if (conn != null) throw new IllegalStateException("already connected");
+        String enc = str(req, "encoding");
+        if (enc != null && !enc.isBlank()) defaultCharset(enc.trim());
         List<URL> urls = new ArrayList<>();
         for (Object o : list(req, "jars")) {
             Path p = Paths.get(home(String.valueOf(o)));
