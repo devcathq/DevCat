@@ -17,7 +17,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   free of Java: its small helper runs on a Java you already have (JAVA_HOME, an installed JDK, the one in DBeaver or
   DataGrip), or, with SSH on, on another computer that has Java and can reach the database. You bring the driver's
   jar. For older databases that don't store Unicode (a Japanese SQLBase in Shift-JIS), set the connection's text
-  encoding, such as MS932, and names and values read correctly.
+  encoding, such as MS932, and names and values read correctly. For a server whose driver can't list its databases
+  (SQLBase), list them on the connection and put `{db}` in the URL: one connection shows them all.
 
 ## 0.25.1 - 2026-11-15
 

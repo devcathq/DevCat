@@ -182,7 +182,12 @@ fn hashes_of(files: &[PathBuf]) -> AppResult<Map<String, Value>> {
 /// (an agent writing into that folder, say) isn't run until the user saves the connection again.
 pub fn pin_jars(cfg: &mut ConnectionConfig) -> AppResult<()> {
     cfg.options.remove("jarHashes");
-    if cfg.kind != ConnectionKind::Jdbc || cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
+    if cfg.kind != ConnectionKind::Jdbc {
+        return Ok(());
+    }
+    // the database list and the URL's {db} go together
+    databases_of(cfg)?;
+    if cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
         return Ok(());
     }
     let settings = Settings::of(cfg)?;
@@ -706,6 +711,13 @@ impl Bridge {
         let _ = w.write_all(b"{\"op\":\"close\"}\n").await;
         let _ = w.flush().await;
         let _ = w.shutdown().await;
+        drop(w);
+        // let it close its database connection before the process goes (dropping the bridge kills
+        // it): a killed helper leaves the session on the server, and some databases lose writes
+        let until = Instant::now() + Duration::from_secs(5);
+        while !self.reader.is_finished() && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }
 
@@ -873,7 +885,8 @@ fn nz(s: &str) -> Option<String> {
 // -------------------------------------------------------------------------------------------------
 // The driver
 
-pub struct JdbcDriver {
+/// One database: one helper (and its database connection). [`JdbcDriver`] holds one per database.
+pub struct JdbcOne {
     /// The helper in use; replaced when it stops or loses its database connection.
     bridge: parking_lot::Mutex<Arc<Bridge>>,
     reconnecting: tokio::sync::Mutex<()>,
@@ -886,11 +899,11 @@ pub struct JdbcDriver {
     default_catalog: Option<String>,
 }
 
-impl JdbcDriver {
+impl JdbcOne {
     pub async fn connect(cfg: &ConnectionConfig) -> AppResult<Self> {
         let settings = Settings::of(cfg)?;
         let (bridge, info) = Self::open(cfg, &settings).await?;
-        Ok(JdbcDriver {
+        Ok(JdbcOne {
             bridge: parking_lot::Mutex::new(Arc::new(bridge)),
             reconnecting: tokio::sync::Mutex::new(()),
             cfg: cfg.clone(),
@@ -1129,7 +1142,7 @@ impl JdbcDriver {
 }
 
 #[async_trait]
-impl Driver for JdbcDriver {
+impl Driver for JdbcOne {
     fn kind(&self) -> ConnectionKind {
         ConnectionKind::Jdbc
     }
@@ -1485,6 +1498,209 @@ impl Driver for JdbcDriver {
     }
 }
 
+// -------------------------------------------------------------------------------------------------
+// Several databases on one server
+
+/// The databases a connection lists (`options.databases`, separated by `,` `;` or lines), for
+/// drivers that can't list a server's databases themselves (SQLBase's): the URL names the one to
+/// use with `{db}`. Empty: the URL names one database, as usual.
+pub fn databases_of(cfg: &ConnectionConfig) -> AppResult<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for d in cfg.options.get("databases").map(String::as_str).unwrap_or("").split([',', ';', '\n']).map(str::trim) {
+        if d.is_empty() || out.iter().any(|o| o == d) {
+            continue;
+        }
+        // it goes into the URL: no characters that would end the name or start a property
+        if d.len() > 64 || !d.chars().all(|c| c.is_alphanumeric() || "_-$#@".contains(c)) {
+            return Err(AppError::msg(format!("JDBC: {d:?} isn't a database name DevCat can put in the URL")));
+        }
+        out.push(d.to_string());
+    }
+    let url = cfg.url.as_deref().unwrap_or("");
+    match (out.is_empty(), url.contains(DB_SLOT)) {
+        (true, true) => Err(AppError::msg("JDBC: the URL has {db}: list the databases to use in its place")),
+        (false, false) => Err(AppError::msg("JDBC: with several databases, put {db} in the URL where the database name goes")),
+        _ => Ok(out),
+    }
+}
+
+const DB_SLOT: &str = "{db}";
+
+/// A JDBC connection: one database, or several on the same server (`databases_of`), each with its
+/// own helper, started the first time it's used. With several, the tree's first level and
+/// `TableRef::database` are the database; each one is browsed as a database without catalogs.
+pub struct JdbcDriver {
+    cfg: ConnectionConfig,
+    /// empty: the URL's one database, kept under ""
+    dbs: Vec<String>,
+    default_db: String,
+    /// per database, connected once; a failed connect leaves it empty, to try again
+    open: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Arc<JdbcOne>>>>>,
+}
+
+impl JdbcDriver {
+    pub async fn connect(cfg: &ConnectionConfig) -> AppResult<Self> {
+        let dbs = databases_of(cfg)?;
+        // the catalog field names the default database when there are several
+        let default_db = match cfg.database.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            Some(d) if dbs.iter().any(|x| x == d) => d.to_string(),
+            Some(d) if !dbs.is_empty() => return Err(AppError::msg(format!("JDBC: the default database {d:?} isn't in the list of databases"))),
+            _ => dbs.first().cloned().unwrap_or_default(),
+        };
+        let d = JdbcDriver { cfg: cfg.clone(), dbs, default_db, open: parking_lot::Mutex::new(HashMap::new()) };
+        // connect now, so a wrong URL, password or Java shows when the connection opens
+        d.one(None).await?;
+        Ok(d)
+    }
+
+    fn several(&self) -> bool {
+        !self.dbs.is_empty()
+    }
+
+    /// The database a request is for: the one it names, else the default.
+    fn pick(&self, db: Option<&str>) -> AppResult<String> {
+        if !self.several() {
+            return Ok(String::new());
+        }
+        match db.map(str::trim).filter(|d| !d.is_empty()) {
+            None => Ok(self.default_db.clone()),
+            Some(d) if self.dbs.iter().any(|x| x == d) => Ok(d.to_string()),
+            Some(d) => Err(AppError::msg(format!("JDBC: {d:?} isn't one of this connection's databases ({})", self.dbs.join(", ")))),
+        }
+    }
+
+    async fn one(&self, db: Option<&str>) -> AppResult<Arc<JdbcOne>> {
+        let db = self.pick(db)?;
+        // one slot per database: a slow database doesn't hold up the others
+        let slot = self.open.lock().entry(db.clone()).or_default().clone();
+        slot.get_or_try_init(|| async {
+            let mut cfg = self.cfg.clone();
+            if self.several() {
+                cfg.url = cfg.url.map(|u| u.replace(DB_SLOT, &db));
+                cfg.database = None;
+            }
+            JdbcOne::connect(&cfg).await.map(Arc::new)
+        })
+        .await
+        .cloned()
+    }
+
+    /// A table as its database's helper sees it: without the database.
+    fn inner(&self, t: &TableRef) -> TableRef {
+        if self.several() { TableRef { database: None, ..t.clone() } } else { t.clone() }
+    }
+
+    /// A result from a database's helper, named with its database again.
+    fn outer(&self, db: &str, t: Option<TableRef>) -> Option<TableRef> {
+        if self.several() { t.map(|t| TableRef { database: Some(db.to_string()), ..t }) } else { t }
+    }
+}
+
+#[async_trait]
+impl Driver for JdbcDriver {
+    fn kind(&self) -> ConnectionKind {
+        ConnectionKind::Jdbc
+    }
+
+    fn dialect(&self) -> Dialect {
+        D
+    }
+
+    async fn server_version(&self) -> AppResult<String> {
+        self.one(None).await?.server_version().await
+    }
+
+    async fn children(&self, path: &[String]) -> AppResult<Vec<TreeNode>> {
+        if !self.several() {
+            return self.one(None).await?.children(path).await;
+        }
+        let Some((db, rest)) = path.split_first() else {
+            return Ok(self
+                .dbs
+                .iter()
+                .map(|d| TreeNode { path: vec![d.clone()], label: d.clone(), kind: NodeKind::Database, has_children: true, detail: None, table: None })
+                .collect());
+        };
+        let one = self.one(Some(db)).await?;
+        // the database takes the catalog's place in the path
+        let mut inner = vec![String::new()];
+        inner.extend_from_slice(rest);
+        let mut nodes = one.children(&inner).await?;
+        for n in &mut nodes {
+            if let Some(first) = n.path.first_mut() {
+                *first = db.clone();
+            }
+            n.table = self.outer(db, n.table.take());
+        }
+        Ok(nodes)
+    }
+
+    async fn list_databases(&self) -> AppResult<Vec<String>> {
+        if self.several() { Ok(self.dbs.clone()) } else { self.one(None).await?.list_databases().await }
+    }
+
+    async fn execute(&self, script: &str, opts: &ExecOptions) -> AppResult<Vec<QueryResult>> {
+        if !self.several() {
+            return self.one(None).await?.execute(script, opts).await;
+        }
+        let one = self.one(opts.database.as_deref()).await?;
+        one.execute(script, &ExecOptions { database: None, ..opts.clone() }).await
+    }
+
+    async fn table_data(&self, req: &TableDataRequest) -> AppResult<TableDataPage> {
+        let one = self.one(req.table.database.as_deref()).await?;
+        one.table_data(&TableDataRequest { table: self.inner(&req.table), ..req.clone() }).await
+    }
+
+    async fn table_structure(&self, table: &TableRef) -> AppResult<TableStructure> {
+        let db = self.pick(table.database.as_deref())?;
+        let mut s = self.one(Some(&db)).await?.table_structure(&self.inner(table)).await?;
+        s.table = self.outer(&db, s.table.take());
+        Ok(s)
+    }
+
+    async fn apply_changes(&self, table: &TableRef, changes: &[RowChange]) -> AppResult<u64> {
+        self.one(table.database.as_deref()).await?.apply_changes(&self.inner(table), changes).await
+    }
+
+    async fn object_ddl(&self, table: &TableRef, kind: &NodeKind) -> AppResult<String> {
+        self.one(table.database.as_deref()).await?.object_ddl(&self.inner(table), kind).await
+    }
+
+    async fn schema_snapshot(&self, database: Option<&str>, schema: Option<&str>) -> AppResult<SchemaSnapshot> {
+        if !self.several() {
+            return self.one(None).await?.schema_snapshot(database, schema).await;
+        }
+        let db = self.pick(database)?;
+        let mut snap = self.one(Some(&db)).await?.schema_snapshot(None, schema).await?;
+        for t in &mut snap.tables {
+            t.table = self.outer(&db, t.table.take());
+        }
+        for (v, _) in &mut snap.views {
+            v.database = Some(db.clone());
+        }
+        Ok(snap)
+    }
+
+    async fn cancel(&self) -> AppResult<()> {
+        let open: Vec<Arc<JdbcOne>> = self.open.lock().values().filter_map(|s| s.get().cloned()).collect();
+        let mut r = Ok(());
+        for o in open {
+            if let Err(e) = o.cancel().await {
+                r = Err(e);
+            }
+        }
+        r
+    }
+
+    async fn close(&self) {
+        let open: Vec<Arc<JdbcOne>> = self.open.lock().drain().filter_map(|(_, s)| s.get().cloned()).collect();
+        for o in open {
+            o.close().await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1497,6 +1713,63 @@ mod tests {
             }
         }
         serde_json::from_value(base).unwrap()
+    }
+
+    #[test]
+    fn several_databases_setting() {
+        let dbs = |url: &str, d: &str| databases_of(&cfg(json!({ "url": url, "options": { "driverJars": "/a.jar", "databases": d } })));
+        assert_eq!(dbs("jdbc:sqlbase://h:2155/{db}", " OFFICE, SALES;\nOFFICE\n").unwrap(), vec!["OFFICE", "SALES"]);
+        assert_eq!(dbs("jdbc:sqlbase://h:2155/OFFICE", "").unwrap(), Vec::<String>::new());
+        assert!(dbs("jdbc:sqlbase://h:2155/OFFICE", "A").unwrap_err().to_string().contains("{db}"));
+        assert!(dbs("jdbc:sqlbase://h:2155/{db}", "").unwrap_err().to_string().contains("list the databases"));
+        // nothing that would change the URL around the name
+        for bad in ["A/B", "A;user=x", "A?x=1", "A B", "A:1", "A&b"] {
+            assert!(dbs("jdbc:x://h/{db}", bad).is_err(), "{bad}");
+        }
+        assert_eq!(dbs("jdbc:x://h/{db}", "受注DB").unwrap(), vec!["受注DB"]);
+    }
+
+    #[tokio::test]
+    async fn h2_several_databases() {
+        let Some(mut cfg) = h2() else {
+            eprintln!("skipping: set DEVCAT_TEST_JAVA and DEVCAT_TEST_H2_JAR");
+            return;
+        };
+        let url = cfg.url.clone().unwrap();
+        cfg.url = Some(url.replace("/db;", "/{db};"));
+        cfg.options.insert("databases".into(), "A, B".into());
+        cfg.database = Some("B".into());
+        let d = JdbcDriver::connect(&cfg).await.unwrap();
+        let on = |db: &str| ExecOptions { database: Some(db.into()), schema: None, max_rows: Some(100) };
+        d.execute("CREATE TABLE ONLY_A(ID INT PRIMARY KEY, V VARCHAR(10)); INSERT INTO ONLY_A VALUES (1, 'x')", &on("A")).await.unwrap();
+        // B is another database: it doesn't have A's table; no database means the default, B
+        assert!(d.execute("SELECT * FROM ONLY_A", &on("B")).await.is_err());
+        assert!(d.execute("SELECT * FROM ONLY_A", &opts()).await.is_err());
+        assert!(d.execute("SELECT 1", &on("C")).await.unwrap_err().to_string().contains("isn't one of"));
+        assert_eq!(d.list_databases().await.unwrap(), vec!["A", "B"]);
+
+        let top = d.children(&[]).await.unwrap();
+        assert_eq!(top.iter().map(|n| (n.label.as_str(), n.kind.clone())).collect::<Vec<_>>(), vec![("A", NodeKind::Database), ("B", NodeKind::Database)]);
+        // walk A down to its table: paths keep the database first, tables name it
+        let mut path = vec!["A".to_string()];
+        let table = loop {
+            let kids = d.children(&path).await.unwrap();
+            assert!(kids.iter().all(|k| k.path[0] == "A"), "{kids:?}");
+            if let Some(t) = kids.iter().find(|k| k.label == "ONLY_A") {
+                break t.table.clone().unwrap();
+            }
+            let next = kids.iter().find(|k| k.label == "PUBLIC" || k.path.last().is_some_and(|p| p.starts_with("t:") && k.label.contains("Table"))).expect("a way down");
+            path = next.path.clone();
+        };
+        assert_eq!(table.database.as_deref(), Some("A"));
+        let page = d.table_data(&TableDataRequest { table: table.clone(), offset: 0, limit: 10, filter: None, sort: vec![] }).await.unwrap();
+        assert_eq!(page.result.rows, vec![vec![json!(1), json!("x")]]);
+        assert_eq!(page.primary_key, vec!["ID"]);
+        let s = d.table_structure(&table).await.unwrap();
+        assert_eq!(s.table.unwrap().database.as_deref(), Some("A"));
+        let snap = d.schema_snapshot(Some("A"), Some("PUBLIC")).await.unwrap();
+        assert!(snap.tables.iter().any(|t| t.table.as_ref().is_some_and(|r| r.name == "ONLY_A" && r.database.as_deref() == Some("A"))));
+        d.close().await;
     }
 
     #[test]
@@ -1790,7 +2063,7 @@ mod tests {
         // a read-only session: refused by its words, and undone if the words lie
         let mut ro = cfg.clone();
         ro.read_only = true;
-        let r = JdbcDriver::connect(&ro).await.unwrap();
+        let r = JdbcOne::connect(&ro).await.unwrap();
         assert!(r.execute("DELETE FROM app.books", &opts()).await.is_err());
         assert!(r.apply_changes(&books, &[RowChange::Delete { key: key(1) }]).await.is_err());
         assert_eq!(r.execute("SELECT COUNT(*) FROM app.books", &opts()).await.unwrap()[0].rows[0][0], json!(3));
@@ -1843,7 +2116,7 @@ mod tests {
     #[tokio::test]
     async fn h2_cancel_and_errors() {
         let Some(cfg) = h2() else { return };
-        let d = Arc::new(JdbcDriver::connect(&cfg).await.unwrap());
+        let d = Arc::new(JdbcOne::connect(&cfg).await.unwrap());
         // a slow query, cancelled from the side
         let run = {
             let d = d.clone();

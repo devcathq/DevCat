@@ -199,6 +199,9 @@ export function JdbcSection({ cfg, set, setOpt }: SectionProps) {
       <Row label="JDBC URL" hint="As the driver's documentation gives it.">
         <Input className="font-mono text-xs!" value={cfg.url ?? ""} placeholder="jdbc:sqlbase://192.168.0.3:2155/MYDB" onChange={(e) => set({ url: e.target.value })} />
       </Row>
+      <Row label="Databases" hint={<>Optional, for a server whose driver can't list its databases (SQLBase): their names, separated by commas, and <span className="font-mono">{"{db}"}</span> in the URL where the name goes. The tree shows them all; each connects when first opened.</>}>
+        <Input className="font-mono text-xs!" value={cfg.options.databases ?? ""} placeholder="OFFICE, SALES" onChange={(e) => setOpt("databases", e.target.value || null)} />
+      </Row>
       <Row label="Driver jar" hint={<>The vendor's driver, {where}. Several jars: separate them with <span className="font-mono">;</span>. A folder means every jar in it.</>}>
         {remote ? (
           <Input className="font-mono text-xs!" value={cfg.options.driverJars ?? ""} placeholder="C:\drivers\SQLBaseJDBC.jar" onChange={(e) => setOpt("driverJars", e.target.value || null)} />
@@ -215,7 +218,7 @@ export function JdbcSection({ cfg, set, setOpt }: SectionProps) {
       <Row label="Password">
         <PasswordInput value={cfg.password ?? ""} onChange={(v) => set({ password: v })} />
       </Row>
-      <Row label="Catalog / schema" hint="Optional defaults for queries; the tree shows them all.">
+      <Row label="Catalog / schema" hint="Optional defaults for queries; the tree shows them all. With several databases, the catalog is the default one.">
         <div className="flex gap-1.5">
           <Input value={cfg.database ?? ""} placeholder="catalog" onChange={(e) => set({ database: e.target.value || null })} />
           <Input value={cfg.options.schema ?? ""} placeholder="schema" onChange={(e) => setOpt("schema", e.target.value || null)} />
@@ -702,7 +705,7 @@ export function SshSection({ cfg, set }: SectionProps) {
 }
 
 /** Managed option keys edited by dedicated fields; hidden from the raw editor. */
-const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards", "parent", "driverJars", "driverClass", "javaPath", "schema", "properties", "jarHashes", "encoding"]);
+const MANAGED_OPTIONS = new Set(["context", "namespace", "managementPort", "useTls", "insecureTls", "basePath", "networkId", "keyPath", "jump", "startDir", "startup", "forwards", "parent", "driverJars", "driverClass", "javaPath", "schema", "properties", "jarHashes", "encoding", "databases"]);
 
 /** VPN / SSH tunnel profile that is connected before this connection opens (options.networkId). */
 function NetworkRow({ cfg, setOpt }: SectionProps) {

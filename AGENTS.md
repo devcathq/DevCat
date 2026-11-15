@@ -97,6 +97,13 @@ or outside the database's network, uses JDBC). Keep these rules:
   between statements and any writing or transaction word outside quotes (agents, a read-only phone and read-only
   connections all go through it). The helper's read-only session also rolls back after every statement, but that's
   a backstop only: DDL and an embedded `COMMIT` commit anyway.
+- **Several databases go through `{db}`**: a driver that can't list a server's databases (SQLBase's) gets the names
+  from the connection (`options.databases`, `jdbc::databases_of`), put into the URL one at a time, one helper each
+  (`JdbcDriver` over `JdbcOne`). The names may only be letters, digits and `_-$#@`: nothing that could end the name
+  or add a URL property. A request naming another database is refused, not tried.
+- **Old drivers bend JDBC**: SQLBase's `isValid` always says false, `setSchema` / `getSchemas(c, p)` throw a plain
+  `SQLException`, and it decodes text with Java's default charset (the connection's text encoding sets it). Fall back
+  on any `SQLException` where a call is optional, and test against such a driver, not only H2.
 - **Never ship a driver jar**: drivers are the vendors' (SQLBase's has its own licence). The user points at one.
 - **Change the Java, rebuild the jar**: run `src-tauri/jdbc-bridge/build.sh` (needs a JDK 17+) and commit the jar
   with the source; bump `PROTOCOL` on both sides when the requests change. Building DevCat itself needs no Java.
