@@ -268,6 +268,29 @@ pub fn render_type(to: Dialect, ty: &Ty) -> String {
             Ty::Other(s) => s.clone(),
             other => render_type(Dialect::Postgres, other),
         },
+        // standard SQL names, for a database reached through JDBC
+        Dialect::Generic => match ty {
+            Ty::TinyInt { .. } | Ty::SmallInt => "SMALLINT".into(),
+            Ty::Int => "INTEGER".into(),
+            Ty::BigInt => "BIGINT".into(),
+            Ty::Decimal(Some((p, Some(s)))) => format!("DECIMAL({p},{s})"),
+            Ty::Decimal(Some((p, None))) => format!("DECIMAL({p})"),
+            Ty::Decimal(None) => "DECIMAL".into(),
+            Ty::Money => "DECIMAL(19,4)".into(),
+            Ty::Real => "REAL".into(),
+            Ty::Double => "DOUBLE PRECISION".into(),
+            Ty::Bool => "BOOLEAN".into(),
+            Ty::Char(n) => format!("CHAR({})", n.unwrap_or(1)),
+            Ty::Varchar(Some(n)) => format!("VARCHAR({n})"),
+            Ty::Date => "DATE".into(),
+            Ty::Time => "TIME".into(),
+            Ty::Timestamp => "TIMESTAMP".into(),
+            Ty::TimestampTz => "TIMESTAMP WITH TIME ZONE".into(),
+            Ty::Binary => "BLOB".into(),
+            Ty::Uuid => "CHAR(36)".into(),
+            Ty::Other(s) => s.clone(),
+            Ty::Varchar(None) | Ty::Text | Ty::Interval | Ty::Json | Ty::Array | Ty::Xml | Ty::Enum => "CLOB".into(),
+        },
     }
 }
 
@@ -315,7 +338,7 @@ pub fn qualified_name(d: Dialect, t: &TableRef) -> String {
     let q = |s: &str| quote_ident(d, s);
     let nonempty = |o: &Option<String>| o.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
     match d {
-        Dialect::Postgres | Dialect::None => match nonempty(&t.schema) {
+        Dialect::Postgres | Dialect::None | Dialect::Generic => match nonempty(&t.schema) {
             Some(s) => format!("{}.{}", q(&s), q(&t.name)),
             None => q(&t.name),
         },

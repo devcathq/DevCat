@@ -289,6 +289,14 @@ pub fn names(scope: &Scope) -> Vec<String> {
 /// One line per connection: name, kind, default database, read-only, id.
 pub fn describe(c: &ConnectionConfig) -> String {
     let mut l = format!("- {} ({}", c.name, kind_name(c.kind));
+    // which database it is (its SQL), from the URL's subprotocol only: the rest can hold secrets
+    if c.kind == ConnectionKind::Jdbc
+        && let Some(sub) = c.url.as_deref().and_then(|u| u.trim().strip_prefix("jdbc:")).and_then(|r| r.split(':').next())
+        && !sub.is_empty()
+        && sub.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        l.push_str(&format!(" {sub}"));
+    }
     if let Some(db) = c.database.as_deref().filter(|d| !d.is_empty()) {
         l.push_str(&format!(", database {db}"));
     }
@@ -323,6 +331,7 @@ pub fn kind_name(k: ConnectionKind) -> &'static str {
         ConnectionKind::Rabbitmq => "rabbitmq",
         ConnectionKind::Docker => "docker",
         ConnectionKind::Ssh => "ssh",
+        ConnectionKind::Jdbc => "jdbc",
     }
 }
 
@@ -512,7 +521,7 @@ impl Tool for DbQuery {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "db_query".into(),
-            description: "Run a query on one of the user's DevCat connections and get the rows back: SQL for Postgres, MySQL, SQLite and SQL Server; mongo shell syntax for MongoDB (`db.users.find({...}).limit(10)`, `db.orders.aggregate([...])`); one command per line for Redis (`SCAN 0 MATCH user:* COUNT 100`, `HGETALL user:1`). Prefer reading: SELECT with a LIMIT, only the columns you need. Statements that change data ask the user first, and read-only connections refuse them.".into(),
+            description: "Run a query on one of the user's DevCat connections and get the rows back: SQL for Postgres, MySQL, SQLite, SQL Server and JDBC databases (in that database's own SQL: a `jdbc sqlbase` connection takes SQLBase SQL; not every one knows LIMIT, so keep `max_rows`); mongo shell syntax for MongoDB (`db.users.find({...}).limit(10)`, `db.orders.aggregate([...])`); one command per line for Redis (`SCAN 0 MATCH user:* COUNT 100`, `HGETALL user:1`). Prefer reading: SELECT with a LIMIT, only the columns you need. Statements that change data ask the user first, and read-only connections refuse them.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

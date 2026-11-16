@@ -138,6 +138,18 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "delete_connection" => out(crate::commands::connections::delete_connection(crate::state::St::get(), arg(args, "id")?).await),
         "test_connection" => out(c!(crate::commands::connections::test_connection, "config")),
         "net_ssh_config_hosts" => out(c!(crate::network::net_ssh_config_hosts)),
+        // database sessions on those connections (JDBC's helper lives in the throwaway folder)
+        "open_connection" => out(crate::commands::connections::open_connection(crate::state::St::get(), arg(args, "id")?).await),
+        "close_connection" => out(crate::commands::connections::close_connection(crate::state::St::get(), arg(args, "id")?).await),
+        "open_connection_ids" => out(crate::commands::connections::open_connection_ids(crate::state::St::get()).await),
+        "db_children" => out(crate::commands::db::db_children(crate::state::St::get(), arg(args, "connId")?, arg(args, "path")?).await),
+        "db_list_databases" => out(crate::commands::db::db_list_databases(crate::state::St::get(), arg(args, "connId")?).await),
+        "db_execute" => out(crate::commands::db::db_execute(crate::state::St::get(), arg(args, "connId")?, arg(args, "script")?, arg(args, "opts")?, arg(args, "skipHistory")?).await),
+        "db_cancel" => out(crate::commands::db::db_cancel(crate::state::St::get(), arg(args, "connId")?).await),
+        "db_table_data" => out(crate::commands::db::db_table_data(crate::state::St::get(), arg(args, "connId")?, arg(args, "req")?).await),
+        "db_table_structure" => out(crate::commands::db::db_table_structure(crate::state::St::get(), arg(args, "connId")?, arg(args, "table")?).await),
+        "db_object_ddl" => out(crate::commands::db::db_object_ddl(crate::state::St::get(), arg(args, "connId")?, arg(args, "table")?, arg(args, "kind")?).await),
+        "db_schema_snapshot" => out(crate::commands::db::db_schema_snapshot(crate::state::St::get(), arg(args, "connId")?, arg(args, "database")?, arg(args, "schema")?).await),
         "pty_open" => {
             let (cwd, program, a, cols, rows): (String, Option<String>, Vec<String>, u16, u16) =
                 (arg(args, "cwd")?, arg(args, "program")?, arg(args, "args")?, arg(args, "cols")?, arg(args, "rows")?);
@@ -236,6 +248,7 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
     let d = std::env::temp_dir().join(format!("devcat-bridge-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&d);
     crate::state::init(d.clone());
+    crate::db::jdbc::init(d.clone());
     // Sync MCP edits agents' configs in a pretend home folder (DEVBRIDGE_MCP_HOME, else one with
     // an empty ~/.claude.json and ~/.codex), never the real ones.
     crate::mcp_sync::init(d.clone());

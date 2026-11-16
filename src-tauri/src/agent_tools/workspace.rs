@@ -41,7 +41,8 @@ pub(super) fn add(out: &mut Vec<Arc<dyn Tool>>, s: &Arc<Scope>, v: &View) {
     }
 }
 
-/// Connection kinds agents may add (SSH sessions stay the user's: see AGENTS.md).
+/// Connection kinds agents may add (SSH sessions stay the user's: see AGENTS.md). Not JDBC
+/// either: its Java path and driver jars are programs DevCat runs (`db/jdbc.rs`).
 const KINDS: &[&str] = &["postgres", "mysql", "sqlite", "mssql", "mongodb", "redis", "kubernetes", "rabbitmq", "docker"];
 
 fn conn_props() -> Value {

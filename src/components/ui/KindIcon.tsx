@@ -1,4 +1,4 @@
-import { Boxes, Container, Database, Feather, HardDrive, Leaf, Rabbit, Server, SquareTerminal, Zap } from "lucide-react";
+import { Boxes, Coffee, Container, Database, Feather, HardDrive, Leaf, Rabbit, Server, SquareTerminal, Zap } from "lucide-react";
 import type { ConnectionKind } from "../../lib/types";
 
 export const KIND_META: Record<ConnectionKind, { label: string; color: string; defaultPort?: number }> = {
@@ -12,6 +12,7 @@ export const KIND_META: Record<ConnectionKind, { label: string; color: string; d
   rabbitmq: { label: "RabbitMQ", color: "#fb923c", defaultPort: 15672 },
   docker: { label: "Docker", color: "#2496ed" },
   ssh: { label: "SSH session", color: "#a3e635", defaultPort: 22 },
+  jdbc: { label: "JDBC", color: "#e8a87c" },
 };
 
 export function KindIcon({ kind, className = "size-4" }: { kind: ConnectionKind; className?: string }) {
@@ -27,5 +28,6 @@ export function KindIcon({ kind, className = "size-4" }: { kind: ConnectionKind;
     case "rabbitmq": return <Rabbit className={className} style={style} />;
     case "docker": return <Container className={className} style={style} />;
     case "ssh": return <SquareTerminal className={className} style={style} />;
+    case "jdbc": return <Coffee className={className} style={style} />;
   }
 }

@@ -34,6 +34,7 @@ const TYPES: Record<Exclude<Dialect, "none">, string[]> = {
     "longblob", "date", "time", "datetime", "timestamp", "year", "json", "enum", "set",
   ],
   sqlite: ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC", "BOOLEAN", "DATE", "DATETIME", "VARCHAR"],
+  generic: ["SMALLINT", "INTEGER", "BIGINT", "DECIMAL", "NUMERIC", "REAL", "DOUBLE PRECISION", "BOOLEAN", "CHAR", "VARCHAR", "CLOB", "BLOB", "DATE", "TIME", "TIMESTAMP"],
   mssql: [
     "bit", "tinyint", "smallint", "int", "bigint", "decimal", "numeric", "money", "smallmoney", "float", "real",
     "char", "varchar", "nchar", "nvarchar", "text", "ntext", "date", "time", "datetime", "datetime2",
@@ -321,7 +322,8 @@ export function foreignKeyChanged(o: ForeignKeyDef, e: ForeignKeyDef, renames: M
  * a different `edited.table.name` renames the table.
  */
 export function generateAlterTable(d: Dialect, original: TableStructure, edited: DesignStructure, table: TableRef): string[] {
-  if (d === "none") return [];
+  // JDBC: every database alters tables its own way; the designer doesn't guess
+  if (d === "none" || d === "generic") return [];
   const newName = nz(edited.table?.name) ?? table.name;
   const ref: TableRef = { ...table, name: newName };
 

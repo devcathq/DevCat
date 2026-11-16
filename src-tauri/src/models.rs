@@ -17,6 +17,9 @@ pub enum ConnectionKind {
     Docker,
     /// A saved SSH login (Xshell-style session): terminal, SFTP, agents on the host. Desktop only.
     Ssh,
+    /// Any database with a JDBC driver jar, through DevCat's small Java helper (`db/jdbc.rs`)
+    /// run by a Java on this computer or on the SSH host.
+    Jdbc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

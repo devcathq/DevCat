@@ -23,7 +23,7 @@ pub fn quote_ident(d: Dialect, ident: &str) -> String {
 /// - MSSQL: `[database].[schema].[name]`
 pub fn qualified_name(d: Dialect, t: &TableRef) -> String {
     let parts: Vec<&str> = match d {
-        Dialect::Postgres => [t.schema.as_deref(), Some(t.name.as_str())].into_iter().flatten().collect(),
+        Dialect::Postgres | Dialect::Generic => [t.schema.as_deref(), Some(t.name.as_str())].into_iter().flatten().collect(),
         Dialect::Mysql => [t.database.as_deref(), Some(t.name.as_str())].into_iter().flatten().collect(),
         Dialect::Sqlite => [t.database.as_deref().or(t.schema.as_deref()), Some(t.name.as_str())]
             .into_iter()
@@ -218,7 +218,7 @@ impl<'a> Splitter<'a> {
             }
             let c = self.b[self.i];
             // Delimiter (outside of strings/comments and CREATE bodies).
-            if self.d != Dialect::Mssql && self.depth <= 0 && self.s[self.i..].starts_with(self.delimiter.as_str()) {
+            if self.d != Dialect::Mssql && self.depth <= 0 && self.b[self.i..].starts_with(self.delimiter.as_bytes()) {
                 self.push(self.i);
                 self.i += self.delimiter.len();
                 self.start = self.i;
@@ -344,7 +344,7 @@ impl<'a> Splitter<'a> {
     fn read_word(&mut self) -> &'a str {
         let st = self.i;
         // A custom delimiter such as `$$` may directly follow a word (`END$$`).
-        while self.i < self.b.len() && is_word_char(self.b[self.i], self.d) && (self.i == st || !self.s[self.i..].starts_with(self.delimiter.as_str())) {
+        while self.i < self.b.len() && is_word_char(self.b[self.i], self.d) && (self.i == st || !self.b[self.i..].starts_with(self.delimiter.as_bytes())) {
             self.i += 1;
         }
         &self.s[st..self.i]
@@ -830,6 +830,20 @@ mod tests {
         assert_eq!(s[1].line(script), 3);
     }
 
+    // unquoted names in Japanese (or any non-ASCII) used to panic the splitter mid-character
+    #[test]
+    fn split_non_ascii_words() {
+        for d in [Dialect::Generic, Dialect::Postgres, Dialect::Mysql, Dialect::Mssql, Dialect::Sqlite] {
+            assert_eq!(split_statements(d, "曜日 = '木'"), vec!["曜日 = '木'"]);
+        }
+        assert_eq!(
+            split_statements(Dialect::Generic, "SELECT 曜日 FROM カレンダー WHERE 曜日 = '木'; SELECT 1"),
+            vec!["SELECT 曜日 FROM カレンダー WHERE 曜日 = '木'", "SELECT 1"]
+        );
+        let mysql = "DELIMITER $$\nCREATE PROCEDURE 手続き() BEGIN SELECT 名前; END$$\nDELIMITER ;";
+        assert_eq!(split_statements(Dialect::Mysql, mysql).len(), 1);
+    }
+
     #[test]
     fn literal_escaping() {
         assert_eq!(literal(Dialect::Postgres, &json!(null)), "NULL");
@@ -933,3 +947,4 @@ mod tests {
         assert_eq!(parse_hex_binary("\\x00ff…"), None);
     }
 }
+

@@ -12,6 +12,15 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- A query or table filter with an unquoted non-ASCII name (`WHERE 曜日 = '木'`) no longer leaves it running forever.
+- **JDBC connections**: any database with a JDBC driver (SQLBase, Oracle, Db2, Informix, H2…) as a connection, with
+  its tree, table data, grid edits, queries and export, and for agents over MCP like any other database. DevCat stays
+  free of Java: its small helper runs on a Java you already have (JAVA_HOME, an installed JDK, the one in DBeaver or
+  DataGrip), or, with SSH on, on another computer that has Java and can reach the database. You bring the driver's
+  jar. For older databases that don't store Unicode (a Japanese SQLBase in Shift-JIS), set the connection's text
+  encoding, such as MS932, and names and values read correctly. For a server whose driver can't list its databases
+  (SQLBase), list them on the connection and put `{db}` in the URL: one connection shows them all.
+
 ## 0.26.0 - 2026-11-16
 
 - **Split panes** (#165): put several tabs side by side in one window. Right-click a tab and choose **Split right**

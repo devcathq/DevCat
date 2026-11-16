@@ -77,6 +77,42 @@ tool with the same scope (`tools_for(…, in_app)`); with DevCat closed it runs 
 (`network::set_passive`: it never starts networks), and tools that need DevCat say so. Sync MCP and the bridge are
 about this computer, so they stay out of the phone dispatcher, like the SSH workbench above.
 
+## JDBC connections
+
+A `jdbc` connection (`src-tauri/src/db/jdbc.rs`) reaches a database through a driver jar the user supplies. DevCat has
+no Java in it: it embeds a small helper (`src-tauri/jdbc-bridge/DevcatJdbc.java`, built into the committed
+`devcat-jdbc.jar` by `build.sh`, Java 11 bytecode, no dependencies) and starts it with a Java that's already there,
+speaking one JSON line each way over its stdin / stdout. With SSH on, DevCat logs in itself, copies the helper to
+`~/.devcat/jdbc/` on that host and runs it there: the database is reached from that host (how a computer without Java,
+or outside the database's network, uses JDBC). Keep these rules:
+
+- **A JDBC connection runs programs**: its Java path and its driver jars. So agents can't add one
+  (`agent_tools::workspace::KINDS`), as with a kubeconfig or VPN config an agent names, and nothing that comes from
+  outside (a room, a chat app, the phone) may create or change one without the user in the window.
+- **Driver jars are pinned**: saving the connection (`save_connection` → `jdbc::pin_jars`) records the sha-256 of
+  every jar on this computer, and a jar that changed or appeared in a jar folder since isn't run (`pinned_jars`),
+  so an agent that can write next to the jars can't get its code run by a query. The Java program isn't pinned
+  (a JDK updates itself); jars on an SSH host are that host's.
+- **Read-only can't trust one database's lexing**: `jdbc::read_only_sql` refuses `$`, `\`, `` ` ``, `[`, a `;`
+  between statements and any writing or transaction word outside quotes (agents, a read-only phone and read-only
+  connections all go through it). The helper's read-only session also rolls back after every statement, but that's
+  a backstop only: DDL and an embedded `COMMIT` commit anyway.
+- **Several databases go through `{db}`**: a driver that can't list a server's databases (SQLBase's) gets the names
+  from the connection (`options.databases`, `jdbc::databases_of`), put into the URL one at a time, one helper each
+  (`JdbcDriver` over `JdbcOne`). The names may only be letters, digits and `_-$#@`: nothing that could end the name
+  or add a URL property. A request naming another database is refused, not tried.
+- **Old drivers bend JDBC**: SQLBase's `isValid` always says false, `setSchema` / `getSchemas(c, p)` throw a plain
+  `SQLException`, it decodes text with Java's default charset (the connection's text encoding sets it), and from
+  server 11.5 on sends SQL holding non-ASCII as UTF-8, which a Shift-JIS database drops the connection over (a
+  Japanese string literal): with a text encoding set, the helper makes it send SQL in that encoding
+  (`sqlbaseLegacyText`). Fall back
+  on any `SQLException` where a call is optional, and test against such a driver, not only H2.
+- **Never ship a driver jar**: drivers are the vendors' (SQLBase's has its own licence). The user points at one.
+- **Change the Java, rebuild the jar**: run `src-tauri/jdbc-bridge/build.sh` (needs a JDK 17+) and commit the jar
+  with the source; bump `PROTOCOL` on both sides when the requests change. Building DevCat itself needs no Java.
+- **stdout is the protocol**: the helper points `System.out` at stderr so a driver that prints can't break it, and
+  DevCat skips any line that isn't JSON (a login banner over SSH).
+
 ## Ghost chats
 
 A ghost chat (`agent_open` with `ghost_window`, `features/agent/ghost.ts`, a window with only the chat:

@@ -1,15 +1,55 @@
 # Builds DevCat installers for macOS (Apple Silicon + Intel), Windows and Linux.
 # Merging a release PR (branch `release/vX.Y.Z`) runs it on the new tag `vX.Y.Z` (release.yml),
 # which publishes a GitHub release with the installers attached. Pushing a tag like `v0.1.0`
-# does the same; run it manually from the Actions tab to get them as workflow artifacts.
+# does the same; run it manually from the Actions tab to get them as workflow artifacts. A manual run
+# can build one platform's app only (`platforms`, e.g. `gh workflow run build.yml -f platforms=windows`),
+# without the CLI: a quick installer to test a branch with.
 name: build
 
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Apps to build (anything but all skips the CLI)"
+        type: choice
+        options: [all, windows, macos, linux]
+        default: all
   push:
     tags: ["v*"]
 
 jobs:
+  # Which builds run: all of them for a tag; a manual run may pick one platform's app.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.m.outputs.app }}
+      cli: ${{ steps.m.outputs.cli }}
+    steps:
+      - id: m
+        env:
+          ONLY: ${{ inputs.platforms || 'all' }}
+        run: |
+          # Every build names its --target, like the CLI's: the same target/<triple> directory,
+          # so the app and CLI jobs share one cache (release-cache.yml).
+          app='[
+            {"platform": "macos-latest", "target": "aarch64-apple-darwin", "label": "macos-arm64"},
+            {"platform": "macos-latest", "target": "x86_64-apple-darwin", "label": "macos-x64"},
+            {"platform": "windows-latest", "target": "x86_64-pc-windows-msvc", "label": "windows-x64"},
+            {"platform": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu", "label": "linux-x64"}
+          ]'
+          cli='[
+            {"platform": "macos-latest", "target": "aarch64-apple-darwin"},
+            {"platform": "macos-latest", "target": "x86_64-apple-darwin"},
+            {"platform": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu"},
+            {"platform": "ubuntu-22.04-arm", "target": "aarch64-unknown-linux-gnu"},
+            {"platform": "windows-latest", "target": "x86_64-pc-windows-msvc"}
+          ]'
+          pick='def os: .platform | if startswith("windows") then "windows" elif startswith("macos") then "macos" else "linux" end;
+                map(select($only == "all" or os == $only))'
+          echo "app=$(jq -c --arg only "$ONLY" "$pick" <<< "$app")" >> "$GITHUB_OUTPUT"
+          if [ "$ONLY" = all ]; then echo "cli=$(jq -c . <<< "$cli")" >> "$GITHUB_OUTPUT"; else echo "cli=[]" >> "$GITHUB_OUTPUT"; fi
+          echo "Building: $ONLY" >> "$GITHUB_STEP_SUMMARY"
+
   # The release notes: this version's section of CHANGELOG.md, then how to download
   # (scripts/release-notes.sh). The release and latest.json (the app's update dialog) use them.
   notes:
@@ -27,25 +67,11 @@ jobs:
           scripts/release-notes.sh "$version" >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    needs: notes
+    needs: [notes, plan]
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Every build names its --target, like the CLI's: the same target/<triple> directory,
-          # so the app and CLI jobs share one cache (release-cache.yml).
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            label: macos-arm64
-          - platform: macos-latest
-            target: x86_64-apple-darwin
-            label: macos-x64
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            label: windows-x64
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            label: linux-x64
+        include: ${{ fromJSON(needs.plan.outputs.app) }}
     runs-on: ${{ matrix.platform }}
     permissions:
       contents: write
@@ -196,15 +222,12 @@ jobs:
   # terminal installs (scripts/install.sh, Homebrew). Assets have no version in their names, so
   # releases/latest/download/devcat-cli-<target>.tar.gz always gets the newest.
   cli:
+    needs: plan
+    if: ${{ needs.plan.outputs.cli != '[]' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { platform: macos-latest, target: aarch64-apple-darwin }
-          - { platform: macos-latest, target: x86_64-apple-darwin }
-          - { platform: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
-          - { platform: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
-          - { platform: windows-latest, target: x86_64-pc-windows-msvc }
+        include: ${{ fromJSON(needs.plan.outputs.cli) }}
     runs-on: ${{ matrix.platform }}
     env:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}

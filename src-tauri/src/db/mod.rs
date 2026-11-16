@@ -4,6 +4,7 @@
 //! (e.g. `[]`, `["mydb"]`, `["mydb", "public"]`, `["mydb", "public", "tables"]`)
 //! and each driver decides what lives at each level.
 
+pub mod jdbc;
 pub mod mongo;
 pub mod mssql;
 pub mod mysql;
@@ -208,6 +209,9 @@ pub enum Dialect {
     Mssql,
     /// Non SQL stores (MongoDB, Redis)
     None,
+    /// Standard SQL, for databases reached through JDBC: `"…"` identifiers, `'…'` strings, `?`
+    /// parameters, `--` and `/* */` comments. The driver quotes names its own way.
+    Generic,
 }
 
 #[async_trait]
@@ -273,6 +277,7 @@ pub async fn connect(cfg: &ConnectionConfig) -> AppResult<DynDriver> {
         ConnectionKind::Mssql => Arc::new(mssql::MssqlDriver::connect(cfg).await?),
         ConnectionKind::Mongodb => Arc::new(mongo::MongoDriver::connect(cfg).await?),
         ConnectionKind::Redis => Arc::new(redis::RedisDriver::connect(cfg).await?),
+        ConnectionKind::Jdbc => Arc::new(jdbc::JdbcDriver::connect(cfg).await?),
         k => return Err(AppError::msg(format!("{k:?} is not a database connection"))),
     })
 }

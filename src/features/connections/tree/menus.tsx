@@ -180,7 +180,7 @@ function nodeMenu(row: Extract<Row, { type: "node" }>): MenuItem[] {
       }
       return [
         { label: "New query", icon: ic(SquareTerminal), onClick: () => openQuery(conn.id, { database: db, schema }) },
-        { label: "New table…", icon: ic(FilePlus), onClick: () => openTableDesign(conn.id, null, db, schema) },
+        ...(conn.kind !== "jdbc" ? [{ label: "New table…", icon: ic(FilePlus), onClick: () => openTableDesign(conn.id, null, db, schema) } as MenuItem] : []),
         "separator",
         { label: "ER diagram", icon: ic(Network), onClick: () => openErDiagram(conn.id, db, schema) },
         { label: "Backup / restore, import / export…", icon: ic(ArrowLeftRight), onClick: () => openDataTransfer(conn.id, db, schema) },
@@ -189,7 +189,7 @@ function nodeMenu(row: Extract<Row, { type: "node" }>): MenuItem[] {
       ];
     }
     case "folder":
-      return isTablesFolder(node) && sql
+      return isTablesFolder(node) && sql && conn.kind !== "jdbc"
         ? [{ label: "New table…", icon: ic(Plus), onClick: () => openTableDesign(conn.id, null, ctx.database, ctx.schema) }, "separator", doRefresh]
         : [doRefresh];
     case "table":
@@ -203,9 +203,11 @@ function nodeMenu(row: Extract<Row, { type: "node" }>): MenuItem[] {
       }
       const d = dialectOf(conn.kind);
       const isTable = node.kind === "table";
+      // JDBC: no table designer (each database alters tables its own way)
+      const canDesign = isTable && conn.kind !== "jdbc";
       return [
         { label: "Open data", icon: ic(Table2), shortcut: "↵", onClick: () => openTableData(conn.id, ref) },
-        ...(isTable ? [{ label: "Design table", icon: ic(PencilRuler), onClick: () => openTableDesign(conn.id, ref) } as MenuItem] : []),
+        ...(canDesign ? [{ label: "Design table", icon: ic(PencilRuler), onClick: () => openTableDesign(conn.id, ref) } as MenuItem] : []),
         { label: "View DDL", icon: ic(Code), onClick: () => openDdl(conn.id, ref, node.kind) },
         { label: "New query", icon: ic(SquareTerminal), onClick: () => openQuery(conn.id, { database: ref.database, schema: ref.schema, initialSql: selectTop(d, ref) }) },
         { label: "Export…", icon: ic(ArrowLeftRight), onClick: () => openDataTransfer(conn.id, ref.database, ref.schema) },

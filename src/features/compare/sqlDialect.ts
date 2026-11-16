@@ -115,6 +115,25 @@ export function mapType(raw: string, from: SqlDialect, to: SqlDialect): string {
   const n = p.args[0];
   const sized = (base: string, def?: string) => (n ? `${base}(${p.args.join(",")})` : def ?? base);
   switch (to) {
+    case "generic":
+      switch (fam) {
+        case "tinyint": case "smallint": return "SMALLINT";
+        case "int": return "INTEGER";
+        case "bigint": return "BIGINT";
+        case "decimal": return sized("DECIMAL");
+        case "real": return "REAL";
+        case "double": return "DOUBLE PRECISION";
+        case "bool": return "BOOLEAN";
+        case "varchar": case "nvarchar": return n && n !== "max" ? `VARCHAR(${n})` : "CLOB";
+        case "char": return sized("CHAR");
+        case "date": return "DATE";
+        case "time": return "TIME";
+        case "timestamp": return "TIMESTAMP";
+        case "timestamptz": return "TIMESTAMP WITH TIME ZONE";
+        case "uuid": return "CHAR(36)";
+        case "binary": return "BLOB";
+        default: return "CLOB";
+      }
     case "postgres":
       switch (fam) {
         case "tinyint": case "smallint": return "smallint";
