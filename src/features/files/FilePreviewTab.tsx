@@ -1,7 +1,7 @@
 // File preview tab: toolbar (path, size, kind, actions) + a viewer per FilePreview kind,
 // or git blame for text files inside a repository. Plain text files (code, config, …) open in an
 // editor (.html also gets a rendered Preview); markdown, pdf, images, sheets, csv and docx stay preview-only.
-import { Copy, Download, ExternalLink, Files, FolderSearch, History, MousePointerClick, Pin, RefreshCw, UserSearch } from "lucide-react";
+import { Copy, Download, ExternalLink, Loader2, Files, FolderSearch, History, MousePointerClick, Pin, RefreshCw, UserSearch } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge, ErrorBox, IconButton, Spinner, Toolbar, Spin } from "../../components/ui";
 import { api } from "../../lib/api";
@@ -14,7 +14,7 @@ import { openGitRepo } from "../git/open";
 import { useRepoRoot } from "../git/repoOf";
 import { FileIcon } from "./FileIcon";
 import { isPinned, togglePin, usePins } from "./pins";
-import { downloadRemoteFile } from "./download";
+import { downloadRemoteFile, useDownloads } from "./download";
 import { copyFile, copyText, fmtSize, openExternally, relPath, revealPath, REVEAL_LABEL } from "./format";
 import { CsvViewer, SheetViewer } from "./viewers/SheetViewer";
 import { BinaryCard, DocxViewer, ImageViewer, MarkdownViewer } from "./viewers/simple";
@@ -39,6 +39,7 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
   /** The file's change stamp when it was last loaded (null: it wasn't there; undefined: not known). */
   const loadedStamp = useRef<string | null | undefined>(undefined);
   const remote = isRemote(tab.path);
+  const pct = useDownloads((s) => s.active[tab.path]);
 
   const load = useCallback(async () => {
     // only the latest load applies (e.g. one started before a save must not undo it)
@@ -129,7 +130,13 @@ export default function FilePreviewTab({ tab }: { tab: Extract<Tab, { type: "fil
         <IconButton title="Refresh" onClick={() => { void load(); setReload((n) => n + 1); }}><Spin icon={RefreshCw} spinning={loading} className="size-3.5" /></IconButton>
         <IconButton title="Copy path" onClick={() => void copyText(tab.path)}><Copy className="size-3.5" /></IconButton>
         {remote ? (
-          <IconButton title="Download to this computer" onClick={() => void downloadRemoteFile(tab.path, preview?.path === tab.path ? preview.size : undefined)}><Download className="size-3.5" /></IconButton>
+          <IconButton
+            title={pct === undefined ? "Download to this computer" : pct === null ? "Downloading: connecting…" : `Downloading… ${pct}%`}
+            active={pct !== undefined}
+            onClick={() => void downloadRemoteFile(tab.path, preview?.path === tab.path ? preview.size : undefined)}
+          >
+            {pct === undefined ? <Download className="size-3.5" /> : <Spin icon={Loader2} className="size-3.5" />}
+          </IconButton>
         ) : (
           <>
             <IconButton title="Copy file (paste in Slack, Explorer, Finder)" onClick={() => void copyFile(tab.path)}><Files className="size-3.5" /></IconButton>
