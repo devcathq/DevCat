@@ -187,7 +187,9 @@ export const api = {
   sftpRename: (path: string, name: string) => invoke<string>("sftp_rename", { path, name }),
   sftpDelete: (paths: string[]) => invoke<void>("sftp_delete", { paths }),
   /** Copy files / folders between this computer and an SSH host; events "sftp-progress", "sftp-done". */
-  sftpTransfer: (jobId: string, items: { src: string; dstDir: string }[]) => invoke<void>("sftp_transfer", { jobId, items }),
+  /** `size`: download only, `src` is one file of this size (skips listing it on the host) */
+  sftpTransfer: (jobId: string, items: { src: string; dstDir: string; size?: number }[]) => invoke<void>("sftp_transfer", { jobId, items }),
+  sftpLocalExists: (dir: string, name: string) => invoke<boolean>("sftp_local_exists", { dir, name }),
   sftpCancel: (jobId: string) => invoke<void>("sftp_cancel", { jobId }),
   sshForwardStart: (connId: string) => invoke<ForwardStatus>("ssh_forward_start", { connId }),
   sshForwardStop: (connId: string) => invoke<void>("ssh_forward_stop", { connId }),
