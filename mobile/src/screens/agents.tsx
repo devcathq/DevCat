@@ -37,6 +37,14 @@ const FONT = "\"JetBrains Mono\", \"SF Mono\", Menlo, monospace";
 /** Width of one character cell per px of font size (monospace). */
 const CELL = 0.602;
 
+/** Columns and rows that fill `el` at `fontSize`. */
+function phoneSize(el: HTMLElement, fontSize: number): { cols: number; rows: number } {
+  return {
+    cols: Math.max(30, Math.floor((el.clientWidth - 8) / (fontSize * CELL))),
+    rows: Math.max(12, Math.floor((el.clientHeight - 8) / (fontSize * 1.1 * 1.17))),
+  };
+}
+
 /** Columns and rows for a new terminal at the default text size on this screen. */
 export function termSize(): { cols: number; rows: number } {
   return {
@@ -84,9 +92,17 @@ export function Terminal({ id }: { id: string }) {
   const [menu, setMenu] = useState(false);
   const [stop, setStop] = useState(false);
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem("devcat.mobile.termFont")) || 11);
-  /** The terminal's columns fit the screen's width (no sideways scrolling); on unless turned off. */
+  /** The terminal takes the phone's width at normal text size, so the program wraps its lines
+   *  there (no sideways scrolling); on unless turned off. A terminal started on the computer
+   *  gets its own size back when this screen closes (`computerSize`). */
   const [fitWidth, setFitWidthState] = useState(() => localStorage.getItem("devcat.mobile.termFit") !== "0");
   const setFitWidth = (on: boolean) => { setFitWidthState(on); localStorage.setItem("devcat.mobile.termFit", on ? "1" : "0"); };
+  const fitRef = useRef(fitWidth);
+  fitRef.current = fitWidth;
+  const readonlyRef = useRef(readonly);
+  readonlyRef.current = readonly;
+  /** A computer-started terminal's size before this phone resized it. */
+  const computerSize = useRef<{ cols: number; rows: number } | null>(null);
   const [choices, setChoices] = useState<Choice[]>([]);
   /** Typing straight into the terminal; off, tapping it only scrolls (no keyboard popping up). */
   const [keyboard, setKeyboard] = useState(false);
@@ -119,10 +135,13 @@ export function Terminal({ id }: { id: string }) {
         if (disposed) return;
         setInfo(r.info);
         let cols = r.info.cols, rows = r.info.rows;
-        if (r.info.origin.startsWith("phone:") && box.current) {
-          // Terminals started here follow the phone's screen.
-          cols = Math.max(30, Math.floor((box.current.clientWidth - 8) / (fontSize * CELL)));
-          rows = Math.max(12, Math.floor((box.current.clientHeight - 8) / (fontSize * 1.1 * 1.17)));
+        const fromHere = r.info.origin.startsWith("phone:");
+        // Terminals started here follow the phone's screen, and so do the computer's while
+        // "fit" is on (they get their size back when this screen closes).
+        const size = box.current ? phoneSize(box.current, fontSize) : null;
+        if (size && (fromHere || (fitRef.current && !readonlyRef.current)) && (size.cols !== cols || size.rows !== rows)) {
+          if (!fromHere) computerSize.current ??= { cols, rows };
+          ({ cols, rows } = size);
           void host("pty_resize", { id, cols, rows }).catch(() => {});
         }
         t.resize(cols, rows);
@@ -191,6 +210,10 @@ export function Terminal({ id }: { id: string }) {
       area?.removeEventListener("touchstart", onTouchStart);
       area?.removeEventListener("touchmove", onTouchMove);
       area?.removeEventListener("touchend", onTouchEnd);
+      // a terminal started on the computer: its own size back
+      const back = computerSize.current;
+      if (back) void host("pty_resize", { id, cols: back.cols, rows: back.rows }).catch(() => {});
+      computerSize.current = null;
       void host("pty_detach", { id }).catch(() => {});
       t.dispose();
       xt.current = null;
@@ -211,21 +234,35 @@ export function Terminal({ id }: { id: string }) {
     if (!keyboard) (document.activeElement as HTMLElement | null)?.blur();
   };
 
-  // text size / fit to width: again when the terminal shows (not while History hides it: it has
-  // no width then), when the phone turns and when the terminal's columns change
+  // text size, and the phone's width: again when the terminal shows (not while History hides it:
+  // it has no size then), when the text size changes and when the phone turns
   useEffect(() => {
     const t = xt.current;
     const el = box.current;
     if (!t || !info || !el) return;
     const apply = () => {
-      if (fitWidth && el.clientWidth === 0) return;
-      t.options.fontSize = fitWidth ? Math.max(5, Math.min(14, (el.clientWidth - 8) / (t.cols * CELL))) : fontSize;
+      t.options.fontSize = fontSize;
+      if (el.clientWidth === 0) return;
+      const fromHere = info.origin.startsWith("phone:");
+      let want: { cols: number; rows: number } | null = null;
+      if (fromHere || (fitWidth && !readonly)) {
+        want = phoneSize(el, fontSize);
+        if (!fromHere) computerSize.current ??= { cols: t.cols, rows: t.rows };
+      } else if (computerSize.current) {
+        // "fit" turned off: the computer's size again (scroll sideways to read it)
+        want = computerSize.current;
+        computerSize.current = null;
+      }
+      if (want && (want.cols !== t.cols || want.rows !== t.rows)) {
+        t.resize(want.cols, want.rows);
+        void host("pty_resize", { id, cols: want.cols, rows: want.rows }).catch(() => {});
+      }
     };
     apply();
     localStorage.setItem("devcat.mobile.termFont", String(fontSize));
-    const sub = t.onResize(apply);
     window.addEventListener("resize", apply);
-    return () => { sub.dispose(); window.removeEventListener("resize", apply); };
+    return () => window.removeEventListener("resize", apply);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fontSize, fitWidth, info, view]);
 
   const send = () => {
@@ -340,12 +377,13 @@ export function Terminal({ id }: { id: string }) {
       )}
       <Sheet open={menu} onClose={() => setMenu(false)} title={folderName(cwdOf(term ?? info ?? undefined, agent))}>
         <div className="text-[12px] text-muted">{cwdOf(term ?? info ?? undefined, agent)} · {info?.program} · {info && (fromPhone(info) ? `started from ${info.origin.slice(6)}` : "started on the computer")}{info ? ` ${ago(info.startedAt)}` : ""}</div>
-        <Item onClick={() => { setFitWidth(!fitWidth); setMenu(false); }} title={fitWidth ? "Normal text size" : "Fit text to screen width"} />
+        <Item onClick={() => { setFitWidth(!fitWidth); setMenu(false); }} title={fitWidth ? "Use the computer's width" : "Wrap lines to the phone's width"}
+          meta={fitWidth ? "Wider lines, scroll sideways to read them" : "Normal text size, no sideways scrolling"} />
         <div className="flex items-center gap-2 rounded-xl bg-raised px-3 py-2">
           <span className="flex-1 font-semibold">Text size</span>
-          <Btn size="sm" onClick={() => { setFitWidth(false); setFontSize((s) => Math.max(7, s - 1)); }}>A−</Btn>
+          <Btn size="sm" onClick={() => setFontSize((s) => Math.max(7, s - 1))}>A−</Btn>
           <span className="w-6 text-center tabular-nums">{fontSize}</span>
-          <Btn size="sm" onClick={() => { setFitWidth(false); setFontSize((s) => Math.min(18, s + 1)); }}>A+</Btn>
+          <Btn size="sm" onClick={() => setFontSize((s) => Math.min(18, s + 1))}>A+</Btn>
         </div>
         <Item onClick={() => { setMenu(false); const dir = cwdOf(term ?? info ?? undefined, agent); nav.push({ s: "files", dir, root: dir }); }} icon={<FolderOpen className="size-4" />} title="Browse files" chevron />
         {agent?.sessionId && agent.cwd && (

@@ -309,10 +309,15 @@ pub fn run() {
             let store = Arc::new(Store::new(dir));
             let handle = app.handle().clone();
             let shown = handle.clone();
-            let notifier: watch::Notifier = Arc::new(move |title, body| {
+            let notifier: watch::Notifier = Arc::new(move |title, body, open| {
                 use tauri_plugin_notification::NotificationExt;
                 // devcat_notify: the status bar icon from the keepalive plugin (Android).
-                let _ = shown.notification().builder().title(title).body(body).icon("devcat_notify").show();
+                let mut b = shown.notification().builder().title(title).body(body).icon("devcat_notify");
+                // tapped: App.tsx opens it (the plugin's `onAction`)
+                if let Some(o) = open {
+                    b = b.extra("open", o);
+                }
+                let _ = b.show();
             });
             let watch = Watch::new(store.clone(), notifier);
             // The sink comes before the client; the watcher reaches the client through this.

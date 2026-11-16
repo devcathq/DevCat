@@ -364,6 +364,8 @@ async fn on_agent(session: &str, event: &Value) {
     let in_folder: Vec<Link> = all.iter().filter(|l| inside(&m.cwd, &l.folder) && own.as_ref().is_none_or(|o| o.id != l.id)).cloned().collect();
     let name = project(&m.cwd);
     let url = crate::remote::chat_link(session, &m.cwd, &m.provider_id);
+    // tapping the notification on a phone opens this chat
+    let open = Some(serde_json::json!({ "kind": "chat", "sessionId": session, "cwd": m.cwd, "providerId": m.provider_id }));
     let notify = crate::notify::load();
     // a scheduled job's chat notifies through agent_jobs.rs (`notify::job`): not twice
     let away = (!notify.only_when_away || !crate::notify::app_focused()) && m.owner != agent::SCHEDULE;
@@ -383,6 +385,7 @@ async fn on_agent(session: &str, event: &Value) {
                     cwd: Some(m.cwd.clone()),
                     skip_links: approvers.iter().map(|l| l.id.clone()).collect(),
                     url,
+                    open: open.clone(),
                 })
                 .await;
             }
@@ -401,6 +404,7 @@ async fn on_agent(session: &str, event: &Value) {
                     cwd: Some(m.cwd.clone()),
                     skip_links: askers.iter().map(|l| l.id.clone()).collect(),
                     url,
+                    open: open.clone(),
                 })
                 .await;
             }
@@ -419,7 +423,7 @@ async fn on_agent(session: &str, event: &Value) {
                     Some("stopped") => "Stopped.".into(),
                     _ => text::clip(&answer, 600),
                 };
-                super::deliver(Note { title, body, needs_you: false, cwd: Some(m.cwd.clone()), skip_links: vec![], url }).await;
+                super::deliver(Note { title, body, needs_you: false, cwd: Some(m.cwd.clone()), skip_links: vec![], url, open }).await;
             }
         }
         _ => {}

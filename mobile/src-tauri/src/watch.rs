@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// Shows a notification (title, body).
-pub type Notifier = Arc<dyn Fn(&str, &str) + Send + Sync>;
+/// Shows a notification (title, body, what tapping it opens: `{machine, kind, …}`, App.tsx).
+pub type Notifier = Arc<dyn Fn(&str, &str, Option<Value>) + Send + Sync>;
 
 /// How often to reconnect a computer that dropped, while "Stay connected" is on.
 const RECONNECT_EVERY: Duration = Duration::from_secs(30);
@@ -40,6 +40,18 @@ struct Note {
     body: String,
     #[serde(default)]
     test: bool,
+    /// What tapping it opens: `{kind: "chat", sessionId, cwd, providerId}` or `{kind: "terminal", ptyId}`.
+    #[serde(default)]
+    open: Option<Value>,
+}
+
+/// Tapping opens this terminal / chat.
+fn open_terminal(pty_id: &str) -> Option<Value> {
+    Some(json!({ "kind": "terminal", "ptyId": pty_id }))
+}
+fn open_chat(p: &Value, session_id: &str) -> Option<Value> {
+    let provider = text(p, "providerId")?;
+    Some(json!({ "kind": "chat", "sessionId": session_id, "cwd": text(p, "cwd").unwrap_or_default(), "providerId": provider }))
 }
 
 /// What an older computer's agents were doing, to notice "finished" / "needs you" here.
@@ -124,7 +136,12 @@ impl Watch {
             Some(m) if machines.len() > 1 => if n.body.is_empty() { m.name.clone() } else { format!("{}: {}", m.name, n.body) },
             _ => n.body.clone(),
         };
-        (self.notifier)(&n.title, &body);
+        // which computer it's on goes with what to open
+        let open = n.open.clone().map(|mut o| {
+            o["machine"] = json!(machine_id);
+            o
+        });
+        (self.notifier)(&n.title, &body, open);
     }
 
     /// An event from a computer (`m-event`).
@@ -202,6 +219,7 @@ impl Watch {
     /// An older computer's agent status event: notify what changed.
     fn legacy_event(&self, machine_id: &str, event: &str, p: &Value) {
         let mut out = None;
+        let mut open = None;
         {
             let mut all = self.legacy.lock();
             let seen = all.entry(machine_id.to_string()).or_default();
@@ -209,6 +227,7 @@ impl Watch {
                 "agent-status" => {
                     let (Some(id), Some(status)) = (text(p, "ptyId"), text(p, "status")) else { return };
                     out = term_change(seen.terms.get(&id), &status, &text(p, "cwd").unwrap_or_default(), text(p, "message").as_deref());
+                    open = open_terminal(&id);
                     seen.terms.insert(id, status);
                 }
                 "agent-gone" => {
@@ -221,6 +240,7 @@ impl Watch {
                     let busy = p.get("busy").and_then(Value::as_bool).unwrap_or(false);
                     let waiting = text(p, "waiting");
                     out = chat_change(seen.chats.get(&id), busy, waiting.as_deref(), &text(p, "cwd").unwrap_or_default(), &text(p, "title").unwrap_or_default());
+                    open = open_chat(p, &id);
                     seen.chats.insert(id, (busy, waiting));
                 }
                 "agent-chat-gone" => {
@@ -232,7 +252,7 @@ impl Watch {
             }
         }
         if let Some((title, body)) = out {
-            self.show(machine_id, &Note { boot: String::new(), seq: 0, title, body, test: false });
+            self.show(machine_id, &Note { boot: String::new(), seq: 0, title, body, test: false, open });
         }
     }
 
@@ -247,8 +267,8 @@ impl Watch {
             let mut terms = HashMap::new();
             for a in r.get("agents").and_then(Value::as_array).into_iter().flatten() {
                 let (Some(id), Some(status)) = (text(a, "ptyId"), text(a, "status")) else { continue };
-                if had && let Some(n) = term_change(seen.terms.get(&id), &status, &text(a, "cwd").unwrap_or_default(), text(a, "message").as_deref()) {
-                    found.push(n);
+                if had && let Some((t, b)) = term_change(seen.terms.get(&id), &status, &text(a, "cwd").unwrap_or_default(), text(a, "message").as_deref()) {
+                    found.push((t, b, open_terminal(&id)));
                 }
                 terms.insert(id, status);
             }
@@ -257,15 +277,15 @@ impl Watch {
                 let Some(id) = text(c, "sessionId") else { continue };
                 let busy = c.get("busy").and_then(Value::as_bool).unwrap_or(false);
                 let waiting = text(c, "waiting");
-                if had && let Some(n) = chat_change(seen.chats.get(&id), busy, waiting.as_deref(), &text(c, "cwd").unwrap_or_default(), &text(c, "title").unwrap_or_default()) {
-                    found.push(n);
+                if had && let Some((t, b)) = chat_change(seen.chats.get(&id), busy, waiting.as_deref(), &text(c, "cwd").unwrap_or_default(), &text(c, "title").unwrap_or_default()) {
+                    found.push((t, b, open_chat(c, &id)));
                 }
                 chats.insert(id, (busy, waiting));
             }
             *seen = Legacy { terms, chats };
         }
-        for (title, body) in found.into_iter().rev().take(MAX_CATCH_UP).rev() {
-            self.show(machine_id, &Note { boot: String::new(), seq: 0, title, body, test: false });
+        for (title, body, open) in found.into_iter().rev().take(MAX_CATCH_UP).rev() {
+            self.show(machine_id, &Note { boot: String::new(), seq: 0, title, body, test: false, open });
         }
     }
 
@@ -295,7 +315,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let got: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
         let g = got.clone();
-        let w = Watch::new(Arc::new(Store::new(dir)), Arc::new(move |t: &str, b: &str| g.lock().push((t.into(), b.into()))));
+        let w = Watch::new(Arc::new(Store::new(dir)), Arc::new(move |t: &str, b: &str, _: Option<Value>| g.lock().push((t.into(), b.into()))));
         w.set_visible(false);
         (w, got)
     }
@@ -368,5 +388,22 @@ mod tests {
         let notes: Vec<Value> = (1..=8).map(|i| note("A", i, &format!("n{i}"))).collect();
         w.sync("M", &json!({ "boot": "A", "notes": notes }));
         assert_eq!(titles(&got), vec!["n4", "n5", "n6", "n7", "n8"]);
+    }
+
+    #[test]
+    fn tapping_opens_what_the_computer_named_on_that_computer() {
+        let dir = std::env::temp_dir().join(format!("devcat-watch-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let got: Arc<Mutex<Vec<Option<Value>>>> = Arc::default();
+        let g = got.clone();
+        let w = Watch::new(Arc::new(Store::new(dir)), Arc::new(move |_: &str, _: &str, o: Option<Value>| g.lock().push(o)));
+        w.set_visible(false);
+        w.on_event("M", "agent-notify", &json!({ "boot": "A", "seq": 1, "title": "web: needs you", "body": "", "open": { "kind": "chat", "sessionId": "S", "cwd": "/w", "providerId": "devcat-agent" } }));
+        w.on_event("M", "agent-notify", &json!({ "boot": "A", "seq": 2, "title": "job done", "body": "" }));
+        let got = got.lock();
+        assert_eq!(got[0].as_ref().unwrap()["sessionId"], "S");
+        assert_eq!(got[0].as_ref().unwrap()["machine"], "M");
+        assert!(got[1].is_none(), "nothing to open: the app just opens");
     }
 }

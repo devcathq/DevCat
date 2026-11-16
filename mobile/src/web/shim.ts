@@ -91,6 +91,7 @@ export async function listen(event: string, h: Handler): Promise<UnlistenFn> {
 // plugin-notification: pages served over http can't show notifications.
 export async function isPermissionGranted() { return false; }
 export async function requestPermission() { return "denied"; }
+export async function onAction(_cb: unknown) { return { unregister: async () => {} }; }
 export function sendNotification() {}
 
 // plugin-barcode-scanner: not in the browser (the phone's camera app opens the link instead).

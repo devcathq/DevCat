@@ -488,7 +488,7 @@ impl Backend for Arc<Demo> {
                 self.notify.lock().clone()
             }
             "notify_test" => {
-                crate::notify::to_phones("DevCat", "Test notification: you'll get these when an agent finishes or needs you.", false, true);
+                crate::notify::to_phones("DevCat", "Test notification: you'll get these when an agent finishes or needs you.", false, true, None);
                 Value::Null
             }
             // DEVCAT_DEMO_OLD: behave like an older DevCat, which doesn't notify phones itself

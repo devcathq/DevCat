@@ -160,6 +160,7 @@ export async function listen(event: string, h: Handler): Promise<UnlistenFn> {
 // plugin-notification
 export async function isPermissionGranted() { return true; }
 export async function requestPermission() { return "granted"; }
+export async function onAction(_cb: unknown) { return { unregister: async () => {} }; }
 export function sendNotification(n: unknown) { console.log("[mock] notification", n); }
 
 // plugin-barcode-scanner

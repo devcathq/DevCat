@@ -41,8 +41,8 @@ export interface K8sObject {
   status?: any;
 }
 
-/** The bottom tabs: Chats ("agents"), Terminal, Files, More. */
-export type TabRoot = "agents" | "terminals" | "fileshome" | "more";
+/** The bottom tabs: Chats ("agents"), Terminal, Files, Tools, More. */
+export type TabRoot = "agents" | "terminals" | "fileshome" | "tools" | "more";
 
 export type Route =
   | { s: "loading" }
@@ -53,7 +53,7 @@ export type Route =
   | { s: "pairing"; link: string; addr?: string | null }
   | { s: "computers" }
   | { s: TabRoot }
-  /** Tools, opened from More. */
+  /** Opened from the Tools tab. */
   | { s: "data" }
   | { s: "network" }
   | { s: "cluster" }
