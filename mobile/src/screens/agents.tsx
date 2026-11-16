@@ -84,11 +84,13 @@ export function Terminal({ id }: { id: string }) {
   const [menu, setMenu] = useState(false);
   const [stop, setStop] = useState(false);
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem("devcat.mobile.termFont")) || 11);
-  const [fitWidth, setFitWidth] = useState(false);
+  /** The terminal's columns fit the screen's width (no sideways scrolling); on unless turned off. */
+  const [fitWidth, setFitWidthState] = useState(() => localStorage.getItem("devcat.mobile.termFit") !== "0");
+  const setFitWidth = (on: boolean) => { setFitWidthState(on); localStorage.setItem("devcat.mobile.termFit", on ? "1" : "0"); };
   const [choices, setChoices] = useState<Choice[]>([]);
   /** Typing straight into the terminal; off, tapping it only scrolls (no keyboard popping up). */
   const [keyboard, setKeyboard] = useState(false);
-  /** Claude Code: the live terminal (first), or its History: the session transcript as a readable
+  /** Claude Code: Chat (the live terminal, first), or its History: the session transcript as a readable
    *  chat that scrolls normally (Claude Code draws full-screen, so the terminal has no scrollback). */
   const [view, setView] = useState<"chat" | "terminal">(() => (localStorage.getItem("devcat.mobile.termView") === "chat" ? "chat" : "terminal"));
   /** The terminal is scrolled up from its newest line. */
@@ -209,14 +211,22 @@ export function Terminal({ id }: { id: string }) {
     if (!keyboard) (document.activeElement as HTMLElement | null)?.blur();
   };
 
-  // text size / fit to width
+  // text size / fit to width: again when the terminal shows (not while History hides it: it has
+  // no width then), when the phone turns and when the terminal's columns change
   useEffect(() => {
     const t = xt.current;
-    if (!t || !info || !box.current) return;
-    const size = fitWidth ? Math.max(5, Math.min(14, (box.current.clientWidth - 8) / (t.cols * CELL))) : fontSize;
-    t.options.fontSize = size;
+    const el = box.current;
+    if (!t || !info || !el) return;
+    const apply = () => {
+      if (fitWidth && el.clientWidth === 0) return;
+      t.options.fontSize = fitWidth ? Math.max(5, Math.min(14, (el.clientWidth - 8) / (t.cols * CELL))) : fontSize;
+    };
+    apply();
     localStorage.setItem("devcat.mobile.termFont", String(fontSize));
-  }, [fontSize, fitWidth, info]);
+    const sub = t.onResize(apply);
+    window.addEventListener("resize", apply);
+    return () => { sub.dispose(); window.removeEventListener("resize", apply); };
+  }, [fontSize, fitWidth, info, view]);
 
   const send = () => {
     if (!text) { write("\r"); return; }
@@ -273,7 +283,7 @@ export function Terminal({ id }: { id: string }) {
     <Screen title={folderName(cwdOf(term ?? info ?? undefined, agent)) || "Terminal"} sub={sub} scroll={false} className="flex flex-col gap-2 p-2"
       right={<button aria-label="Terminal menu" className="flex size-9 items-center justify-center text-muted" onClick={() => setMenu(true)}><MoreVertical className="size-5" /></button>}>
       {error && <ErrorBox error={error} />}
-      {canChat && <Seg value={view} onChange={pickView} options={[{ value: "terminal", label: "Terminal" }, { value: "chat", label: "History" }]} />}
+      {canChat && <Seg value={view} onChange={pickView} options={[{ value: "terminal", label: "Chat" }, { value: "chat", label: "History" }]} />}
       {canChat && view === "chat" && <LiveTranscript cwd={agent!.cwd!} sessionId={agent!.sessionId!} working={agent?.status === "working"} pending={sent} onSeen={seen} />}
       <div className={clsx("relative min-h-0 flex-1", canChat && view === "chat" && "hidden")}>
         <div className="h-full overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1" onPasteCapture={readonly ? undefined : pastedImages}>
