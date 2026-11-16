@@ -100,6 +100,12 @@ function phone(cmd: string, args: Record<string, unknown>): unknown {
     case "agent_close": return null;
     case "agent_open": {
       if (args.ghost) return { ...(demoInvoke("agent_open", { ghostWindow: "mock" }, fromComputer) as object), sessionId: "mock-ghost" };
+      // `mock-long`: the demo chat four times over, longer than the screen
+      if (args.sessionId === "mock-long") {
+        const r = demoInvoke("agent_open", args, fromComputer) as { events: { event: string }[] } & Record<string, unknown>;
+        const body = r.events.filter((e) => e.event !== "meta" && e.event !== "title");
+        return { ...r, sessionId: "mock-long", events: [r.events[0], ...body, ...body, ...body, ...body] };
+      }
       // `mock-wait`: the demo chat stopped at the database dump, waiting for an OK
       if (args.sessionId !== "mock-wait") return undefined;
       const r = demoInvoke("agent_open", args, fromComputer) as { events: { event: string }[] } & Record<string, unknown>;

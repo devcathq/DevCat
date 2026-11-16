@@ -14,7 +14,6 @@ export function ProjectBar() {
   const s = useFocus();
   const [open, setOpen] = useState(false);
   useEffect(() => { if (online) void loadFocus(); }, [machine, online]);
-  if (s.projects.length === 0) return null;
   const p = focusedProject(s);
   return (
     <>
@@ -25,6 +24,7 @@ export function ProjectBar() {
       </button>
       <Sheet open={open} onClose={() => setOpen(false)} title="Focus on a project">
         <Choice on={!p} title="All projects" meta="Everything on this computer" onClick={() => { setFocus(null); setOpen(false); }} icon={<Layers className="size-4 text-muted" />} />
+        {s.projects.length === 0 && <Note>This computer has no projects yet. Create them in DevCat on the computer (the project menu at the top left).</Note>}
         {s.projects.map((x) => (
           <Choice key={x.id} on={p?.id === x.id} title={x.name}
             meta={x.folders?.length ? x.folders.map((f) => f.split(/[\\/]/).filter(Boolean).pop()).join(" · ") : "No code folders yet"}
