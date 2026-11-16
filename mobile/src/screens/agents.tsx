@@ -11,6 +11,7 @@ import { host, nav, toast, toastErr, useApp } from "../lib/store";
 import { uploadPasteImage } from "../lib/transfer";
 import type { AgentStatus, AiProvider, ClaudeProject, PtyInfo, SessionMeta } from "../lib/types";
 import { Btn, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Screen, Section, Seg, Sheet, Spinner, TextArea, ago, folderName, useLoad } from "../ui";
+import { useFocus, useInFocus } from "../lib/focus";
 
 const THEME = {
   background: "#0a0b0d", foreground: "#e6e8ec", cursor: "#f5a524", cursorAccent: "#0a0b0d", selectionBackground: "#f5a52440",
@@ -371,7 +372,14 @@ export function NewChat({ cwd: initial }: { cwd?: string }) {
 
 export function Sessions({ cwd: initial }: { cwd?: string }) {
   const projects = useLoad(() => host<ClaudeProject[]>("claude_projects"), []);
-  const sorted = useMemo(() => [...(projects.data ?? [])].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? "")), [projects.data]);
+  const shown = useInFocus();
+  // the focused project's folders (all, if none of them has sessions yet)
+  const sorted = useMemo(() => {
+    const all = [...(projects.data ?? [])].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? ""));
+    const mine = all.filter((p) => shown(p.cwd));
+    return mine.length ? mine : all;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects.data, useFocus((f) => f.focus)]);
   const [cwd, setCwd] = useState(initial ?? "");
   useEffect(() => { if (!cwd && sorted[0]) setCwd(sorted[0].cwd); }, [sorted, cwd]);
   const sessions = useLoad(() => (cwd ? host<SessionMeta[]>("claude_sessions", { cwd }) : Promise.resolve([] as SessionMeta[])), [cwd]);

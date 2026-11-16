@@ -8,7 +8,7 @@ import { Empty, Screen, Section, Spinner, ago, duration, folderName } from "../u
 import { termSize } from "./agents";
 import { FolderSheet, cwdOf, useProjects } from "./chats";
 import { ProjectBar } from "./focus";
-import { focusFolders, useInFocus } from "../lib/focus";
+import { claim, focusFolders, focusedProject, useFocus, useInFocus } from "../lib/focus";
 
 export function Terminals() {
   const terms = useApp((s) => s.terms);
@@ -17,6 +17,7 @@ export function Terminals() {
   const readonly = useApp((s) => s.machines.find((m) => m.id === s.current)?.access === "readonly");
   const projects = useProjects();
   const shown = useInFocus();
+  const focusName = focusedProject(useFocus())?.name;
   const [pick, setPick] = useState<"shell" | "claude" | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -27,6 +28,7 @@ export function Terminals() {
   const online = conn?.state === "online";
 
   const open = async (cwd: string, claude: boolean) => {
+    claim(cwd);
     setBusy(true);
     try {
       const { cols, rows } = termSize();
@@ -68,7 +70,7 @@ export function Terminals() {
       })}
 
       {online && shells.length + agentTerms.length === 0 && (
-        <Empty icon={<TerminalSquare className="size-8" />} title="No terminals open">Open a shell or Claude Code in one of your projects. It keeps running on the computer when you close this app.</Empty>
+        <Empty icon={<TerminalSquare className="size-8" />} title={focusName ? `No terminals in ${focusName}` : "No terminals open"}>{focusName ? `Terminals in its folders show here. The folder you open one in becomes part of ${focusName}.` : "Open a shell or Claude Code in one of your projects. It keeps running on the computer when you close this app."}</Empty>
       )}
       {readonly && <div className="rounded-lg bg-hover px-3 py-2 text-center text-[12px] text-muted">Read-only access: you can watch terminals but not open or type in them.</div>}
 

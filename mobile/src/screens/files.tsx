@@ -128,7 +128,7 @@ export function FilesHome() {
   const agents = useApp((s) => s.agents);
   const shown = useInFocus();
   const own = focusFolders(useFocus());
-  const sorted = useMemo(() => [...(projects.data ?? [])].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? "")).filter((p) => shown(p.cwd) && !own.includes(p.cwd)),
+  const sorted = useMemo(() => [...(projects.data ?? [])].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? "")).filter((p) => !own.includes(p.cwd)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [projects.data, own.join("|")]);
   const active = useMemo(() => [...new Set(terms.map((t) => agents[t.id]?.cwd || t.cwd))].filter((d) => shown(d)),

@@ -4,7 +4,7 @@
 import clsx from "clsx";
 import { AlertTriangle, ArrowUp, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, Clock, FolderOpen, Ghost, History, Sparkles, TerminalSquare } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { focusFolders, useFocus, useInFocus } from "../lib/focus";
+import { claim, focusFolders, focusedProject, useFocus, useInFocus } from "../lib/focus";
 import { host, nav, refreshAgents, toastErr, useApp } from "../lib/store";
 import type { AgentChatInfo, AgentStatus, AiProvider, ClaudeProject, PtyInfo } from "../lib/types";
 import { Btn, Empty, ErrorBox, Input, Screen, Section, Sheet, Spinner, TextArea, ago, duration, folderName, useLoad } from "../ui";
@@ -33,14 +33,29 @@ export function FolderSheet({ open, value, onClose, onPick, title = "Project fol
   const focus = useFocus();
   const shown = useInFocus();
   const own = focusFolders(focus);
+  const project = focusedProject(focus);
   const pick = (cwd: string) => { onPick(cwd); onClose(); };
-  // under a project's focus: its folders first, then recent ones inside them
-  const list = [...own.map((cwd) => ({ cwd })), ...projects.sorted.filter((p) => shown(p.cwd) && !own.includes(p.cwd))];
+  // under a project's focus: its folders first, then the other recent ones (picking one adds it)
+  const mine = [...own.map((cwd) => ({ cwd })), ...projects.sorted.filter((p) => shown(p.cwd) && !own.includes(p.cwd))];
+  const others = project ? projects.sorted.filter((p) => !shown(p.cwd)) : [];
+  const list = project ? mine : projects.sorted;
+  const row = (p: { cwd: string }) => (
+    <button key={p.cwd} onClick={() => pick(p.cwd)} className={clsx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left active:bg-hover", value === p.cwd ? "bg-accent/10 ring-1 ring-accent/60" : "bg-raised")}>
+      <FolderOpen className="size-5 shrink-0 text-muted" />
+      <span className="min-w-0 flex-1"><span className="block truncate font-semibold">{folderName(p.cwd)}</span><span className="block truncate text-[11px] text-muted">{p.cwd}</span></span>
+      {value === p.cwd && <Check className="size-4 text-accent" />}
+    </button>
+  );
   return (
     <Sheet open={open} onClose={onClose} title={title}>
       {projects.error && <ErrorBox error={projects.error} />}
       {projects.loading && <Spinner />}
-      <div className="space-y-1.5">
+      {project && <Section>{`In ${project.name}`}</Section>}
+      {project && mine.length === 0 && <div className="text-[12.5px] text-muted">No folders yet. Pick one below: it becomes part of {project.name} on this phone.</div>}
+      {project && <div className="space-y-1.5">{mine.slice(0, 8).map(row)}</div>}
+      {project && others.length > 0 && <Section>Other folders</Section>}
+      {project && <div className="space-y-1.5">{others.slice(0, 8).map(row)}</div>}
+      <div className={clsx("space-y-1.5", project && "hidden")}>
         {list.slice(0, 8).map((p) => (
           <button key={p.cwd} onClick={() => pick(p.cwd)} className={clsx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left active:bg-hover", value === p.cwd ? "bg-accent/10 ring-1 ring-accent/60" : "bg-raised")}>
             <FolderOpen className="size-5 shrink-0 text-muted" />
@@ -77,6 +92,7 @@ function useAgentChoices(): AgentChoice[] {
 
 /** Start an agent: a DevCat Agent chat, or a terminal running Claude Code / another CLI agent. */
 export async function startAgent(cwd: string, choice: AgentChoice, message: string) {
+  claim(cwd);
   if (choice.chat) {
     nav.push({ s: "agentchat", cwd, providerId: choice.id, sessionId: null, first: message || undefined });
     return;
@@ -102,7 +118,7 @@ function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }
   // a folder of the focused project, else the most recent one
   useEffect(() => {
     if (cwd && shown(cwd)) return;
-    const next = focusFolders(focus)[0] ?? projects.sorted.find((p) => shown(p.cwd))?.cwd ?? (focus.focus ? "" : projects.sorted[0]?.cwd ?? "");
+    const next = focusFolders(focus)[0] ?? projects.sorted.find((p) => shown(p.cwd))?.cwd ?? projects.sorted[0]?.cwd ?? "";
     if (next !== cwd) setCwd(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects.sorted, focus]);
@@ -199,6 +215,7 @@ export function Chats() {
   const machine = useApp((s) => s.machines.find((m) => m.id === s.current));
   const readonly = machine?.access === "readonly";
   const shown = useInFocus();
+  const focusName = focusedProject(useFocus())?.name;
   const [, tick] = useState(0);
   useEffect(() => {
     void refreshAgents();
@@ -282,13 +299,38 @@ export function Chats() {
         </div>
       )}
 
-      {online && needs + running + recent === 0 && (
-        <Empty icon={<Sparkles className="size-8" />} title="No agents yet">Ask something above. The agent runs on your computer and keeps going when you close this app.</Empty>
+      <PastSessions />
+
+      {online && running + recent === 0 && (focusName || needs === 0) && (
+        focusName ? (
+          <Empty icon={<Sparkles className="size-8" />} title={`Nothing running in ${focusName}`}>Chats and terminals in its folders show here. Ask something above: the folder you pick becomes part of {focusName}.</Empty>
+        ) : (
+          <Empty icon={<Sparkles className="size-8" />} title="No agents running">Ask something above. The agent runs on your computer and keeps going when you close this app.</Empty>
+        )
       )}
       <button onClick={() => nav.push({ s: "sessions" })} className="flex w-full items-center justify-center gap-1.5 py-2 text-[13px] font-semibold text-accent">
         <History className="size-4" />All sessions
       </button>
     </Screen>
+  );
+}
+
+/** Earlier work, by project folder (Claude Code's sessions): opens that folder's history. */
+function PastSessions() {
+  const projects = useProjects();
+  const shown = useInFocus();
+  const list = projects.sorted.filter((p) => shown(p.cwd)).slice(0, 5);
+  if (list.length === 0) return null;
+  return (
+    <>
+      <Section>Past sessions</Section>
+      <div>
+        {list.map((p) => (
+          <Row key={p.cwd} onClick={() => nav.push({ s: "sessions", cwd: p.cwd })} icon={<History className="size-4 text-muted" />} title={folderName(p.cwd)}
+            meta={`${p.sessionCount} session${p.sessionCount === 1 ? "" : "s"} · ${p.cwd}`} right={p.lastActive ? ago(p.lastActive) : undefined} />
+        ))}
+      </div>
+    </>
   );
 }
 
