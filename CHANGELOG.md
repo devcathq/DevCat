@@ -12,6 +12,14 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.26.0 - 2026-11-16
+
+- **Split panes** (#165): put several tabs side by side in one window. Right-click a tab and choose **Split right**
+  or **Split down**, or drag a tab onto another pane's edge; a terminal or SFTP tab can also open a second one on the
+  same target beside it. `Ctrl+Alt+Shift+\` splits right, `Ctrl+Alt+Shift+-` splits down and `Ctrl+Alt+Shift+Arrow`
+  moves between panes (`⌥⇧⌘` on macOS), also from inside a terminal. Moving a tab keeps its shell and unsaved text.
+  The layout isn't kept across restarts.
+
 ## 0.25.1 - 2026-11-15
 
 - **A new icon** (#162): DevCat's cat now has a `>_` face and a ring of the tools it works with, in the app, the DEV
