@@ -39,8 +39,10 @@ pub struct Prefs {
     #[serde(default)]
     pub device_name: Option<String>,
     /// Android: stay connected in the background and notify (`watch`, the keepalive plugin).
+    /// Unset: on, so notifications work without looking for the setting; off once the user
+    /// turns it off.
     #[serde(default)]
-    pub background: bool,
+    pub background: Option<bool>,
 }
 
 pub struct Store {

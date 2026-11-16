@@ -94,7 +94,7 @@ pub struct Watch {
 
 impl Watch {
     pub fn new(store: Arc<Store>, notifier: Notifier) -> Arc<Self> {
-        let keep = store.prefs().background;
+        let keep = store.prefs().background.unwrap_or(cfg!(target_os = "android"));
         Arc::new(Self { store, notifier, seen: Mutex::default(), old: Mutex::default(), legacy: Mutex::default(), visible: AtomicBool::new(true), keep: AtomicBool::new(keep), wake: tokio::sync::Notify::new() })
     }
 

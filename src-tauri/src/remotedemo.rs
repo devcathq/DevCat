@@ -491,6 +491,8 @@ impl Backend for Arc<Demo> {
                 crate::notify::to_phones("DevCat", "Test notification: you'll get these when an agent finishes or needs you.", false, true);
                 Value::Null
             }
+            // DEVCAT_DEMO_OLD: behave like an older DevCat, which doesn't notify phones itself
+            "notify_recent" if std::env::var_os("DEVCAT_DEMO_OLD").is_some() => return Err(json!("unknown command notify_recent")),
             "notify_recent" => crate::notify::recent(),
             "audit" => json!([
                 { "at": crate::remote::server::now_ms() - 120_000, "device": "", "deviceName": "", "action": "db_apply_changes", "detail": "[c-pg] orders: 1 change(s)", "ok": true },
@@ -508,15 +510,18 @@ impl Backend for Arc<Demo> {
     }
 
     fn host_info(&self) -> HostInfo {
-        let port = self.host.lock().as_ref().map(|h| h.store.settings().port).unwrap_or(0);
+        // One lock, let go before the rest: a lock taken in a field of the struct below would be
+        // held to its end, and taking it again for another field hung every pairing.
+        let host = self.host.lock().clone();
+        let port = host.as_ref().map(|h| h.store.settings().port).unwrap_or(0);
         HostInfo {
-            id: self.host.lock().as_ref().and_then(|h| h.endpoint_id()).unwrap_or_default(),
+            id: host.as_ref().and_then(|h| h.endpoint_id()).unwrap_or_default(),
             name: "Demo MacBook".into(),
             os: "macos".into(),
             app_version: "0.4.0".into(),
             addrs: crate::remote::reachable_addrs(port, None),
             relay: demo_relay(),
-            home: self.host.lock().as_ref().and_then(|h| h.home_relay()),
+            home: host.as_ref().and_then(|h| h.home_relay()),
         }
     }
 
@@ -582,7 +587,8 @@ pub async fn run(port: u16, dir: std::path::PathBuf) -> Result<(), String> {
     }
     let h = host.clone();
     crate::events::add_tap(move |event, payload| {
-        if matches!(event, "agent-event" | "agent-chat" | "agent-chat-gone" | "agent-notify") {
+        let old = std::env::var_os("DEVCAT_DEMO_OLD").is_some();
+        if matches!(event, "agent-event" | "agent-chat" | "agent-chat-gone" | "agent-status" | "agent-gone") || (event == "agent-notify" && !old) {
             h.broadcast(event, payload);
         }
     });

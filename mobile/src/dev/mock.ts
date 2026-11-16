@@ -24,7 +24,7 @@ const terminals = [
   { id: "T4", cwd: P("api-gateway"), program: "zsh", agent: false, origin: "desktop", startedAt: NOW - 5 * 3_600_000, cols: 60, rows: 30 },
 ];
 const statuses = [
-  { ptyId: "T1", cwd: P("storefront"), status: "waiting", since: NOW - 60_000, message: "Claude needs your permission to use Bash" },
+  { ptyId: "T1", cwd: P("storefront"), sessionId: "s1", status: "waiting", since: NOW - 60_000, message: "Claude needs your permission to use Bash" },
   { ptyId: "T2", cwd: P("api-gateway"), status: "working", since: NOW - 2 * 60_000 - 14_000 },
   { ptyId: "T3", cwd: P("ui"), status: "idle", since: NOW - 7 * 60_000, lastTurnMs: 192_000 },
 ];
@@ -67,6 +67,10 @@ function phone(cmd: string, args: Record<string, unknown>): unknown {
       { id: "s2", title: "Add Apple Pay to the payment sheet", messageCount: 112, updatedAt: new Date(NOW - 26 * 3_600_000).toISOString(), gitBranch: "feat/apple-pay", costUsd: 4.1 },
     ];
     case "claude_transcript": return [
+      ...Array.from({ length: 6 }, (_, i) => [
+        { type: "user", message: { role: "user", content: `Step ${i + 1}: look at the checkout flow and tell me what's slow` } },
+        { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: `Here's what I found in step ${i + 1}:\n\n- The **cart total** is computed twice per render\n- \`getShipping()\` calls the API without a cache\n- Images load at full size on mobile` }, { type: "tool_use", name: "Read", input: { file_path: "src/checkout/Cart.tsx" } }] } },
+      ]).flat(),
       { type: "user", message: { role: "user", content: "Run the checkout tests and fix what fails" } },
       { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "I'll run the test suite first." }, { type: "tool_use", name: "Bash", input: { command: "npm test -- checkout" } }] } },
     ];

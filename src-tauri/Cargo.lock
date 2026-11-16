@@ -1824,6 +1824,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "toml_edit 0.25.17+spec-1.1.0",
+ "tracing-subscriber",
  "trash",
  "uuid",
  "zip 8.6.0",

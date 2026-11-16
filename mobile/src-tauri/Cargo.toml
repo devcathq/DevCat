@@ -48,3 +48,6 @@ panic = "unwind"
 [profile.dev.package."*"]
 debug = false
 
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+

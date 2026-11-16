@@ -4,7 +4,7 @@
 // Turning the session into items is shared with the desktop (src/features/agent/model.ts).
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, File as FileIcon, FilePen, FolderOpen, Layers, MessageCircleQuestion, MoreVertical, Paperclip, Plug,
+  ArrowDown, ArrowUp, Ban, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, File as FileIcon, FilePen, FolderOpen, Layers, MessageCircleQuestion, MoreVertical, Paperclip, Plug,
   ClipboardList, Ghost, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TerminalSquare, TriangleAlert, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -237,20 +237,37 @@ function Conversation({ chat, cwd, ghost, readonly, policy, onSend, onDecide, on
   chat: Chat; cwd: string; ghost: boolean; readonly: boolean; policy: AgentPolicy; onSend: (t: string) => void; onDecide: (id: string, d: AgentDecision) => void; onReply: (id: string, t: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  // Follows the newest text while at the bottom. A finger on the list stops that (streamed text
+  // would pull it back down on every piece and the chat couldn't be scrolled while working).
   const stick = useRef(true);
+  const touching = useRef(false);
+  const [away, setAway] = useState(false);
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (el && stick.current && !touching.current) el.scrollTop = el.scrollHeight;
   }, [chat.items]);
   const onScroll = () => {
     const el = scroller.current;
-    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (!el) return;
+    const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stick.current = atEnd;
+    setAway(!atEnd);
+  };
+  const toEnd = () => {
+    const el = scroller.current;
+    if (!el) return;
+    stick.current = true;
+    setAway(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
   const lastUser = chat.items.map((i) => i.kind).lastIndexOf("user");
   const blocks = useMemo(() => toBlocks(chat.items), [chat.items]);
   const ctx: ItemCtx = { cwd, readonly, onDecide, onReply };
   return (
-    <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+      onTouchStart={() => { touching.current = true; stick.current = false; }}
+      onTouchEnd={() => { touching.current = false; onScroll(); }} onTouchCancel={() => { touching.current = false; onScroll(); }}>
       <div className="flex flex-col gap-3 px-3.5 pt-4 pb-3">
         {chat.items.length === 0 ? (
           <Welcome chat={chat} cwd={cwd} ghost={ghost} policy={policy} onSend={readonly ? undefined : onSend} />
@@ -261,6 +278,12 @@ function Conversation({ chat, cwd, ghost, readonly, policy, onSend, onDecide, on
         )}
         {chat.busy && blocks[blocks.length - 1]?.kind !== "steps" && <Working items={chat.items} />}
       </div>
+    </div>
+    {away && (
+      <button onClick={toEnd} className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line bg-raised/95 px-3 py-1.5 text-[12.5px] font-semibold shadow-lg active:bg-hover">
+        <ArrowDown className="size-3.5" />Latest
+      </button>
+    )}
     </div>
   );
 }

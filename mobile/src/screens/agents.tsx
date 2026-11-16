@@ -5,12 +5,13 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import clsx from "clsx";
 import { Bot, FolderOpen, ImagePlus, Keyboard, MoreVertical, Send, Square } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { onEvent } from "../lib/rpc";
 import { host, nav, toast, toastErr, useApp } from "../lib/store";
 import { uploadPasteImage } from "../lib/transfer";
 import type { AgentStatus, AiProvider, ClaudeProject, PtyInfo, SessionMeta } from "../lib/types";
 import { Btn, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Screen, Section, Seg, Sheet, Spinner, TextArea, ago, folderName, useLoad } from "../ui";
+import { Markdown } from "./files";
 import { useFocus, useInFocus } from "../lib/focus";
 
 const THEME = {
@@ -87,6 +88,9 @@ export function Terminal({ id }: { id: string }) {
   const [choices, setChoices] = useState<Choice[]>([]);
   /** Typing straight into the terminal; off, tapping it only scrolls (no keyboard popping up). */
   const [keyboard, setKeyboard] = useState(false);
+  /** Claude Code: its conversation as a readable chat (the session transcript), or the terminal. */
+  const [view, setView] = useState<"chat" | "terminal">(() => (localStorage.getItem("devcat.mobile.termView") === "terminal" ? "terminal" : "chat"));
+  const pickView = (v: "chat" | "terminal") => { setView(v); localStorage.setItem("devcat.mobile.termView", v); };
 
   const write = (data: string) => {
     if (readonly) return;
@@ -155,7 +159,13 @@ export function Terminal({ id }: { id: string }) {
       touch.y = y;
       const lines = Math.trunc(touch.acc / lineHeight());
       if (lines) {
-        t.scrollLines(lines);
+        if (t.buffer.active.type === "alternate") {
+          // a full-screen program (Claude Code, less, vim) has no scrollback here: send it the
+          // wheel, which xterm turns into what the program asked for (mouse wheel or arrows)
+          t.element?.querySelector(".xterm-screen")?.dispatchEvent(new WheelEvent("wheel", { deltaY: lines * lineHeight(), deltaMode: 0, bubbles: true, cancelable: true, clientX: x, clientY: y }));
+        } else {
+          t.scrollLines(lines);
+        }
         touch.acc -= lines * lineHeight();
       }
     };
@@ -237,13 +247,18 @@ export function Terminal({ id }: { id: string }) {
   };
 
   const st = agent?.status;
+  const canChat = !!(term?.agent && agent?.sessionId && agent.cwd);
+  // back to the terminal: xterm measures again now that it's visible
+  useEffect(() => { if (view === "terminal") xt.current?.refresh(0, (xt.current?.rows ?? 1) - 1); }, [view]);
   const sub = exited ? "exited" : st === "waiting" ? <span className="text-warn">⚠ {agent?.message ?? "waiting for you"}</span> : st === "working" ? <span className="text-warn">◐ working</span> : st === "idle" ? <span className="text-ok">✓ done</span> : (term?.program ?? info?.program ?? "");
 
   return (
     <Screen title={folderName(cwdOf(term ?? info ?? undefined, agent)) || "Terminal"} sub={sub} scroll={false} className="flex flex-col gap-2 p-2"
       right={<button aria-label="Terminal menu" className="flex size-9 items-center justify-center text-muted" onClick={() => setMenu(true)}><MoreVertical className="size-5" /></button>}>
       {error && <ErrorBox error={error} />}
-      <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1" onPasteCapture={readonly ? undefined : pastedImages}>
+      {canChat && <Seg value={view} onChange={pickView} options={[{ value: "chat", label: "Chat" }, { value: "terminal", label: "Terminal" }]} />}
+      {canChat && view === "chat" && <LiveTranscript cwd={agent!.cwd!} sessionId={agent!.sessionId!} working={agent?.status === "working"} />}
+      <div className={clsx("min-h-0 flex-1 overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1", canChat && view === "chat" && "hidden")} onPasteCapture={readonly ? undefined : pastedImages}>
         <div ref={box} className="h-full min-w-full" />
       </div>
       {!readonly && choices.length > 0 && (
@@ -416,6 +431,61 @@ export function Sessions({ cwd: initial }: { cwd?: string }) {
 }
 
 type AgentSession = { id: string; title: string; updatedMs: number; messages: number };
+
+/** A Claude Code session as a chat, kept up to date while it's on screen (from its transcript
+ *  file on the computer): scrolls like any list, whatever the terminal is drawing. */
+function LiveTranscript({ cwd, sessionId, working }: { cwd: string; sessionId: string; working: boolean }) {
+  const [entries, setEntries] = useState<unknown[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  const touching = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      if (document.hidden) return;
+      host<unknown[]>("claude_transcript", { cwd, sessionId }).then((e) => { if (alive) { setEntries(e); setError(null); } }, (e) => { if (alive) setError(String(e)); });
+    };
+    load();
+    const t = setInterval(load, working ? 2000 : 6000);
+    return () => { alive = false; clearInterval(t); };
+  }, [cwd, sessionId, working]);
+  const list = useMemo(() => blocks(entries ?? []), [entries]);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && stick.current && !touching.current) el.scrollTop = el.scrollHeight;
+  }, [list.length, list[list.length - 1]?.text]);
+  // formatted text and code get their height after layout: stay at the end while it grows
+  useEffect(() => {
+    const el = scroller.current;
+    const body = el?.firstElementChild;
+    if (!el || !body) return;
+    const ro = new ResizeObserver(() => { if (stick.current && !touching.current) el.scrollTop = el.scrollHeight; });
+    ro.observe(body);
+    return () => ro.disconnect();
+  }, [entries !== null]);
+  const onScroll = () => {
+    const el = scroller.current;
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+  return (
+    <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border border-line bg-panel p-2.5"
+      onTouchStart={() => { touching.current = true; stick.current = false; }} onTouchEnd={() => { touching.current = false; onScroll(); }}>
+      {error ? <ErrorBox error={error} /> : !entries ? <Loading /> : list.length === 0 ? <Empty title="Nothing said yet" /> : (
+        <div className="flex flex-col gap-2">
+          {list.map((b, i) => b.kind === "tool" ? (
+            <div key={i} className="border-l-2 border-line py-0.5 pl-2.5 font-mono text-[11px] break-all text-muted">▸ {b.text}</div>
+          ) : b.kind === "me" ? (
+            <div key={i} className="selectable max-w-[92%] self-end rounded-xl bg-accent/15 px-3 py-2 text-[13.5px] break-words whitespace-pre-wrap">{b.text.length > 2500 ? `${b.text.slice(0, 2500)}…` : b.text}</div>
+          ) : (
+            <div key={i} className="selectable text-[13.5px]"><Markdown text={b.text.length > 6000 ? `${b.text.slice(0, 6000)}…` : b.text} /></div>
+          ))}
+          {working && <div className="flex items-center gap-2 text-[12px] text-muted"><Spinner className="size-3.5" />Working…</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 type Block = { kind: "me" | "ai" | "tool"; text: string };
 

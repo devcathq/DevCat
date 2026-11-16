@@ -130,9 +130,10 @@ fn m_visible(watch: State<'_, Arc<Watch>>, visible: bool) {
 /// optimization. Starts the service when it's on and isn't running yet (the app is on screen:
 /// the page asks when it starts). Async: the plugin call needs the main thread free.
 #[tauri::command]
-async fn m_background(handle: tauri::AppHandle, watch: State<'_, Arc<Watch>>) -> Result<Value, String> {
+async fn m_background(handle: tauri::AppHandle, app: State<'_, App>, watch: State<'_, Arc<Watch>>) -> Result<Value, String> {
     let ka = handle.keep_alive();
-    if ka.supported() && watch.keep() {
+    // nothing to stay connected to before a computer is paired
+    if ka.supported() && watch.keep() && !app.store.machines().is_empty() {
         ka.start()?;
     }
     Ok(json!({ "supported": ka.supported(), "on": watch.keep(), "batteryUnrestricted": ka.battery_unrestricted() }))
@@ -146,7 +147,7 @@ async fn m_background_set(handle: tauri::AppHandle, app: State<'_, App>, watch: 
     }
     if on { ka.start()? } else { ka.stop()? }
     let mut p = app.store.prefs();
-    p.background = on;
+    p.background = Some(on);
     app.store.save_prefs(&p)?;
     watch.set_keep(on);
     Ok(json!({ "supported": true, "on": on, "batteryUnrestricted": ka.battery_unrestricted() }))
