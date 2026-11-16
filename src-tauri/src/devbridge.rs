@@ -165,6 +165,7 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "sftp_delete" => out(c!(crate::claude::sftp::sftp_delete, "paths")),
         "sftp_transfer" => out(c!(crate::claude::sftp::sftp_transfer, "jobId", "items")),
         "sftp_cancel" => out(c!(crate::claude::sftp::sftp_cancel, "jobId")),
+        "sftp_local_exists" => out(c!(crate::claude::sftp::sftp_local_exists, "dir", "name")),
         "ssh_forward_start" => out(c!(crate::claude::ssh_forward::ssh_forward_start, "connId")),
         "ssh_forward_stop" => out(c!(crate::claude::ssh_forward::ssh_forward_stop, "connId")),
         "ssh_forward_list" => out(c!(crate::claude::ssh_forward::ssh_forward_list)),

@@ -30,7 +30,7 @@ import { forwardsActive, parseForwards, startForwards, stopForwards, useForwards
 import { isVariant } from "../../ssh/variants";
 import {
   activateConnection, copyText, deleteConnection, deleteRedisKey, disconnect, dropCollection, dropObject,
-  duplicateConnection, refreshAll, truncateTable,
+  duplicateConnection, quickTmuxVariant, refreshAll, truncateTable,
 } from "./actions";
 import { isBookmarkable, isInfra, isTablesFolder, redisKeyOf, refOf, type Row } from "./rows";
 import { useTree } from "./store";
@@ -121,7 +121,10 @@ function connectionMenu(conn: ConnectionConfig): MenuItem[] {
       "separator",
       ...(variant
         ? []
-        : [{ label: "New variant…", icon: ic(GitFork), onClick: () => useUi.getState().openConnectionDialog(null, "ssh", conn.projectId ?? null, conn.id) } as MenuItem]),
+        : [
+          { label: "New variant…", icon: ic(GitFork), onClick: () => useUi.getState().openConnectionDialog(null, "ssh", conn.projectId ?? null, conn.id) },
+          { label: "New tmux variant", icon: ic(SquareTerminal), onClick: () => void quickTmuxVariant(conn) },
+        ] as MenuItem[]),
       ...edit,
     ];
   }

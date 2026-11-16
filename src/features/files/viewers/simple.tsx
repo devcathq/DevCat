@@ -7,7 +7,7 @@ import { createPortal } from "react-dom";
 import { Button, IconButton } from "../../../components/ui";
 import type { FilePreview } from "../../../lib/types";
 import { fmtSize, openExternally } from "../format";
-import { downloadRemoteFile } from "../download";
+import { downloadRemoteFile, useDownloads } from "../download";
 import { MarkdownDoc } from "./MarkdownDoc";
 import { TruncatedBanner } from "./SheetViewer";
 import { isRemote } from "../../../lib/remotePath";
@@ -248,6 +248,8 @@ function DocxText({ preview }: { preview: FilePreview }) {
 
 export function BinaryCard({ preview }: ViewerProps) {
   const tooLarge = preview.kind === "too_large";
+  const pct = useDownloads((s) => s.active[preview.path]);
+  const downloading = pct !== undefined;
   return (
     <div className="flex h-full items-center justify-center p-6">
       <div className="flex w-80 flex-col items-center gap-2 rounded-lg border border-line bg-panel p-6 text-center">
@@ -257,7 +259,12 @@ export function BinaryCard({ preview }: ViewerProps) {
           {fmtSize(preview.size)}{preview.mime ? ` · ${preview.mime}` : ""}
         </div>
         {isRemote(preview.path)
-          ? <Button className="mt-2" onClick={() => void downloadRemoteFile(preview.path)}><Download className="size-3.5" /> Download</Button>
+          ? (
+            <Button className="mt-2" loading={downloading} onClick={() => void downloadRemoteFile(preview.path, preview.size)}>
+              {!downloading && <Download className="size-3.5" />}
+              {!downloading ? "Download" : pct === null ? "Connecting…" : `Downloading… ${pct}%`}
+            </Button>
+          )
           : <Button className="mt-2" onClick={() => void openExternally(preview.path)}><ExternalLink className="size-3.5" /> Open externally</Button>}
       </div>
     </div>

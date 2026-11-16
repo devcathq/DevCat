@@ -8,7 +8,7 @@ import { Button, Empty, ErrorBox, IconButton, Spinner, Toolbar } from "../../com
 import { KindIcon } from "../../components/ui/KindIcon";
 import { DATABASE_KINDS, type HistoryEntry, type SavedQuery } from "../../lib/types";
 import { inFocus, useConnections, useScopedConnections } from "../../store/connections";
-import { useTabs } from "../../store/tabs";
+import { useTabVisible } from "../../store/tabs";
 import type { Tab } from "../../tabs/types";
 import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
 import {
@@ -33,7 +33,7 @@ export default function HistoryTab({ tab }: { tab: Extract<Tab, { type: "history
   const [selected, setSelected] = useState<string | null>(null);
   const connections = useScopedConnections();
   useConnections((s) => s.focusProjectId);
-  const active = useTabs((s) => s.activeId === tab.id);
+  const active = useTabVisible(tab.id);
   const { history, saved, loading, error, refresh } = useHistoryData({ search, connectionId: connFilter || null, limit: 2000 });
   const menu = useContextMenu();
   useNow(60_000);

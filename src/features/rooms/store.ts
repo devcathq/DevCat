@@ -5,7 +5,7 @@ import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { toast } from "sonner";
 import { create } from "zustand";
 import { IS_MAIN_WINDOW } from "../../lib/windows";
-import { openTab, useTabs } from "../../store/tabs";
+import { isTabVisible, openTab, useTabs } from "../../store/tabs";
 import { label, rooms, type JoinRequest, type Message, type RoomSummary } from "./api";
 
 interface RoomsState {
@@ -90,8 +90,8 @@ export function startRooms() {
   void listen<{ room: string; roomName: string; message: Message }>("room-mention", (e) => {
     const { room, roomName, message } = e.payload;
     // the room on screen: seen as it arrives
-    const active = useTabs.getState().tabs.find((t) => t.id === useTabs.getState().activeId);
-    if (active?.type === "room" && active.roomId === room && document.hasFocus()) return;
+    const onScreen = useTabs.getState().tabs.some((t) => t.type === "room" && t.roomId === room && isTabVisible(t.id));
+    if (onScreen && document.hasFocus()) return;
     useRooms.setState((s) => ({ mentions: { ...s.mentions, [room]: (s.mentions[room] ?? 0) + 1 } }));
     if (!IS_MAIN_WINDOW) return;
     const text = message.text.length > 140 ? `${message.text.slice(0, 140)}…` : message.text;

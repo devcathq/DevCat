@@ -375,6 +375,7 @@ pub fn run() {
             claude::sftp::sftp_delete,
             claude::sftp::sftp_transfer,
             claude::sftp::sftp_cancel,
+            claude::sftp::sftp_local_exists,
             claude::ssh_forward::ssh_forward_start,
             claude::ssh_forward::ssh_forward_stop,
             claude::ssh_forward::ssh_forward_list,

@@ -13,7 +13,7 @@ import { Badge, Button, Empty, IconButton, Spinner } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { monaco } from "../../lib/monaco";
 import { useFocusProject } from "../../store/connections";
-import { useTabs } from "../../store/tabs";
+import { useTabVisible } from "../../store/tabs";
 import type { Tab } from "../../tabs/types";
 import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
 import { confirmDialog, promptDialog } from "../connections/dialogs";
@@ -61,7 +61,7 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
   // files dragged over the room (from the system or DevCat's Files tree), to share them
   const [dragging, setDragging] = useState(false);
   const tick = useRooms((s) => s.ticks[room] ?? 0);
-  const active = useTabs((s) => s.activeId === tab.id);
+  const active = useTabVisible(tab.id);
   const focus = useFocusProject();
   const menuCtx = useContextMenu();
 
