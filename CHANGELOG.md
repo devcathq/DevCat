@@ -12,6 +12,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- A query or table filter with an unquoted non-ASCII name (`WHERE 曜日 = '木'`) no longer leaves it running forever.
 - **JDBC connections**: any database with a JDBC driver (SQLBase, Oracle, Db2, Informix, H2…) as a connection, with
   its tree, table data, grid edits, queries and export, and for agents over MCP like any other database. DevCat stays
   free of Java: its small helper runs on a Java you already have (JAVA_HOME, an installed JDK, the one in DBeaver or
