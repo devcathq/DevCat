@@ -14,6 +14,7 @@
     "mobile:dev": "vite --config mobile/vite.config.ts",
     "mobile:build": "tsc -p mobile && vite build --config mobile/vite.config.ts",
     "mobile:bridge": "vite --config mobile/vite.config.ts --mode bridge --port 1442",
+    "mobile:mock": "vite --config mobile/vite.config.ts --mode mock --port 1444",
     "mobile:web": "tsc -p mobile && vite build --config mobile/vite.config.ts --mode web",
     "mobile:hosted": "tsc -p mobile && vite build --config mobile/vite.config.ts --mode hosted",
     "mobile:check-crypto": "node --experimental-strip-types mobile/src/web/crypto.check.ts",

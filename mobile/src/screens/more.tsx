@@ -1,16 +1,13 @@
-// More: this computer (address, access, keep awake), notifications setup, the activity log,
+// More: this computer (address, access, keep awake), notifications, the activity log,
 // help, renaming this phone and unpairing.
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { Bell, ChevronRight, Coffee, Copy, HelpCircle, History, Laptop, LogOut, Pencil, Repeat, Server } from "lucide-react";
+import { Bell, Boxes, ChevronRight, Coffee, Copy, Database, HelpCircle, History, Laptop, LogOut, Network, Pencil, Repeat, Server } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { IS_WEB } from "../lib/env";
-import { phone } from "../lib/rpc";
+import { phone, type Background } from "../lib/rpc";
 import { currentMachine, host, loadMachines, nav, toast, toastErr, useApp } from "../lib/store";
 import type { AuditEntry, HostInfo, NotifySettings } from "../lib/types";
 import { Badge, Btn, Card, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Note, Screen, Section, Toggle, TextArea, ago, useLoad } from "../ui";
 
-const NTFY_IOS = "https://apps.apple.com/app/ntfy/id1625396347";
-const NTFY_ANDROID = "https://play.google.com/store/apps/details?id=io.heckel.ntfy";
 
 export function More() {
   const machine = useApp((s) => s.machines.find((m) => m.id === s.current));
@@ -42,7 +39,12 @@ export function More() {
           </div>
         </Card>
       )}
-      <Item icon={<Bell className="size-5" />} title="Notifications" meta="Push when an agent finishes or needs you" onClick={() => nav.push({ s: "notify" })} chevron />
+      <Section>Tools</Section>
+      <Item icon={<Database className="size-5" />} title="Data" meta="Databases and Redis" onClick={() => nav.push({ s: "data" })} chevron />
+      <Item icon={<Network className="size-5" />} title="VPN & tunnels" meta="Connect, disconnect, logs" onClick={() => nav.push({ s: "network" })} chevron />
+      <Item icon={<Boxes className="size-5" />} title="Cluster" meta="Kubernetes pods and logs" onClick={() => nav.push({ s: "cluster" })} chevron />
+      <Section>This computer</Section>
+      <Item icon={<Bell className="size-5" />} title="Notifications" meta="When an agent finishes or needs you" onClick={() => nav.push({ s: "notify" })} chevron />
       <Item icon={<Coffee className="size-5" />} title="Keep computer awake" meta="So it stays reachable" right={<Toggle on={!!awake.data?.on} disabled={readonly || awake.loading} onChange={(v) => void setAwake(v)} />} />
       <Item icon={<History className="size-5" />} title="Activity log" meta="What this phone did on the computer" onClick={() => nav.push({ s: "activity" })} chevron />
       <Item icon={<HelpCircle className="size-5" />} title="Help & troubleshooting" onClick={() => nav.push({ s: "help" })} chevron />
@@ -142,13 +144,32 @@ export function MachineSettings() {
   );
 }
 
-function Step({ n, title, meta, right }: { n: number; title: ReactNode; meta?: ReactNode; right?: ReactNode }) {
+/** Android: DevCat stays connected in the background and notifies itself (src-tauri watch.rs,
+ *  the keepalive plugin). Shown only where that's possible. */
+function OnThisPhone() {
+  const [b, setB] = useState<Background | null>(null);
+  const load = () => { if (!IS_WEB) phone.background().then(setB, () => {}); };
+  useEffect(load, []);
+  // The battery setting changes in Android's settings: check again when back here.
+  useEffect(() => {
+    const f = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", f);
+    return () => document.removeEventListener("visibilitychange", f);
+  }, []);
+  if (!b?.supported) return null;
+  const set = async (on: boolean) => {
+    try { setB(await phone.setBackground(on)); } catch (e) { toastErr(e); }
+  };
   return (
-    <div className="flex items-center gap-3 rounded-xl bg-raised px-3 py-2.5">
-      <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent/15 text-[12px] font-bold text-accent">{n}</span>
-      <span className="min-w-0 flex-1"><span className="block font-semibold">{title}</span>{meta && <span className="block truncate text-[11.5px] text-muted">{meta}</span>}</span>
-      {right}
-    </div>
+    <>
+      <Section>In this app</Section>
+      <Item title="Stay connected in the background" meta="Get notifications while the app is closed too" right={<Toggle on={b.on} onChange={(on) => void set(on)} />} />
+      {b.on && !b.batteryUnrestricted && (
+        <Item title="Battery optimization is on" meta="Android may pause the connection while the phone sleeps. Set DevCat to Unrestricted."
+          right={<Btn size="sm" onClick={() => void phone.batterySettings().catch(toastErr)}>Settings</Btn>} />
+      )}
+      <Note>While it's on, Android shows a quiet "DevCat is connected" notification and DevCat uses some battery. Swiping DevCat away from the recent apps stops it.</Note>
+    </>
   );
 }
 
@@ -157,36 +178,26 @@ export function Notify() {
   const [v, setV] = useState<NotifySettings | null>(null);
   const [tested, setTested] = useState<string | null>(null);
   const readonly = currentMachine()?.access === "readonly";
-  const isIos = /iphone|ipad/i.test(navigator.userAgent);
   useEffect(() => { if (s.data) setV(s.data); }, [s.data]);
-  if (!v) return <Screen title="Notifications">{s.error ? <ErrorBox error={s.error} /> : <Loading />}</Screen>;
+  const intro = <div className="text-[13px] text-muted">This app shows a notification when an agent on your computer finishes or needs you, while it's connected to the computer.</div>;
+  if (!v) return <Screen title="Notifications">{intro}<OnThisPhone />{s.error ? <ErrorBox error={s.error} /> : <Loading />}</Screen>;
   const save = async (next: NotifySettings) => {
     setV(next);
     try { setV(await host<NotifySettings>("notify_save", { settings: next })); } catch (e) { toastErr(e); }
-  };
-  const topicUrl = `${v.server.replace(/\/+$/, "")}/${v.topic}`;
-  const subscribe = () => {
-    const host_ = v.server.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-    // The ntfy app handles ntfy:// links; the web page offers to open the app otherwise.
-    void openUrl(`ntfy://${host_}/${v.topic}`).catch(() => openUrl(topicUrl));
   };
   const test = async () => {
     try { await host("notify_test"); setTested(new Date().toLocaleTimeString()); } catch (e) { toastErr(e); }
   };
   return (
     <Screen title="Notifications">
-      <div className="text-[13px] text-muted">Get a push when an agent finishes or needs you, even when this app is closed. DevCat on the computer sends it through the free <b className="text-fg">ntfy</b> app. No account needed.</div>
-      <Item title="Notify this phone" meta={v.enabled ? "On" : "Off"} right={<Toggle on={v.enabled} disabled={readonly} onChange={(on) => void save({ ...v, enabled: on })} />} />
-      <Section>Set up (once)</Section>
-      <Step n={1} title="Install ntfy" meta="free, open source" right={<Btn size="sm" onClick={() => void openUrl(isIos ? NTFY_IOS : NTFY_ANDROID)}>{isIos ? "App Store" : "Google Play"}</Btn>} />
-      <Step n={2} title="Subscribe to your private topic" meta={<span className="font-mono">{v.topic}</span>} right={<Btn size="sm" variant="primary" onClick={subscribe}>Subscribe</Btn>} />
-      <Step n={3} title="Send a test" meta={tested ? <span className="text-ok">✓ Sent {tested}. Did it arrive?</span> : "Check that it arrives"} right={<Btn size="sm" disabled={readonly} onClick={() => void test()}>Test</Btn>} />
-      {!isIos && <Note>Android: in ntfy, allow notifications and turn off battery optimization for ntfy so pushes arrive right away.</Note>}
+      {intro}
+      <OnThisPhone />
       <Section>Notify me when</Section>
       <Item title="An agent finished" meta={`after running at least ${v.minSeconds} s`} right={<Toggle on={v.onDone} disabled={readonly} onChange={(x) => void save({ ...v, onDone: x })} />} />
       <Item title="An agent needs input" meta="permission prompts, questions" right={<Toggle on={v.onInput} disabled={readonly} onChange={(x) => void save({ ...v, onInput: x })} />} />
       <Item title="Only when I'm away" meta="not while DevCat is the active app on the computer" right={<Toggle on={v.onlyWhenAway} disabled={readonly} onChange={(x) => void save({ ...v, onlyWhenAway: x })} />} />
-      <Note>Notifications contain only the project name and status, never code or data. The topic name is the key: keep it private. Server: <b>{v.server}</b> (change it on the computer).</Note>
+      <Item title="Send a test" meta={tested ? <span className="text-ok">✓ Sent {tested}. Did it show?</span> : "Check that notifications show on this phone"} right={<Btn size="sm" disabled={readonly} onClick={() => void test()}>Test</Btn>} />
+      <Note>These rules also decide what goes to Telegram, Discord, Slack and webhooks. Set those up in DevCat on the computer: 📱 → Notifications, and Agent bots.</Note>
     </Screen>
   );
 }
@@ -242,7 +253,8 @@ export function Help() {
         <p>The code works <b>once</b> and expires after <b>5 minutes</b>. On the computer click <b>New code</b> and scan again. Five wrong tries cancel the code.</p>
       </Q>
       <Q q="Notifications don't arrive">
-        <p>Install <b>ntfy</b>, subscribe to the topic shown under More → Notifications, and send a test. On Android, turn off battery optimization for ntfy. Notifications are skipped while you're using DevCat on the computer if "Only when I'm away" is on. They need Claude Code agents started from DevCat (terminals opened before this was set up report after a restart).</p>
+        <p>This app notifies while it's connected to the computer. On Android, turn on <b>More → Notifications → Stay connected in the background</b> to get them while the app is closed, allow DevCat's notifications, and set its battery use to <b>Unrestricted</b>. Then try <b>Send a test</b>.</p>
+        <p>Notifications are skipped while you're using DevCat on the computer if "Only when I'm away" is on. They need Claude Code agents started from DevCat (terminals opened before this was set up report after a restart).</p>
       </Q>
       <Q q="Full access vs read-only">
         <p><b>Full access</b>: agents and terminals, queries and edits, Redis keys, VPNs, Kubernetes actions. <b>Read-only</b>: browse and run queries that only read. Change it on the computer under Paired phones.</p>

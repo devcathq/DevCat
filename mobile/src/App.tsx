@@ -1,16 +1,19 @@
 // DevCat Mobile: screen switch over the navigation stack, startup (paired computers, events),
-// reconnecting when the app comes back to the foreground, and local notifications.
+// reconnecting when the app comes back to the foreground, and notification permission (the
+// app's Rust side shows them while this page is off screen).
 import { useEffect } from "react";
 import { phone, startEvents } from "./lib/rpc";
-import { loadMachines, nav, selectMachine, setLocalNotifier, startStateEvents, toast, useApp } from "./lib/store";
+import { loadMachines, nav, selectMachine, startStateEvents, toast, useApp } from "./lib/store";
 import type { Route } from "./lib/types";
-import { Agents, NewChat, Sessions, Terminal, Transcript } from "./screens/agents";
+import { NewChat, Sessions, Terminal, Transcript } from "./screens/agents";
+import { Chats } from "./screens/chats";
+import { Terminals } from "./screens/terminals";
 import { AgentChat } from "./screens/agentchat";
 import { Browse, Data, Query, RedisKey, Row, Rows } from "./screens/data";
 import { Activity, Help, MachineSettings, More, Notify } from "./screens/more";
 import { FileView, Files, FilesHome } from "./screens/files";
 import { Cluster, NetLog, Network, Pod } from "./screens/ops";
-import { IS_WEB, isPairLink } from "./lib/env";
+import { IS_MOCK, IS_WEB, isPairLink } from "./lib/env";
 import { Computers, Pairing, Paste, Scan, WebLanding, Welcome, prefersApp } from "./screens/setup";
 import { adoptCarried, appLink, carryPairing, pairedHostId, parseLink } from "./web/client";
 import { Loading, Toasts } from "./ui";
@@ -24,7 +27,8 @@ function screen(r: Route) {
     case "paste": return <Paste link={r.link} />;
     case "pairing": return <Pairing link={r.link} addr={r.addr} />;
     case "computers": return <Computers />;
-    case "agents": return <Agents />;
+    case "agents": return <Chats />;
+    case "terminals": return <Terminals />;
     case "terminal": return <Terminal id={r.id} />;
     case "newchat": return <NewChat cwd={r.cwd} />;
     case "sessions": return <Sessions cwd={r.cwd} />;
@@ -123,6 +127,8 @@ async function boot() {
   const chatLink = takeWebChatLink();
   const webLink = takeWebLink();
   if (IS_WEB) carryPairing();
+  // Android: start staying connected in the background if it's on (only while on screen).
+  if (!IS_WEB) void phone.background().catch(() => {});
   const [info, machines] = await Promise.all([phone.info(), loadMachines()]);
   useApp.setState({ info });
   if (webLink) {
@@ -161,6 +167,15 @@ async function boot() {
   const pick = machines.find((m) => m.id === last) ?? machines[0];
   selectMachine(pick.id);
   nav.reset([{ s: "computers" }, { s: "agents" }]);
+  if (IS_MOCK) mockStart();
+}
+
+/** Mock mode: `?stack=[{"s":"terminal","id":"T1"}]` opens those screens over the start one. */
+function mockStart() {
+  try {
+    const extra = JSON.parse(new URLSearchParams(location.search).get("stack") ?? "[]") as Route[];
+    if (extra.length) nav.reset([...useApp.getState().stack, ...extra]);
+  } catch { /* a bad stack: stay on the start screen */ }
 }
 
 export function App() {
@@ -168,14 +183,14 @@ export function App() {
   useEffect(() => {
     void boot();
     void import("@tauri-apps/plugin-notification").then(async (n) => {
-      setLocalNotifier((title, body) => {
-        void n.isPermissionGranted().then((ok) => (ok ? n.sendNotification({ title, body }) : undefined));
-      });
       if (!(await n.isPermissionGranted())) await n.requestPermission();
     }).catch(() => {});
+    const visible = (v: boolean) => { if (!IS_WEB) void phone.visible(v).catch(() => {}); };
+    visible(!document.hidden);
     // Back from the background or a network change: start fresh connections.
     let hiddenAt = 0;
     const onVis = () => {
+      visible(!document.hidden);
       if (document.hidden) { hiddenAt = Date.now(); return; }
       if (Date.now() - hiddenAt > 20_000) void phone.networkChanged();
     };

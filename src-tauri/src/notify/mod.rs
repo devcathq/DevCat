@@ -1,26 +1,24 @@
-//! Phone notifications for AI agents: "finished" and "needs your input", pushed through ntfy
-//! (https://ntfy.sh or a self-hosted server) to the ntfy app on the user's phone. No DevCat
-//! server or account: the computer posts straight to the user's private topic.
+//! Notifications for AI agents: "finished" and "needs your input". The rules here (which
+//! changes, how long a turn must run, only when away) decide; what passes goes to DevCat Mobile
+//! (`to_phones`: an `agent-notify` event to the connected phones, which show it themselves, and
+//! `recent` for a phone that was offline) and to the notification channels and linked chats
+//! (`integrations::deliver`, which calls `to_phones`). No DevCat server or account.
 //! Agent status comes from Claude Code hooks (see hooks.rs).
 pub mod hooks;
 
 use crate::error::{AppError, AppResult};
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Older files also have the ntfy fields (enabled, server, topic, token): ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NotifySettings {
-    pub enabled: bool,
-    /// ntfy server, e.g. https://ntfy.sh
-    pub server: String,
-    /// Private topic name (random; whoever knows it can read the notifications).
-    pub topic: String,
-    /// Access token for a protected self-hosted server.
-    pub token: Option<String>,
     pub on_done: bool,
     pub on_input: bool,
     /// "Finished" only for turns that ran at least this long.
@@ -31,16 +29,7 @@ pub struct NotifySettings {
 
 impl Default for NotifySettings {
     fn default() -> Self {
-        Self {
-            enabled: false,
-            server: "https://ntfy.sh".into(),
-            topic: String::new(),
-            token: None,
-            on_done: true,
-            on_input: true,
-            min_seconds: 30,
-            only_when_away: true,
-        }
+        Self { on_done: true, on_input: true, min_seconds: 30, only_when_away: true }
     }
 }
 
@@ -50,21 +39,8 @@ fn path() -> AppResult<PathBuf> {
     DIR.get().map(|d| d.join("notify.json")).ok_or_else(|| AppError::msg("notifications not initialized"))
 }
 
-/// `devcat-` + 16 random lowercase base32 characters (80 bits): hard to guess.
-pub fn new_topic() -> String {
-    const ALPHA: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
-    let bytes: [u8; 16] = crate::remote::store::random_bytes();
-    let s: String = bytes.iter().map(|b| ALPHA[(*b as usize) % 32] as char).collect();
-    format!("devcat-{s}")
-}
-
 pub fn load() -> NotifySettings {
-    let mut s: NotifySettings = path().ok().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    if s.topic.is_empty() {
-        s.topic = new_topic();
-        let _ = save(&s);
-    }
-    s
+    path().ok().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 fn save(s: &NotifySettings) -> AppResult<()> {
@@ -119,35 +95,68 @@ pub fn fmt_duration(ms: i64) -> String {
     }
 }
 
-/// The ntfy message for a status change, if the settings want one.
-pub fn message_for(s: &NotifySettings, status: &hooks::AgentStatus, change: &hooks::Change) -> Option<Value> {
+/// The notification (title, body) for a status change, if the settings want one.
+pub fn message_for(s: &NotifySettings, status: &hooks::AgentStatus, change: &hooks::Change) -> Option<(String, String)> {
     let project = project_name(status.cwd.as_deref());
-    let (title, body, tags, priority) = match change {
+    match change {
         hooks::Change::Finished { ran_ms } if s.on_done && *ran_ms >= i64::from(s.min_seconds) * 1000 => {
-            (format!("{project}: finished"), format!("The agent finished after {}.", fmt_duration(*ran_ms)), "white_check_mark", 3)
+            Some((format!("{project}: finished"), format!("The agent finished after {}.", fmt_duration(*ran_ms))))
         }
-        hooks::Change::NeedsInput { message } if s.on_input => (format!("{project}: needs you"), message.clone(), "raising_hand", 4),
-        _ => return None,
-    };
-    Some(json!({ "topic": s.topic, "title": title, "message": body, "tags": [tags], "priority": priority }))
+        hooks::Change::NeedsInput { message } if s.on_input => Some((format!("{project}: needs you"), message.clone())),
+        _ => None,
+    }
 }
 
-async fn publish(s: &NotifySettings, msg: &Value) -> AppResult<()> {
-    let server = s.server.trim().trim_end_matches('/');
-    if !(server.starts_with("https://") || server.starts_with("http://")) {
-        return Err(AppError::msg("The ntfy server must start with https://"));
+/// A notification as phones get it (event `agent-notify`, and `recent`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneNote {
+    /// This run of DevCat (`seq` starts again when it restarts).
+    pub boot: String,
+    pub seq: u64,
+    pub at: i64,
+    pub title: String,
+    pub body: String,
+    pub needs_you: bool,
+    /// From "Send a test": phones show it even while the app is on screen.
+    pub test: bool,
+}
+
+/// The last notifications, for a phone that was offline when they went out.
+const KEEP_NOTES: usize = 50;
+static NOTES: Lazy<Mutex<VecDeque<PhoneNote>>> = Lazy::new(Mutex::default);
+static SEQ: AtomicU64 = AtomicU64::new(0);
+static BOOT: Lazy<String> = Lazy::new(|| hex::encode(crate::remote::store::random_bytes::<8>()));
+
+/// Send a notification to the paired phones (DevCat Mobile shows it). Callers applied the
+/// rules already; "finished" / "needs you" turned off here stays off for phones too.
+pub(crate) fn to_phones(title: &str, body: &str, needs_you: bool, test: bool) {
+    let s = load();
+    if !test && !(if needs_you { s.on_input } else { s.on_done }) {
+        return;
     }
-    let mut req = reqwest::Client::builder().timeout(Duration::from_secs(10)).build()?.post(format!("{server}/")).json(msg);
-    if let Some(t) = s.token.as_deref().filter(|t| !t.is_empty()) {
-        req = req.bearer_auth(t);
+    let note = PhoneNote {
+        boot: BOOT.clone(),
+        seq: SEQ.fetch_add(1, Ordering::Relaxed) + 1,
+        at: crate::remote::server::now_ms(),
+        title: title.chars().take(200).collect(),
+        body: body.chars().take(1000).collect(),
+        needs_you,
+        test,
+    };
+    {
+        let mut n = NOTES.lock();
+        n.push_back(note.clone());
+        while n.len() > KEEP_NOTES {
+            n.pop_front();
+        }
     }
-    let resp = req.send().await?;
-    if !resp.status().is_success() {
-        let code = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(AppError::msg(format!("ntfy answered {code}: {}", text.trim())));
-    }
-    Ok(())
+    emit("agent-notify", serde_json::to_value(&note).unwrap_or(Value::Null));
+}
+
+/// The kept notifications (a phone shows the ones newer than what it saw, see `to_phones`).
+pub fn recent() -> Value {
+    json!({ "boot": *BOOT, "notes": NOTES.lock().iter().filter(|n| !n.test).cloned().collect::<Vec<_>>() })
 }
 
 /// A scheduled DevCat Agent job finished (`needs_you` false) or waits for the user, as the
@@ -157,14 +166,7 @@ pub(crate) async fn job(title: &str, message: &str, needs_you: bool) {
     if !(if needs_you { s.on_input } else { s.on_done }) || (s.only_when_away && app_focused()) {
         return;
     }
-    if s.enabled {
-        let (tags, priority) = if needs_you { ("raising_hand", 4) } else { ("alarm_clock", 3) };
-        let msg = json!({ "topic": s.topic, "title": title, "message": message, "tags": [tags], "priority": priority });
-        if let Err(e) = publish(&s, &msg).await {
-            eprintln!("notification failed: {e}");
-        }
-    }
-    // and the notification channels (integrations: Discord, Slack, webhooks)
+    // the phones, the notification channels (Discord, Slack, webhooks) and linked chats
     crate::integrations::deliver(crate::integrations::Note { title: title.into(), body: message.into(), needs_you, cwd: None, skip_links: vec![], url: None }).await;
 }
 
@@ -173,16 +175,11 @@ pub(crate) async fn on_change(status: &hooks::AgentStatus, change: hooks::Change
     if s.only_when_away && app_focused() {
         return;
     }
-    let Some(msg) = message_for(&s, status, &change) else { return };
-    if s.enabled
-        && let Err(e) = publish(&s, &msg).await
-    {
-        eprintln!("notification failed: {e}");
-    }
-    // and the notification channels and the chats linked to the agent's folder (integrations)
+    let Some((title, body)) = message_for(&s, status, &change) else { return };
+    // the phones, the notification channels and the chats linked to the agent's folder
     crate::integrations::deliver(crate::integrations::Note {
-        title: msg["title"].as_str().unwrap_or("DevCat").into(),
-        body: msg["message"].as_str().unwrap_or("").into(),
+        title,
+        body,
         needs_you: matches!(change, hooks::Change::NeedsInput { .. }),
         cwd: status.cwd.clone(),
         skip_links: vec![],
@@ -200,38 +197,16 @@ pub async fn notify_settings() -> AppResult<NotifySettings> {
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn notify_save(settings: NotifySettings) -> AppResult<NotifySettings> {
-    let mut s = settings;
-    s.server = s.server.trim().trim_end_matches('/').to_string();
-    if s.server.is_empty() {
-        s.server = NotifySettings::default().server;
-    }
-    if s.topic.trim().is_empty() {
-        s.topic = new_topic();
-    }
-    s.topic = s.topic.trim().to_string();
-    save(&s)?;
-    emit("notify-settings", serde_json::to_value(&s)?);
-    Ok(s)
+    save(&settings)?;
+    emit("notify-settings", serde_json::to_value(&settings)?);
+    Ok(settings)
 }
 
-/// A new private topic (the old one stops getting notifications).
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn notify_new_topic() -> AppResult<NotifySettings> {
-    let mut s = load();
-    s.topic = new_topic();
-    notify_save(s).await
-}
-
+/// A test notification to the paired phones (the channels have their own test).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn notify_test() -> AppResult<()> {
-    let s = load();
-    let msg = json!({
-        "topic": s.topic,
-        "title": "DevCat",
-        "message": "Test notification: you'll get these when an agent finishes or needs you.",
-        "tags": ["tada"],
-    });
-    publish(&s, &msg).await
+    to_phones("DevCat", "Test notification: you'll get these when an agent finishes or needs you.", false, true);
+    Ok(())
 }
 
 /// Status of every agent DevCat knows about (from hooks).
@@ -251,24 +226,40 @@ mod tests {
 
     #[test]
     fn messages_follow_settings() {
-        let s = NotifySettings { enabled: true, topic: "devcat-x".into(), ..Default::default() };
+        let s = NotifySettings::default();
         let st = status("/Users/me/Projects/storefront");
-        let m = message_for(&s, &st, &hooks::Change::Finished { ran_ms: 192_000 }).unwrap();
-        assert_eq!(m["title"], "storefront: finished");
-        assert_eq!(m["message"], "The agent finished after 3m 12s.");
-        assert_eq!(m["topic"], "devcat-x");
+        let (title, body) = message_for(&s, &st, &hooks::Change::Finished { ran_ms: 192_000 }).unwrap();
+        assert_eq!((title.as_str(), body.as_str()), ("storefront: finished", "The agent finished after 3m 12s."));
         assert!(message_for(&s, &st, &hooks::Change::Finished { ran_ms: 5_000 }).is_none(), "short turn");
-        let m = message_for(&s, &st, &hooks::Change::NeedsInput { message: "Claude needs your permission to use Bash".into() }).unwrap();
-        assert_eq!((m["title"].as_str(), m["priority"].as_i64()), (Some("storefront: needs you"), Some(4)));
+        let (title, _) = message_for(&s, &st, &hooks::Change::NeedsInput { message: "Claude needs your permission to use Bash".into() }).unwrap();
+        assert_eq!(title, "storefront: needs you");
         let off = NotifySettings { on_input: false, ..s };
         assert!(message_for(&off, &st, &hooks::Change::NeedsInput { message: "x".into() }).is_none());
         assert!(message_for(&off, &st, &hooks::Change::Other).is_none());
     }
 
     #[test]
-    fn topics_and_durations() {
-        let t = new_topic();
-        assert!(t.starts_with("devcat-") && t.len() == 23 && t != new_topic());
+    fn old_ntfy_settings_still_load() {
+        let s: NotifySettings = serde_json::from_value(json!({ "enabled": true, "server": "https://ntfy.sh", "topic": "devcat-x", "onDone": false, "minSeconds": 5 })).unwrap();
+        assert_eq!(s, NotifySettings { on_done: false, min_seconds: 5, ..Default::default() });
+    }
+
+    #[test]
+    fn phones_get_numbered_notes_and_tests_stay_live_only() {
+        let before = SEQ.load(Ordering::Relaxed);
+        to_phones("api: finished", "done", false, false);
+        to_phones("DevCat", "test", false, true);
+        let r = recent();
+        let notes = r["notes"].as_array().unwrap();
+        let last = notes.last().unwrap();
+        assert_eq!((last["title"].as_str(), last["test"].as_bool()), (Some("api: finished"), Some(false)));
+        assert!(last["seq"].as_u64().unwrap() > before);
+        assert!(notes.iter().all(|n| n["test"] == false));
+        assert_eq!(r["boot"], last["boot"]);
+    }
+
+    #[test]
+    fn durations() {
         assert_eq!(fmt_duration(45_000), "45s");
         assert_eq!(fmt_duration(3_725_000), "1h 02m");
     }

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status bar icon (white on transparent, as Android wants): a terminal prompt. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M3.5,6.4L4.9,5L11.4,11.5L4.9,18L3.5,16.6L8.6,11.5Z M12.5,16.5L20.5,16.5L20.5,18.5L12.5,18.5Z" />
+</vector>

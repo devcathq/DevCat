@@ -50,6 +50,10 @@ jobs:
         working-directory: mobile
         run: pnpm tauri android init --ci
 
+      - name: DevCat launcher icon, release build rules
+        working-directory: mobile
+        run: scripts/android-setup.sh
+
       - name: Build (release, signed)
         if: env.HAS_KEYSTORE == 'true'
         working-directory: mobile

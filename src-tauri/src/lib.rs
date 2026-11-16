@@ -397,10 +397,9 @@ pub fn run() {
             claude::git::git_discard,
             claude::git::git_discard_all,
             claude::git::git_commit,
-            // phone notifications (agent hooks → ntfy)
+            // agent notifications (hooks → phones, channels, linked chats)
             notify::notify_settings,
             notify::notify_save,
-            notify::notify_new_topic,
             notify::notify_test,
             notify::agents_status,
             // remote access from the mobile app

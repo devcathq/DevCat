@@ -1,16 +1,16 @@
-// Agents: every terminal on the computer (agents first, sorted by what needs you), the live
-// terminal with a key row, new chats, session history and readable transcripts.
+// A live terminal with a key row, new chats, session history and readable transcripts. The lists
+// are in chats.tsx (Chats tab) and terminals.tsx (Terminal tab).
 import { loadUnicode } from "../../../src/lib/xtermUnicode";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import clsx from "clsx";
-import { AlertTriangle, Bot, CheckCircle2, ChevronRight, Clock, FolderOpen, ImagePlus, Keyboard, Laptop, MoreVertical, Plus, Send, Smartphone, Square, TerminalSquare } from "lucide-react";
+import { Bot, FolderOpen, ImagePlus, Keyboard, MoreVertical, Send, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { onEvent } from "../lib/rpc";
-import { host, nav, refreshAgents, toast, toastErr, useApp } from "../lib/store";
+import { host, nav, toast, toastErr, useApp } from "../lib/store";
 import { uploadPasteImage } from "../lib/transfer";
-import type { AgentChatInfo, AgentStatus, AiProvider, ClaudeProject, PtyInfo, SessionMeta } from "../lib/types";
-import { Btn, Card, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Screen, Section, Seg, Sheet, Spinner, TextArea, ago, duration, folderName, useLoad } from "../ui";
+import type { AgentStatus, AiProvider, ClaudeProject, PtyInfo, SessionMeta } from "../lib/types";
+import { Btn, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Screen, Section, Seg, Sheet, Spinner, TextArea, ago, folderName, useLoad } from "../ui";
 
 const THEME = {
   background: "#0a0b0d", foreground: "#e6e8ec", cursor: "#f5a524", cursorAccent: "#0a0b0d", selectionBackground: "#f5a52440",
@@ -28,111 +28,20 @@ function b64ToBytes(s: string): Uint8Array {
 const fromPhone = (t: PtyInfo) => t.origin.startsWith("phone:");
 /** The project folder: where Claude says it works (hooks), else where the terminal started. */
 const cwdOf = (t: PtyInfo | undefined, a: AgentStatus | undefined) => a?.cwd || t?.cwd || "";
-const OriginIcon = ({ t }: { t: PtyInfo }) => fromPhone(t) ? <Smartphone className="inline size-3" /> : <Laptop className="inline size-3" />;
-
-function statusLine(t: PtyInfo, a: AgentStatus | undefined): string {
-  const origin = fromPhone(t) ? `from ${t.origin.slice(6)}` : "on the computer";
-  if (!a) return `${t.program} · ${origin} · ${ago(t.startedAt)}`;
-  if (a.status === "working") return `${t.program} · ${origin} · working ${duration(Date.now() - a.since)}`;
-  if (a.status === "idle") return `${t.program} · finished ${ago(a.since)}${a.lastTurnMs ? ` after ${duration(a.lastTurnMs)}` : ""}`;
-  return `${t.program} · ${origin}`;
-}
-
-/** "storefront · working 2m · from Pixel" for a DevCat Agent chat. */
-function chatLine(c: AgentChatInfo): string {
-  const origin = c.origin.startsWith("phone:") ? `from ${c.origin.slice(6)}` : "on the computer";
-  if (c.busy) return `${folderName(c.cwd)} · working ${duration(Date.now() - c.since)} · ${origin}`;
-  return `${folderName(c.cwd)} · finished ${ago(c.since)}`;
-}
-
-const openChat = (c: AgentChatInfo) => nav.push({ s: "agentchat", cwd: c.cwd, providerId: c.providerId, sessionId: c.sessionId });
-
-// ------------------------------------------------------------------ list
-
-export function Agents() {
-  const terms = useApp((s) => s.terms);
-  const agents = useApp((s) => s.agents);
-  const chats = useApp((s) => s.chats);
-  const conn = useApp((s) => s.conn[s.current ?? ""]);
-  const machine = useApp((s) => s.machines.find((m) => m.id === s.current));
-  const [, tick] = useState(0);
-  useEffect(() => {
-    void refreshAgents();
-    const t = setInterval(() => { if (!document.hidden) { void refreshAgents(); tick((x) => x + 1); } }, 5000);
-    return () => clearInterval(t);
-  }, []);
-
-  const groups = useMemo(() => {
-    const agentTerms = terms.filter((t) => t.agent);
-    const st = (t: PtyInfo) => agents[t.id]?.status;
-    return {
-      waiting: agentTerms.filter((t) => st(t) === "waiting"),
-      working: agentTerms.filter((t) => st(t) === "working"),
-      done: agentTerms.filter((t) => st(t) !== "waiting" && st(t) !== "working"),
-      other: terms.filter((t) => !t.agent),
-      chatsWaiting: chats.filter((c) => c.waiting),
-      chatsWorking: chats.filter((c) => c.busy && !c.waiting),
-      chatsDone: chats.filter((c) => !c.busy && !c.waiting),
-    };
-  }, [terms, agents, chats]);
-  const open = (t: PtyInfo) => nav.push({ s: "terminal", id: t.id });
-  const offline = conn?.state !== "online";
-
-  return (
-    <Screen
-      title="Agents"
-      sub={<>{machine?.name ?? "Computer"} · {conn?.state === "online" ? <span className="text-ok">● online</span> : conn?.state === "connecting" ? "connecting…" : <span>○ offline</span>}</>}
-      right={<>
-        <Btn size="sm" variant="primary" onClick={() => nav.push({ s: "newchat" })}><Plus className="size-4" />New</Btn>
-      </>}
-      tab="agents"
-    >
-      {offline && conn?.error && <ErrorBox error={conn.error} onRetry={() => void refreshAgents()} />}
-      {terms.length === 0 && chats.length === 0 && !offline && (
-        <Empty icon={<TerminalSquare className="size-8" />} title="No agents running">Start one with <b className="text-fg">New</b>. It runs on the computer and keeps going when you close this app.</Empty>
-      )}
-      {groups.waiting.length + groups.chatsWaiting.length > 0 && <Section>Needs you</Section>}
-      {groups.chatsWaiting.map((c) => (
-        <Card key={c.sessionId} tone="warn" onClick={() => openChat(c)}>
-          <div className="flex items-center gap-2"><AlertTriangle className="size-4 text-warn" /><b className="min-w-0 flex-1 truncate">{folderName(c.cwd)}</b><span className="text-[11px] text-muted">{c.providerName}</span></div>
-          <div className="mt-1 line-clamp-2 text-[12.5px]">{c.waiting}</div>
-        </Card>
-      ))}
-      {groups.waiting.map((t) => (
-        <Card key={t.id} tone="warn" onClick={() => open(t)}>
-          <div className="flex items-center gap-2"><AlertTriangle className="size-4 text-warn" /><b className="min-w-0 flex-1 truncate">{folderName(cwdOf(t, agents[t.id]))}</b><span className="text-[11px] text-muted">{t.program} · <OriginIcon t={t} /></span></div>
-          <div className="mt-1 text-[12.5px]">{agents[t.id]?.message ?? "Waiting for you"}</div>
-        </Card>
-      ))}
-      {groups.working.length + groups.chatsWorking.length > 0 && <Section>Working</Section>}
-      {groups.chatsWorking.map((c) => (
-        <Item key={c.sessionId} onClick={() => openChat(c)} icon={<Spinner className="size-4 text-warn" />} title={c.title || folderName(c.cwd)} meta={chatLine(c)} chevron />
-      ))}
-      {groups.working.map((t) => (
-        <Item key={t.id} onClick={() => open(t)} icon={<Spinner className="size-4 text-warn" />} title={folderName(cwdOf(t, agents[t.id]))} meta={statusLine(t, agents[t.id])} chevron />
-      ))}
-      {groups.done.length + groups.chatsDone.length > 0 && <Section>{groups.done.some((t) => agents[t.id]) || groups.chatsDone.length ? "Done" : "Agents"}</Section>}
-      {groups.chatsDone.map((c) => (
-        <Item key={c.sessionId} onClick={() => openChat(c)} icon={<Bot className="size-4 text-ok" />} title={c.title || folderName(c.cwd)} meta={chatLine(c)} chevron />
-      ))}
-      {groups.done.map((t) => (
-        <Item key={t.id} onClick={() => open(t)} icon={agents[t.id] ? <CheckCircle2 className="size-4 text-ok" /> : <Clock className="size-4" />} title={folderName(cwdOf(t, agents[t.id]))} meta={statusLine(t, agents[t.id])} chevron />
-      ))}
-      {groups.other.length > 0 && <Section>Terminals</Section>}
-      {groups.other.map((t) => (
-        <Item key={t.id} onClick={() => open(t)} icon={<ChevronRight className="size-4" />} title={t.program} meta={<>{t.cwd} · <OriginIcon t={t} /></>} />
-      ))}
-      <div className="pt-2"><Btn block onClick={() => nav.push({ s: "sessions" })}><Clock className="size-4" />Session history</Btn></div>
-    </Screen>
-  );
-}
-
 // ------------------------------------------------------------------ terminal
 
 const KEYS: [string, string][] = [["1", "1"], ["2", "2"], ["3", "3"], ["Esc", "\x1b"], ["Tab", "\t"], ["⇧Tab", "\x1b[Z"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["←", "\x1b[D"], ["→", "\x1b[C"], ["⏎", "\r"], ["^C", "\x03"]];
 const FONT = "\"JetBrains Mono\", \"SF Mono\", Menlo, monospace";
 /** Width of one character cell per px of font size (monospace). */
 const CELL = 0.602;
+
+/** Columns and rows for a new terminal at the default text size on this screen. */
+export function termSize(): { cols: number; rows: number } {
+  return {
+    cols: Math.max(30, Math.floor((window.innerWidth - 24) / (11 * CELL))),
+    rows: Math.max(16, Math.floor((window.innerHeight - 260) / (11 * 1.1 * 1.17))),
+  };
+}
 
 /** Let the terminal take typing (and show the keyboard) or not. */
 function setKeys(t: XTerm, on: boolean) {
@@ -385,8 +294,7 @@ export function NewChat({ cwd: initial }: { cwd?: string }) {
     }
     setBusy(true);
     try {
-      const cols = Math.max(30, Math.floor((window.innerWidth - 24) / (11 * CELL)));
-      const rows = Math.max(16, Math.floor((window.innerHeight - 260) / (11 * 1.1 * 1.17)));
+      const { cols, rows } = termSize();
       const args = msg.trim() ? [msg.trim()] : [];
       const info = await host<PtyInfo>("pty_open", { cwd: folder, program: provider ? null : "claude", args, cols, rows, providerId: provider || null });
       useApp.setState({ terms: [...useApp.getState().terms.filter((t) => t.id !== info.id), info] });
@@ -501,8 +409,8 @@ export function Transcript({ cwd, sessionId, title }: { cwd: string; sessionId: 
   const resume = async () => {
     setBusy(true);
     try {
-      const cols = Math.max(30, Math.floor((window.innerWidth - 24) / (11 * CELL)));
-      const info = await host<PtyInfo>("pty_open", { cwd, program: "claude", args: ["--resume", sessionId], cols, rows: 40 });
+      const { cols, rows } = termSize();
+      const info = await host<PtyInfo>("pty_open", { cwd, program: "claude", args: ["--resume", sessionId], cols, rows });
       useApp.setState({ terms: [...useApp.getState().terms, info] });
       nav.push({ s: "terminal", id: info.id });
     } catch (e) {

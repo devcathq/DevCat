@@ -127,10 +127,10 @@ chat (titles, logs, notifications with its text) must skip ghost chats too.
 ## Agent bots and notification channels (`integrations/`)
 
 `src-tauri/src/integrations/` puts DevCat in the user's chat apps: notification webhooks (Discord, Slack, plain) next
-to ntfy, and bots (Telegram long polling, Discord gateway) that run from this computer. A chat is *linked* to a
-folder (its project and memory), a DevCat Agent connection and `Perms` (notify, approve, requests, files,
-connections, auto-edit), with a one-time code from DevCat (`/link CODE`) **and** the user's OK in DevCat
-(`LinkPrompt`). What comes from a chat app is someone on another device, so keep these rules:
+to the phones' own notifications, and bots (Telegram long polling, Discord gateway) that run from this computer. A
+chat is *linked* to a folder (its project and memory), a DevCat Agent connection and `Perms` (notify, approve,
+requests, files, connections, auto-edit), with a one-time code from DevCat (`/link CODE`) **and** the user's OK in
+DevCat (`LinkPrompt`). What comes from a chat app is someone on another device, so keep these rules:
 
 - **Only a linked chat, and in it only the people its link lists** (`bridge::linked`, and the same check on every
   button press). Strangers get no answer beyond the `/start` hint in a private chat.
@@ -146,6 +146,15 @@ connections, auto-edit), with a one-time code from DevCat (`/link CODE`) **and**
 - Tokens and webhook URLs live in the keychain (`secrets`), not in `integrations.json`. Integration commands are
   desktop-only: keep them out of the phone dispatcher. A link's folder is on this computer (no `ssh://`), like the
   phone: no SSH workbench, rooms or memory sync through a chat app.
+
+## Phone notifications
+
+The computer decides what to notify ("finished", "needs you": the rules in `notify/mod.rs`) and `integrations::deliver`
+sends it to the channels and linked chats, and to paired phones through `notify::to_phones` (event `agent-notify`, and
+`notify_recent` for a phone that was offline). DevCat Mobile shows them itself (`mobile/src-tauri/src/watch.rs`);
+there's no push service and no server. On Android the app stays running in the background only while the user's
+"Stay connected" is on (a foreground service in `mobile/src-tauri/plugins/keepalive`). Anything new that should
+notify goes through `deliver`, so phones and channels follow the same rules, and ghost chats never reach it.
 
 ## Shared memory
 

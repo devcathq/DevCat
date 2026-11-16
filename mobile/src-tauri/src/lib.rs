@@ -3,18 +3,22 @@
 //!
 //! Commands (all errors are user-facing strings):
 //!   m_info, m_set_name, m_machines, m_pair, m_call, m_connect, m_disconnect, m_forget,
-//!   m_set_addrs, m_network_changed, m_download
+//!   m_set_addrs, m_network_changed, m_download, m_visible, m_background, m_background_set,
+//!   m_battery_settings
 //! Events: `m-conn` ({ id, state: connecting|online|offline, error? }),
 //!         `m-event` ({ id, event, payload }), `m-pair` ({ stage, hostName }),
 //!         `m-transfer` ({ path, done, total }), `m-path` ({ id, path: { direct, rttMs, relay? } | null }).
 pub mod client;
 pub mod store;
+pub mod watch;
 
 use client::{Client, Hello};
 use serde_json::{Value, json};
-use std::sync::Arc;
-use store::{Machine, Prefs, Store};
+use std::sync::{Arc, OnceLock};
+use store::{Machine, Store};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_devcat_keepalive::KeepAliveExt;
+use watch::Watch;
 
 pub fn platform() -> &'static str {
     if cfg!(target_os = "ios") {
@@ -57,7 +61,9 @@ fn m_set_name(app: State<'_, App>, name: String) -> Result<(), String> {
     if name.is_empty() {
         return Err("Enter a name".into());
     }
-    app.store.save_prefs(&Prefs { device_name: Some(name.clone()) })?;
+    let mut p = app.store.prefs();
+    p.device_name = Some(name.clone());
+    app.store.save_prefs(&p)?;
     app.client.set_name(name);
     Ok(())
 }
@@ -89,8 +95,9 @@ fn m_disconnect(app: State<'_, App>, id: String) {
 }
 
 #[tauri::command]
-fn m_forget(app: State<'_, App>, id: String) -> Result<Vec<Machine>, String> {
+fn m_forget(app: State<'_, App>, watch: State<'_, Arc<Watch>>, id: String) -> Result<Vec<Machine>, String> {
     app.client.forget(&id)?;
+    watch.forget(&id);
     Ok(app.store.machines())
 }
 
@@ -111,6 +118,43 @@ fn m_set_addrs(app: State<'_, App>, id: String, addrs: Vec<String>) -> Result<Ve
 async fn m_network_changed(app: State<'_, App>) -> Result<(), String> {
     app.client.network_changed().await;
     Ok(())
+}
+
+/// The web page is on screen or not (notifications only when it isn't: on screen it shows toasts).
+#[tauri::command]
+fn m_visible(watch: State<'_, Arc<Watch>>, visible: bool) {
+    watch.set_visible(visible);
+}
+
+/// Background connection (Android): whether it's possible, on, and free of battery
+/// optimization. Starts the service when it's on and isn't running yet (the app is on screen:
+/// the page asks when it starts). Async: the plugin call needs the main thread free.
+#[tauri::command]
+async fn m_background(handle: tauri::AppHandle, watch: State<'_, Arc<Watch>>) -> Result<Value, String> {
+    let ka = handle.keep_alive();
+    if ka.supported() && watch.keep() {
+        ka.start()?;
+    }
+    Ok(json!({ "supported": ka.supported(), "on": watch.keep(), "batteryUnrestricted": ka.battery_unrestricted() }))
+}
+
+#[tauri::command]
+async fn m_background_set(handle: tauri::AppHandle, app: State<'_, App>, watch: State<'_, Arc<Watch>>, on: bool) -> Result<Value, String> {
+    let ka = handle.keep_alive();
+    if !ka.supported() {
+        return Err("Staying connected in the background is only for Android".into());
+    }
+    if on { ka.start()? } else { ka.stop()? }
+    let mut p = app.store.prefs();
+    p.background = on;
+    app.store.save_prefs(&p)?;
+    watch.set_keep(on);
+    Ok(json!({ "supported": true, "on": on, "batteryUnrestricted": ka.battery_unrestricted() }))
+}
+
+#[tauri::command]
+async fn m_battery_settings(handle: tauri::AppHandle) -> Result<(), String> {
+    handle.keep_alive().open_battery_settings()
 }
 
 /// Where a downloaded file goes: iOS keeps it in DevCat's folder of the Files app (Documents,
@@ -185,7 +229,9 @@ pub async fn bridge_call(app: &App, version: &str, cmd: &str, args: Value) -> Re
         }
         "m_set_name" => {
             let name = req("name")?;
-            app.store.save_prefs(&Prefs { device_name: Some(name.clone()) }).map_err(Value::String)?;
+            let mut p = app.store.prefs();
+            p.device_name = Some(name.clone());
+            app.store.save_prefs(&p).map_err(Value::String)?;
             app.client.set_name(name);
             Ok(Value::Null)
         }
@@ -239,7 +285,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         // devcat://pair?… links (from the web page's "Open in DevCat app") open the pairing screen.
-        .plugin(tauri_plugin_deep_link::init());
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_devcat_keepalive::init());
     #[cfg(mobile)]
     {
         builder = builder.plugin(tauri_plugin_barcode_scanner::init());
@@ -249,16 +296,42 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             let store = Arc::new(Store::new(dir));
             let handle = app.handle().clone();
+            let shown = handle.clone();
+            let notifier: watch::Notifier = Arc::new(move |title, body| {
+                use tauri_plugin_notification::NotificationExt;
+                // devcat_notify: the status bar icon from the keepalive plugin (Android).
+                let _ = shown.notification().builder().title(title).body(body).icon("devcat_notify").show();
+            });
+            let watch = Watch::new(store.clone(), notifier);
+            // The sink comes before the client; the watcher reaches the client through this.
+            let client_cell: Arc<OnceLock<Arc<Client>>> = Arc::default();
+            let (w, cell) = (watch.clone(), client_cell.clone());
             let sink: client::Sink = Arc::new(move |event, payload| {
+                match event {
+                    "m-event" => {
+                        if let (Some(id), Some(ev)) = (payload["id"].as_str(), payload["event"].as_str()) {
+                            w.on_event(id, ev, &payload["payload"]);
+                        }
+                    }
+                    "m-conn" if payload["state"] == "online" => {
+                        if let (Some(id), Some(c)) = (payload["id"].as_str(), cell.get()) {
+                            w.connected(c.clone(), id.to_string());
+                        }
+                    }
+                    _ => {}
+                }
                 let _ = handle.emit(event, payload);
             });
             let name = store.prefs().device_name.unwrap_or_else(default_name);
             let hello = Hello { name, platform: platform().into(), app_version: app.package_info().version.to_string() };
             let client = Client::new(store.clone(), sink, hello)?;
+            let _ = client_cell.set(client.clone());
+            tauri::async_runtime::spawn(watch.clone().keep_connected(client.clone()));
+            app.manage(watch);
             app.manage(App { client, store });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![m_info, m_set_name, m_machines, m_pair, m_connect, m_call, m_disconnect, m_forget, m_set_addrs, m_network_changed, m_download])
+        .invoke_handler(tauri::generate_handler![m_info, m_set_name, m_machines, m_pair, m_connect, m_call, m_disconnect, m_forget, m_set_addrs, m_network_changed, m_download, m_visible, m_background, m_background_set, m_battery_settings])
         .run(tauri::generate_context!())
         .expect("error while running DevCat Mobile");
 }

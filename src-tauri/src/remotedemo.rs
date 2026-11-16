@@ -487,7 +487,11 @@ impl Backend for Arc<Demo> {
                 *self.notify.lock() = args["settings"].clone();
                 self.notify.lock().clone()
             }
-            "notify_test" => Value::Null,
+            "notify_test" => {
+                crate::notify::to_phones("DevCat", "Test notification: you'll get these when an agent finishes or needs you.", false, true);
+                Value::Null
+            }
+            "notify_recent" => crate::notify::recent(),
             "audit" => json!([
                 { "at": crate::remote::server::now_ms() - 120_000, "device": "", "deviceName": "", "action": "db_apply_changes", "detail": "[c-pg] orders: 1 change(s)", "ok": true },
                 { "at": crate::remote::server::now_ms() - 600_000, "device": "", "deviceName": "", "action": "pty_open", "detail": "~/acme/api-gateway (claude)", "ok": true },
@@ -563,7 +567,7 @@ pub async fn run(port: u16, dir: std::path::PathBuf) -> Result<(), String> {
         awake: Mutex::new(true),
         seq: AtomicU64::new(1),
         net: Mutex::new(vec![("n-ovpn".into(), "connected".into()), ("n-ssh".into(), "disconnected".into()), ("n-wg".into(), "disconnected".into())]),
-        notify: Mutex::new(json!({ "enabled": true, "server": "https://ntfy.sh", "topic": "devcat-demo7k2q9x4m", "onDone": true, "onInput": true, "minSeconds": 30, "onlyWhenAway": true })),
+        notify: Mutex::new(json!({ "onDone": true, "onInput": true, "minSeconds": 30, "onlyWhenAway": true })),
         dir: dir.clone(),
     });
     let host = Host::new(store, Arc::new(demo.clone()));
@@ -578,7 +582,7 @@ pub async fn run(port: u16, dir: std::path::PathBuf) -> Result<(), String> {
     }
     let h = host.clone();
     crate::events::add_tap(move |event, payload| {
-        if matches!(event, "agent-event" | "agent-chat" | "agent-chat-gone") {
+        if matches!(event, "agent-event" | "agent-chat" | "agent-chat-gone" | "agent-notify") {
             h.broadcast(event, payload);
         }
     });
@@ -593,6 +597,11 @@ pub async fn run(port: u16, dir: std::path::PathBuf) -> Result<(), String> {
     let home = proj("storefront");
     let now = crate::remote::server::now_ms();
     let a = demo.open_pty(&home, &claude_screen(true), "desktop", 74, 34).await.map_err(|e| e.to_string())?;
+    // Where its Claude Code hooks would post: send hook events here to try notifications.
+    if let Some(l) = crate::notify::hooks::launch(&a.id) {
+        let url = l.env.iter().find(|(k, _)| k == "DEVCAT_HOOK_URL").map(|(_, v)| v.clone()).unwrap_or_default();
+        std::fs::write(dir.join("hook-url.txt"), url).map_err(|e| e.to_string())?;
+    }
     crate::notify::hooks::apply(&a.id, &json!({ "hook_event_name": "UserPromptSubmit", "cwd": proj("storefront") }), now - 200_000);
     crate::notify::hooks::apply(&a.id, &json!({ "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash", "cwd": proj("storefront") }), now - 20_000);
     let b = demo.open_pty(&home, &claude_screen(false), "phone:Demo phone", 60, 30).await.map_err(|e| e.to_string())?;

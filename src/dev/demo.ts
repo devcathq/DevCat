@@ -278,7 +278,7 @@ const remoteDevices = [
   { id: PHONE_ID, name: "Ava's iPhone", platform: "ios", access: "full", pairedAt: NOW - 86_400_000 * 2, lastSeen: NOW, kind: "app" },
   { id: "web-3f9a1c2b7d4e8f60", name: "Android browser", platform: "android", access: "readonly", pairedAt: NOW - 86_400_000 * 12, lastSeen: NOW - 86_400_000 * 3, kind: "web" },
 ];
-const notifySettings = { enabled: true, server: "https://ntfy.sh", topic: "devcat-k3v9q2x7mf4hx2ab", token: null, onDone: true, onInput: true, minSeconds: 30, onlyWhenAway: true };
+const notifySettings = { onDone: true, onInput: true, minSeconds: 30, onlyWhenAway: true };
 const audit = [
   { at: NOW - 120_000, device: PHONE_ID, deviceName: "Ava's iPhone", action: "db_apply_changes", detail: "[c-pg] orders: 1 change(s)", ok: true },
   { at: NOW - 540_000, device: PHONE_ID, deviceName: "Ava's iPhone", action: "db_execute", detail: "[c-pg] SELECT country, count(*) FROM orders GROUP BY 1", ok: true },

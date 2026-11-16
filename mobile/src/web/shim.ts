@@ -2,7 +2,7 @@
 // same screens run in a phone browser. The phone-side commands (m_*) are answered here by
 // WebHost (talks to the DevCat that served the page) or, in the hosted version, RelayHost
 // (through the computer's relay); camera and notifications are stubs (the QR code is scanned
-// with the phone's camera app, notifications come through ntfy).
+// with the phone's camera app; notifications need the app).
 import { CODE_LINK } from "../lib/env";
 import { WebHost, carryPairing, deviceName, platform, saved as webSaved, setDeviceName } from "./client";
 import type { RelayHost, RelaySaved } from "./relay";

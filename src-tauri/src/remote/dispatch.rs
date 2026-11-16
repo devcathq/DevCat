@@ -92,6 +92,8 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "notify_settings" => out(crate::notify::notify_settings().await),
         "notify_save" => out(crate::notify::notify_save(a!("settings")).await),
         "notify_test" => out(crate::notify::notify_test().await),
+        // what was notified lately, for a phone that was offline (DevCat Mobile watch.rs)
+        "notify_recent" => Ok(crate::notify::recent()),
         "agents" => Ok(json!({
             "terminals": crate::claude::pty::list(),
             "agents": crate::notify::hooks::all(),

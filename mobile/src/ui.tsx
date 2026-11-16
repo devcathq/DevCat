@@ -1,18 +1,16 @@
 // Phone UI primitives in DevCat's dark theme: screen with header + bottom tabs, list items,
 // cards, buttons, toggles, segmented controls, sheets and confirm dialogs.
 import clsx from "clsx";
-import { ChevronLeft, ChevronRight, Database, FolderOpen, Loader2, MoreHorizontal, Network, Server, Sparkles } from "lucide-react";
+import { ChevronLeft, ChevronRight, FolderOpen, Loader2, MessageCircle, MoreHorizontal, TerminalSquare } from "lucide-react";
 import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { nav, useApp, waitingCount } from "./lib/store";
 import type { TabRoot } from "./lib/types";
 
 const TABS: { id: TabRoot; label: string; icon: ReactNode }[] = [
-  { id: "agents", label: "Agents", icon: <Sparkles className="size-5" /> },
-  { id: "fileshome", label: "Files", icon: <FolderOpen className="size-5" /> },
-  { id: "data", label: "Data", icon: <Database className="size-5" /> },
-  { id: "network", label: "Network", icon: <Network className="size-5" /> },
-  { id: "cluster", label: "Cluster", icon: <Server className="size-5" /> },
-  { id: "more", label: "More", icon: <MoreHorizontal className="size-5" /> },
+  { id: "agents", label: "Chats", icon: <MessageCircle className="size-[22px]" /> },
+  { id: "terminals", label: "Terminal", icon: <TerminalSquare className="size-[22px]" /> },
+  { id: "fileshome", label: "Files", icon: <FolderOpen className="size-[22px]" /> },
+  { id: "more", label: "More", icon: <MoreHorizontal className="size-[22px]" /> },
 ];
 
 export function TabBar({ active }: { active: TabRoot }) {
@@ -20,7 +18,7 @@ export function TabBar({ active }: { active: TabRoot }) {
   return (
     <nav className="flex shrink-0 justify-around border-t border-line bg-panel pt-1.5" style={{ paddingBottom: "max(10px, env(safe-area-inset-bottom))" }}>
       {TABS.map((t) => (
-        <button key={t.id} onClick={() => nav.tab(t.id)} className={clsx("relative flex min-w-0 flex-1 flex-col items-center gap-0.5 text-[10.5px]", active === t.id ? "text-accent" : "text-faint")}>
+        <button key={t.id} onClick={() => nav.tab(t.id)} className={clsx("relative flex min-w-0 flex-1 flex-col items-center gap-0.5 py-0.5 text-[11px] font-medium", active === t.id ? "text-accent" : "text-faint")}>
           {t.icon}
           {t.label}
           {t.id === "agents" && waiting > 0 && <span className="absolute -top-0.5 right-[calc(50%-20px)] min-w-4 rounded-full bg-warn px-1 text-[10px] leading-4 font-bold text-accent-fg">{waiting}</span>}
@@ -30,15 +28,17 @@ export function TabBar({ active }: { active: TabRoot }) {
   );
 }
 
-export function Screen({ title, sub, back = true, right, children, tab, scroll = true, className }: {
+export function Screen({ title, sub, back: backProp, right, children, tab, scroll = true, className }: {
   title: ReactNode; sub?: ReactNode; back?: boolean; right?: ReactNode; children: ReactNode; tab?: TabRoot; scroll?: boolean; className?: string;
 }) {
+  // A tab's own screen has no back arrow (switching computers is in More).
+  const back = backProp ?? !tab;
   return (
     <div className="flex h-full flex-col">
       <header className="flex shrink-0 items-center gap-1 border-b border-line px-2 pb-2" style={{ paddingTop: "max(10px, env(safe-area-inset-top))" }}>
         {back ? (
           <button aria-label="Back" onClick={() => nav.back()} className="-ml-0.5 flex size-9 items-center justify-center rounded-full text-muted active:bg-hover"><ChevronLeft className="size-6" /></button>
-        ) : <span className="w-2" />}
+        ) : <span className="w-1.5" />}
         <div className="min-w-0 flex-1">
           <div className="truncate text-[17px] font-semibold">{title}</div>
           {sub && <div className="truncate text-[11.5px] text-muted">{sub}</div>}
