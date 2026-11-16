@@ -185,6 +185,9 @@ function Row({ icon, title, meta, right, onClick }: { icon: React.ReactNode; tit
   );
 }
 
+/** Rows by time, newest on top. */
+const newestFirst = (rows: { at: number; row: React.ReactNode }[]) => [...rows].sort((a, b) => b.at - a.at).map((r) => r.row);
+
 const openChat = (c: AgentChatInfo) => nav.push({ s: "agentchat", cwd: c.cwd, providerId: c.providerId, sessionId: c.sessionId });
 const openTerm = (t: PtyInfo) => nav.push({ s: "terminal", id: t.id });
 
@@ -250,28 +253,32 @@ export function Chats() {
       {running > 0 && <Section>Running</Section>}
       {running > 0 && (
         <div>
-          {g.workingChats.map((c) => (
-            <Row key={c.sessionId} onClick={() => openChat(c)} icon={<Spinner className="size-4 text-warn" />} title={c.title || folderName(c.cwd)} meta={`${folderName(c.cwd)} · ${c.providerName}`} right={duration(Date.now() - c.since)} />
-          ))}
-          {g.workingTerms.map((t) => (
-            <Row key={t.id} onClick={() => openTerm(t)} icon={<Spinner className="size-4 text-warn" />} title={folderName(cwdOf(t, agents[t.id]))} meta={`${t.program} · ${by(t.origin)}`} right={duration(Date.now() - (agents[t.id]?.since ?? t.startedAt))} />
-          ))}
+          {newestFirst([
+            ...g.workingChats.map((c) => ({ at: c.since, row: (
+              <Row key={c.sessionId} onClick={() => openChat(c)} icon={<Spinner className="size-4 text-warn" />} title={c.title || folderName(c.cwd)} meta={`${folderName(c.cwd)} · ${c.providerName}`} right={duration(Date.now() - c.since)} />
+            ) })),
+            ...g.workingTerms.map((t) => ({ at: agents[t.id]?.since ?? t.startedAt, row: (
+              <Row key={t.id} onClick={() => openTerm(t)} icon={<Spinner className="size-4 text-warn" />} title={folderName(cwdOf(t, agents[t.id]))} meta={`${t.program} · ${by(t.origin)}`} right={duration(Date.now() - (agents[t.id]?.since ?? t.startedAt))} />
+            ) })),
+          ])}
         </div>
       )}
 
       {recent > 0 && <Section>Recent</Section>}
       {recent > 0 && (
         <div>
-          {g.doneChats.map((c) => (
-            <Row key={c.sessionId} onClick={() => openChat(c)} icon={<Bot className="size-4 text-ok" />} title={c.title || folderName(c.cwd)} meta={`${folderName(c.cwd)} · ${c.providerName}`} right={ago(c.since)} />
-          ))}
-          {g.doneTerms.map((t) => {
-            const a = agents[t.id];
-            return (
-              <Row key={t.id} onClick={() => openTerm(t)} icon={a ? <CheckCircle2 className="size-4 text-ok" /> : <Clock className="size-4 text-muted" />} title={folderName(cwdOf(t, a))}
-                meta={a?.lastTurnMs ? `${t.program} · took ${duration(a.lastTurnMs)}` : `${t.program} · ${by(t.origin)}`} right={ago(a?.since ?? t.startedAt)} />
-            );
-          })}
+          {newestFirst([
+            ...g.doneChats.map((c) => ({ at: c.since, row: (
+              <Row key={c.sessionId} onClick={() => openChat(c)} icon={<Bot className="size-4 text-ok" />} title={c.title || folderName(c.cwd)} meta={`${folderName(c.cwd)} · ${c.providerName}`} right={ago(c.since)} />
+            ) })),
+            ...g.doneTerms.map((t) => {
+              const a = agents[t.id];
+              return { at: a?.since ?? t.startedAt, row: (
+                <Row key={t.id} onClick={() => openTerm(t)} icon={a ? <CheckCircle2 className="size-4 text-ok" /> : <Clock className="size-4 text-muted" />} title={folderName(cwdOf(t, a))}
+                  meta={a?.lastTurnMs ? `${t.program} · took ${duration(a.lastTurnMs)}` : `${t.program} · ${by(t.origin)}`} right={ago(a?.since ?? t.startedAt)} />
+              ) };
+            }),
+          ])}
         </div>
       )}
 

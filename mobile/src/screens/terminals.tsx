@@ -40,8 +40,9 @@ export function Terminals() {
     }
   };
 
-  const shells = terms.filter((t) => !t.agent && shown(t.cwd));
-  const agentTerms = terms.filter((t) => t.agent && shown(cwdOf(t, agents[t.id])));
+  const newest = (a: PtyInfo, b: PtyInfo) => b.startedAt - a.startedAt;
+  const shells = terms.filter((t) => !t.agent && shown(t.cwd)).sort(newest);
+  const agentTerms = terms.filter((t) => t.agent && shown(cwdOf(t, agents[t.id]))).sort(newest);
 
   return (
     <Screen title="Terminal" sub="Runs on the computer" tab="terminals" className="space-y-3 p-3">

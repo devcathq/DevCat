@@ -7,12 +7,16 @@
 //!
 //! Notifications sent while a computer was out of reach are fetched after reconnecting
 //! (`notify_recent`): each one is numbered (`seq`, per run of DevCat: `boot`).
+//!
+//! A computer with an older DevCat sends no `agent-notify` (it answers `notify_recent` with an
+//! error): for it, this works the changes out itself from its agents' status (`Legacy`), as
+//! "finished" and "needs you" without the computer's rules.
 use crate::client::Client;
 use crate::store::Store;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -38,11 +42,51 @@ struct Note {
     test: bool,
 }
 
+/// What an older computer's agents were doing, to notice "finished" / "needs you" here.
+#[derive(Default)]
+struct Legacy {
+    /// Terminal agents by pty id: status.
+    terms: HashMap<String, String>,
+    /// DevCat Agent chats by session id: (busy, waiting).
+    chats: HashMap<String, (bool, Option<String>)>,
+}
+
+fn folder(cwd: &str) -> String {
+    cwd.split(['/', '\\']).filter(|s| !s.is_empty()).last().unwrap_or("agent").to_string()
+}
+
+fn text(v: &Value, k: &str) -> Option<String> {
+    v.get(k).and_then(Value::as_str).map(str::to_string)
+}
+
+/// A terminal agent's status changed: worth a notification? (title, body)
+fn term_change(prev: Option<&String>, status: &str, cwd: &str, message: Option<&str>) -> Option<(String, String)> {
+    if prev.map(String::as_str) == Some(status) {
+        return None;
+    }
+    match status {
+        "waiting" => Some((format!("{} needs you", folder(cwd)), message.unwrap_or("").to_string())),
+        "idle" if prev.map(String::as_str) == Some("working") => Some((format!("{} finished", folder(cwd)), "The agent is done.".into())),
+        _ => None,
+    }
+}
+
+/// The same for a DevCat Agent chat.
+fn chat_change(prev: Option<&(bool, Option<String>)>, busy: bool, waiting: Option<&str>, cwd: &str, title: &str) -> Option<(String, String)> {
+    if let Some(w) = waiting {
+        return (prev.and_then(|p| p.1.as_deref()) != Some(w)).then(|| (format!("{} needs you", folder(cwd)), w.to_string()));
+    }
+    (!busy && prev.is_some_and(|p| p.0)).then(|| (format!("{} finished", folder(cwd)), if title.is_empty() { "The agent is done.".into() } else { title.to_string() }))
+}
+
 pub struct Watch {
     store: Arc<Store>,
     notifier: Notifier,
     /// Per computer: the newest notification seen (boot, seq).
     seen: Mutex<HashMap<String, (String, u64)>>,
+    /// Computers with an older DevCat (no `agent-notify`), and what their agents were doing.
+    old: Mutex<HashSet<String>>,
+    legacy: Mutex<HashMap<String, Legacy>>,
     visible: AtomicBool,
     keep: AtomicBool,
     wake: tokio::sync::Notify,
@@ -51,7 +95,7 @@ pub struct Watch {
 impl Watch {
     pub fn new(store: Arc<Store>, notifier: Notifier) -> Arc<Self> {
         let keep = store.prefs().background;
-        Arc::new(Self { store, notifier, seen: Mutex::default(), visible: AtomicBool::new(true), keep: AtomicBool::new(keep), wake: tokio::sync::Notify::new() })
+        Arc::new(Self { store, notifier, seen: Mutex::default(), old: Mutex::default(), legacy: Mutex::default(), visible: AtomicBool::new(true), keep: AtomicBool::new(keep), wake: tokio::sync::Notify::new() })
     }
 
     pub fn set_visible(&self, visible: bool) {
@@ -86,8 +130,13 @@ impl Watch {
     /// An event from a computer (`m-event`).
     pub fn on_event(&self, machine_id: &str, event: &str, p: &Value) {
         if event != "agent-notify" {
+            if self.old.lock().contains(machine_id) {
+                self.legacy_event(machine_id, event, p);
+            }
             return;
         }
+        // it sends notifications itself after all (updated while connected)
+        self.old.lock().remove(machine_id);
         let Ok(n) = serde_json::from_value::<Note>(p.clone()) else { return };
         if !n.test {
             let mut seen = self.seen.lock();
@@ -126,16 +175,98 @@ impl Watch {
 
     pub fn forget(&self, machine_id: &str) {
         self.seen.lock().remove(machine_id);
+        self.old.lock().remove(machine_id);
+        self.legacy.lock().remove(machine_id);
     }
 
-    /// A computer came online: catch up on what it notified while it was out of reach.
+    /// A computer came online: catch up on what it notified while it was out of reach. An older
+    /// DevCat doesn't know `notify_recent`: watch its agents' status instead.
     pub fn connected(self: &Arc<Self>, client: Arc<Client>, machine_id: String) {
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
-            if let Ok(r) = client.call(&machine_id, "notify_recent", json!({})).await {
-                me.sync(&machine_id, &r);
+            match client.call(&machine_id, "notify_recent", json!({})).await {
+                Ok(r) => {
+                    me.old.lock().remove(&machine_id);
+                    me.sync(&machine_id, &r);
+                }
+                Err(_) => {
+                    me.old.lock().insert(machine_id.clone());
+                    if let Ok(r) = client.call(&machine_id, "agents", Value::Null).await {
+                        me.legacy_sync(&machine_id, &r);
+                    }
+                }
             }
         });
+    }
+
+    /// An older computer's agent status event: notify what changed.
+    fn legacy_event(&self, machine_id: &str, event: &str, p: &Value) {
+        let mut out = None;
+        {
+            let mut all = self.legacy.lock();
+            let seen = all.entry(machine_id.to_string()).or_default();
+            match event {
+                "agent-status" => {
+                    let (Some(id), Some(status)) = (text(p, "ptyId"), text(p, "status")) else { return };
+                    out = term_change(seen.terms.get(&id), &status, &text(p, "cwd").unwrap_or_default(), text(p, "message").as_deref());
+                    seen.terms.insert(id, status);
+                }
+                "agent-gone" => {
+                    if let Some(id) = text(p, "ptyId") {
+                        seen.terms.remove(&id);
+                    }
+                }
+                "agent-chat" => {
+                    let Some(id) = text(p, "sessionId") else { return };
+                    let busy = p.get("busy").and_then(Value::as_bool).unwrap_or(false);
+                    let waiting = text(p, "waiting");
+                    out = chat_change(seen.chats.get(&id), busy, waiting.as_deref(), &text(p, "cwd").unwrap_or_default(), &text(p, "title").unwrap_or_default());
+                    seen.chats.insert(id, (busy, waiting));
+                }
+                "agent-chat-gone" => {
+                    if let Some(id) = text(p, "sessionId") {
+                        seen.chats.remove(&id);
+                    }
+                }
+                _ => return,
+            }
+        }
+        if let Some((title, body)) = out {
+            self.show(machine_id, &Note { boot: String::new(), seq: 0, title, body, test: false });
+        }
+    }
+
+    /// An older computer's agents (its `agents` answer) after connecting: notify what changed
+    /// while away (nothing the first time), then remember them.
+    fn legacy_sync(&self, machine_id: &str, r: &Value) {
+        let mut found = Vec::new();
+        {
+            let mut all = self.legacy.lock();
+            let had = all.contains_key(machine_id);
+            let seen = all.entry(machine_id.to_string()).or_default();
+            let mut terms = HashMap::new();
+            for a in r.get("agents").and_then(Value::as_array).into_iter().flatten() {
+                let (Some(id), Some(status)) = (text(a, "ptyId"), text(a, "status")) else { continue };
+                if had && let Some(n) = term_change(seen.terms.get(&id), &status, &text(a, "cwd").unwrap_or_default(), text(a, "message").as_deref()) {
+                    found.push(n);
+                }
+                terms.insert(id, status);
+            }
+            let mut chats = HashMap::new();
+            for c in r.get("chats").and_then(Value::as_array).into_iter().flatten() {
+                let Some(id) = text(c, "sessionId") else { continue };
+                let busy = c.get("busy").and_then(Value::as_bool).unwrap_or(false);
+                let waiting = text(c, "waiting");
+                if had && let Some(n) = chat_change(seen.chats.get(&id), busy, waiting.as_deref(), &text(c, "cwd").unwrap_or_default(), &text(c, "title").unwrap_or_default()) {
+                    found.push(n);
+                }
+                chats.insert(id, (busy, waiting));
+            }
+            *seen = Legacy { terms, chats };
+        }
+        for (title, body) in found.into_iter().rev().take(MAX_CATCH_UP).rev() {
+            self.show(machine_id, &Note { boot: String::new(), seq: 0, title, body, test: false });
+        }
     }
 
     /// While "Stay connected" is on, reconnect every paired computer that dropped.
@@ -211,6 +342,23 @@ mod tests {
         w.on_event("M", "agent-notify", &note("A", 9, "before"));
         w.sync("M", &json!({ "boot": "B", "notes": [note("B", 1, "after restart")] }));
         assert_eq!(titles(&got), vec!["before", "after restart"]);
+    }
+
+    #[test]
+    fn older_computer_status_changes_notify() {
+        let (w, got) = watch("legacy");
+        w.old.lock().insert("M".into());
+        w.legacy_sync("M", &json!({ "agents": [{ "ptyId": "T1", "status": "working", "cwd": "/src/api" }], "chats": [] }));
+        w.on_event("M", "agent-status", &json!({ "ptyId": "T1", "status": "waiting", "cwd": "/src/api", "message": "Allow Bash?" }));
+        w.on_event("M", "agent-status", &json!({ "ptyId": "T1", "status": "working", "cwd": "/src/api" }));
+        w.on_event("M", "agent-status", &json!({ "ptyId": "T1", "status": "idle", "cwd": "/src/api" }));
+        w.on_event("M", "agent-chat", &json!({ "sessionId": "S", "busy": true, "cwd": "/w/web", "title": "Fix login" }));
+        w.on_event("M", "agent-chat", &json!({ "sessionId": "S", "busy": false, "cwd": "/w/web", "title": "Fix login" }));
+        assert_eq!(titles(&got), vec!["api needs you", "api finished", "web finished"]);
+        // a computer that sends notifications itself: status changes don't notify twice
+        w.on_event("M", "agent-notify", &note("A", 1, "x: finished"));
+        w.on_event("M", "agent-status", &json!({ "ptyId": "T1", "status": "waiting", "cwd": "/src/api" }));
+        assert_eq!(titles(&got).len(), 4);
     }
 
     #[test]

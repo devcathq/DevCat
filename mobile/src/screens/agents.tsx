@@ -132,11 +132,45 @@ export function Terminal({ id }: { id: string }) {
     void attach();
     const onVis = () => { if (!document.hidden) void attach(); };
     document.addEventListener("visibilitychange", onVis);
+    // Touch scrolling: xterm scrolls its history with a wheel only, so a finger dragged up or down
+    // over the terminal scrolls it here (sideways stays with the page, for "normal text size").
+    let touch: { x: number; y: number; acc: number; vertical: boolean | null } | null = null;
+    const lineHeight = () => (Number(t.options.fontSize) || 11) * 1.1 * 1.17;
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) { touch = null; return; }
+      touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, acc: 0, vertical: null };
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!touch || e.touches.length !== 1) return;
+      const { clientX: x, clientY: y } = e.touches[0];
+      if (touch.vertical === null) {
+        const dx = Math.abs(x - touch.x), dy = Math.abs(y - touch.y);
+        if (dx < 6 && dy < 6) return;
+        touch.vertical = dy >= dx;
+      }
+      if (!touch.vertical) return;
+      e.preventDefault();
+      touch.acc += touch.y - y;
+      touch.y = y;
+      const lines = Math.trunc(touch.acc / lineHeight());
+      if (lines) {
+        t.scrollLines(lines);
+        touch.acc -= lines * lineHeight();
+      }
+    };
+    const onTouchEnd = () => { touch = null; };
+    const area = box.current;
+    area?.addEventListener("touchstart", onTouchStart, { passive: true });
+    area?.addEventListener("touchmove", onTouchMove, { passive: false });
+    area?.addEventListener("touchend", onTouchEnd);
     return () => {
       disposed = true;
       if (scan) clearTimeout(scan);
       offOut(); offLag(); offExit();
       document.removeEventListener("visibilitychange", onVis);
+      area?.removeEventListener("touchstart", onTouchStart);
+      area?.removeEventListener("touchmove", onTouchMove);
+      area?.removeEventListener("touchend", onTouchEnd);
       void host("pty_detach", { id }).catch(() => {});
       t.dispose();
       xt.current = null;

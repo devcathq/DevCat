@@ -32,7 +32,9 @@ const chats = [
   { sessionId: "demo-chat", cwd: P("storefront"), title: "Refunds in the last 30 days", providerId: "devcat-agent", providerName: "DevCat Agent", origin: "desktop", busy: false, waiting: null, since: NOW - 2 * 60_000 },
 ];
 
+const HISTORY = Array.from({ length: 80 }, (_, i) => `  earlier output line ${i + 1}\r\n`).join("");
 const SCREEN = [
+  HISTORY,
   "\x1b[1m✻ Welcome to Claude Code!\x1b[0m\r\n\r\n",
   "\x1b[2m> \x1b[0mRun the checkout tests and fix what fails\r\n\r\n",
   "⏺ I'll run the test suite first.\r\n\r\n",
