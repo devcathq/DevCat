@@ -24,8 +24,12 @@ const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
 /// How long the computer's user has to click Allow.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(150);
 const CALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const PING_EVERY: Duration = Duration::from_secs(15);
-const PONG_DEADLINE_MS: i64 = 45_000;
+/// A dead connection (Wi-Fi gone, computer asleep) is noticed within PONG_DEADLINE_MS, and the
+/// calls waiting on it fail then instead of spinning.
+const PING_EVERY: Duration = Duration::from_secs(10);
+const PONG_DEADLINE_MS: i64 = 25_000;
+/// Back on screen: how long a connection has to answer a ping before it's replaced.
+const RESUME_CHECK: Duration = Duration::from_secs(4);
 
 /// Something for the UI: `m-conn` (connection state) or `m-event` (an event from a computer)
 /// or `m-pair` (pairing progress).
@@ -44,6 +48,8 @@ pub struct Session {
     tx: mpsc::UnboundedSender<ClientMsg>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>>,
     next: AtomicU64,
+    /// When the computer last answered a ping.
+    last_pong: Arc<AtomicI64>,
     pub host: HostInfo,
     pub device: DeviceInfo,
 }
@@ -230,7 +236,8 @@ impl Client {
 
         let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>> = Arc::default();
-        let session = Arc::new(Session { conn: conn.clone(), tx: tx.clone(), pending: pending.clone(), next: AtomicU64::new(1), host, device });
+        let last_pong = Arc::new(AtomicI64::new(now_ms()));
+        let session = Arc::new(Session { conn: conn.clone(), tx: tx.clone(), pending: pending.clone(), next: AtomicU64::new(1), last_pong: last_pong.clone(), host, device });
 
         // writer
         let writer = tokio::spawn(async move {
@@ -241,7 +248,6 @@ impl Client {
             }
         });
         // keep-alive
-        let last_pong = Arc::new(AtomicI64::new(now_ms()));
         let (lp, ping_tx, ping_conn) = (last_pong.clone(), tx.clone(), conn.clone());
         let pinger = tokio::spawn(async move {
             loop {
@@ -388,8 +394,38 @@ impl Client {
         }
     }
 
-    /// The network changed (Wi-Fi ↔ cellular, app back from background): drop connections and
-    /// rebind so the next call reconnects cleanly.
+    /// The app is back on screen: connections that still answer stay (no reconnecting, nothing
+    /// to load again), the ones that don't are dropped so the next call reconnects.
+    pub async fn resume(&self) {
+        if let Some((ep, _)) = self.endpoint.lock().await.as_ref() {
+            ep.network_change().await;
+        }
+        let all: Vec<(String, Arc<Session>)> = self.sessions.lock().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut checks = tokio::task::JoinSet::new();
+        for (id, s) in all {
+            checks.spawn(async move {
+                let before = s.last_pong.load(Ordering::Relaxed);
+                let alive = s.tx.send(ClientMsg::Ping).is_ok()
+                    && tokio::time::timeout(RESUME_CHECK, async {
+                        while s.last_pong.load(Ordering::Relaxed) <= before {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    })
+                    .await
+                    .is_ok();
+                (id, s, alive)
+            });
+        }
+        while let Some(Ok((id, s, alive))) = checks.join_next().await {
+            // only if it's still the same connection (a new one may have replaced it meanwhile)
+            if !alive && self.sessions.lock().get(&id).is_some_and(|x| Arc::ptr_eq(x, &s)) {
+                self.disconnect(&id);
+            }
+        }
+    }
+
+    /// The network changed (Wi-Fi ↔ cellular): drop connections and rebind so the next call
+    /// reconnects cleanly.
     pub async fn network_changed(&self) {
         let ids: Vec<String> = self.sessions.lock().keys().cloned().collect();
         for id in ids {

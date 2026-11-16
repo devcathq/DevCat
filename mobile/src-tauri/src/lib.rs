@@ -3,7 +3,7 @@
 //!
 //! Commands (all errors are user-facing strings):
 //!   m_info, m_set_name, m_machines, m_pair, m_call, m_connect, m_disconnect, m_forget,
-//!   m_set_addrs, m_network_changed, m_download, m_visible, m_background, m_background_set,
+//!   m_set_addrs, m_network_changed, m_resume, m_download, m_visible, m_background, m_background_set,
 //!   m_battery_settings
 //! Events: `m-conn` ({ id, state: connecting|online|offline, error? }),
 //!         `m-event` ({ id, event, payload }), `m-pair` ({ stage, hostName }),
@@ -112,6 +112,13 @@ fn m_set_addrs(app: State<'_, App>, id: String, addrs: Vec<String>) -> Result<Ve
     })?;
     app.client.disconnect(&id);
     Ok(app.store.machines())
+}
+
+/// Back on screen: keep the connections that still answer (client.rs `resume`).
+#[tauri::command]
+async fn m_resume(app: State<'_, App>) -> Result<(), String> {
+    app.client.resume().await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -265,6 +272,10 @@ pub async fn bridge_call(app: &App, version: &str, cmd: &str, args: Value) -> Re
             app.client.network_changed().await;
             Ok(Value::Null)
         }
+        "m_resume" => {
+            app.client.resume().await;
+            Ok(Value::Null)
+        }
         _ => Err(json!(format!("unknown command {cmd}"))),
     }
 }
@@ -332,7 +343,7 @@ pub fn run() {
             app.manage(App { client, store });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![m_info, m_set_name, m_machines, m_pair, m_connect, m_call, m_disconnect, m_forget, m_set_addrs, m_network_changed, m_download, m_visible, m_background, m_background_set, m_battery_settings])
+        .invoke_handler(tauri::generate_handler![m_info, m_set_name, m_machines, m_pair, m_connect, m_call, m_disconnect, m_forget, m_set_addrs, m_network_changed, m_resume, m_download, m_visible, m_background, m_background_set, m_battery_settings])
         .run(tauri::generate_context!())
         .expect("error while running DevCat Mobile");
 }

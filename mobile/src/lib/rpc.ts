@@ -39,6 +39,8 @@ export const phone = {
   forget: (id: string) => invoke<Machine[]>("m_forget", { id }),
   setAddrs: (id: string, addrs: string[]) => invoke<Machine[]>("m_set_addrs", { id, addrs }),
   networkChanged: () => invoke<void>("m_network_changed"),
+  /** Back on screen: keep connections that still answer, replace the others. */
+  resume: () => invoke<void>("m_resume"),
   /** The app only (the Rust side notifies while the page isn't on screen). */
   visible: (visible: boolean) => invoke<void>("m_visible", { visible }),
   /** Android: stay connected in the background (fails elsewhere). */

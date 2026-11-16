@@ -219,8 +219,10 @@ export function Chats() {
   const [, tick] = useState(0);
   useEffect(() => {
     void refreshAgents();
-    const t = setInterval(() => { if (!document.hidden) { void refreshAgents(); tick((x) => x + 1); } }, 5000);
-    return () => clearInterval(t);
+    // status changes arrive as events: the list is only checked now and then, the times tick here
+    const t = setInterval(() => { if (!document.hidden) void refreshAgents(); }, 15_000);
+    const clock = setInterval(() => { if (!document.hidden) tick((x) => x + 1); }, 5000);
+    return () => { clearInterval(t); clearInterval(clock); };
   }, []);
   const online = conn?.state === "online";
 

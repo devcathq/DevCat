@@ -142,7 +142,7 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
     case "m_machines": return [machine] as T;
     case "m_connect": setTimeout(() => emit("m-conn", { id: MACHINE, state: "online" }), 0); return { host: phone("host_info", {}), device: { access: "full" } } as T;
     case "m_call": return call(String(args.cmd), (args.args as Record<string, unknown>) ?? {}) as T;
-    case "m_visible": case "m_disconnect": case "m_network_changed": case "m_set_name": return null as T;
+    case "m_visible": case "m_disconnect": case "m_network_changed": case "m_resume": case "m_set_name": return null as T;
     case "m_background": case "m_background_set": return { supported: true, on: !!args.on, batteryUnrestricted: false } as T;
     default: throw `Not in the mock: ${cmd}`;
   }

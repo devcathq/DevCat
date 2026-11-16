@@ -110,14 +110,22 @@ export function host<T>(cmd: string, args: Record<string, unknown> = {}): Promis
   return call<T>(id, cmd, args);
 }
 
-export async function refreshAgents() {
+/** The `agents` call in flight: screens asking at the same time share it instead of queuing
+ *  more on the connection. */
+let agentsCall: Promise<void> | null = null;
+export function refreshAgents(): Promise<void> {
   const id = get().current;
-  if (!id) return;
-  try {
-    const r = await call<{ terminals: PtyInfo[]; agents: AgentStatus[]; chats?: AgentChatInfo[] }>(id, "agents");
-    if (get().current !== id) return;
-    set({ terms: r.terminals, agents: Object.fromEntries(r.agents.map((a) => [a.ptyId, a])), chats: r.chats ?? [] });
-  } catch { /* offline: the connection state shows it */ }
+  if (!id) return Promise.resolve();
+  agentsCall ??= (async () => {
+    try {
+      const r = await call<{ terminals: PtyInfo[]; agents: AgentStatus[]; chats?: AgentChatInfo[] }>(id, "agents");
+      if (get().current !== id) return;
+      set({ terms: r.terminals, agents: Object.fromEntries(r.agents.map((a) => [a.ptyId, a])), chats: r.chats ?? [] });
+    } catch { /* offline: the connection state shows it */ } finally {
+      agentsCall = null;
+    }
+  })();
+  return agentsCall;
 }
 
 /** How many agents wait for the user on the selected computer. */

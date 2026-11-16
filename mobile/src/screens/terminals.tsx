@@ -22,7 +22,7 @@ export function Terminals() {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     void refreshAgents();
-    const t = setInterval(() => { if (!document.hidden) void refreshAgents(); }, 5000);
+    const t = setInterval(() => { if (!document.hidden) void refreshAgents(); }, 15_000);
     return () => clearInterval(t);
   }, []);
   const online = conn?.state === "online";

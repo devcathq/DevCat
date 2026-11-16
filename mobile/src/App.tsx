@@ -187,12 +187,13 @@ export function App() {
     }).catch(() => {});
     const visible = (v: boolean) => { if (!IS_WEB) void phone.visible(v).catch(() => {}); };
     visible(!document.hidden);
-    // Back from the background or a network change: start fresh connections.
+    // Back from the background: keep the connections that still answer, replace the others
+    // (dropping them all made every return a reconnect). A network change: start fresh ones.
     let hiddenAt = 0;
     const onVis = () => {
       visible(!document.hidden);
       if (document.hidden) { hiddenAt = Date.now(); return; }
-      if (Date.now() - hiddenAt > 20_000) void phone.networkChanged();
+      if (Date.now() - hiddenAt > 20_000) void phone.resume().catch(() => phone.networkChanged());
     };
     const onOnline = () => void phone.networkChanged();
     document.addEventListener("visibilitychange", onVis);

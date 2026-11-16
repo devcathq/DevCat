@@ -15,6 +15,20 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, Value> {
     serde_json::from_value(args.get(name).cloned().unwrap_or(Value::Null)).map_err(|e| json!(format!("bad argument {name}: {e}")))
 }
 
+/// A transcript entry without what a phone doesn't show: tool output (`toolUseResult`, and the
+/// content of `tool_result` blocks), which is most of a long session's size.
+fn compact_entry(mut e: Value) -> Value {
+    if let Some(o) = e.as_object_mut() {
+        o.remove("toolUseResult");
+    }
+    if let Some(blocks) = e.pointer_mut("/message/content").and_then(Value::as_array_mut) {
+        for b in blocks.iter_mut().filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
+            b["content"] = Value::String(String::new());
+        }
+    }
+    e
+}
+
 fn out<T: serde::Serialize>(r: crate::error::AppResult<T>) -> CallResult {
     r.map(|v| serde_json::to_value(v).unwrap_or(Value::Null)).map_err(|e| json!(e.to_string()))
 }
@@ -200,7 +214,19 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         // Sessions of an SSH folder are read on the host, logging in with what the computer has
         // (a session's saved password): desktop only, like the SSH workbench (AGENTS.md).
         "claude_sessions" => out(crate::claude::sessions::claude_sessions(local_folder(a!("cwd"))?).await),
-        "claude_transcript" => out(crate::claude::sessions::claude_transcript(local_folder(a!("cwd"))?, a!("sessionId")).await),
+        "claude_transcript" => {
+            let all = crate::claude::sessions::claude_transcript(local_folder(a!("cwd"))?, a!("sessionId")).await.map_err(|e| json!(e.to_string()))?;
+            // `from`: only the entries after the first `from`, without tool output (DevCat Mobile's
+            // History polls while Claude works; the whole file each time clogged the connection)
+            match arg::<Option<usize>>(args, "from").unwrap_or(None) {
+                None => Ok(json!(all)),
+                Some(from) => {
+                    let total = all.len();
+                    let entries: Vec<Value> = all.into_iter().skip(from).map(compact_entry).collect();
+                    Ok(json!({ "total": total, "entries": entries }))
+                }
+            }
+        }
         "ai_providers_list" => out(crate::ai::ai_providers_list().await),
         // DevCat Agent chats (src-tauri/src/agent.rs): the phone gets `agent-event`s of the chats it opened.
         "agent_open" => {
@@ -473,5 +499,23 @@ mod tests {
         let h = dirs::home_dir().unwrap();
         assert_eq!(expand_home("~/Projects"), h.join("Projects").to_string_lossy());
         assert_eq!(expand_home("/tmp/x"), "/tmp/x");
+    }
+}
+
+#[cfg(test)]
+mod transcript_tests {
+    use super::compact_entry;
+    use serde_json::json;
+
+    #[test]
+    fn phones_get_entries_without_tool_output() {
+        let e = json!({ "type": "user", "toolUseResult": { "stdout": "x".repeat(10_000) },
+            "message": { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t", "content": "big output" }] } });
+        let c = compact_entry(e);
+        assert!(c.get("toolUseResult").is_none());
+        assert_eq!(c["message"]["content"][0]["content"], "");
+        assert_eq!(c["message"]["content"][0]["tool_use_id"], "t");
+        let text = json!({ "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "hi" }] } });
+        assert_eq!(compact_entry(text.clone()), text);
     }
 }

@@ -4,7 +4,7 @@ import { loadUnicode } from "../../../src/lib/xtermUnicode";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import clsx from "clsx";
-import { Bot, FolderOpen, ImagePlus, Keyboard, MoreVertical, Send, Square } from "lucide-react";
+import { Bot, ChevronDown, ChevronUp, ChevronsDown, FolderOpen, History, ImagePlus, Keyboard, MoreVertical, Send, Square } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { onEvent } from "../lib/rpc";
 import { host, nav, toast, toastErr, useApp } from "../lib/store";
@@ -88,8 +88,11 @@ export function Terminal({ id }: { id: string }) {
   const [choices, setChoices] = useState<Choice[]>([]);
   /** Typing straight into the terminal; off, tapping it only scrolls (no keyboard popping up). */
   const [keyboard, setKeyboard] = useState(false);
-  /** Claude Code: its conversation as a readable chat (the session transcript), or the terminal. */
-  const [view, setView] = useState<"chat" | "terminal">(() => (localStorage.getItem("devcat.mobile.termView") === "terminal" ? "terminal" : "chat"));
+  /** Claude Code: the live terminal (first), or its History: the session transcript as a readable
+   *  chat that scrolls normally (Claude Code draws full-screen, so the terminal has no scrollback). */
+  const [view, setView] = useState<"chat" | "terminal">(() => (localStorage.getItem("devcat.mobile.termView") === "chat" ? "chat" : "terminal"));
+  /** The terminal is scrolled up from its newest line. */
+  const [scrolledUp, setScrolledUp] = useState(false);
   const pickView = (v: "chat" | "terminal") => { setView(v); localStorage.setItem("devcat.mobile.termView", v); };
   /** Messages sent in the Chat view, shown until the transcript has them. */
   const [sent, setSent] = useState<string[]>([]);
@@ -107,6 +110,7 @@ export function Terminal({ id }: { id: string }) {
     loadUnicode(t);
     xt.current = t;
     t.onData((d) => write(d));
+    t.onScroll(() => { const b = t.buffer.active; setScrolledUp(b.viewportY < b.baseY); });
     const attach = async () => {
       try {
         const r = await host<{ info: PtyInfo; data: string }>("pty_attach", { id });
@@ -250,6 +254,15 @@ export function Terminal({ id }: { id: string }) {
     void attach(imgs);
   };
 
+  /** A page up / down: through the scrollback, or for a full-screen program (no scrollback
+   *  here) as Page Up / Page Down keys. Down while scrolled up goes back to the newest line. */
+  const scrollPage = (dir: -1 | 1) => {
+    const t = xt.current;
+    if (!t) return;
+    if (t.buffer.active.type === "alternate") { if (!readonly) write(dir < 0 ? "\x1b[5~" : "\x1b[6~"); return; }
+    if (dir > 0 && scrolledUp) t.scrollToBottom(); else t.scrollPages(dir);
+  };
+
   const st = agent?.status;
   const canChat = !!(term?.agent && agent?.sessionId && agent.cwd);
   // back to the terminal: xterm measures again now that it's visible
@@ -260,10 +273,25 @@ export function Terminal({ id }: { id: string }) {
     <Screen title={folderName(cwdOf(term ?? info ?? undefined, agent)) || "Terminal"} sub={sub} scroll={false} className="flex flex-col gap-2 p-2"
       right={<button aria-label="Terminal menu" className="flex size-9 items-center justify-center text-muted" onClick={() => setMenu(true)}><MoreVertical className="size-5" /></button>}>
       {error && <ErrorBox error={error} />}
-      {canChat && <Seg value={view} onChange={pickView} options={[{ value: "chat", label: "Chat" }, { value: "terminal", label: "Terminal" }]} />}
+      {canChat && <Seg value={view} onChange={pickView} options={[{ value: "terminal", label: "Terminal" }, { value: "chat", label: "History" }]} />}
       {canChat && view === "chat" && <LiveTranscript cwd={agent!.cwd!} sessionId={agent!.sessionId!} working={agent?.status === "working"} pending={sent} onSeen={seen} />}
-      <div className={clsx("min-h-0 flex-1 overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1", canChat && view === "chat" && "hidden")} onPasteCapture={readonly ? undefined : pastedImages}>
-        <div ref={box} className="h-full min-w-full" />
+      <div className={clsx("relative min-h-0 flex-1", canChat && view === "chat" && "hidden")}>
+        <div className="h-full overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1" onPasteCapture={readonly ? undefined : pastedImages}>
+          <div ref={box} className="h-full min-w-full" />
+        </div>
+        {/* scrolling without a wheel: a page up, back to the newest, and the whole session in History */}
+        <div className="absolute right-2 bottom-2 flex flex-col items-end gap-1.5">
+          {canChat && (
+            <button onClick={() => pickView("chat")} className="flex h-8 items-center gap-1 rounded-full border border-line bg-raised/95 px-3 text-[12px] font-semibold shadow-lg active:bg-hover">
+              <History className="size-3.5" />History
+            </button>
+          )}
+          <button aria-label="Scroll up a page" onClick={() => scrollPage(-1)} className="flex size-9 items-center justify-center rounded-full border border-line bg-raised/95 shadow-lg active:bg-hover"><ChevronUp className="size-5" /></button>
+          <button aria-label={scrolledUp ? "Back to the newest" : "Scroll down a page"} onClick={() => scrollPage(1)}
+            className={clsx("flex size-9 items-center justify-center rounded-full border shadow-lg active:bg-hover", scrolledUp ? "border-accent bg-accent text-accent-fg" : "border-line bg-raised/95")}>
+            {scrolledUp ? <ChevronsDown className="size-5" /> : <ChevronDown className="size-5" />}
+          </button>
+        </div>
       </div>
       {!readonly && choices.length > 0 && (
         <div className="space-y-1.5">
@@ -444,11 +472,36 @@ function LiveTranscript({ cwd, sessionId, working, pending, onSeen }: { cwd: str
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const touching = useRef(false);
+  /** Entries already here: the computer sends only what's after them (and no tool output). */
+  const have = useRef<{ key: string; n: number }>({ key: "", n: 0 });
   useEffect(() => {
     let alive = true;
+    let busy = false;
+    const key = `${cwd}\u0000${sessionId}`;
+    if (have.current.key !== key) have.current = { key, n: 0 };
     const load = () => {
-      if (document.hidden) return;
-      host<unknown[]>("claude_transcript", { cwd, sessionId }).then((e) => { if (alive) { setEntries(e); setError(null); } }, (e) => { if (alive) setError(String(e)); });
+      // one at a time: a slow answer mustn't pile up requests behind it on the connection
+      if (document.hidden || busy) return;
+      busy = true;
+      const from = have.current.n;
+      host<unknown[] | { total: number; entries: unknown[] }>("claude_transcript", { cwd, sessionId, from })
+        .then((r) => {
+          if (!alive) return;
+          setError(null);
+          if (Array.isArray(r)) {
+            // a computer from before `from`: the whole transcript each time
+            have.current.n = r.length;
+            setEntries(r);
+          } else if (r.total < from) {
+            // the file got shorter (rewritten): start over
+            have.current.n = 0;
+            setEntries(null);
+          } else if (r.entries.length || from === 0) {
+            have.current.n = r.total;
+            setEntries((e) => (from === 0 ? r.entries : [...(e ?? []), ...r.entries]));
+          }
+        }, (e) => { if (alive) setError(String(e)); })
+        .finally(() => { busy = false; });
     };
     load();
     // just sent something: look again soon, it's in the transcript within a moment
