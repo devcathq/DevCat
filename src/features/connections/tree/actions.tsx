@@ -3,7 +3,7 @@
 import { toast } from "sonner";
 import { api, errMsg } from "../../../lib/api";
 import { dialectOf, type ConnectionConfig, type TableRef, type TreeNode } from "../../../lib/types";
-import { useConnections } from "../../../store/connections";
+import { newConnection, useConnections } from "../../../store/connections";
 import { useUi } from "../../../store/ui";
 import { confirmDialog } from "../dialogs";
 import { openDdl, openInfra, openMongoCollection, openRedis, openTableData } from "../openers";
@@ -92,6 +92,34 @@ export async function duplicateConnection(conn: ConnectionConfig) {
     useUi.getState().openConnectionDialog(saved.id);
   } catch (e) {
     toast.error(`Duplicate failed: ${errMsg(e)}`);
+  }
+}
+
+/** "New tmux variant": a variant of an SSH session that attaches tmux session `<slug>-<n>`, the
+ *  first number none of its variants uses yet. Rename it afterwards if needed. */
+export async function quickTmuxVariant(conn: ConnectionConfig) {
+  const slug = conn.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "session";
+  const taken = new Set<string>();
+  for (const v of variantsOf(conn.id)) {
+    const s = v.options?.startup?.match(/-s\s+(\S+)/)?.[1];
+    if (s) taken.add(s);
+    taken.add(v.name);
+  }
+  let n = 1;
+  const nameOf = (i: number) => `${slug}-${i}`;
+  while (taken.has(nameOf(n)) || taken.has(`${conn.name} · ${nameOf(n)}`)) n++;
+  const tmux = nameOf(n);
+  const c = newConnection("ssh", conn.projectId ?? null);
+  c.host = "";
+  c.port = null;
+  c.password = null;
+  c.name = `${conn.name} · ${tmux}`;
+  c.options = { parent: conn.id, startup: `tmux new -A -s ${tmux}` };
+  try {
+    const saved = await useConnections.getState().save(c);
+    toast.success(`Added ${saved.name}`);
+  } catch (e) {
+    toast.error(`Could not add variant: ${errMsg(e)}`);
   }
 }
 
