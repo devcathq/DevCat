@@ -1,5 +1,5 @@
 // DevCat Mobile: remote access for paired phones (src-tauri/src/remote) and agent
-// notifications through ntfy (src-tauri/src/notify).
+// notifications (src-tauri/src/notify).
 // Events: "remote-status" (RemoteStatus), "remote-pair-request" (PairRequest),
 // "remote-pair-resolved" ({ requestId }), "remote-pty-opened" (PtyInfo), "agent-status" (AgentStatus).
 import { invoke } from "@tauri-apps/api/core";
@@ -104,10 +104,6 @@ export interface AuditEntry {
 }
 
 export interface NotifySettings {
-  enabled: boolean;
-  server: string;
-  topic: string;
-  token?: string | null;
   onDone: boolean;
   onInput: boolean;
   minSeconds: number;
@@ -142,15 +138,8 @@ export const mobileApi = {
 
   notifySettings: () => invoke<NotifySettings>("notify_settings"),
   notifySave: (settings: NotifySettings) => invoke<NotifySettings>("notify_save", { settings }),
-  notifyNewTopic: () => invoke<NotifySettings>("notify_new_topic"),
+  /** A test notification to the connected phones. */
   notifyTest: () => invoke<void>("notify_test"),
 };
 
-/** The ntfy web/app link for a topic (the ntfy app opens it, or offers to subscribe). */
-export function ntfyLink(s: NotifySettings): string {
-  return `${s.server.replace(/\/+$/, "")}/${s.topic}`;
-}
-
 export const MOBILE_RELEASES_URL = "https://github.com/devcathq/DevCat/releases/latest";
-export const NTFY_IOS_URL = "https://apps.apple.com/app/ntfy/id1625396347";
-export const NTFY_ANDROID_URL = "https://play.google.com/store/apps/details?id=io.heckel.ntfy";

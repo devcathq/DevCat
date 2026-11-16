@@ -1,5 +1,5 @@
 // "📱 Mobile": remote access for the DevCat mobile app (pairing QR, paired phones, port and
-// public address), phone notifications for agents (ntfy), the activity log and the setup help.
+// public address), agent notifications (phones, channels), the activity log and the setup help.
 // Everything here is local to this computer: no DevCat server, no account.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { Button, Checkbox, Dialog, Field, Input, Select, Spinner } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import {
-  MOBILE_RELEASES_URL, NTFY_ANDROID_URL, NTFY_IOS_URL, mobileApi, ntfyLink, pathLabel,
+  MOBILE_RELEASES_URL, mobileApi, pathLabel,
   type Access, type AuditEntry, type Device, type NotifySettings, type PairInfo, type RelayChoice, type RemoteSettings,
 } from "./api";
 import { useMobile, type MobileTab } from "./store";
@@ -304,11 +304,8 @@ function RemoteTab() {
 
 function NotifyTab() {
   const [s, setS] = useState<NotifySettings | null>(null);
-  const [qr, setQr] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   useEffect(() => { mobileApi.notifySettings().then(setS).catch((e) => toast.error(errMsg(e))); }, []);
-  const link = s ? ntfyLink(s) : "";
-  useEffect(() => { if (link) mobileApi.qr(link).then(setQr).catch(() => setQr(null)); }, [link]);
   if (!s) return <Spinner />;
 
   const save = async (next: NotifySettings) => {
@@ -319,7 +316,7 @@ function NotifyTab() {
     setTesting(true);
     try {
       await mobileApi.notifyTest();
-      toast.success("Test sent. It should arrive on your phone in a few seconds.");
+      toast.success("Test sent to the connected phones.");
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
@@ -329,35 +326,13 @@ function NotifyTab() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center gap-3">
-        <Toggle on={s.enabled} onChange={(on) => void save({ ...s, enabled: on })} />
-        <div className="flex-1">
-          <div className="font-semibold">Notify my phone (ntfy) when an agent finishes or needs me</div>
-          <div className="text-[12px] text-muted">Works even when the DevCat app on the phone is closed. Uses the free <b className="text-fg">ntfy</b> app; no account needed.</div>
+      <div className="space-y-2">
+        <div className="font-semibold">Notifications when an agent finishes or needs you</div>
+        <div className="text-[12px] text-muted">
+          The DevCat app on your phone shows them while it's connected to this computer. On Android, turn on <b className="text-fg">More → Notifications → Stay connected in the background</b> in the app to get them while it's closed too. The channels and linked chats below get them as well.
         </div>
+        <Button size="sm" variant="primary" loading={testing} onClick={() => void test()}>Send a test to my phone</Button>
       </div>
-
-      <Section title="Set up (once)">
-        <div className="flex gap-4">
-          <div className="flex size-[150px] shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white">
-            {qr ? <div className="size-full [&>svg]:size-full" dangerouslySetInnerHTML={{ __html: qr }} /> : <Spinner />}
-          </div>
-          <div className="min-w-0 flex-1 space-y-2">
-            <Steps>
-              <li>Install <b>ntfy</b>: <button className="text-accent hover:underline" onClick={() => void openUrl(NTFY_IOS_URL)}>App Store</button> · <button className="text-accent hover:underline" onClick={() => void openUrl(NTFY_ANDROID_URL)}>Google Play</button></li>
-              <li>In ntfy tap <b>+</b> and subscribe to the topic <span className="font-mono text-fg">{s.topic}</span>{s.server !== "https://ntfy.sh" && <> on server <span className="font-mono text-fg">{s.server}</span></>}. Or scan this code with the camera.</li>
-              <li><b>Send a test</b> and check that it arrives</li>
-            </Steps>
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => void copy(s.topic, "Topic")}><Copy className="size-3" />Copy topic</Button>
-              <Button size="sm" variant="primary" loading={testing} onClick={() => void test()}>Send a test</Button>
-            </div>
-          </div>
-        </div>
-        <div className="text-[11px] text-faint">The topic name is the only key: anyone who knows it can read these notifications. They only contain the project name and the status, never code or data.</div>
-      </Section>
-
-      <ChannelsSection />
 
       <Section title="Notify me when">
         <div className="flex flex-col items-start gap-2">
@@ -370,22 +345,10 @@ function NotifyTab() {
           <Checkbox label="An agent needs input (permission prompts, questions)" checked={s.onInput} onChange={(v) => void save({ ...s, onInput: v })} />
           <Checkbox label="Only when I'm away (not while DevCat is the active app)" checked={s.onlyWhenAway} onChange={(v) => void save({ ...s, onlyWhenAway: v })} />
         </div>
-      </Section>
-
-      <Section title="Server">
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="ntfy server" hint="Self-hosted ntfy works too">
-            <Input value={s.server} onChange={(e) => setS({ ...s, server: e.target.value })} onBlur={() => void save(s)} />
-          </Field>
-          <Field label="Access token (optional)" hint="For a protected self-hosted server">
-            <Input type="password" value={s.token ?? ""} onChange={(e) => setS({ ...s, token: e.target.value })} onBlur={() => void save(s)} />
-          </Field>
-        </div>
-        <Button size="sm" variant="ghost" onClick={() => void mobileApi.notifyNewTopic().then(setS).catch((e) => toast.error(errMsg(e)))}>
-          <RefreshCw className="size-3" />New private topic (subscribe again on the phone)
-        </Button>
         <div className="text-[11px] text-faint">Agent status comes from Claude Code hooks DevCat adds to the terminals it starts (macOS and Linux). Agents started before turning this on report after their next restart.</div>
       </Section>
+
+      <ChannelsSection />
     </div>
   );
 }

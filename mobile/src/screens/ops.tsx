@@ -72,7 +72,7 @@ export function Network() {
   };
 
   return (
-    <Screen title="VPN & tunnels" sub={`on ${useApp.getState().machines.find((m) => m.id === current)?.name ?? "the computer"}`} tab="network" right={<IconBtn label="Refresh" onClick={profiles.reload}><RefreshCw className="size-4" /></IconBtn>}>
+    <Screen title="VPN & tunnels" sub={`on ${useApp.getState().machines.find((m) => m.id === current)?.name ?? "the computer"}`} right={<IconBtn label="Refresh" onClick={profiles.reload}><RefreshCw className="size-4" /></IconBtn>}>
       {profiles.loading ? <Loading /> : profiles.error ? <ErrorBox error={profiles.error} onRetry={profiles.reload} /> : (profiles.data ?? []).length === 0 ? (
         <Empty icon={<NetworkIcon className="size-8" />} title="No VPNs or tunnels">Add them in DevCat on the computer (VPN & Tunnels).</Empty>
       ) : profiles.data!.map((p) => {
@@ -179,16 +179,16 @@ export function Cluster() {
     try { await host(cmd, { connId, ...args }); toast(done, "ok"); items.reload(); } catch (e) { toastErr(e); }
   };
 
-  if (conns.loading) return <Screen title="Cluster" tab="cluster"><Loading /></Screen>;
+  if (conns.loading) return <Screen title="Cluster"><Loading /></Screen>;
   if ((conns.data ?? []).length === 0) {
-    return <Screen title="Cluster" tab="cluster"><Empty icon={<Server className="size-8" />} title="No Kubernetes connections">Add a cluster in DevCat on the computer; it shows up here.</Empty></Screen>;
+    return <Screen title="Cluster"><Empty icon={<Server className="size-8" />} title="No Kubernetes connections">Add a cluster in DevCat on the computer; it shows up here.</Empty></Screen>;
   }
   return (
     <Screen title={
       <select className="max-w-full bg-transparent text-[17px] font-semibold" value={connId} onChange={(e) => { setConnId(e.target.value); setNs(""); }}>
         {conns.data!.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
-    } tab="cluster" right={<IconBtn label="Refresh" onClick={items.reload}><RefreshCw className="size-4" /></IconBtn>}>
+    } right={<IconBtn label="Refresh" onClick={items.reload}><RefreshCw className="size-4" /></IconBtn>}>
       {connected.error && <ErrorBox error={connected.error} onRetry={connected.reload} />}
       {tab !== "nodes" && (
         <select className="h-10 w-full rounded-xl border border-line bg-panel px-3 text-[13px]" value={ns} onChange={(e) => setNs(e.target.value)}>

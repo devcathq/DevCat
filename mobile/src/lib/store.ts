@@ -126,9 +126,8 @@ export function waitingCount(s: State = get()): number {
 }
 
 // ------------------------------------------------------------------ events
-
-let notify: ((title: string, body: string) => void) | null = null;
-export function setLocalNotifier(fn: (title: string, body: string) => void) { notify = fn; }
+// While the page is on screen: toasts. Off screen the app's Rust side notifies (src-tauri
+// watch.rs), also for the other computers and while Android has paused this page.
 
 const folder = (p?: string | null) => (p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "agent";
 
@@ -160,14 +159,9 @@ export function startStateEvents() {
     const changed = prev?.status !== a.status;
     if (!changed) return;
     const watching = (() => { const r = top(); return r.s === "terminal" && r.id === a.ptyId; })();
-    if (a.status === "waiting") {
-      const msg = `${folder(a.cwd)}: ${a.message ?? "needs you"}`;
-      if (document.hidden) notify?.(`${folder(a.cwd)} needs you`, a.message ?? "");
-      else if (!watching) toast(msg, "info");
-    } else if (a.status === "idle" && prev?.status === "working") {
-      if (document.hidden) notify?.(`${folder(a.cwd)} finished`, "The agent is done.");
-      else if (!watching) toast(`${folder(a.cwd)} finished`, "ok");
-    }
+    if (document.hidden || watching) return;
+    if (a.status === "waiting") toast(`${folder(a.cwd)}: ${a.message ?? "needs you"}`, "info");
+    else if (a.status === "idle" && prev?.status === "working") toast(`${folder(a.cwd)} finished`, "ok");
   });
   onEvent<{ ptyId: string }>("agent-gone", (p, mid) => {
     if (mid !== get().current) return;
@@ -180,15 +174,10 @@ export function startStateEvents() {
     const prev = get().chats.find((x) => x.sessionId === c.sessionId);
     set({ chats: [c, ...get().chats.filter((x) => x.sessionId !== c.sessionId)] });
     const watching = (() => { const r = top(); return r.s === "agentchat" && r.sessionId === c.sessionId; })();
-    if (watching) return;
+    if (watching || document.hidden) return;
     const name = folder(c.cwd);
-    if (c.waiting && c.waiting !== prev?.waiting) {
-      if (document.hidden) notify?.(`${name} needs you`, c.waiting);
-      else toast(`${name}: ${c.waiting}`, "info");
-    } else if (!c.busy && prev?.busy) {
-      if (document.hidden) notify?.(`${name} finished`, c.title || "The agent is done.");
-      else toast(`${name} finished`, "ok");
-    }
+    if (c.waiting && c.waiting !== prev?.waiting) toast(`${name}: ${c.waiting}`, "info");
+    else if (!c.busy && prev?.busy) toast(`${name} finished`, "ok");
   });
   onEvent<{ sessionId: string }>("agent-chat-gone", (p, mid) => {
     if (mid !== get().current) return;

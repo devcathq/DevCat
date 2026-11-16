@@ -1047,6 +1047,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-barcode-scanner",
  "tauri-plugin-deep-link",
+ "tauri-plugin-devcat-keepalive",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tauri-plugin-notification",
@@ -5276,6 +5277,16 @@ dependencies = [
  "url",
  "windows-registry",
  "windows-result",
+]
+
+[[package]]
+name = "tauri-plugin-devcat-keepalive"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

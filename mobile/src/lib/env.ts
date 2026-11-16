@@ -15,3 +15,5 @@ export function isPairLink(s: string): boolean {
   const t = s.trim();
   return t.startsWith("devcat://pair") || (/^https?:\/\//.test(t) && /[#&]id=[0-9a-f]{64}/i.test(t) && /[#&]code=/.test(t));
 }
+/** `pnpm mobile:mock`: made-up data, no computer (src/dev/mock.ts). */
+export const IS_MOCK = import.meta.env.MODE === "mock";

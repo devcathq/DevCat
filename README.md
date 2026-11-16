@@ -132,9 +132,9 @@ logs and deployments.
   **Allow phone browsers** off).
 - Give each phone **full access** or **read-only**; **Revoke** cuts one off immediately. Every change a phone makes
   is in the **Activity** log on the computer.
-- **Notifications** ("finished", "needs you") come through the free [ntfy](https://ntfy.sh) app, so they arrive
-  even when DevCat Mobile is closed, and to Discord, Slack or any webhook as well (Mobile pairing →
-  Notifications). DevCat Agent chats report their state themselves; Claude Code's comes from hooks DevCat adds to
+- **Notifications** ("finished", "needs you") show in DevCat Mobile itself; on Android, "Stay connected in the
+  background" (More → Notifications) keeps it connected so they arrive while the app is closed too. They go to
+  Telegram, Discord, Slack or any webhook as well (Mobile pairing → Notifications, Agent bots). DevCat Agent chats report their state themselves; Claude Code's comes from hooks DevCat adds to
   the terminals it starts (macOS and Linux).
 - **Get it**: releases don't include the Android APK for now. Build it yourself, or run the `mobile`
   workflow from the Actions tab. For iPhone, build it with Xcode. Until then, the browser version
@@ -510,7 +510,7 @@ src-tauri/src/
   cli.rs                  `devcat serve` / `devcat stop`: remote access without a window
   instance.rs             another DevCat holding the port: find it, stop it
   events.rs               backend events to windows and phones
-  notify/                 agent status from Claude Code hooks, ntfy notifications
+  notify/                 agent status from Claude Code hooks, notification rules, phone notifications
   integrations/           agent bots (Telegram, Discord) and notification webhooks
   agent.rs, agent_tools.rs  DevCat Agent chats and its tools for your connections
   memory/                 the memory every agent shares, and its sync between computers

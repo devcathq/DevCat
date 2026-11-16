@@ -32,10 +32,7 @@ export interface HostInfo { id: string; name: string; os: string; appVersion: st
 
 export interface AuditEntry { at: number; device: string; deviceName: string; action: string; detail?: string | null; ok: boolean }
 
-export interface NotifySettings {
-  enabled: boolean; server: string; topic: string; token?: string | null;
-  onDone: boolean; onInput: boolean; minSeconds: number; onlyWhenAway: boolean;
-}
+export interface NotifySettings { onDone: boolean; onInput: boolean; minSeconds: number; onlyWhenAway: boolean }
 
 export interface K8sObject {
   kind?: string;
@@ -44,7 +41,8 @@ export interface K8sObject {
   status?: any;
 }
 
-export type TabRoot = "agents" | "fileshome" | "data" | "network" | "cluster" | "more";
+/** The bottom tabs: Chats ("agents"), Terminal, Files, More. */
+export type TabRoot = "agents" | "terminals" | "fileshome" | "more";
 
 export type Route =
   | { s: "loading" }
@@ -55,6 +53,10 @@ export type Route =
   | { s: "pairing"; link: string; addr?: string | null }
   | { s: "computers" }
   | { s: TabRoot }
+  /** Tools, opened from More. */
+  | { s: "data" }
+  | { s: "network" }
+  | { s: "cluster" }
   | { s: "terminal"; id: string }
   | { s: "newchat"; cwd?: string }
   | { s: "sessions"; cwd?: string }

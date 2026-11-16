@@ -1,7 +1,7 @@
 //! Integrations: DevCat in the user's chat apps.
 //!
 //! - **Notification channels**: Discord / Slack incoming webhooks and plain webhooks get "finished"
-//!   and "needs you", next to ntfy (`notify`).
+//!   and "needs you", next to DevCat Mobile (`notify::to_phones`).
 //! - **Bots** (Telegram, Discord) run from this computer (no server, no public address). A chat is
 //!   *linked* to a folder (its project, and so its memory), a DevCat Agent connection and what it
 //!   may do ([`Perms`]): get notifications, answer approvals and questions, send new requests,
@@ -391,8 +391,10 @@ pub struct Note {
     pub url: Option<String>,
 }
 
-/// Send a note to the notification channels and the linked chats that want it.
+/// Send a note to the paired phones (DevCat Mobile), the notification channels and the linked
+/// chats that want it.
 pub async fn deliver(note: Note) {
+    crate::notify::to_phones(&note.title, &note.body, note.needs_you, false);
     let s = load();
     for c in s.channels.iter().filter(|c| c.enabled && if note.needs_you { c.on_input } else { c.on_done }) {
         if let Some(url) = crate::secrets::get(&channel_secret(&c.id))

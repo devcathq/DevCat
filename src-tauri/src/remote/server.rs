@@ -23,7 +23,7 @@ const PAIR_MAX_ATTEMPTS: u32 = 5;
 const MAX_QUEUED_OUTPUT: usize = 4 * 1024 * 1024;
 
 /// Events every phone gets.
-const BROADCAST_EVENTS: &[&str] = &["pty-exit", "agent-status", "agent-gone", "agent-chat", "agent-chat-gone", "net-status", "net-traffic", "net-log", "keep-awake", "remote-pty-opened"];
+const BROADCAST_EVENTS: &[&str] = &["pty-exit", "agent-status", "agent-gone", "agent-chat", "agent-chat-gone", "agent-notify", "net-status", "net-traffic", "net-log", "keep-awake", "remote-pty-opened"];
 /// Events only the phone that started the stream gets (matched on `streamId`).
 const STREAM_EVENTS: &[&str] = &["k8s-log", "k8s-log-end", "k8s-watch"];
 

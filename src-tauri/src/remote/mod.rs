@@ -30,7 +30,7 @@ const APPROVE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// App events mirrored to phones (the host filters per phone).
 const FORWARDED: &[&str] = &[
-    "pty-output", "pty-exit", "agent-status", "agent-gone", "agent-event", "agent-chat", "agent-chat-gone", "net-status", "net-traffic", "net-log", "keep-awake", "k8s-log",
+    "pty-output", "pty-exit", "agent-status", "agent-gone", "agent-event", "agent-chat", "agent-chat-gone", "agent-notify", "net-status", "net-traffic", "net-log", "keep-awake", "k8s-log",
     "k8s-log-end", "k8s-watch", "remote-pty-opened",
 ];
 
@@ -519,7 +519,7 @@ fn qr_svg(text: &str) -> AppResult<String> {
         .build())
 }
 
-/// A QR code (SVG) for any short text, e.g. the ntfy subscribe link.
+/// A QR code (SVG) for any short text, e.g. a pairing link.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn remote_qr(text: String) -> AppResult<String> {
     qr_svg(&text)

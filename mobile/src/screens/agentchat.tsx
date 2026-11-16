@@ -5,7 +5,7 @@
 import clsx from "clsx";
 import {
   ArrowUp, Ban, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, File as FileIcon, FilePen, FolderOpen, Layers, MessageCircleQuestion, MoreVertical, Paperclip, Plug,
-  ClipboardList, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TriangleAlert, Webhook, X,
+  ClipboardList, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TerminalSquare, TriangleAlert, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -17,6 +17,8 @@ import { errMsg, onEvent } from "../lib/rpc";
 import { host, nav, toastErr, useApp } from "../lib/store";
 import { Btn, Confirm, Empty, ErrorBox, Item as Row, Loading, Screen, Sheet, Spinner, folderName } from "../ui";
 import { Markdown } from "./files";
+import { termSize } from "./agents";
+import type { PtyInfo } from "../lib/types";
 
 interface Chat extends ChatView {
   sessionId: string;
@@ -163,11 +165,23 @@ export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; 
   const stop = () => { if (chat) void host("agent_stop", { sessionId: chat.sessionId }).catch(toastErr); };
 
   const waiting = chat?.items.some((i) => i.kind === "tool" && ((i.status === "approval" && i.request) || (i.status === "question" && i.question)));
-  const sub = !chat ? "DevCat Agent" : waiting ? <span className="text-warn">⚠ needs you</span> : chat.busy ? <span className="text-warn">◐ working</span> : chat.title || `${chat.providerName} · ${chat.model}`;
+  const where = `${folderName(cwd)} · ${chat?.providerName ?? "DevCat Agent"}`;
+  const sub = !chat ? where : waiting ? <span className="text-warn">⚠ needs you · {folderName(cwd)}</span> : chat.busy ? <span className="text-warn">◐ working · {folderName(cwd)}</span> : where;
   const fromPhone = info?.origin.startsWith("phone:") ?? !sessionId;
+  /** A shell in the chat's folder, in the Terminal screen. */
+  const openTerminal = async () => {
+    try {
+      const { cols, rows } = termSize();
+      const t = await host<PtyInfo>("pty_open", { cwd, program: null, args: [], cols, rows, providerId: null });
+      useApp.setState({ terms: [...useApp.getState().terms.filter((x) => x.id !== t.id), t] });
+      nav.push({ s: "terminal", id: t.id });
+    } catch (e) {
+      toastErr(e);
+    }
+  };
 
   return (
-    <Screen title={folderName(cwd) || "Chat"} sub={sub} scroll={false} className="flex flex-col"
+    <Screen title={chat?.title || folderName(cwd) || "Chat"} sub={sub} scroll={false} className="flex flex-col"
       right={chat && <button aria-label="Chat menu" className="flex size-9 items-center justify-center text-muted" onClick={() => setMenu(true)}><MoreVertical className="size-5" /></button>}>
       {!chat ? (
         error ? <div className="p-3"><Empty icon={<Bot className="size-8" />} title="DevCat Agent couldn't start"><span className="text-danger">{error}</span></Empty></div> : <Loading text="Opening the chat…" />
@@ -183,6 +197,14 @@ export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; 
             </div>
           )}
           <EditedFiles items={chat.items} cwd={cwd} />
+          {waiting && !readonly && (
+            <div className="px-3 pt-1.5">
+              <button onClick={() => document.querySelector("[data-needs]")?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                className="flex w-full items-center gap-2 rounded-xl bg-warn/15 px-3 py-2 text-left text-[13px] font-semibold text-warn active:bg-warn/25">
+                <TriangleAlert className="size-4 shrink-0" /><span className="flex-1">The agent is waiting for your answer</span><span className="text-[12px] underline">Show</span>
+              </button>
+            </div>
+          )}
           {readonly ? (
             <div className="mx-3 mb-2 rounded-lg bg-hover px-3 py-2 text-center text-[12px] text-muted" style={{ marginBottom: "max(8px, env(safe-area-inset-bottom))" }}>Read-only access: you can watch but not reply.</div>
           ) : (
@@ -194,6 +216,7 @@ export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; 
       <Sheet open={menu} onClose={() => setMenu(false)} title={folderName(cwd)}>
         {chat && <ContextDetails chat={chat} models={models} />}
         <Row onClick={() => { setMenu(false); nav.push({ s: "files", dir: cwd, root: cwd }); }} icon={<FolderOpen className="size-4" />} title="Browse files" chevron />
+        {!readonly && <Row onClick={() => { setMenu(false); void openTerminal(); }} icon={<TerminalSquare className="size-4" />} title="Open a terminal here" meta={cwd} chevron />}
         {!readonly && chat?.busy && <Row onClick={() => { setMenu(false); stop(); }} icon={<Square className="size-4" />} title="Stop the agent" />}
         {!readonly && fromPhone && <Row onClick={() => { setMenu(false); setEnd(true); }} icon={<X className="size-4 text-danger" />} title={<span className="text-danger">End chat</span>} />}
       </Sheet>
@@ -483,7 +506,7 @@ function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
   const i = item.input ?? {};
   const title = approvalTitle(item.name, req.kind, item.input);
   return (
-    <div className="rounded-xl border border-accent/40 bg-accent/5 p-3">
+    <div data-needs className="rounded-xl border border-accent/40 bg-accent/5 p-3">
       <div className="mb-2 flex items-center gap-2 text-[14px] font-semibold"><ShieldAlert className="size-4 text-accent" />{title}</div>
       {item.name === "shell" && <Code>{str(i.command)}</Code>}
       {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
@@ -500,10 +523,14 @@ function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
           <Btn variant="ghost" block onClick={() => ctx.onDecide(item.id, { decision: "deny" })}>Deny</Btn>
         </div>
       ) : (
-        <div className="mt-2.5 flex flex-col gap-2">
-          <Btn variant="primary" block onClick={() => ctx.onDecide(item.id, { decision: "allow" })}>Allow</Btn>
-          <Btn block onClick={() => ctx.onDecide(item.id, { decision: "allow-for-session" })}>Always allow {allowAllLabel(item.name)} in this chat</Btn>
-          <Btn variant="ghost" block onClick={() => ctx.onDecide(item.id, { decision: "deny" })}>Deny</Btn>
+        <div className="mt-3 space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <Btn onClick={() => ctx.onDecide(item.id, { decision: "deny" })}>Deny</Btn>
+            <Btn variant="primary" onClick={() => ctx.onDecide(item.id, { decision: "allow" })}>Allow</Btn>
+          </div>
+          <button onClick={() => ctx.onDecide(item.id, { decision: "allow-for-session" })} className="w-full py-1.5 text-center text-[12.5px] font-semibold text-accent active:opacity-70">
+            Always allow {allowAllLabel(item.name)} in this chat
+          </button>
         </div>
       )}
     </div>
@@ -515,7 +542,7 @@ function QuestionCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
   const q = item.question!;
   const [own, setOwn] = useState("");
   return (
-    <div className="rounded-xl border border-accent/40 bg-accent/5 p-3">
+    <div data-needs className="rounded-xl border border-accent/40 bg-accent/5 p-3">
       <div className="mb-2.5 flex items-start gap-2 text-[14px]">
         <MessageCircleQuestion className="mt-0.5 size-4 shrink-0 text-accent" />
         <span className="selectable whitespace-pre-wrap">{q.question}</span>

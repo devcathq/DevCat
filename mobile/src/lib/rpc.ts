@@ -39,7 +39,15 @@ export const phone = {
   forget: (id: string) => invoke<Machine[]>("m_forget", { id }),
   setAddrs: (id: string, addrs: string[]) => invoke<Machine[]>("m_set_addrs", { id, addrs }),
   networkChanged: () => invoke<void>("m_network_changed"),
+  /** The app only (the Rust side notifies while the page isn't on screen). */
+  visible: (visible: boolean) => invoke<void>("m_visible", { visible }),
+  /** Android: stay connected in the background (fails elsewhere). */
+  background: () => invoke<Background>("m_background"),
+  setBackground: (on: boolean) => invoke<Background>("m_background_set", { on }),
+  batterySettings: () => invoke<void>("m_battery_settings"),
 };
+
+export interface Background { supported: boolean; on: boolean; batteryUnrestricted: boolean }
 
 /** Run a command on a computer (see src-tauri/src/remote/dispatch.rs for the list). */
 export function call<T>(machineId: string, cmd: string, args: Record<string, unknown> = {}): Promise<T> {

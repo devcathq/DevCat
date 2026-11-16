@@ -38,6 +38,9 @@ pub struct Machine {
 pub struct Prefs {
     #[serde(default)]
     pub device_name: Option<String>,
+    /// Android: stay connected in the background and notify (`watch`, the keepalive plugin).
+    #[serde(default)]
+    pub background: bool,
 }
 
 pub struct Store {
