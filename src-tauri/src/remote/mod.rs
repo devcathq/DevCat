@@ -325,6 +325,8 @@ impl Backend for AppBackend {
         for s in client.streams() {
             let _ = crate::infra::k8s::streams::k8s_stream_stop(s).await;
         }
+        // desktop terminals it showed at its size: their own size back
+        dispatch::restore_sizes(&client.device.id).await;
         // The phone's ghost chats end if it doesn't come back soon (a dropped connection or a
         // phone put away for a moment shouldn't lose the chat; a phone gone for good shouldn't
         // leave one running).

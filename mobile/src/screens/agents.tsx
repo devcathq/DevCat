@@ -101,17 +101,29 @@ export function Terminal({ id }: { id: string }) {
   fitRef.current = fitWidth;
   const readonlyRef = useRef(readonly);
   readonlyRef.current = readonly;
-  /** A computer-started terminal's size before this phone resized it. */
+  /** A computer-started terminal's size before this phone resized it (the computer puts it
+   *  back when this screen closes or the phone disconnects: dispatch.rs `restore_size`). */
   const computerSize = useRef<{ cols: number; rows: number } | null>(null);
+  /** The computer doesn't resize its own terminals for phones (DevCat before PR #170). */
+  const noResize = useRef(false);
+  /** Ask the computer for this size; the view follows only if it did (a terminal started here
+   *  always does), so lines are never cut off by a view narrower than the program writes. */
+  const resizeTo = async (t: XTerm, want: { cols: number; rows: number }, fromHere: boolean): Promise<boolean> => {
+    const r = await host<{ resized?: boolean } | null>("pty_resize", { id, cols: want.cols, rows: want.rows }).catch(() => null);
+    if (!fromHere && !r?.resized) { noResize.current = true; return false; }
+    if (xt.current === t) t.resize(want.cols, want.rows);
+    return true;
+  };
   const [choices, setChoices] = useState<Choice[]>([]);
   /** Typing straight into the terminal; off, tapping it only scrolls (no keyboard popping up). */
   const [keyboard, setKeyboard] = useState(false);
   /** Claude Code: Chat (the live terminal, first), or its History: the session transcript as a readable
    *  chat that scrolls normally (Claude Code draws full-screen, so the terminal has no scrollback). */
-  const [view, setView] = useState<"chat" | "terminal">(() => (localStorage.getItem("devcat.mobile.termView") === "chat" ? "chat" : "terminal"));
+  const [view, setView] = useState<"chat" | "terminal">("terminal");
   /** The terminal is scrolled up from its newest line. */
   const [scrolledUp, setScrolledUp] = useState(false);
-  const pickView = (v: "chat" | "terminal") => { setView(v); localStorage.setItem("devcat.mobile.termView", v); };
+  // Chat first every time (History is a tap away)
+  const pickView = (v: "chat" | "terminal") => setView(v);
   /** Messages sent in the Chat view, shown until the transcript has them. */
   const [sent, setSent] = useState<string[]>([]);
   const seen = useMemo(() => (text: string) => setSent((x) => x.filter((y) => y !== text)), []);
@@ -136,11 +148,10 @@ export function Terminal({ id }: { id: string }) {
         setInfo(r.info);
         let cols = r.info.cols, rows = r.info.rows;
         const fromHere = r.info.origin.startsWith("phone:");
-        // Terminals started here follow the phone's screen, and so do the computer's while
-        // "fit" is on (they get their size back when this screen closes).
+        // Terminals started here follow the phone's screen; the computer's ones too while "fit"
+        // is on, once the computer has resized them (below)
         const size = box.current ? phoneSize(box.current, fontSize) : null;
-        if (size && (fromHere || (fitRef.current && !readonlyRef.current)) && (size.cols !== cols || size.rows !== rows)) {
-          if (!fromHere) computerSize.current ??= { cols, rows };
+        if (size && fromHere && (size.cols !== cols || size.rows !== rows)) {
           ({ cols, rows } = size);
           void host("pty_resize", { id, cols, rows }).catch(() => {});
         }
@@ -210,9 +221,7 @@ export function Terminal({ id }: { id: string }) {
       area?.removeEventListener("touchstart", onTouchStart);
       area?.removeEventListener("touchmove", onTouchMove);
       area?.removeEventListener("touchend", onTouchEnd);
-      // a terminal started on the computer: its own size back
-      const back = computerSize.current;
-      if (back) void host("pty_resize", { id, cols: back.cols, rows: back.rows }).catch(() => {});
+      // leaving it: the computer gives a terminal of its own its size back
       computerSize.current = null;
       void host("pty_detach", { id }).catch(() => {});
       t.dispose();
@@ -244,18 +253,16 @@ export function Terminal({ id }: { id: string }) {
       t.options.fontSize = fontSize;
       if (el.clientWidth === 0) return;
       const fromHere = info.origin.startsWith("phone:");
-      let want: { cols: number; rows: number } | null = null;
-      if (fromHere || (fitWidth && !readonly)) {
-        want = phoneSize(el, fontSize);
-        if (!fromHere) computerSize.current ??= { cols: t.cols, rows: t.rows };
+      if (fromHere || (fitWidth && !readonly && !noResize.current)) {
+        const want = phoneSize(el, fontSize);
+        if (want.cols === t.cols && want.rows === t.rows) return;
+        const own = { cols: t.cols, rows: t.rows };
+        void resizeTo(t, want, fromHere).then((ok) => { if (ok && !fromHere) computerSize.current ??= own; });
       } else if (computerSize.current) {
         // "fit" turned off: the computer's size again (scroll sideways to read it)
-        want = computerSize.current;
+        const own = computerSize.current;
         computerSize.current = null;
-      }
-      if (want && (want.cols !== t.cols || want.rows !== t.rows)) {
-        t.resize(want.cols, want.rows);
-        void host("pty_resize", { id, cols: want.cols, rows: want.rows }).catch(() => {});
+        void resizeTo(t, own, false);
       }
     };
     apply();

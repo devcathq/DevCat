@@ -15,6 +15,31 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, Value> {
     serde_json::from_value(args.get(name).cloned().unwrap_or(Value::Null)).map_err(|e| json!(format!("bad argument {name}: {e}")))
 }
 
+/// Desktop terminals a phone resized to its screen: pty id → (phone, own columns, own rows).
+static PHONE_SIZED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<String, (String, u16, u16)>>> = std::sync::LazyLock::new(Default::default);
+
+/// A desktop terminal this phone resized: its own size back.
+async fn restore_size(pty: &str, device: &str) {
+    let own = {
+        let mut sized = PHONE_SIZED.lock();
+        match sized.get(pty) {
+            Some((d, ..)) if d == device => sized.remove(pty),
+            _ => None,
+        }
+    };
+    if let Some((_, cols, rows)) = own {
+        let _ = crate::claude::pty::pty_resize(pty.to_string(), cols, rows).await;
+    }
+}
+
+/// A phone disconnected: every desktop terminal it resized gets its own size back.
+pub async fn restore_sizes(device: &str) {
+    let ptys: Vec<String> = PHONE_SIZED.lock().iter().filter(|(_, (d, ..))| d == device).map(|(k, _)| k.clone()).collect();
+    for p in ptys {
+        restore_size(&p, device).await;
+    }
+}
+
 /// A transcript entry without what a phone doesn't show: tool output (`toolUseResult`, and the
 /// content of `tool_result` blocks), which is most of a long session's size.
 fn compact_entry(mut e: Value) -> Value {
@@ -157,17 +182,26 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "pty_detach" => {
             let id: String = a!("id");
             client.detach(&id);
+            restore_size(&id, &client.device.id).await;
             Ok(Value::Null)
         }
         "pty_write" => out(crate::claude::pty::pty_write(a!("id"), a!("data")).await),
         "pty_resize" => {
-            // Only terminals the phone started: resizing a desktop terminal would garble its view there.
+            // A desktop terminal takes the phone's size while the phone shows it (so its program
+            // wraps to the phone's width) and gets its own back when the phone leaves it or
+            // disconnects (`restore_sizes`); the desktop shows it narrow meanwhile.
             let id: String = a!("id");
+            let (cols, rows): (u16, u16) = (a!("cols"), a!("rows"));
             let info = crate::claude::pty::info(&id).map_err(|e| json!(e.to_string()))?;
             if !info.origin.starts_with("phone:") {
-                return Ok(Value::Null);
+                let mut sized = PHONE_SIZED.lock();
+                let own = sized.entry(id.clone()).or_insert((client.device.id.clone(), info.cols, info.rows));
+                if (own.1, own.2) == (cols, rows) {
+                    sized.remove(&id); // asked for its own size: nothing to put back
+                }
             }
-            out(crate::claude::pty::pty_resize(id, a!("cols"), a!("rows")).await)
+            crate::claude::pty::pty_resize(id, cols, rows).await.map_err(|e| json!(e.to_string()))?;
+            Ok(json!({ "resized": true }))
         }
         "pty_close" => out(crate::claude::pty::pty_close(a!("id")).await),
         "claude_projects" => out(crate::claude::sessions::claude_projects().await),

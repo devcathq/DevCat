@@ -80,7 +80,8 @@ function phone(cmd: string, args: Record<string, unknown>): unknown {
       const info = terminals.find((t) => t.id === args.id) ?? terminals[0];
       return { info, data: btoa(unescape(encodeURIComponent(info.program === "zsh" ? "ava@macbook api-gateway % " : SCREEN))) };
     }
-    case "pty_detach": case "pty_write": case "pty_resize": return null;
+    case "pty_detach": case "pty_write": return null;
+    case "pty_resize": return { resized: true };
     case "pty_open": {
       const t = { id: `T${terminals.length + 1}`, cwd: String(args.cwd ?? HOME), program: String(args.program ?? "zsh"), agent: args.program === "claude", origin: "phone:Mock phone", startedAt: Date.now(), cols: 60, rows: 30 };
       terminals.push(t);
