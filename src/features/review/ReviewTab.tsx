@@ -10,7 +10,7 @@ import { Button, Checkbox, Dialog, ErrorBox, IconButton, Spinner, Textarea, Tool
 import { api, errMsg } from "../../lib/api";
 import type { ReviewChanged, ReviewDoc, ReviewNote, ReviewPage, ReviewRendered } from "../../lib/types";
 import type { Tab } from "../../tabs/types";
-import { setCloseGuard, useTabs } from "../../store/tabs";
+import { setCloseGuard, useTabVisible, useTabs } from "../../store/tabs";
 import { useConnections } from "../../store/connections";
 import { displayPath, isRemote } from "../../lib/remotePath";
 import { useFonts } from "../appearance/fonts";
@@ -209,7 +209,7 @@ function filePath(root: string, url: string, rel: string): string {
 function PageArea({ tabId, id, error, onSize }:
   { tabId: string; id: string | null; error: string | null; onSize: (s: { w: number; h: number }) => void }) {
   const ref = useRef<HTMLDivElement>(null);
-  const active = useTabs((s) => s.activeId === tabId);
+  const active = useTabVisible(tabId); // on screen, in whichever pane
   const zoom = useFonts((s) => s.uiZoom);
   const covered = useOverlayCovers(ref, active && !!id);
   const [placed, setPlaced] = useState(false);

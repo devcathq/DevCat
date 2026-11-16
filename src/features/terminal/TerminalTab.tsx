@@ -1,7 +1,7 @@
 // A terminal tab: a login shell in a folder (local, or on an SSH host / saved SSH session), on its
 // own, apart from any agent chat. Closing the tab ends the shell.
 import { useRef, useState } from "react";
-import { useTabs } from "../../store/tabs";
+import { useTabVisible, useTabs } from "../../store/tabs";
 import type { Tab } from "../../tabs/types";
 import { TerminalPane } from "../claude/TerminalPane";
 import { QuickBar } from "./QuickBar";
@@ -9,7 +9,9 @@ import { QuickBar } from "./QuickBar";
 type TerminalTabT = Extract<Tab, { type: "terminal" }>;
 
 export default function TerminalTab({ tab }: { tab: TerminalTabT }) {
-  const active = useTabs((s) => s.activeId === tab.id);
+  // on screen (fitted, drawing) vs where the user is (takes the keyboard): with split panes they differ
+  const visible = useTabVisible(tab.id);
+  const focused = useTabs((s) => s.activeId === tab.id) && visible;
   const [pty, setPty] = useState<string | null>(null);
   // The tab shows the title the program sets (a shell's user@host:dir, Claude Code's task), like
   // a terminal app's tab; back to the session's name when there's none. Windows' console starts a
@@ -23,7 +25,7 @@ export default function TerminalTab({ tab }: { tab: TerminalTabT }) {
   return (
     <div className="flex h-full flex-col bg-app">
       <div className="min-h-0 flex-1">
-        <TerminalPane cwd={tab.cwd} program={tab.program ?? null} getArgs={tab.args ? async () => tab.args! : undefined} name={tab.program ? "docker" : tab.connId ? "ssh" : "shell"} visible={active} onPty={setPty} onTitle={onTitle} />
+        <TerminalPane cwd={tab.cwd} program={tab.program ?? null} getArgs={tab.args ? async () => tab.args! : undefined} name={tab.program ? "docker" : tab.connId ? "ssh" : "shell"} visible={visible} focus={focused} onPty={setPty} onTitle={onTitle} />
       </div>
       <QuickBar ptyId={pty} cwd={tab.cwd} />
     </div>

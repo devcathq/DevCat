@@ -1,10 +1,9 @@
 import clsx from "clsx";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AppWindow, ArrowUpCircle, Cable, Sparkle, ChevronDown, Copy, CopyPlus, Crosshair, DoorOpen, Folder, Ghost, Layers, FolderPlus, GitBranch, ListTodo, LogOut, MousePointerClick, NotebookPen, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Shield, SquareArrowOutUpRight, Trash2, Users, X, Zap } from "lucide-react";
-import { isPinned, pin, unpin, usePins } from "../../features/files/pins";
+import { AppWindow, ArrowUpCircle, Cable, ChevronDown, Crosshair, DoorOpen, Folder, Ghost, Layers, FolderPlus, GitBranch, ListTodo, LogOut, MousePointerClick, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Shield, SquareArrowOutUpRight, Trash2, Users } from "lucide-react";
 import { openGhostChat } from "../../features/agent/ghost";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { Toaster } from "sonner";
 import ConnectionDialog from "../../features/connections/ConnectionDialog";
@@ -17,14 +16,10 @@ import { AiConnectionsDialog, ProviderPicker } from "../../features/claude/AiPro
 import GitPanel from "../../features/git/GitPanel";
 import NotesPanel from "../../features/notes/NotesPanel";
 import { openReviewDialog, ReviewUrlDialog } from "../../features/review/ReviewUrlDialog";
-import { createNote, noteInFocus, useNotes } from "../../features/notes/store";
-import { inFocus, useConnections, useFocusProject } from "../../store/connections";
+import { createNote } from "../../features/notes/store";
+import { useConnections, useFocusProject } from "../../store/connections";
 import { useContextMenu, type MenuItem } from "../../features/connections/ContextMenu";
 import { createProject, deleteProject, focusProject } from "../../features/connections/tree/projectActions";
-import { confirmDialog } from "../../features/connections/dialogs";
-import { detectSession } from "../../features/claude/store";
-import { useTabActivity } from "../../features/claude/activity";
-import { useQuickCommands } from "../../features/terminal/quickCommands";
 import { UpdateDialog } from "../../features/update/UpdateDialog";
 import { MobileDialog } from "../../features/mobile/MobileDialog";
 import { IntegrationsDialog } from "../../features/integrations/IntegrationsDialog";
@@ -46,20 +41,16 @@ import { zoomUi } from "../../features/appearance/fonts";
 import { PairPrompt } from "../../features/mobile/PairPrompt";
 import { startMobileStatus } from "../../features/mobile/store";
 import { startUpdateChecks, useUpdate } from "../../features/update/store";
-import { IS_MAC, IS_MAIN_WINDOW, NEW_WINDOW_SHORTCUT, openNewWindow, takeLaunchTab, type TabTransfer } from "../../lib/windows";
+import { IS_MAC, IS_MAIN_WINDOW, NEW_WINDOW_SHORTCUT, openNewWindow, takeLaunchTab } from "../../lib/windows";
 import "../../store/projectFolders";
-import { folderInFocus, useFolderProjects } from "../../store/folderProjects";
-import { sessionIdOf } from "../../lib/remotePath";
 import "../../features/files/openedFiles";
 import { openQuickOpen, QuickOpen, useQuickOpen } from "../../features/files/QuickOpen";
 import { openTab, useTabs } from "../../store/tabs";
 import { useUi, type SidebarView } from "../../store/ui";
-import { TabContent } from "../../tabs/registry";
-import { TabIcon, tabKindLabel } from "../../tabs/TabIcon";
-import { tabConnId, tabFolder, type Tab } from "../../tabs/types";
-import { IconButton, Spin } from "../ui";
+import { IconButton } from "../ui";
 import { AiTerminalIcon } from "../ui/AppIcons";
 import { SettingsMenu } from "./SettingsMenu";
+import { Workspace } from "./Workspace";
 
 export default function AppShell() {
   const load = useConnections((s) => s.load);
@@ -396,212 +387,6 @@ async function ghostChat() {
   const tabs = useTabs.getState();
   const active = tabs.tabs.find((t) => t.id === tabs.activeId);
   await openGhostChat(active?.type === "claude" ? active.providerId : null);
-}
-
-/** AI workspace tab title: pulsing "working" while the agent runs, a dot when it finished unseen. */
-function AgentTabTitle({ tabId, title }: { tabId: string; title: string }) {
-  const { working, done } = useTabActivity(tabId);
-  return (
-    <>
-      {working && <Spin icon={Sparkle} className="size-3 shrink-0 text-accent [animation-duration:2.4s]" />}
-      <span className="flex min-w-0 flex-col leading-tight">
-        <span className="truncate">{title}</span>
-        {working && <span className="working-text text-[10px] font-medium">working</span>}
-      </span>
-      {done && !working && <span className="size-1.5 shrink-0 rounded-full bg-ok" title="Finished" />}
-    </>
-  );
-}
-
-/** Spec + title of a tab, to recreate it in another window. */
-async function tabTransfer(t: Tab): Promise<TabTransfer> {
-  const { id, dirty, ...spec } = t;
-  // AI workspace on Claude: resume the session the terminal is on (it may have changed since the tab opened).
-  if (spec.type === "claude") return { ...spec, sessionId: (await detectSession(id)) ?? spec.sessionId ?? null };
-  return spec;
-}
-
-async function moveTabToWindow(t: Tab) {
-  if (t.dirty && t.type !== "query") {
-    const ok = await confirmDialog({
-      title: "Move tab",
-      message: <>The tab <b>{t.title}</b> has unsaved changes, which are not moved to the new window. Move it anyway?</>,
-      confirmLabel: "Move",
-      danger: true,
-    });
-    if (!ok) return;
-  }
-  if (await openNewWindow(useConnections.getState().focusProjectId, await tabTransfer(t))) useTabs.getState().close(t.id, true);
-}
-
-function Workspace() {
-  const { tabs: allTabs, activeId, activate, close, closeOthers } = useTabs();
-  const menu = useContextMenu();
-  const tabMenu = (e: React.MouseEvent, t: Tab) => {
-    const focusId = useConnections.getState().focusProjectId;
-    const transferable = t.type !== "welcome";
-    menu.show(e, [
-      // a ghost chat belongs to its window: closing that window deletes it
-      { label: "Move to new window", icon: <SquareArrowOutUpRight className="size-3.5" />, disabled: !transferable || (t.type === "claude" && !!t.ghost), onClick: () => void moveTabToWindow(t) },
-      // A copy of an AI workspace tab would run a second agent on the same session.
-      ...(t.type !== "claude"
-        ? [{ label: "Open copy in new window", icon: <Copy className="size-3.5" />, disabled: !transferable, onClick: async () => void openNewWindow(focusId, await tabTransfer(t)) } as MenuItem]
-        : []),
-      // Another shell / file browser on the same host (Xshell's duplicate session).
-      ...(t.type === "terminal" || t.type === "sftp"
-        ? [{ label: "Duplicate tab", icon: <CopyPlus className="size-3.5" />, onClick: () => { const { id: _id, title, dirty: _d, ...spec } = t; openTab(spec, title); } } as MenuItem]
-        : []),
-      // pinned files show at the top of the AI workspace's Files (features/files/pins.ts)
-      ...(t.type === "file"
-        ? [isPinned(usePins.getState().pins, t.path)
-          ? { label: "Unpin file", icon: <PinOff className="size-3.5" />, onClick: () => unpin(t.path) } as MenuItem
-          : { label: "Pin file", icon: <Pin className="size-3.5" />, onClick: () => pin(t.path, t.root ?? null) } as MenuItem]
-        : []),
-      ...((t.type === "terminal" || t.type === "claude") && !useQuickCommands.getState().visible
-        ? [{ label: "Show quick command bar", icon: <Zap className="size-3.5" />, onClick: () => useQuickCommands.getState().setVisible(true) } as MenuItem]
-        : []),
-      "separator",
-      { label: "Close", icon: <X className="size-3.5" />, onClick: () => close(t.id) },
-      { label: "Close others", disabled: allTabs.length < 2, onClick: () => closeOthers(t.id) },
-    ]);
-  };
-  // Focus mode hides tabs of other projects' connections, notes and folders (chats, terminals,
-  // files, Git): they stay mounted and come back on exit. A folder on an SSH session goes by that
-  // session's project, so its chat and terminal show together.
-  const connOf = (t: Tab) => tabConnId(t) ?? sessionIdOf(tabFolder(t));
-  const focusId = useConnections((s) => s.focusProjectId);
-  const connections = useConnections((s) => s.connections);
-  const notes = useNotes((s) => s.notes);
-  const folders = useFolderProjects((s) => s.folders);
-  const tabs = useMemo(
-    () => allTabs.filter((t) => t.type === "note"
-      ? noteInFocus(notes.find((n) => n.id === t.noteId)?.projectId)
-      : connOf(t) ? inFocus(connOf(t)) : folderInFocus(tabFolder(t))),
-    [allTabs, focusId, connections, notes, folders], // eslint-disable-line react-hooks/exhaustive-deps
-  );
-  const hiddenCount = allTabs.length - tabs.length;
-  const connName = (t: Tab) => { const id = tabConnId(t); return id ? connections.find((c) => c.id === id)?.name : undefined; };
-  const connColor = (t: Tab) => { const id = tabConnId(t); return id ? connections.find((c) => c.id === id)?.color : undefined; };
-  useEffect(() => {
-    if (!tabs.some((t) => t.id === activeId) && tabs.length) activate(tabs[tabs.length - 1].id);
-  }, [tabs, activeId, activate]);
-  const { barRef, drag, startDrag } = useTabDrag();
-  // Bring the active tab into view when it changes (a new tab opens at the end of a full bar).
-  // Only the bar scrolls: scrollIntoView would also move the containers around it.
-  useEffect(() => {
-    const bar = barRef.current;
-    const el = bar?.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(activeId ?? "")}"]`);
-    if (!bar || !el) return;
-    const b = bar.getBoundingClientRect(), r = el.getBoundingClientRect();
-    if (r.left < b.left) bar.scrollLeft -= b.left - r.left;
-    else if (r.right > b.left + bar.clientWidth) bar.scrollLeft += r.right - (b.left + bar.clientWidth);
-  }, [activeId, tabs.length, barRef]);
-  return (
-    <div className="flex h-full flex-col bg-panel">
-      <div ref={barRef} data-tour="tabs" className="no-select flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-line bg-app">
-        {tabs.map((t, i) => (
-          <div
-            key={t.id}
-            data-tab-id={t.id}
-            onMouseDown={(e) => {
-              if (e.button === 1) { e.preventDefault(); close(t.id); return; }
-              activate(t.id);
-              if (e.button === 0) startDrag(e, t.id);
-            }}
-            onContextMenu={(e) => tabMenu(e, t)}
-            title={drag ? undefined : tabKindLabel(t, connName(t))}
-            className={clsx(
-              "group relative flex max-w-56 shrink-0 cursor-default items-center gap-2 border-r border-line pl-3 pr-1.5",
-              t.id === activeId ? "bg-panel text-fg shadow-[inset_0_2px_0_var(--color-accent)]" : "text-muted hover:bg-panel/60",
-              drag?.id === t.id && "opacity-50",
-            )}
-          >
-            {/* Where the dragged tab lands: before this one (or after the last). */}
-            {drag && drag.before === t.id && drag.id !== t.id && tabs[i - 1]?.id !== drag.id && (
-              <span className="pointer-events-none absolute inset-y-1 -left-px w-0.5 rounded bg-accent" />
-            )}
-            {drag && drag.before === null && i === tabs.length - 1 && drag.id !== t.id && (
-              <span className="pointer-events-none absolute inset-y-1 -right-px w-0.5 rounded bg-accent" />
-            )}
-            {/* The connection's color (e.g. red for production) under its tabs. */}
-            {connColor(t) && <span className="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 rounded-t" style={{ background: connColor(t)! }} />}
-            <TabIcon tab={t} />
-            {t.type === "claude" ? <AgentTabTitle tabId={t.id} title={t.title} /> : <span className="truncate" title={t.title}>{t.title}</span>}
-            {t.dirty && <span className="size-1.5 rounded-full bg-accent" />}
-            <button
-              aria-label="Close tab"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => close(t.id)}
-              className="rounded p-0.5 opacity-0 hover:bg-hover group-hover:opacity-100"
-            >
-              <X className="size-3.5" />
-            </button>
-          </div>
-        ))}
-        {hiddenCount > 0 && (
-          <span className="ml-auto flex shrink-0 items-center px-3 text-[11px] text-faint" title="Tabs from other projects are hidden while focus mode is on">
-            {hiddenCount} tab{hiddenCount === 1 ? "" : "s"} hidden by focus
-          </span>
-        )}
-      </div>
-      {menu.element}
-      <div className="relative min-h-0 flex-1">
-        {/* Keep every tab mounted so editors and grids preserve their state. A hidden tab isn't
-            `display: none`: that drops its layout, and with it every scroll position (an HTML
-            preview's frame, a long file) once the tab shows again. `content-visibility: hidden`
-            keeps the layout but skips its rendering work (animations included), `invisible` is the
-            fallback where it isn't supported, and `inert` takes focus and clicks away from it. */}
-        {allTabs.map((t) => {
-          const hidden = t.id !== activeId || !tabs.includes(t);
-          return (
-            <div key={t.id} inert={hidden} className={clsx("absolute inset-0", hidden && "invisible [content-visibility:hidden]")}>
-              <TabContent tab={t} />
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/** Reorder tabs by dragging them along the tab bar (mouse events: Tauri's file drop handling
- *  gets in the way of HTML drag and drop). The bar scrolls when dragging near its edges. */
-function useTabDrag() {
-  const barRef = useRef<HTMLDivElement>(null);
-  const [drag, setDrag] = useState<{ id: string; before: string | null } | null>(null);
-  const startDrag = (e: React.MouseEvent, id: string) => {
-    const x0 = e.clientX;
-    let moving = false;
-    // The tab whose left half is under the pointer, or the next one; null = past the last.
-    const target = (x: number): string | null => {
-      for (const el of barRef.current?.querySelectorAll<HTMLElement>("[data-tab-id]") ?? []) {
-        const r = el.getBoundingClientRect();
-        if (x < r.left + r.width / 2) return el.dataset.tabId ?? null;
-      }
-      return null;
-    };
-    const onMove = (ev: MouseEvent) => {
-      if (!moving && Math.abs(ev.clientX - x0) < 5) return;
-      moving = true;
-      const bar = barRef.current;
-      if (bar) {
-        const r = bar.getBoundingClientRect();
-        if (ev.clientX < r.left + 24) bar.scrollLeft -= 16;
-        else if (ev.clientX > r.right - 24) bar.scrollLeft += 16;
-      }
-      const before = target(ev.clientX);
-      setDrag((d) => (d?.before === before && d.id === id ? d : { id, before }));
-    };
-    const onUp = (ev: MouseEvent) => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      if (moving) useTabs.getState().move(id, target(ev.clientX));
-      setDrag(null);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  };
-  return { barRef, drag, startDrag };
 }
 
 function StatusBar() {

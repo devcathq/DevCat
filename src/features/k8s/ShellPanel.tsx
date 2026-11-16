@@ -1,4 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { paneKey } from "../../lib/paneKeys";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { RotateCw } from "lucide-react";
@@ -55,7 +56,7 @@ export default function ShellPanel({ connId, target, visible, onPodChange }: { c
     enableGpu(term);
     termRef.current = { term, fit };
     // ⌘/Ctrl + = / - / 0 (font size), copy / paste / clear / select all: the same keys as the AI workspace terminals.
-    term.attachCustomKeyEventHandler((e) => e.type !== "keydown" || !(terminalZoomKey(e) || terminalEditKey(term, e)));
+    term.attachCustomKeyEventHandler((e) => e.type !== "keydown" || !(paneKey(e) || terminalZoomKey(e) || terminalEditKey(term, e)));
     const offCopy = copyOnSelect(term, host.current!);
     const offOsc52 = programCopy(term);
     const input = term.onData((d) => {

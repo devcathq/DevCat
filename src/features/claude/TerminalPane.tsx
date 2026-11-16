@@ -13,6 +13,7 @@ import { ptyEventsReady, subscribePty } from "./pty";
 import { openFile, resolvePath } from "./util";
 import { openExternally } from "../files/format";
 import { glassOn, onPaletteChange, palette } from "../appearance/store";
+import { paneKey } from "../../lib/paneKeys";
 import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
 import { terminalTheme } from "../appearance/themes";
 import { enableGpu } from "../../lib/xtermGpu";
@@ -83,7 +84,11 @@ export interface TerminalPaneProps {
   getArgs?: () => string[] | Promise<string[]>;
   /** Change to kill and restart the process. */
   startKey?: number;
+  /** On screen (fitted to its pane, drawing). */
   visible: boolean;
+  /** Where the user is: takes the keyboard. Defaults to `visible`; with split panes a visible
+   *  terminal in another pane isn't. */
+  focus?: boolean;
   /** Process name used in the exit line. */
   name: string;
   onPty?: (id: string | null) => void;
@@ -97,7 +102,7 @@ export interface TerminalPaneProps {
   activityId?: string;
 }
 
-export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, visible, name, onPty, onTitle, beforeRestart, shiftEnterNewline, activityId }: TerminalPaneProps) {
+export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, visible, focus = visible, name, onPty, onTitle, beforeRestart, shiftEnterNewline, activityId }: TerminalPaneProps) {
   const host = useRef<HTMLDivElement>(null);
   const termRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null);
   const ptyRef = useRef<string | null>(null);
@@ -110,6 +115,8 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
   /** Keys typed while a paste on an SSH host is being decided: sent after it, in order. */
   const heldInput = useRef<string[] | null>(null);
   const [restartNonce, setRestartNonce] = useNonce();
+  const focusRef = useRef(focus);
+  focusRef.current = focus;
   // Latest callbacks without re-running effects.
   const cb = useRef({ getArgs, onPty, onTitle, beforeRestart, cwd });
   cb.current = { getArgs, onPty, onTitle, beforeRestart, cwd };
@@ -159,8 +166,10 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
 
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
-      // App shortcuts (⌥⇧⌘1/2/3 view switch) belong to the app.
-      if (e.altKey && e.shiftKey && (e.metaKey || e.ctrlKey) && /^Digit\d$/.test(e.code)) return false;
+      // App shortcuts (⌥⇧⌘1/2/3 view switch, ⌥⇧⌘T terminal) belong to the app.
+      if (e.altKey && e.shiftKey && (e.metaKey || e.ctrlKey) && /^(Digit\d|KeyT)$/.test(e.code)) return false;
+      // ⌥⇧⌘ + \ - arrows: split / move between panes (window-level shortcuts of the workspace).
+      if (paneKey(e)) return false;
       // ⌘/Ctrl + = / - / 0: terminal font size (every terminal; same setting as Appearance → Fonts).
       if (terminalZoomKey(e)) return false;
       if (terminalEditKey(term, e)) return false;
@@ -340,7 +349,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
             t.term.write(`${RESET_MODES}\r\n\x1b[2m[${name} exited${code ? ` with code ${code}` : ""} — press Enter to restart]\x1b[0m\r\n`);
           },
         );
-        if (visible) t.term.focus();
+        if (focusRef.current) t.term.focus();
       } catch (e) {
         if (cancelled) return;
         exitedRef.current = true;
@@ -363,16 +372,17 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startKey, restartNonce, program, providerId]);
 
-  // Fit + focus when shown.
+  // Fit when shown; focus when it's where the user is.
   useEffect(() => {
     const t = termRef.current;
-    // Hidden terminals must not keep keyboard focus.
-    if (!visible) return void t?.term.blur();
+    // Hidden terminals, and those of panes the user left, must not keep keyboard focus.
+    if (!visible || !focus) t?.term.blur();
+    if (!visible) return;
     requestAnimationFrame(() => {
       try { t?.fit.fit(); } catch { /* ignore */ }
-      t?.term.focus();
+      if (focus) t?.term.focus();
     });
-  }, [visible]);
+  }, [visible, focus]);
 
   const menu = useContextMenu();
   const terminalMenu = (term: Terminal): MenuItem[] => {

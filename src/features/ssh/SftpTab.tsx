@@ -15,7 +15,7 @@ import { IconButton, Input, Spin } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import { remoteHost, remoteParts, remoteUri } from "../../lib/remotePath";
 import type { FileEntry } from "../../lib/types";
-import { openTab, useTabs } from "../../store/tabs";
+import { openTab, useTabVisible } from "../../store/tabs";
 import type { Tab } from "../../tabs/types";
 import { confirmDialog, promptDialog } from "../connections/dialogs";
 import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
@@ -161,7 +161,7 @@ export default function SftpTab({ tab }: { tab: SftpTabT }) {
     }
   }, []);
 
-  const active = useTabs((s) => s.activeId === tab.id);
+  const active = useTabVisible(tab.id);
   return (
     <div className="flex h-full flex-col bg-app">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line bg-panel px-3 text-[12px]">
