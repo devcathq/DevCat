@@ -25,6 +25,18 @@ export const useFocus = create<FocusState>(() => ({ projects: [], focus: null, c
 
 const key = (machine: string) => `devcat.mobile.focus.${machine}`;
 const claimsKey = (machine: string) => `devcat.mobile.focusFolders.${machine}`;
+/** The last list of the computer's projects (and its folders), shown while it isn't connected. */
+const cacheKey = (machine: string) => `devcat.mobile.focusCache.${machine}`;
+
+/** What was known about a computer's projects the last time it was connected. */
+export function showCached(machine: string) {
+  try {
+    const c = JSON.parse(localStorage.getItem(cacheKey(machine)) ?? "null") as { projects: Project[]; desktop: Record<string, string[]>; home: string | null } | null;
+    if (!c) return;
+    const saved = localStorage.getItem(key(machine));
+    useFocus.setState({ ...c, focus: c.projects.some((p) => p.id === saved) ? saved : null, claimed: loadClaims(machine) });
+  } catch { /* nothing cached */ }
+}
 
 function loadClaims(machine: string): Record<string, string[]> {
   try { return JSON.parse(localStorage.getItem(claimsKey(machine)) ?? "{}") as Record<string, string[]>; } catch { return {}; }
@@ -45,6 +57,7 @@ export async function loadFocus() {
     if (useApp.getState().current !== machine) return;
     const saved = localStorage.getItem(key(machine));
     useFocus.setState({ projects, focus: projects.some((p) => p.id === saved) ? saved : null, claimed: loadClaims(machine), desktop, home });
+    try { localStorage.setItem(cacheKey(machine), JSON.stringify({ projects, desktop, home })); } catch { /* quota */ }
   } catch { /* offline or an older computer: no focus */ }
 }
 

@@ -4,7 +4,7 @@
 import clsx from "clsx";
 import { Check, ChevronDown, Layers } from "lucide-react";
 import { useEffect, useState } from "react";
-import { focusedProject, loadFocus, setFocus, useFocus } from "../lib/focus";
+import { focusedProject, loadFocus, setFocus, showCached, useFocus } from "../lib/focus";
 import { useApp } from "../lib/store";
 import { Note, Sheet } from "../ui";
 
@@ -13,6 +13,8 @@ export function ProjectBar() {
   const online = useApp((s) => s.conn[s.current ?? ""]?.state === "online");
   const s = useFocus();
   const [open, setOpen] = useState(false);
+  // the last known list right away, the computer's own once it's connected
+  useEffect(() => { if (machine) showCached(machine); }, [machine]);
   useEffect(() => { if (online) void loadFocus(); }, [machine, online]);
   const p = focusedProject(s);
   return (
@@ -24,7 +26,10 @@ export function ProjectBar() {
       </button>
       <Sheet open={open} onClose={() => setOpen(false)} title="Focus on a project">
         <Choice on={!p} title="All projects" meta="Everything on this computer" onClick={() => { setFocus(null); setOpen(false); }} icon={<Layers className="size-4 text-muted" />} />
-        {s.projects.length === 0 && <Note>This computer has no projects yet. Create them in DevCat on the computer (the project menu at the top left).</Note>}
+        {s.projects.length === 0 && (online
+          ? <Note>This computer has no projects yet. Create them in DevCat on the computer (the project menu at the top left).</Note>
+          : <Note>Connect to the computer to see its projects.</Note>)}
+        {s.projects.length > 0 && !online && <div className="text-[11.5px] text-muted">Not connected: the projects as they were last time.</div>}
         {s.projects.map((x) => (
           <Choice key={x.id} on={p?.id === x.id} title={x.name}
             meta={x.folders?.length ? x.folders.map((f) => f.split(/[\\/]/).filter(Boolean).pop()).join(" · ") : "No code folders yet"}
