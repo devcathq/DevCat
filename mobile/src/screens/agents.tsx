@@ -91,6 +91,9 @@ export function Terminal({ id }: { id: string }) {
   /** Claude Code: its conversation as a readable chat (the session transcript), or the terminal. */
   const [view, setView] = useState<"chat" | "terminal">(() => (localStorage.getItem("devcat.mobile.termView") === "terminal" ? "terminal" : "chat"));
   const pickView = (v: "chat" | "terminal") => { setView(v); localStorage.setItem("devcat.mobile.termView", v); };
+  /** Messages sent in the Chat view, shown until the transcript has them. */
+  const [sent, setSent] = useState<string[]>([]);
+  const seen = useMemo(() => (text: string) => setSent((x) => x.filter((y) => y !== text)), []);
 
   const write = (data: string) => {
     if (readonly) return;
@@ -213,6 +216,7 @@ export function Terminal({ id }: { id: string }) {
 
   const send = () => {
     if (!text) { write("\r"); return; }
+    if (canChat && view === "chat") setSent((x) => [...x, text]);
     write(text);
     // A separate Enter, so the program doesn't treat it as part of a paste.
     setTimeout(() => write("\r"), 60);
@@ -257,7 +261,7 @@ export function Terminal({ id }: { id: string }) {
       right={<button aria-label="Terminal menu" className="flex size-9 items-center justify-center text-muted" onClick={() => setMenu(true)}><MoreVertical className="size-5" /></button>}>
       {error && <ErrorBox error={error} />}
       {canChat && <Seg value={view} onChange={pickView} options={[{ value: "chat", label: "Chat" }, { value: "terminal", label: "Terminal" }]} />}
-      {canChat && view === "chat" && <LiveTranscript cwd={agent!.cwd!} sessionId={agent!.sessionId!} working={agent?.status === "working"} />}
+      {canChat && view === "chat" && <LiveTranscript cwd={agent!.cwd!} sessionId={agent!.sessionId!} working={agent?.status === "working"} pending={sent} onSeen={seen} />}
       <div className={clsx("min-h-0 flex-1 overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1", canChat && view === "chat" && "hidden")} onPasteCapture={readonly ? undefined : pastedImages}>
         <div ref={box} className="h-full min-w-full" />
       </div>
@@ -434,7 +438,7 @@ type AgentSession = { id: string; title: string; updatedMs: number; messages: nu
 
 /** A Claude Code session as a chat, kept up to date while it's on screen (from its transcript
  *  file on the computer): scrolls like any list, whatever the terminal is drawing. */
-function LiveTranscript({ cwd, sessionId, working }: { cwd: string; sessionId: string; working: boolean }) {
+function LiveTranscript({ cwd, sessionId, working, pending, onSeen }: { cwd: string; sessionId: string; working: boolean; pending: string[]; onSeen: (text: string) => void }) {
   const [entries, setEntries] = useState<unknown[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -447,10 +451,17 @@ function LiveTranscript({ cwd, sessionId, working }: { cwd: string; sessionId: s
       host<unknown[]>("claude_transcript", { cwd, sessionId }).then((e) => { if (alive) { setEntries(e); setError(null); } }, (e) => { if (alive) setError(String(e)); });
     };
     load();
-    const t = setInterval(load, working ? 2000 : 6000);
-    return () => { alive = false; clearInterval(t); };
-  }, [cwd, sessionId, working]);
+    // just sent something: look again soon, it's in the transcript within a moment
+    const soon = pending.length ? setTimeout(load, 900) : undefined;
+    const t = setInterval(load, working || pending.length ? 2000 : 6000);
+    return () => { alive = false; clearInterval(t); if (soon) clearTimeout(soon); };
+  }, [cwd, sessionId, working, pending.length]);
   const list = useMemo(() => blocks(entries ?? []), [entries]);
+  // what was sent from here shows until the transcript has it
+  useEffect(() => {
+    const said = new Set(list.filter((b) => b.kind === "me").slice(-8).map((b) => b.text.trim()));
+    for (const p of pending) if (said.has(p.trim())) onSeen(p);
+  }, [list, pending, onSeen]);
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && stick.current && !touching.current) el.scrollTop = el.scrollHeight;
@@ -480,7 +491,10 @@ function LiveTranscript({ cwd, sessionId, working }: { cwd: string; sessionId: s
           ) : (
             <div key={i} className="selectable text-[13.5px]"><Markdown text={b.text.length > 6000 ? `${b.text.slice(0, 6000)}…` : b.text} /></div>
           ))}
-          {working && <div className="flex items-center gap-2 text-[12px] text-muted"><Spinner className="size-3.5" />Working…</div>}
+          {pending.map((p, i) => (
+            <div key={`p${i}`} className="max-w-[92%] self-end rounded-xl bg-accent/10 px-3 py-2 text-[13.5px] break-words whitespace-pre-wrap opacity-70">{p}</div>
+          ))}
+          {(working || pending.length > 0) && <div className="flex items-center gap-2 text-[12px] text-muted"><Spinner className="size-3.5" />Working…</div>}
         </div>
       )}
     </div>

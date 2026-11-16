@@ -36,6 +36,13 @@ function savedPolicy(): AgentPolicy {
   }
 }
 
+/** What was just sent shows at once (`echo-` items); the computer's own copy replaces it. */
+const ECHO = "echo-";
+function withoutEcho(c: Chat, batch: AgentLiveEvent[]): Chat {
+  if (!batch.some((e) => e.type === "turnStart" || e.type === "queued")) return c;
+  return { ...c, items: c.items.filter((i) => !i.key.startsWith(ECHO)) };
+}
+
 function toBase64(f: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -64,7 +71,7 @@ function useChat(cwd: string, providerId: string, initial: string | null, ghost:
       frame = 0;
       const batch = queued;
       queued = [];
-      setChat((c) => (c ? applyAll(c, batch) : c));
+      setChat((c) => (c ? applyAll(withoutEcho(c, batch), batch) : c));
     };
     const off = onEvent<{ sessionId: string; event: AgentLiveEvent; seq?: number }>("agent-event", (p) => {
       if (p.sessionId !== id.current && id.current) return;
@@ -135,13 +142,17 @@ export function AgentChat({ cwd, providerId, sessionId, first, ghost = false }: 
   };
 
   const send = async (text: string): Promise<boolean> => {
-    if (!chat || chat.busy || (!text.trim() && !attachments.length)) return false;
+    if (!chat || (!text.trim() && !attachments.length)) return false;
+    // shown right away; while it works, the computer queues it (`queued`)
+    const echo = `${ECHO}${Date.now()}`;
+    setChat((c) => c && { ...c, busy: true, items: [...c.items, { kind: "user", key: echo, text: text.trim(), attachments, queued: c.busy }] });
     try {
       // the window decides when the conversation gets summarized
       await host("agent_send", { sessionId: chat.sessionId, text: text.trim(), policy, model: chat.model || null, attachments, contextWindow: contextWindow(chat.model, models).tokens });
       setAttachments([]);
       return true;
     } catch (e) {
+      setChat((c) => c && { ...c, busy: c.items.some((i) => i.kind === "user" && i.key === echo) ? chat.busy : c.busy, items: c.items.filter((i) => i.key !== echo) });
       setError(errMsg(e));
       return false;
     }
@@ -683,7 +694,7 @@ function Composer({ chat, models, policy, onPolicy, onModel, attachments, setAtt
   }, [text]);
 
   const submit = async () => {
-    if ((!text.trim() && !attachments.length) || chat.busy) return;
+    if (!text.trim() && !attachments.length) return;
     const t = text;
     setText("");
     if (!(await onSend(t))) setText(t);
@@ -746,7 +757,7 @@ function Composer({ chat, models, policy, onPolicy, onModel, attachments, setAtt
             </svg>
             {pct}%
           </span>
-          {chat.busy ? (
+          {chat.busy && !text.trim() && !attachments.length ? (
             <button aria-label="Stop" onClick={onStop} className="flex size-9 shrink-0 items-center justify-center rounded-full bg-fg text-app active:opacity-85"><Square className="size-3.5 fill-current" /></button>
           ) : (
             <button aria-label="Send" onClick={() => void submit()} disabled={!text.trim() && !attachments.length}

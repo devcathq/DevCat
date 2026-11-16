@@ -39,6 +39,9 @@ class KeepAliveService : Service() {
             .setContentText("Tells you when an agent needs you or finishes")
             .setOngoing(true)
             .setShowWhen(false)
+            // never a sound or a pop-up, on phones that show low-importance ones anyway
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(open)
@@ -48,7 +51,13 @@ class KeepAliveService : Service() {
         } else {
             startForeground(ID, n)
         }
+        running = true
         return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        running = false
+        super.onDestroy()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -59,5 +68,9 @@ class KeepAliveService : Service() {
     companion object {
         private const val CHANNEL = "devcat-connection"
         private const val ID = 7301
+
+        /** Whether the service is up (in this process). */
+        @Volatile
+        var running = false
     }
 }

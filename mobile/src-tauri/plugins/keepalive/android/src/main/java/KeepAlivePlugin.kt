@@ -19,6 +19,12 @@ class KeepAlivePlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun start(invoke: Invoke) {
+        // Already running: starting it again would post its notification again (some phones show
+        // it as a pop-up every time).
+        if (KeepAliveService.running) {
+            invoke.resolve()
+            return
+        }
         try {
             ContextCompat.startForegroundService(activity, service())
             invoke.resolve()
