@@ -11,6 +11,8 @@ import { host, nav, toast, toastErr, top, useApp } from "../lib/store";
 import { SAVES_IN_BROWSER, copyText, download, relativePath, upload, type Stop } from "../lib/transfer";
 import type { ClaudeProject } from "../lib/types";
 import { Btn, Card, Confirm, Empty, ErrorBox, IconBtn, Input, Item, Loading, Note, Screen, Section, Seg, Sheet, TextArea, ago, folderName, useLoad } from "../ui";
+import { focusFolders, useFocus, useInFocus } from "../lib/focus";
+import { ProjectBar } from "./focus";
 import type { FileEntry, FilePreview } from "../../../src/lib/types";
 
 const sep = (p: string) => (p.includes("\\") && !p.includes("/") ? "\\" : "/");
@@ -124,11 +126,20 @@ export function FilesHome() {
   const home = useLoad(() => host<string | null>("home_dir"), []);
   const terms = useApp((s) => s.terms);
   const agents = useApp((s) => s.agents);
-  const sorted = useMemo(() => [...(projects.data ?? [])].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? "")), [projects.data]);
-  const active = useMemo(() => [...new Set(terms.map((t) => agents[t.id]?.cwd || t.cwd))], [terms, agents]);
+  const shown = useInFocus();
+  const own = focusFolders(useFocus());
+  const sorted = useMemo(() => [...(projects.data ?? [])].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? "")).filter((p) => shown(p.cwd) && !own.includes(p.cwd)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projects.data, own.join("|")]);
+  const active = useMemo(() => [...new Set(terms.map((t) => agents[t.id]?.cwd || t.cwd))].filter((d) => shown(d)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [terms, agents, own.join("|")]);
   const [path, setPath] = useState("");
   return (
     <Screen title="Files" sub="On the computer" tab="fileshome">
+      <ProjectBar />
+      {own.length > 0 && <Section>Project folders</Section>}
+      {own.map((d) => <Item key={d} icon={<Folder className="size-5 text-accent" />} title={folderName(d)} meta={d} onClick={() => nav.push({ s: "files", dir: d, root: d })} chevron />)}
       <div className="flex gap-2">
         <Input className="flex-1 font-mono text-[13px]" placeholder="~/Projects/app" value={path} onChange={(e) => setPath(e.target.value)} />
         <Btn disabled={!path.trim()} onClick={() => nav.push({ s: "files", dir: path.trim(), root: path.trim() })}>Open</Btn>

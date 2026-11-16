@@ -8,6 +8,8 @@ import type {
   CellValue, ConnectionConfig, ConnectionKind, HistoryEntry, Project, QueryResult, RowChange, SavedQuery, TableDataPage, TableRef, TableStructure, TreeNode,
 } from "../lib/types";
 import { Btn, Card, Confirm, Dot, Empty, ErrorBox, Field, IconBtn, Input, Item, Loading, Note, Screen, Section, Seg, Sheet, TextArea, ago, useLoad } from "../ui";
+import { useFocus } from "../lib/focus";
+import { ProjectBar } from "./focus";
 
 // SSH sessions never reach the phone (the computer leaves them out: see AGENTS.md); named for the type only.
 const KIND_LABEL: Record<ConnectionKind, string> = {
@@ -38,9 +40,10 @@ export function Data() {
   const open = useLoad(() => host<string[]>("open_connection_ids"), [], 15000);
   const history = useLoad(() => host<HistoryEntry[]>("history_list", { connectionId: null, search: null, limit: 5 }), []);
   const [q, setQ] = useState("");
+  const focus = useFocus((s) => s.focus);
   const groups = useMemo(() => {
     if (!data) return [];
-    const list = data.conns.filter((c) => c.kind !== "kubernetes" && c.kind !== "rabbitmq" && c.kind !== "docker" && (!q || c.name.toLowerCase().includes(q.toLowerCase())));
+    const list = data.conns.filter((c) => c.kind !== "kubernetes" && c.kind !== "rabbitmq" && c.kind !== "docker" && (!q || c.name.toLowerCase().includes(q.toLowerCase())) && (!focus || c.projectId === focus));
     const byProject = new Map<string, ConnectionConfig[]>();
     for (const c of list) {
       const k = c.projectId ?? "";
@@ -49,11 +52,12 @@ export function Data() {
     const ordered = [...data.projects].sort((a, b) => a.order - b.order).map((p) => ({ name: p.name, conns: byProject.get(p.id) ?? [] }));
     ordered.push({ name: "Other", conns: byProject.get("") ?? [] });
     return ordered.filter((g) => g.conns.length);
-  }, [data, q]);
+  }, [data, q, focus]);
   const names = Object.fromEntries((data?.conns ?? []).map((c) => [c.id, c.name]));
 
   return (
     <Screen title="Data" sub={useApp.getState().machines.find((m) => m.id === useApp.getState().current)?.name} right={<IconBtn label="Refresh" onClick={reload}><RefreshCw className="size-4" /></IconBtn>}>
+      <ProjectBar />
       <Input placeholder="Search connections" value={q} onChange={(e) => setQ(e.target.value)} />
       {loading ? <Loading /> : error ? <ErrorBox error={error} onRetry={reload} /> : groups.length === 0 ? (
         <Empty icon={<Database className="size-8" />} title="No database connections">Add connections in DevCat on the computer; they show up here.</Empty>

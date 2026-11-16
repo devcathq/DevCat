@@ -27,6 +27,8 @@ use store::{AuditEntry, Device, RelayChoice, RemoteSettings, RemoteStore};
 use tokio::sync::oneshot;
 
 const APPROVE_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a phone's ghost chats wait for it to reconnect before they end.
+const PHONE_GHOST_GRACE: Duration = Duration::from_secs(10 * 60);
 
 /// App events mirrored to phones (the host filters per phone).
 const FORWARDED: &[&str] = &[
@@ -258,8 +260,11 @@ struct AppBackend;
 #[async_trait::async_trait]
 impl Backend for AppBackend {
     async fn call(&self, client: &Arc<Client>, cmd: &str, args: Value) -> Result<Value, Value> {
+        // nothing of a ghost chat is recorded, not even that it was used (AGENTS.md)
+        let ghost = cmd.starts_with("agent_")
+            && (args.get("ghost").and_then(Value::as_bool) == Some(true) || args.get("sessionId").and_then(Value::as_str).is_some_and(crate::agent::is_ghost));
         let r = dispatch::call(client, cmd, &args).await;
-        if !dispatch::NOT_AUDITED.contains(&cmd) {
+        if !ghost && !dispatch::NOT_AUDITED.contains(&cmd) {
             if let Some(rm) = REMOTE.get() {
                 let reads = ["fs_list", "list_connections", "list_projects", "open_connection_ids", "host_info", "claude_projects", "claude_sessions", "ai_providers_list", "keep_awake_status", "net_list", "net_status", "db_children", "db_list_databases", "saved_queries_list", "history_list", "k8s_connect", "k8s_namespaces", "k8s_list", "k8s_cluster_overview", "k8s_metrics", "db_table_structure"];
                 // Log changes and data reads, not the background refreshes.
@@ -320,6 +325,17 @@ impl Backend for AppBackend {
         for s in client.streams() {
             let _ = crate::infra::k8s::streams::k8s_stream_stop(s).await;
         }
+        // The phone's ghost chats end if it doesn't come back soon (a dropped connection or a
+        // phone put away for a moment shouldn't lose the chat; a phone gone for good shouldn't
+        // leave one running).
+        let device = client.device.id.clone();
+        crate::rt::spawn(async move {
+            tokio::time::sleep(PHONE_GHOST_GRACE).await;
+            let back = REMOTE.get().is_some_and(|rm| rm.host.clients().iter().any(|c| c.device.id == device));
+            if !back {
+                crate::agent::close_ghosts_of(&crate::agent::phone_ghost(&device));
+            }
+        });
     }
 }
 

@@ -7,6 +7,8 @@ import type { PtyInfo } from "../lib/types";
 import { Empty, Screen, Section, Spinner, ago, duration, folderName } from "../ui";
 import { termSize } from "./agents";
 import { FolderSheet, cwdOf, useProjects } from "./chats";
+import { ProjectBar } from "./focus";
+import { focusFolders, useInFocus } from "../lib/focus";
 
 export function Terminals() {
   const terms = useApp((s) => s.terms);
@@ -14,6 +16,7 @@ export function Terminals() {
   const conn = useApp((s) => s.conn[s.current ?? ""]);
   const readonly = useApp((s) => s.machines.find((m) => m.id === s.current)?.access === "readonly");
   const projects = useProjects();
+  const shown = useInFocus();
   const [pick, setPick] = useState<"shell" | "claude" | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -37,11 +40,12 @@ export function Terminals() {
     }
   };
 
-  const shells = terms.filter((t) => !t.agent);
-  const agentTerms = terms.filter((t) => t.agent);
+  const shells = terms.filter((t) => !t.agent && shown(t.cwd));
+  const agentTerms = terms.filter((t) => t.agent && shown(cwdOf(t, agents[t.id])));
 
   return (
     <Screen title="Terminal" sub="Runs on the computer" tab="terminals" className="space-y-3 p-3">
+      <ProjectBar />
       {!readonly && (
         <div className="grid grid-cols-2 gap-2">
           <NewButton icon={<TerminalSquare className="size-5" />} title="New terminal" meta="A shell in a folder" disabled={!online || busy} onClick={() => setPick("shell")} />
@@ -62,12 +66,12 @@ export function Terminals() {
         return <TermRow key={t.id} t={t} title={folderName(cwdOf(t, a))} meta={<>{t.program} · {state}</>} right={ago(t.startedAt)} done={a?.status === "idle"} />;
       })}
 
-      {online && terms.length === 0 && (
+      {online && shells.length + agentTerms.length === 0 && (
         <Empty icon={<TerminalSquare className="size-8" />} title="No terminals open">Open a shell or Claude Code in one of your projects. It keeps running on the computer when you close this app.</Empty>
       )}
       {readonly && <div className="rounded-lg bg-hover px-3 py-2 text-center text-[12px] text-muted">Read-only access: you can watch terminals but not open or type in them.</div>}
 
-      <FolderSheet open={pick !== null} value={projects.sorted[0]?.cwd ?? ""} title={pick === "claude" ? "Open Claude Code in" : "Open a terminal in"}
+      <FolderSheet open={pick !== null} value={focusFolders()[0] ?? projects.sorted[0]?.cwd ?? ""} title={pick === "claude" ? "Open Claude Code in" : "Open a terminal in"}
         onClose={() => setPick(null)} onPick={(cwd) => void open(cwd, pick === "claude")} />
     </Screen>
   );

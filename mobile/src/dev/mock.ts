@@ -91,7 +91,13 @@ function phone(cmd: string, args: Record<string, unknown>): unknown {
     case "notify_recent": return { boot: "mock", notes: [] };
     case "audit": return [{ at: NOW - 120_000, device: "", deviceName: "Pixel 9", action: "pty_open", detail: "~/Projects/api-gateway (claude)", ok: true }];
     case "agent_decide": case "agent_answer": case "agent_approve": case "agent_models": return cmd === "agent_models" ? [] : null;
+    case "list_projects": return [
+      { id: "p-shop", name: "Acme Shop", color: "#22c55e", order: 0, folders: [P("storefront"), P("ui")] },
+      { id: "p-pay", name: "Payments", color: "#3b82f6", order: 1, folders: [P("api-gateway"), P("payments-worker")] },
+    ];
+    case "agent_close": return null;
     case "agent_open": {
+      if (args.ghost) return { ...(demoInvoke("agent_open", { ghostWindow: "mock" }, fromComputer) as object), sessionId: "mock-ghost" };
       // `mock-wait`: the demo chat stopped at the database dump, waiting for an OK
       if (args.sessionId !== "mock-wait") return undefined;
       const r = demoInvoke("agent_open", args, fromComputer) as { events: { event: string }[] } & Record<string, unknown>;

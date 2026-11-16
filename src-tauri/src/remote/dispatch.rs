@@ -81,8 +81,12 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             arg(args, $n)?
         };
     }
-    // a ghost chat stays in its window on the computer (agent.rs `ghost_dir`)
-    if cmd.starts_with("agent_") && arg::<String>(args, "sessionId").is_ok_and(|id| crate::agent::is_ghost(&id)) {
+    // a ghost chat stays where it was opened: a window's on the computer, a phone's on that phone
+    // (agent.rs `ghost_dir`)
+    if cmd.starts_with("agent_")
+        && let Ok(id) = arg::<String>(args, "sessionId")
+        && crate::agent::ghost_of(&id).is_some_and(|g| g != crate::agent::phone_ghost(&client.device.id))
+    {
         return Err(json!("That chat is a ghost chat: it's only in its window on the computer."));
     }
     match cmd {
@@ -199,7 +203,9 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         // DevCat Agent chats (src-tauri/src/agent.rs): the phone gets `agent-event`s of the chats it opened.
         "agent_open" => {
             let session_id: Option<String> = arg(args, "sessionId").unwrap_or(None);
-            if client.readonly() && !session_id.as_deref().is_some_and(crate::agent::exists) {
+            // this phone's ghost chat: nothing kept, ends when the phone leaves it (agent.rs)
+            let ghost = arg::<bool>(args, "ghost").unwrap_or(false).then(|| crate::agent::phone_ghost(&client.device.id));
+            if client.readonly() && (ghost.is_some() || !session_id.as_deref().is_some_and(crate::agent::exists)) {
                 return Err(json!("This phone has read-only access: it can watch chats but not start one."));
             }
             let origin = format!("phone:{}", client.device.name);
@@ -208,7 +214,8 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             if let Some(id) = &session_id {
                 client.attach(id);
             }
-            let opened = match crate::agent::open(expand_home(&arg::<String>(args, "cwd")?), a!("providerId"), session_id.clone(), &origin, &client.device.id, None, None, true).await {
+            let cwd = if ghost.is_some() { String::new() } else { expand_home(&arg::<String>(args, "cwd")?) };
+            let opened = match crate::agent::open(cwd, a!("providerId"), session_id.clone(), &origin, &client.device.id, None, ghost.as_deref(), ghost.is_none()).await {
                 Ok(o) => o,
                 Err(e) => {
                     if let Some(id) = &session_id {

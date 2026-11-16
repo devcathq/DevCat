@@ -2,12 +2,14 @@
 // project folder, with DevCat Agent, Claude Code or another agent), then the agents running and
 // the recent ones. Terminals without an agent are in the Terminal tab (terminals.tsx).
 import clsx from "clsx";
-import { AlertTriangle, ArrowUp, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, Clock, FolderOpen, History, Sparkles, TerminalSquare } from "lucide-react";
+import { AlertTriangle, ArrowUp, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, Clock, FolderOpen, Ghost, History, Sparkles, TerminalSquare } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { focusFolders, useFocus, useInFocus } from "../lib/focus";
 import { host, nav, refreshAgents, toastErr, useApp } from "../lib/store";
 import type { AgentChatInfo, AgentStatus, AiProvider, ClaudeProject, PtyInfo } from "../lib/types";
 import { Btn, Empty, ErrorBox, Input, Screen, Section, Sheet, Spinner, TextArea, ago, duration, folderName, useLoad } from "../ui";
 import { termSize } from "./agents";
+import { ProjectBar } from "./focus";
 
 const KEY_FOLDER = "devcat.mobile.lastFolder";
 const KEY_AGENT = "devcat.mobile.lastAgent";
@@ -28,13 +30,18 @@ export function FolderSheet({ open, value, onClose, onPick, title = "Project fol
   const projects = useProjects();
   const home = useLoad(() => host<string | null>("home_dir"), []);
   const [other, setOther] = useState("");
+  const focus = useFocus();
+  const shown = useInFocus();
+  const own = focusFolders(focus);
   const pick = (cwd: string) => { onPick(cwd); onClose(); };
+  // under a project's focus: its folders first, then recent ones inside them
+  const list = [...own.map((cwd) => ({ cwd })), ...projects.sorted.filter((p) => shown(p.cwd) && !own.includes(p.cwd))];
   return (
     <Sheet open={open} onClose={onClose} title={title}>
       {projects.error && <ErrorBox error={projects.error} />}
       {projects.loading && <Spinner />}
       <div className="space-y-1.5">
-        {projects.sorted.slice(0, 8).map((p) => (
+        {list.slice(0, 8).map((p) => (
           <button key={p.cwd} onClick={() => pick(p.cwd)} className={clsx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left active:bg-hover", value === p.cwd ? "bg-accent/10 ring-1 ring-accent/60" : "bg-raised")}>
             <FolderOpen className="size-5 shrink-0 text-muted" />
             <span className="min-w-0 flex-1"><span className="block truncate font-semibold">{folderName(p.cwd)}</span><span className="block truncate text-[11px] text-muted">{p.cwd}</span></span>
@@ -83,16 +90,32 @@ export async function startAgent(cwd: string, choice: AgentChoice, message: stri
 function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }) {
   const projects = useProjects();
   const choices = useAgentChoices();
+  const focus = useFocus();
+  const shown = useInFocus();
   const [cwd, setCwd] = useState(() => localStorage.getItem(KEY_FOLDER) ?? "");
   const [agentId, setAgentId] = useState<string | null>(() => localStorage.getItem(KEY_AGENT));
   const [text, setText] = useState("");
   const [sheet, setSheet] = useState<"folder" | "agent" | null>(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (!cwd && projects.sorted[0]) setCwd(projects.sorted[0].cwd); }, [projects.sorted, cwd]);
-  const agent = choices.find((c) => c.id === agentId) ?? choices[0];
+  /** A ghost chat: DevCat Agent in an empty scratch folder, keeping nothing (agent.rs). */
+  const [ghost, setGhost] = useState(false);
+  // a folder of the focused project, else the most recent one
+  useEffect(() => {
+    if (cwd && shown(cwd)) return;
+    const next = focusFolders(focus)[0] ?? projects.sorted.find((p) => shown(p.cwd))?.cwd ?? (focus.focus ? "" : projects.sorted[0]?.cwd ?? "");
+    if (next !== cwd) setCwd(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects.sorted, focus]);
+  const chatAgent = choices.find((c) => c.chat);
+  const agent = ghost ? chatAgent : choices.find((c) => c.id === agentId) ?? choices[0];
   const pickFolder = (c: string) => { setCwd(c); localStorage.setItem(KEY_FOLDER, c); };
   const pickAgent = (c: AgentChoice) => { setAgentId(c.id); localStorage.setItem(KEY_AGENT, c.id); setSheet(null); };
   const go = async () => {
+    if (ghost && agent) {
+      nav.push({ s: "agentchat", cwd: "", providerId: agent.id, sessionId: null, first: text.trim() || undefined, ghost: true });
+      setText("");
+      return;
+    }
     if (!cwd || !agent) return;
     setBusy(true);
     try {
@@ -106,20 +129,32 @@ function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }
   };
   if (readonly) return null;
   return (
-    <div className="rounded-2xl border border-line bg-raised p-2.5 shadow-sm focus-within:border-accent/70">
-      <TextArea rows={2} value={text} disabled={offline} placeholder={offline ? "Connect to the computer to start an agent" : "Ask an agent to build, fix or explain…"}
+    <div className={clsx("rounded-2xl border p-2.5 shadow-sm", ghost ? "border-fg/40 border-dashed bg-panel" : "border-line bg-raised focus-within:border-accent/70")}>
+      <TextArea rows={2} value={text} disabled={offline} placeholder={offline ? "Connect to the computer to start an agent" : ghost ? "Ask anything. Nothing of this chat is kept…" : "Ask an agent to build, fix or explain…"}
         className="max-h-40 min-h-14 resize-none border-0 bg-transparent px-1 focus:border-0"
         onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && text.trim()) { e.preventDefault(); void go(); } }} />
       <div className="mt-1 flex items-center gap-1.5">
-        <button onClick={() => setSheet("folder")} className="flex h-8 min-w-0 items-center gap-1 rounded-full bg-hover px-2.5 text-[12.5px] active:bg-line">
-          <FolderOpen className="size-3.5 shrink-0 text-muted" /><span className="truncate font-medium">{cwd ? folderName(cwd) : "Folder"}</span><ChevronDown className="size-3.5 shrink-0 text-faint" />
-        </button>
-        <button onClick={() => setSheet("agent")} className="flex h-8 min-w-0 items-center gap-1 rounded-full bg-hover px-2.5 text-[12.5px] active:bg-line">
-          {agent?.chat ? <Sparkles className="size-3.5 shrink-0 text-accent" /> : <TerminalSquare className="size-3.5 shrink-0 text-muted" />}
-          <span className="truncate font-medium">{agent?.name ?? "Agent"}</span><ChevronDown className="size-3.5 shrink-0 text-faint" />
-        </button>
+        {ghost ? (
+          <span className="flex h-8 min-w-0 items-center gap-1 rounded-full bg-hover/60 px-2.5 text-[12.5px] text-muted">No project · keeps nothing</span>
+        ) : (
+          <>
+            <button onClick={() => setSheet("folder")} className="flex h-8 min-w-0 items-center gap-1 rounded-full bg-hover px-2.5 text-[12.5px] active:bg-line">
+              <FolderOpen className="size-3.5 shrink-0 text-muted" /><span className="truncate font-medium">{cwd ? folderName(cwd) : "Folder"}</span><ChevronDown className="size-3.5 shrink-0 text-faint" />
+            </button>
+            <button onClick={() => setSheet("agent")} className="flex h-8 min-w-0 items-center gap-1 rounded-full bg-hover px-2.5 text-[12.5px] active:bg-line">
+              {agent?.chat ? <Sparkles className="size-3.5 shrink-0 text-accent" /> : <TerminalSquare className="size-3.5 shrink-0 text-muted" />}
+              <span className="truncate font-medium">{agent?.name ?? "Agent"}</span><ChevronDown className="size-3.5 shrink-0 text-faint" />
+            </button>
+          </>
+        )}
         <span className="flex-1" />
-        <button aria-label="Start" disabled={offline || busy || !cwd} onClick={() => void go()}
+        {chatAgent && (
+          <button aria-label="Ghost chat" aria-pressed={ghost} title="Ghost chat: keeps nothing" onClick={() => setGhost(!ghost)}
+            className={clsx("flex size-9 shrink-0 items-center justify-center rounded-full", ghost ? "bg-fg text-app" : "text-muted active:bg-hover")}>
+            <Ghost className="size-[18px]" />
+          </button>
+        )}
+        <button aria-label="Start" disabled={offline || busy || (!ghost && !cwd)} onClick={() => void go()}
           className="flex size-10 shrink-0 items-center justify-center rounded-full bg-accent text-accent-fg active:brightness-90 disabled:opacity-40">
           {busy ? <Spinner className="text-accent-fg" /> : <ArrowUp className="size-5" />}
         </button>
@@ -160,6 +195,7 @@ export function Chats() {
   const conn = useApp((s) => s.conn[s.current ?? ""]);
   const machine = useApp((s) => s.machines.find((m) => m.id === s.current));
   const readonly = machine?.access === "readonly";
+  const shown = useInFocus();
   const [, tick] = useState(0);
   useEffect(() => {
     void refreshAgents();
@@ -171,15 +207,19 @@ export function Chats() {
   const g = useMemo(() => {
     const agentTerms = terms.filter((t) => t.agent);
     const st = (t: PtyInfo) => agents[t.id]?.status;
+    // what needs you shows whatever the focus; the rest follows it
+    const mine = agentTerms.filter((t) => shown(cwdOf(t, agents[t.id])));
+    const myChats = chats.filter((c) => shown(c.cwd));
     return {
       waitingTerms: agentTerms.filter((t) => st(t) === "waiting"),
       waitingChats: chats.filter((c) => c.waiting),
-      workingTerms: agentTerms.filter((t) => st(t) === "working"),
-      workingChats: chats.filter((c) => c.busy && !c.waiting),
-      doneTerms: agentTerms.filter((t) => st(t) !== "waiting" && st(t) !== "working"),
-      doneChats: chats.filter((c) => !c.busy && !c.waiting),
+      workingTerms: mine.filter((t) => st(t) === "working"),
+      workingChats: myChats.filter((c) => c.busy && !c.waiting),
+      doneTerms: mine.filter((t) => st(t) !== "waiting" && st(t) !== "working"),
+      doneChats: myChats.filter((c) => !c.busy && !c.waiting),
     };
-  }, [terms, agents, chats]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terms, agents, chats, shown]);
   const needs = g.waitingTerms.length + g.waitingChats.length;
   const running = g.workingTerms.length + g.workingChats.length;
   const recent = g.doneTerms.length + g.doneChats.length;
@@ -191,6 +231,7 @@ export function Chats() {
       right={<button aria-label="All sessions" onClick={() => nav.push({ s: "sessions" })} className="flex size-9 items-center justify-center rounded-full text-muted active:bg-hover"><History className="size-5" /></button>}
       tab="agents" className="space-y-3 p-3"
     >
+      <ProjectBar />
       {!online && conn?.error && <ErrorBox error={conn.error} onRetry={() => void refreshAgents()} />}
 
       {needs > 0 && (
