@@ -97,6 +97,7 @@ function phone(cmd: string, args: Record<string, unknown>): unknown {
       { id: "p-shop", name: "Acme Shop", color: "#22c55e", order: 0, folders: [P("storefront"), P("ui")] },
       { id: "p-pay", name: "Payments", color: "#3b82f6", order: 1, folders: [P("api-gateway"), P("payments-worker")] },
       { id: "p-new", name: "interopera", color: "#8b5cf6", order: 2 },
+      { id: "p-ui", name: "UI", color: "#eab308", order: 3 },
     ];
     case "agent_close": return null;
     case "agent_open": {

@@ -1,8 +1,10 @@
 // Project focus on the phone, like the desktop's: pick one of the computer's projects and the
 // lists show only what belongs to it: its connections, and chats and terminals in its folders.
-// A project's folders are its code folders (set on the computer) and, as on the desktop, the
-// folders used while it was focused (`claim`: starting a chat or terminal there). The desktop
-// keeps its own list in its window, so the phone keeps one too. Nothing changes on the computer.
+// A folder is a project's when it's one of its code folders (set on the computer), one the desktop
+// used with it (its window's list, shared as `focus_folders`), one used with it on this phone
+// (`claim`: a chat or terminal started there under focus), or when it has the project's name (a
+// folder under the home folder called "DevCat" for the project "devcat"). Nothing changes on the
+// computer.
 import { create } from "zustand";
 import type { Project } from "./types";
 import { host, useApp } from "./store";
@@ -13,9 +15,13 @@ interface FocusState {
   focus: string | null;
   /** Folders used on this phone while a project was focused: project id → folders. */
   claimed: Record<string, string[]>;
+  /** The desktop's list: folder → project ids. */
+  desktop: Record<string, string[]>;
+  /** The computer's home folder (names above it don't count). */
+  home: string | null;
 }
 
-export const useFocus = create<FocusState>(() => ({ projects: [], focus: null, claimed: {} }));
+export const useFocus = create<FocusState>(() => ({ projects: [], focus: null, claimed: {}, desktop: {}, home: null }));
 
 const key = (machine: string) => `devcat.mobile.focus.${machine}`;
 const claimsKey = (machine: string) => `devcat.mobile.focusFolders.${machine}`;
@@ -29,10 +35,16 @@ export async function loadFocus() {
   const machine = useApp.getState().current;
   if (!machine) return;
   try {
-    const projects = [...(await host<Project[]>("list_projects"))].sort((a, b) => a.order - b.order);
+    const [list, desktop, home] = await Promise.all([
+      host<Project[]>("list_projects"),
+      // an older computer doesn't share its list
+      host<Record<string, string[]>>("focus_folders").catch(() => ({})),
+      host<string | null>("home_dir").catch(() => null),
+    ]);
+    const projects = [...list].sort((a, b) => a.order - b.order);
     if (useApp.getState().current !== machine) return;
     const saved = localStorage.getItem(key(machine));
-    useFocus.setState({ projects, focus: projects.some((p) => p.id === saved) ? saved : null, claimed: loadClaims(machine) });
+    useFocus.setState({ projects, focus: projects.some((p) => p.id === saved) ? saved : null, claimed: loadClaims(machine), desktop, home });
   } catch { /* offline or an older computer: no focus */ }
 }
 
@@ -56,7 +68,21 @@ const trim = (p: string) => p.replace(/[\\/]+$/, "");
 export function focusFolders(s: FocusState = useFocus.getState()): string[] {
   const p = focusedProject(s);
   if (!p) return [];
-  return [...new Set([...(p.folders ?? []), ...(s.claimed[p.id] ?? [])].map(trim).filter(Boolean))];
+  const desktop = Object.entries(s.desktop).filter(([, ids]) => ids.includes(p.id)).map(([f]) => f);
+  return [...new Set([...(p.folders ?? []), ...desktop, ...(s.claimed[p.id] ?? [])].map(trim).filter(Boolean))];
+}
+
+const norm = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** A folder has the project's name: it, or a folder it's in, under the home folder. */
+function namedLike(cwd: string, project: Project, home: string | null): boolean {
+  const want = norm(project.name);
+  if (!want) return false;
+  const c = trim(cwd).replace(/\\/g, "/");
+  const h = home ? trim(home).replace(/\\/g, "/") : null;
+  // without the home folder: skip the first two parts (/Users/<name>, /home/<name>)
+  const rest = h && (c === h || c.startsWith(`${h}/`)) ? c.slice(h.length) : h ? "" : c.split("/").slice(3).join("/");
+  return rest.split("/").some((part) => part && norm(part) === want);
 }
 
 /** A chat or terminal starts in `cwd` while a project is focused: the folder is that project's
@@ -76,7 +102,9 @@ export function claim(cwd: string, home?: string | null) {
 export function inFocus(cwd: string | null | undefined, s: FocusState = useFocus.getState()): boolean {
   if (!s.focus) return true;
   const c = trim(cwd ?? "");
-  return focusFolders(s).some((f) => c === f || c.startsWith(`${f}/`) || c.startsWith(`${f}\\`));
+  if (!c) return false;
+  const p = focusedProject(s);
+  return focusFolders(s).some((f) => c === f || c.startsWith(`${f}/`) || c.startsWith(`${f}\\`)) || (!!p && namedLike(c, p, s.home));
 }
 
 /** `inFocus` that re-renders when the focus changes. */

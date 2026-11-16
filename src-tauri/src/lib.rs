@@ -35,6 +35,7 @@ mod models;
 mod network;
 mod notes;
 mod notify;
+mod focus_folders;
 #[cfg(feature = "gui")]
 mod opened;
 mod projects;
@@ -108,6 +109,7 @@ fn init_backend(dir: std::path::PathBuf) {
     memory::init(dir.clone());
     network::start();
     notify::init(dir.clone());
+    focus_folders::init(dir.clone());
     remote::init(dir.clone());
     // after remote access: sync uses its relay choice
     memory::sync::init(dir.clone());
@@ -399,6 +401,7 @@ pub fn run() {
             claude::git::git_commit,
             // agent notifications (hooks → phones, channels, linked chats)
             notify::notify_settings,
+            focus_folders::focus_folders_save,
             notify::notify_save,
             notify::notify_test,
             notify::agents_status,

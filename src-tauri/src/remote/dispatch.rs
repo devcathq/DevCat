@@ -55,7 +55,7 @@ pub const WRITES: &[&str] = &[
 const PHONE_MEDIA_CAP: usize = 12 * 1024 * 1024;
 
 /// Calls too frequent or too private for the audit log (keystrokes, live views).
-pub const NOT_AUDITED: &[&str] = &["pty_write", "pty_resize", "pty_attach", "pty_detach", "net_traffic", "k8s_stream_stop", "agents", "home_dir", "agent_detach", "agent_models"];
+pub const NOT_AUDITED: &[&str] = &["pty_write", "pty_resize", "pty_attach", "pty_detach", "net_traffic", "k8s_stream_stop", "agents", "home_dir", "agent_detach", "agent_models", "notify_recent", "focus_folders"];
 
 /// A file transfer is many calls: log a download once (first piece) and an upload once (last piece).
 pub fn audit_skip(cmd: &str, args: &Value) -> bool {
@@ -96,6 +96,8 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "notify_settings" => out(crate::notify::notify_settings().await),
         "notify_save" => out(crate::notify::notify_save(a!("settings")).await),
         "notify_test" => out(crate::notify::notify_test().await),
+        // the folders used with each project on the computer, for the phone's project focus
+        "focus_folders" => Ok(json!(crate::focus_folders::load())),
         // what was notified lately, for a phone that was offline (DevCat Mobile watch.rs)
         "notify_recent" => Ok(crate::notify::recent()),
         "agents" => Ok(json!({
