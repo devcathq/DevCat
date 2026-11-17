@@ -12,10 +12,22 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-- **DevCat Agent keeps its plan through long work**: when a long chat is summarized to free the context window, the
+## 0.28.0 - 2026-11-17
+
+- **DevCat Agent keeps its plan through long work** (#172): when a long chat is summarized to free the context window, the
   agent's checklist now goes into the summary, so it carries on with the same plan instead of forgetting it. The plan
   panel also stays when you say "continue" after the agent paused. And the agent now pauses after 200 steps per
   message instead of 60 (change it with **Steps per turn** in the connection's settings; 0 means no limit).
+- **Notifications on the phone without ntfy** (#170): DevCat Mobile now gets the computer's notifications itself (the
+  same "Notify me when" rules), and catches up on the ones it missed while offline. On Android, **Stay connected in
+  the background** (More → Notifications) keeps the app connected. ntfy is gone from the Notifications tab.
+- **A simpler DevCat Mobile** (#170, #171): four tabs (Chats, Terminal, Files, More); Chats puts what needs you on top
+  with an "Ask an agent…" box; Terminal opens a plain shell or Claude Code in a folder you pick; tapping a
+  notification opens its chat. Terminals scroll by touch and wrap at the phone's width.
+- **Ghost chats and project focus on the phone** (#170, #171): start a ghost chat (no project, memory or connections,
+  keeps nothing) from the phone, and pick a project to see only its chats, terminals and connections.
+- **Android fixes** (#170): DevCat's own launcher icon instead of the placeholder, and scanning the pairing QR code no
+  longer crashes release builds.
 
 ## 0.27.0 - 2026-11-16
 
