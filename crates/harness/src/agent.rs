@@ -19,8 +19,12 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
 /// Default steps per turn before the agent stops and asks the user to continue (see
-/// [`Agent::max_steps`]); helpers always stop here.
-pub const MAX_STEPS: u32 = 60;
+/// [`Agent::max_steps`]). High enough for a long build or port; the repeat guard
+/// ([`MAX_SAME_CALL`]) catches a model stuck in a loop much sooner.
+pub const MAX_STEPS: u32 = 200;
+
+/// Steps a helper (`subagent`) takes before it gives up: it only looks around.
+pub const HELPER_MAX_STEPS: u32 = 60;
 
 /// Share of the context window at which the conversation is summarized before the next step.
 pub const COMPACT_AT: f64 = 0.8;
@@ -64,6 +68,31 @@ Don't call any tools: answer with the summary only, in this structure.
 6. Still to do: the remaining steps and open questions.
 
 Keep paths, names, numbers and error messages exact. Leave out what no longer matters.";
+
+/// The latest `todo_write` list in `session` as `[x]` / `[>]` / `[ ]` lines, if a step is still
+/// open (a finished list has nothing to carry on).
+fn open_todos(session: &Session) -> Option<String> {
+    let input = session.events().iter().rev().find_map(|e| match e {
+        SessionEvent::Assistant { content, .. } => content.iter().rev().find_map(|b| match b {
+            Block::ToolUse { name, input, .. } if name == TODO_WRITE => Some(input),
+            _ => None,
+        }),
+        _ => None,
+    })?;
+    let todos = input.get("todos")?.as_array()?;
+    let mut open = false;
+    let lines: Vec<String> = todos.iter().filter_map(|t| {
+        let content = t.get("content")?.as_str()?.trim();
+        let mark = match t.get("status").and_then(Value::as_str) {
+            Some("completed") => "[x]",
+            Some("in_progress") => { open = true; "[>]" }
+            _ => { open = true; "[ ]" }
+        };
+        (!content.is_empty()).then(|| format!("{mark} {content}"))
+    }).collect();
+    open.then(|| lines.join("
+"))
+}
 
 /// One model step. [`Llm`] is the real one; tests use a scripted model.
 #[async_trait]
@@ -268,12 +297,22 @@ impl Agent {
             r = self.model.step(&req, &mut ignore) => r?,
             _ = cancel.cancelled() => return Err(Error::Cancelled),
         };
-        let summary: String = reply.content.iter().filter_map(|b| match b {
+        let mut summary: String = reply.content.iter().filter_map(|b| match b {
             Block::Text { text } => Some(text.as_str()),
             _ => None,
         }).collect::<Vec<_>>().join("").trim().to_string();
         if summary.is_empty() {
             return Err(Error::Provider("The model returned an empty summary; the conversation was left as it was.".into()));
+        }
+        // the checklist lives in a `todo_write` call the summary replaces: carry it over word for
+        // word, so the model goes on with the same plan (and keeps updating it)
+        if let Some(list) = open_todos(session) {
+            summary.push_str(&format!("
+
+## Your checklist (`todo_write`) when the conversation was summarized
+{list}
+
+Go on from the step marked [>] and keep the list up to date with `todo_write`."));
         }
         session.append(SessionEvent::Compacted { summary: summary.clone(), model: self.model.name(), usage: reply.usage, tokens_before }).await?;
         on(AgentEvent::Compacted { summary, tokens_before, usage: reply.usage });
@@ -553,7 +592,7 @@ impl Agent {
                 hooks: self.hooks.clone(),
                 sandbox: self.sandbox,
                 inbox: Inbox::default(),
-                max_steps: MAX_STEPS,
+                max_steps: HELPER_MAX_STEPS,
                 allowed: self.allowed.clone(),
                 helper: Some(id.to_string()),
                 started: true,
@@ -574,7 +613,7 @@ impl Agent {
                 Ok(TurnEnd::Answered) if !answer.is_empty() => ToolOutput::ok(answer),
                 Ok(TurnEnd::Answered) => ToolOutput::err("The helper finished without an answer."),
                 Ok(TurnEnd::StepLimit) => ToolOutput::err(format!(
-                    "The helper stopped after {MAX_STEPS} steps without an answer.{}",
+                    "The helper stopped after {HELPER_MAX_STEPS} steps without an answer.{}",
                     if answer.is_empty() { String::new() } else { format!(" What it had so far:\n\n{answer}") }
                 )),
                 Err(Error::Cancelled) => ToolOutput::err("Stopped by the user."),

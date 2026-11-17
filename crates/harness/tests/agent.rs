@@ -289,6 +289,38 @@ async fn compact_on_request_and_nothing_to_compact() {
 }
 
 #[tokio::test]
+async fn compaction_carries_an_open_checklist_over() {
+    let (dir, mut session) = project().await;
+    let plan = json!({ "todos": [
+        { "content": "Read the code", "status": "completed" },
+        { "content": "Fix the bug", "status": "in_progress" },
+        { "content": "Run the tests", "status": "pending" },
+    ] });
+    let done = json!({ "todos": [{ "content": "Read the code", "status": "completed" }] });
+    let model = Scripted::new(vec![
+        vec![tool("t1", "todo_write", plan)],
+        vec![text("working")],
+        vec![text("Summary: fixing the bug.")],
+        vec![tool("t2", "todo_write", done)],
+        vec![text("all done")],
+        vec![text("Summary: finished.")],
+    ]);
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "system".into());
+    agent.turn(&mut session, "fix it", &Cancel::default(), &mut |_| {}).await.unwrap();
+    agent.compact(&mut session, None, &Cancel::default(), &mut |_| {}).await.unwrap();
+    let summary = session.messages()[0].text();
+    assert!(summary.contains("Summary: fixing the bug."));
+    assert!(summary.contains("[x] Read the code
+[>] Fix the bug
+[ ] Run the tests"), "{summary}");
+    // a finished list isn't carried over
+    agent.turn(&mut session, "go on", &Cancel::default(), &mut |_| {}).await.unwrap();
+    agent.compact(&mut session, None, &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert!(!session.messages()[0].text().contains("checklist"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn in_the_sandbox_commands_still_ask() {
     for sandbox in [false, true] {
         let (dir, mut session) = project().await;
