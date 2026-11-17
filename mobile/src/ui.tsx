@@ -1,7 +1,7 @@
 // Phone UI primitives in DevCat's dark theme: screen with header + bottom tabs, list items,
 // cards, buttons, toggles, segmented controls, sheets and confirm dialogs.
 import clsx from "clsx";
-import { ChevronLeft, ChevronRight, FolderOpen, Loader2, MessageCircle, MoreHorizontal, TerminalSquare } from "lucide-react";
+import { ChevronLeft, ChevronRight, FolderOpen, Loader2, MessageCircle, MoreHorizontal, TerminalSquare, Wrench } from "lucide-react";
 import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { nav, useApp, waitingCount } from "./lib/store";
 import type { TabRoot } from "./lib/types";
@@ -10,6 +10,7 @@ const TABS: { id: TabRoot; label: string; icon: ReactNode }[] = [
   { id: "agents", label: "Chats", icon: <MessageCircle className="size-[22px]" /> },
   { id: "terminals", label: "Terminal", icon: <TerminalSquare className="size-[22px]" /> },
   { id: "fileshome", label: "Files", icon: <FolderOpen className="size-[22px]" /> },
+  { id: "tools", label: "Tools", icon: <Wrench className="size-[22px]" /> },
   { id: "more", label: "More", icon: <MoreHorizontal className="size-[22px]" /> },
 ];
 

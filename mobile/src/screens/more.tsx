@@ -9,6 +9,18 @@ import type { AuditEntry, HostInfo, NotifySettings } from "../lib/types";
 import { Badge, Btn, Card, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Note, Screen, Section, Toggle, TextArea, ago, useLoad } from "../ui";
 
 
+/** The Tools tab: what DevCat reaches on the computer besides agents and files. */
+export function Tools() {
+  const machine = useApp((s) => s.machines.find((m) => m.id === s.current));
+  return (
+    <Screen title="Tools" sub={machine?.name} tab="tools">
+      <Item icon={<Database className="size-5" />} title="Data" meta="Databases and Redis: browse, query, edit" onClick={() => nav.push({ s: "data" })} chevron />
+      <Item icon={<Network className="size-5" />} title="VPN & tunnels" meta="Connect, disconnect, logs" onClick={() => nav.push({ s: "network" })} chevron />
+      <Item icon={<Boxes className="size-5" />} title="Cluster" meta="Kubernetes pods and logs" onClick={() => nav.push({ s: "cluster" })} chevron />
+    </Screen>
+  );
+}
+
 export function More() {
   const machine = useApp((s) => s.machines.find((m) => m.id === s.current));
   const info = useApp((s) => s.info);
@@ -39,10 +51,6 @@ export function More() {
           </div>
         </Card>
       )}
-      <Section>Tools</Section>
-      <Item icon={<Database className="size-5" />} title="Data" meta="Databases and Redis" onClick={() => nav.push({ s: "data" })} chevron />
-      <Item icon={<Network className="size-5" />} title="VPN & tunnels" meta="Connect, disconnect, logs" onClick={() => nav.push({ s: "network" })} chevron />
-      <Item icon={<Boxes className="size-5" />} title="Cluster" meta="Kubernetes pods and logs" onClick={() => nav.push({ s: "cluster" })} chevron />
       <Section>This computer</Section>
       <Item icon={<Bell className="size-5" />} title="Notifications" meta="When an agent finishes or needs you" onClick={() => nav.push({ s: "notify" })} chevron />
       <Item icon={<Coffee className="size-5" />} title="Keep computer awake" meta="So it stays reachable" right={<Toggle on={!!awake.data?.on} disabled={readonly || awake.loading} onChange={(v) => void setAwake(v)} />} />

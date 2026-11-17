@@ -3,7 +3,7 @@
 //!
 //! Commands (all errors are user-facing strings):
 //!   m_info, m_set_name, m_machines, m_pair, m_call, m_connect, m_disconnect, m_forget,
-//!   m_set_addrs, m_network_changed, m_download, m_visible, m_background, m_background_set,
+//!   m_set_addrs, m_network_changed, m_resume, m_download, m_visible, m_background, m_background_set,
 //!   m_battery_settings
 //! Events: `m-conn` ({ id, state: connecting|online|offline, error? }),
 //!         `m-event` ({ id, event, payload }), `m-pair` ({ stage, hostName }),
@@ -114,6 +114,13 @@ fn m_set_addrs(app: State<'_, App>, id: String, addrs: Vec<String>) -> Result<Ve
     Ok(app.store.machines())
 }
 
+/// Back on screen: keep the connections that still answer (client.rs `resume`).
+#[tauri::command]
+async fn m_resume(app: State<'_, App>) -> Result<(), String> {
+    app.client.resume().await;
+    Ok(())
+}
+
 #[tauri::command]
 async fn m_network_changed(app: State<'_, App>) -> Result<(), String> {
     app.client.network_changed().await;
@@ -130,9 +137,10 @@ fn m_visible(watch: State<'_, Arc<Watch>>, visible: bool) {
 /// optimization. Starts the service when it's on and isn't running yet (the app is on screen:
 /// the page asks when it starts). Async: the plugin call needs the main thread free.
 #[tauri::command]
-async fn m_background(handle: tauri::AppHandle, watch: State<'_, Arc<Watch>>) -> Result<Value, String> {
+async fn m_background(handle: tauri::AppHandle, app: State<'_, App>, watch: State<'_, Arc<Watch>>) -> Result<Value, String> {
     let ka = handle.keep_alive();
-    if ka.supported() && watch.keep() {
+    // nothing to stay connected to before a computer is paired
+    if ka.supported() && watch.keep() && !app.store.machines().is_empty() {
         ka.start()?;
     }
     Ok(json!({ "supported": ka.supported(), "on": watch.keep(), "batteryUnrestricted": ka.battery_unrestricted() }))
@@ -146,7 +154,7 @@ async fn m_background_set(handle: tauri::AppHandle, app: State<'_, App>, watch: 
     }
     if on { ka.start()? } else { ka.stop()? }
     let mut p = app.store.prefs();
-    p.background = on;
+    p.background = Some(on);
     app.store.save_prefs(&p)?;
     watch.set_keep(on);
     Ok(json!({ "supported": true, "on": on, "batteryUnrestricted": ka.battery_unrestricted() }))
@@ -264,6 +272,10 @@ pub async fn bridge_call(app: &App, version: &str, cmd: &str, args: Value) -> Re
             app.client.network_changed().await;
             Ok(Value::Null)
         }
+        "m_resume" => {
+            app.client.resume().await;
+            Ok(Value::Null)
+        }
         _ => Err(json!(format!("unknown command {cmd}"))),
     }
 }
@@ -297,10 +309,15 @@ pub fn run() {
             let store = Arc::new(Store::new(dir));
             let handle = app.handle().clone();
             let shown = handle.clone();
-            let notifier: watch::Notifier = Arc::new(move |title, body| {
+            let notifier: watch::Notifier = Arc::new(move |title, body, open| {
                 use tauri_plugin_notification::NotificationExt;
                 // devcat_notify: the status bar icon from the keepalive plugin (Android).
-                let _ = shown.notification().builder().title(title).body(body).icon("devcat_notify").show();
+                let mut b = shown.notification().builder().title(title).body(body).icon("devcat_notify");
+                // tapped: App.tsx opens it (the plugin's `onAction`)
+                if let Some(o) = open {
+                    b = b.extra("open", o);
+                }
+                let _ = b.show();
             });
             let watch = Watch::new(store.clone(), notifier);
             // The sink comes before the client; the watcher reaches the client through this.
@@ -331,7 +348,7 @@ pub fn run() {
             app.manage(App { client, store });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![m_info, m_set_name, m_machines, m_pair, m_connect, m_call, m_disconnect, m_forget, m_set_addrs, m_network_changed, m_download, m_visible, m_background, m_background_set, m_battery_settings])
+        .invoke_handler(tauri::generate_handler![m_info, m_set_name, m_machines, m_pair, m_connect, m_call, m_disconnect, m_forget, m_set_addrs, m_network_changed, m_resume, m_download, m_visible, m_background, m_background_set, m_battery_settings])
         .run(tauri::generate_context!())
         .expect("error while running DevCat Mobile");
 }

@@ -24,7 +24,7 @@ const terminals = [
   { id: "T4", cwd: P("api-gateway"), program: "zsh", agent: false, origin: "desktop", startedAt: NOW - 5 * 3_600_000, cols: 60, rows: 30 },
 ];
 const statuses = [
-  { ptyId: "T1", cwd: P("storefront"), status: "waiting", since: NOW - 60_000, message: "Claude needs your permission to use Bash" },
+  { ptyId: "T1", cwd: P("storefront"), sessionId: "s1", status: "waiting", since: NOW - 60_000, message: "Claude needs your permission to use Bash" },
   { ptyId: "T2", cwd: P("api-gateway"), status: "working", since: NOW - 2 * 60_000 - 14_000 },
   { ptyId: "T3", cwd: P("ui"), status: "idle", since: NOW - 7 * 60_000, lastTurnMs: 192_000 },
 ];
@@ -32,7 +32,9 @@ const chats = [
   { sessionId: "demo-chat", cwd: P("storefront"), title: "Refunds in the last 30 days", providerId: "devcat-agent", providerName: "DevCat Agent", origin: "desktop", busy: false, waiting: null, since: NOW - 2 * 60_000 },
 ];
 
+const HISTORY = Array.from({ length: 80 }, (_, i) => `  earlier output line ${i + 1}\r\n`).join("");
 const SCREEN = [
+  HISTORY,
   "\x1b[1m✻ Welcome to Claude Code!\x1b[0m\r\n\r\n",
   "\x1b[2m> \x1b[0mRun the checkout tests and fix what fails\r\n\r\n",
   "⏺ I'll run the test suite first.\r\n\r\n",
@@ -65,6 +67,10 @@ function phone(cmd: string, args: Record<string, unknown>): unknown {
       { id: "s2", title: "Add Apple Pay to the payment sheet", messageCount: 112, updatedAt: new Date(NOW - 26 * 3_600_000).toISOString(), gitBranch: "feat/apple-pay", costUsd: 4.1 },
     ];
     case "claude_transcript": return [
+      ...Array.from({ length: 6 }, (_, i) => [
+        { type: "user", message: { role: "user", content: `Step ${i + 1}: look at the checkout flow and tell me what's slow` } },
+        { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: `Here's what I found in step ${i + 1}:\n\n- The **cart total** is computed twice per render\n- \`getShipping()\` calls the API without a cache\n- Images load at full size on mobile` }, { type: "tool_use", name: "Read", input: { file_path: "src/checkout/Cart.tsx" } }] } },
+      ]).flat(),
       { type: "user", message: { role: "user", content: "Run the checkout tests and fix what fails" } },
       { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "I'll run the test suite first." }, { type: "tool_use", name: "Bash", input: { command: "npm test -- checkout" } }] } },
     ];
@@ -74,7 +80,8 @@ function phone(cmd: string, args: Record<string, unknown>): unknown {
       const info = terminals.find((t) => t.id === args.id) ?? terminals[0];
       return { info, data: btoa(unescape(encodeURIComponent(info.program === "zsh" ? "ava@macbook api-gateway % " : SCREEN))) };
     }
-    case "pty_detach": case "pty_write": case "pty_resize": return null;
+    case "pty_detach": case "pty_write": return null;
+    case "pty_resize": return { resized: true };
     case "pty_open": {
       const t = { id: `T${terminals.length + 1}`, cwd: String(args.cwd ?? HOME), program: String(args.program ?? "zsh"), agent: args.program === "claude", origin: "phone:Mock phone", startedAt: Date.now(), cols: 60, rows: 30 };
       terminals.push(t);
@@ -91,7 +98,21 @@ function phone(cmd: string, args: Record<string, unknown>): unknown {
     case "notify_recent": return { boot: "mock", notes: [] };
     case "audit": return [{ at: NOW - 120_000, device: "", deviceName: "Pixel 9", action: "pty_open", detail: "~/Projects/api-gateway (claude)", ok: true }];
     case "agent_decide": case "agent_answer": case "agent_approve": case "agent_models": return cmd === "agent_models" ? [] : null;
+    case "list_projects": return [
+      { id: "p-shop", name: "Acme Shop", color: "#22c55e", order: 0, folders: [P("storefront"), P("ui")] },
+      { id: "p-pay", name: "Payments", color: "#3b82f6", order: 1, folders: [P("api-gateway"), P("payments-worker")] },
+      { id: "p-new", name: "interopera", color: "#8b5cf6", order: 2 },
+      { id: "p-ui", name: "UI", color: "#eab308", order: 3 },
+    ];
+    case "agent_close": return null;
     case "agent_open": {
+      if (args.ghost) return { ...(demoInvoke("agent_open", { ghostWindow: "mock" }, fromComputer) as object), sessionId: "mock-ghost" };
+      // `mock-long`: the demo chat four times over, longer than the screen
+      if (args.sessionId === "mock-long") {
+        const r = demoInvoke("agent_open", args, fromComputer) as { events: { event: string }[] } & Record<string, unknown>;
+        const body = r.events.filter((e) => e.event !== "meta" && e.event !== "title");
+        return { ...r, sessionId: "mock-long", events: [r.events[0], ...body, ...body, ...body, ...body] };
+      }
       // `mock-wait`: the demo chat stopped at the database dump, waiting for an OK
       if (args.sessionId !== "mock-wait") return undefined;
       const r = demoInvoke("agent_open", args, fromComputer) as { events: { event: string }[] } & Record<string, unknown>;
@@ -122,7 +143,7 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
     case "m_machines": return [machine] as T;
     case "m_connect": setTimeout(() => emit("m-conn", { id: MACHINE, state: "online" }), 0); return { host: phone("host_info", {}), device: { access: "full" } } as T;
     case "m_call": return call(String(args.cmd), (args.args as Record<string, unknown>) ?? {}) as T;
-    case "m_visible": case "m_disconnect": case "m_network_changed": case "m_set_name": return null as T;
+    case "m_visible": case "m_disconnect": case "m_network_changed": case "m_resume": case "m_set_name": return null as T;
     case "m_background": case "m_background_set": return { supported: true, on: !!args.on, batteryUnrestricted: false } as T;
     default: throw `Not in the mock: ${cmd}`;
   }
@@ -140,6 +161,7 @@ export async function listen(event: string, h: Handler): Promise<UnlistenFn> {
 // plugin-notification
 export async function isPermissionGranted() { return true; }
 export async function requestPermission() { return "granted"; }
+export async function onAction(_cb: unknown) { return { unregister: async () => {} }; }
 export function sendNotification(n: unknown) { console.log("[mock] notification", n); }
 
 // plugin-barcode-scanner

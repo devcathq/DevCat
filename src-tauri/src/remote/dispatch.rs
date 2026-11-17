@@ -15,6 +15,45 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, Value> {
     serde_json::from_value(args.get(name).cloned().unwrap_or(Value::Null)).map_err(|e| json!(format!("bad argument {name}: {e}")))
 }
 
+/// Desktop terminals a phone resized to its screen: pty id → (phone, own columns, own rows).
+static PHONE_SIZED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<String, (String, u16, u16)>>> = std::sync::LazyLock::new(Default::default);
+
+/// A desktop terminal this phone resized: its own size back.
+async fn restore_size(pty: &str, device: &str) {
+    let own = {
+        let mut sized = PHONE_SIZED.lock();
+        match sized.get(pty) {
+            Some((d, ..)) if d == device => sized.remove(pty),
+            _ => None,
+        }
+    };
+    if let Some((_, cols, rows)) = own {
+        let _ = crate::claude::pty::pty_resize(pty.to_string(), cols, rows).await;
+    }
+}
+
+/// A phone disconnected: every desktop terminal it resized gets its own size back.
+pub async fn restore_sizes(device: &str) {
+    let ptys: Vec<String> = PHONE_SIZED.lock().iter().filter(|(_, (d, ..))| d == device).map(|(k, _)| k.clone()).collect();
+    for p in ptys {
+        restore_size(&p, device).await;
+    }
+}
+
+/// A transcript entry without what a phone doesn't show: tool output (`toolUseResult`, and the
+/// content of `tool_result` blocks), which is most of a long session's size.
+fn compact_entry(mut e: Value) -> Value {
+    if let Some(o) = e.as_object_mut() {
+        o.remove("toolUseResult");
+    }
+    if let Some(blocks) = e.pointer_mut("/message/content").and_then(Value::as_array_mut) {
+        for b in blocks.iter_mut().filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
+            b["content"] = Value::String(String::new());
+        }
+    }
+    e
+}
+
 fn out<T: serde::Serialize>(r: crate::error::AppResult<T>) -> CallResult {
     r.map(|v| serde_json::to_value(v).unwrap_or(Value::Null)).map_err(|e| json!(e.to_string()))
 }
@@ -55,7 +94,7 @@ pub const WRITES: &[&str] = &[
 const PHONE_MEDIA_CAP: usize = 12 * 1024 * 1024;
 
 /// Calls too frequent or too private for the audit log (keystrokes, live views).
-pub const NOT_AUDITED: &[&str] = &["pty_write", "pty_resize", "pty_attach", "pty_detach", "net_traffic", "k8s_stream_stop", "agents", "home_dir", "agent_detach", "agent_models"];
+pub const NOT_AUDITED: &[&str] = &["pty_write", "pty_resize", "pty_attach", "pty_detach", "net_traffic", "k8s_stream_stop", "agents", "home_dir", "agent_detach", "agent_models", "notify_recent", "focus_folders"];
 
 /// A file transfer is many calls: log a download once (first piece) and an upload once (last piece).
 pub fn audit_skip(cmd: &str, args: &Value) -> bool {
@@ -81,8 +120,12 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             arg(args, $n)?
         };
     }
-    // a ghost chat stays in its window on the computer (agent.rs `ghost_dir`)
-    if cmd.starts_with("agent_") && arg::<String>(args, "sessionId").is_ok_and(|id| crate::agent::is_ghost(&id)) {
+    // a ghost chat stays where it was opened: a window's on the computer, a phone's on that phone
+    // (agent.rs `ghost_dir`)
+    if cmd.starts_with("agent_")
+        && let Ok(id) = arg::<String>(args, "sessionId")
+        && crate::agent::ghost_of(&id).is_some_and(|g| g != crate::agent::phone_ghost(&client.device.id))
+    {
         return Err(json!("That chat is a ghost chat: it's only in its window on the computer."));
     }
     match cmd {
@@ -92,6 +135,8 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "notify_settings" => out(crate::notify::notify_settings().await),
         "notify_save" => out(crate::notify::notify_save(a!("settings")).await),
         "notify_test" => out(crate::notify::notify_test().await),
+        // the folders used with each project on the computer, for the phone's project focus
+        "focus_folders" => Ok(json!(crate::focus_folders::load())),
         // what was notified lately, for a phone that was offline (DevCat Mobile watch.rs)
         "notify_recent" => Ok(crate::notify::recent()),
         "agents" => Ok(json!({
@@ -137,17 +182,26 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         "pty_detach" => {
             let id: String = a!("id");
             client.detach(&id);
+            restore_size(&id, &client.device.id).await;
             Ok(Value::Null)
         }
         "pty_write" => out(crate::claude::pty::pty_write(a!("id"), a!("data")).await),
         "pty_resize" => {
-            // Only terminals the phone started: resizing a desktop terminal would garble its view there.
+            // A desktop terminal takes the phone's size while the phone shows it (so its program
+            // wraps to the phone's width) and gets its own back when the phone leaves it or
+            // disconnects (`restore_sizes`); the desktop shows it narrow meanwhile.
             let id: String = a!("id");
+            let (cols, rows): (u16, u16) = (a!("cols"), a!("rows"));
             let info = crate::claude::pty::info(&id).map_err(|e| json!(e.to_string()))?;
             if !info.origin.starts_with("phone:") {
-                return Ok(Value::Null);
+                let mut sized = PHONE_SIZED.lock();
+                let own = sized.entry(id.clone()).or_insert((client.device.id.clone(), info.cols, info.rows));
+                if (own.1, own.2) == (cols, rows) {
+                    sized.remove(&id); // asked for its own size: nothing to put back
+                }
             }
-            out(crate::claude::pty::pty_resize(id, a!("cols"), a!("rows")).await)
+            crate::claude::pty::pty_resize(id, cols, rows).await.map_err(|e| json!(e.to_string()))?;
+            Ok(json!({ "resized": true }))
         }
         "pty_close" => out(crate::claude::pty::pty_close(a!("id")).await),
         "claude_projects" => out(crate::claude::sessions::claude_projects().await),
@@ -194,12 +248,26 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         // Sessions of an SSH folder are read on the host, logging in with what the computer has
         // (a session's saved password): desktop only, like the SSH workbench (AGENTS.md).
         "claude_sessions" => out(crate::claude::sessions::claude_sessions(local_folder(a!("cwd"))?).await),
-        "claude_transcript" => out(crate::claude::sessions::claude_transcript(local_folder(a!("cwd"))?, a!("sessionId")).await),
+        "claude_transcript" => {
+            let all = crate::claude::sessions::claude_transcript(local_folder(a!("cwd"))?, a!("sessionId")).await.map_err(|e| json!(e.to_string()))?;
+            // `from`: only the entries after the first `from`, without tool output (DevCat Mobile's
+            // History polls while Claude works; the whole file each time clogged the connection)
+            match arg::<Option<usize>>(args, "from").unwrap_or(None) {
+                None => Ok(json!(all)),
+                Some(from) => {
+                    let total = all.len();
+                    let entries: Vec<Value> = all.into_iter().skip(from).map(compact_entry).collect();
+                    Ok(json!({ "total": total, "entries": entries }))
+                }
+            }
+        }
         "ai_providers_list" => out(crate::ai::ai_providers_list().await),
         // DevCat Agent chats (src-tauri/src/agent.rs): the phone gets `agent-event`s of the chats it opened.
         "agent_open" => {
             let session_id: Option<String> = arg(args, "sessionId").unwrap_or(None);
-            if client.readonly() && !session_id.as_deref().is_some_and(crate::agent::exists) {
+            // this phone's ghost chat: nothing kept, ends when the phone leaves it (agent.rs)
+            let ghost = arg::<bool>(args, "ghost").unwrap_or(false).then(|| crate::agent::phone_ghost(&client.device.id));
+            if client.readonly() && (ghost.is_some() || !session_id.as_deref().is_some_and(crate::agent::exists)) {
                 return Err(json!("This phone has read-only access: it can watch chats but not start one."));
             }
             let origin = format!("phone:{}", client.device.name);
@@ -208,7 +276,8 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             if let Some(id) = &session_id {
                 client.attach(id);
             }
-            let opened = match crate::agent::open(expand_home(&arg::<String>(args, "cwd")?), a!("providerId"), session_id.clone(), &origin, &client.device.id, None, None, true).await {
+            let cwd = if ghost.is_some() { String::new() } else { expand_home(&arg::<String>(args, "cwd")?) };
+            let opened = match crate::agent::open(cwd, a!("providerId"), session_id.clone(), &origin, &client.device.id, None, ghost.as_deref(), ghost.is_none()).await {
                 Ok(o) => o,
                 Err(e) => {
                     if let Some(id) = &session_id {
@@ -464,5 +533,23 @@ mod tests {
         let h = dirs::home_dir().unwrap();
         assert_eq!(expand_home("~/Projects"), h.join("Projects").to_string_lossy());
         assert_eq!(expand_home("/tmp/x"), "/tmp/x");
+    }
+}
+
+#[cfg(test)]
+mod transcript_tests {
+    use super::compact_entry;
+    use serde_json::json;
+
+    #[test]
+    fn phones_get_entries_without_tool_output() {
+        let e = json!({ "type": "user", "toolUseResult": { "stdout": "x".repeat(10_000) },
+            "message": { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t", "content": "big output" }] } });
+        let c = compact_entry(e);
+        assert!(c.get("toolUseResult").is_none());
+        assert_eq!(c["message"]["content"][0]["content"], "");
+        assert_eq!(c["message"]["content"][0]["tool_use_id"], "t");
+        let text = json!({ "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "hi" }] } });
+        assert_eq!(compact_entry(text.clone()), text);
     }
 }

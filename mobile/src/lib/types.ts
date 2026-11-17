@@ -41,8 +41,8 @@ export interface K8sObject {
   status?: any;
 }
 
-/** The bottom tabs: Chats ("agents"), Terminal, Files, More. */
-export type TabRoot = "agents" | "terminals" | "fileshome" | "more";
+/** The bottom tabs: Chats ("agents"), Terminal, Files, Tools, More. */
+export type TabRoot = "agents" | "terminals" | "fileshome" | "tools" | "more";
 
 export type Route =
   | { s: "loading" }
@@ -53,7 +53,7 @@ export type Route =
   | { s: "pairing"; link: string; addr?: string | null }
   | { s: "computers" }
   | { s: TabRoot }
-  /** Tools, opened from More. */
+  /** Opened from the Tools tab. */
   | { s: "data" }
   | { s: "network" }
   | { s: "cluster" }
@@ -61,8 +61,9 @@ export type Route =
   | { s: "newchat"; cwd?: string }
   | { s: "sessions"; cwd?: string }
   | { s: "transcript"; cwd: string; sessionId: string; title: string }
-  /** A DevCat Agent chat: `sessionId` null = a new one; `first` = a message to send right away. */
-  | { s: "agentchat"; cwd: string; providerId: string; sessionId: string | null; first?: string }
+  /** A DevCat Agent chat: `sessionId` null = a new one; `first` = a message to send right away;
+   *  `ghost`: a ghost chat (no project, keeps nothing, ends when this screen closes). */
+  | { s: "agentchat"; cwd: string; providerId: string; sessionId: string | null; first?: string; ghost?: boolean }
   | { s: "browse"; connId: string; path: string[]; title: string }
   | { s: "rows"; connId: string; table: TableRef }
   | { s: "row"; connId: string; table: TableRef; row: Record<string, CellValue> | null; pk: string[] }

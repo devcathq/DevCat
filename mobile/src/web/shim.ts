@@ -71,7 +71,7 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       case "m_connect": return host.connect();
       case "m_call": return host.call(String(args.cmd), args.args ?? null);
       case "m_disconnect": host.close(); return null;
-      case "m_network_changed": host.close(); keepUp(0); return null;
+      case "m_network_changed": case "m_resume": host.close(); keepUp(0); return null;
       case "m_forget": host.forget(); return [];
       case "m_set_addrs": { const m = machine(); return m ? [m] : []; }
       default: throw `Not available in the browser: ${cmd}`;
@@ -91,6 +91,7 @@ export async function listen(event: string, h: Handler): Promise<UnlistenFn> {
 // plugin-notification: pages served over http can't show notifications.
 export async function isPermissionGranted() { return false; }
 export async function requestPermission() { return "denied"; }
+export async function onAction(_cb: unknown) { return { unregister: async () => {} }; }
 export function sendNotification() {}
 
 // plugin-barcode-scanner: not in the browser (the phone's camera app opens the link instead).

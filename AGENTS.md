@@ -124,6 +124,11 @@ no memory, notes or rooms tools and no memory brief, isn't in `agent::list` or t
 choice and no ↑ history, and the phone dispatcher refuses every `agent_*` call on it. Anything new that records a
 chat (titles, logs, notifications with its text) must skip ghost chats too.
 
+A phone has ghost chats of its own (`agent_open` with `ghost`): tied to the phone (`agent::phone_ghost`, its device
+id) instead of a window, so only that phone can use one (`dispatch.rs` checks `agent::ghost_of` on every `agent_*`
+call) and a window's stay refused. One ends when the phone leaves its screen (`agent_close`) or stays away for
+`PHONE_GHOST_GRACE` (`remote::disconnected`), and calls on it aren't in the phone activity log.
+
 ## Agent bots and notification channels (`integrations/`)
 
 `src-tauri/src/integrations/` puts DevCat in the user's chat apps: notification webhooks (Discord, Slack, plain) next

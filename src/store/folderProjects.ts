@@ -1,7 +1,9 @@
 // Focus mode for folders: which projects a folder belongs to. A folder used while a project is
 // focused (its AI Workspace folder, or the folder of a chat, terminal, file or Git tab opened then)
 // is that project's, and in focus the tabs of other folders are hidden, like other projects'
-// connections. Kept in localStorage, so every window knows.
+// connections. Kept in localStorage, so every window knows, and saved on the computer for a paired
+// phone's focus (src-tauri/src/focus_folders.rs).
+import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { create } from "zustand";
 import { tabConnId, tabFolder } from "../tabs/types";
@@ -29,7 +31,15 @@ function load(): Record<string, string[]> {
 function save(folders: Record<string, string[]>) {
   try { localStorage.setItem(KEY, JSON.stringify(folders)); } catch { /* quota / private mode */ }
   useFolderProjects.setState({ folders });
+  share(folders);
 }
+
+/** For the phone (an older backend or the browser build: nothing to do). */
+function share(folders: Record<string, string[]>) {
+  void invoke("focus_folders_save", { folders }).catch(() => {});
+}
+// what this window already knew, once at start
+share(load());
 
 /** The home folder and the folders above it count only for themselves, not for what's in them: a
  *  terminal opened in ~ would otherwise claim every folder under it. */

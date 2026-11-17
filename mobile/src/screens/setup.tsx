@@ -203,6 +203,8 @@ export function Pairing({ link, addr }: { link: string; addr?: string | null }) 
       await loadMachines();
       selectMachine(m.id);
       toast(`Paired with ${m.name}`, "ok");
+      // Android: start staying connected for notifications now there's a computer
+      if (!IS_WEB) void phone.background().catch(() => {});
       nav.reset([{ s: "computers" }, { s: "agents" }]);
     } catch (e) {
       setError(errMsg(e));

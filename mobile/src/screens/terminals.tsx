@@ -7,6 +7,8 @@ import type { PtyInfo } from "../lib/types";
 import { Empty, Screen, Section, Spinner, ago, duration, folderName } from "../ui";
 import { termSize } from "./agents";
 import { FolderSheet, cwdOf, useProjects } from "./chats";
+import { ProjectBar } from "./focus";
+import { claim, focusFolders, focusedProject, useFocus, useInFocus } from "../lib/focus";
 
 export function Terminals() {
   const terms = useApp((s) => s.terms);
@@ -14,16 +16,19 @@ export function Terminals() {
   const conn = useApp((s) => s.conn[s.current ?? ""]);
   const readonly = useApp((s) => s.machines.find((m) => m.id === s.current)?.access === "readonly");
   const projects = useProjects();
+  const shown = useInFocus();
+  const focusName = focusedProject(useFocus())?.name;
   const [pick, setPick] = useState<"shell" | "claude" | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     void refreshAgents();
-    const t = setInterval(() => { if (!document.hidden) void refreshAgents(); }, 5000);
+    const t = setInterval(() => { if (!document.hidden) void refreshAgents(); }, 15_000);
     return () => clearInterval(t);
   }, []);
   const online = conn?.state === "online";
 
   const open = async (cwd: string, claude: boolean) => {
+    claim(cwd);
     setBusy(true);
     try {
       const { cols, rows } = termSize();
@@ -37,11 +42,13 @@ export function Terminals() {
     }
   };
 
-  const shells = terms.filter((t) => !t.agent);
-  const agentTerms = terms.filter((t) => t.agent);
+  const newest = (a: PtyInfo, b: PtyInfo) => b.startedAt - a.startedAt;
+  const shells = terms.filter((t) => !t.agent && shown(t.cwd)).sort(newest);
+  const agentTerms = terms.filter((t) => t.agent && shown(cwdOf(t, agents[t.id]))).sort(newest);
 
   return (
     <Screen title="Terminal" sub="Runs on the computer" tab="terminals" className="space-y-3 p-3">
+      <ProjectBar />
       {!readonly && (
         <div className="grid grid-cols-2 gap-2">
           <NewButton icon={<TerminalSquare className="size-5" />} title="New terminal" meta="A shell in a folder" disabled={!online || busy} onClick={() => setPick("shell")} />
@@ -62,12 +69,12 @@ export function Terminals() {
         return <TermRow key={t.id} t={t} title={folderName(cwdOf(t, a))} meta={<>{t.program} · {state}</>} right={ago(t.startedAt)} done={a?.status === "idle"} />;
       })}
 
-      {online && terms.length === 0 && (
-        <Empty icon={<TerminalSquare className="size-8" />} title="No terminals open">Open a shell or Claude Code in one of your projects. It keeps running on the computer when you close this app.</Empty>
+      {online && shells.length + agentTerms.length === 0 && (
+        <Empty icon={<TerminalSquare className="size-8" />} title={focusName ? `No terminals in ${focusName}` : "No terminals open"}>{focusName ? `Terminals in its folders show here. The folder you open one in becomes part of ${focusName}.` : "Open a shell or Claude Code in one of your projects. It keeps running on the computer when you close this app."}</Empty>
       )}
       {readonly && <div className="rounded-lg bg-hover px-3 py-2 text-center text-[12px] text-muted">Read-only access: you can watch terminals but not open or type in them.</div>}
 
-      <FolderSheet open={pick !== null} value={projects.sorted[0]?.cwd ?? ""} title={pick === "claude" ? "Open Claude Code in" : "Open a terminal in"}
+      <FolderSheet open={pick !== null} value={focusFolders()[0] ?? projects.sorted[0]?.cwd ?? ""} title={pick === "claude" ? "Open Claude Code in" : "Open a terminal in"}
         onClose={() => setPick(null)} onPick={(cwd) => void open(cwd, pick === "claude")} />
     </Screen>
   );

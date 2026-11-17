@@ -4,8 +4,8 @@
 // Turning the session into items is shared with the desktop (src/features/agent/model.ts).
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, File as FileIcon, FilePen, FolderOpen, Layers, MessageCircleQuestion, MoreVertical, Paperclip, Plug,
-  ClipboardList, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TerminalSquare, TriangleAlert, Webhook, X,
+  ArrowDown, ArrowUp, Ban, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, File as FileIcon, FilePen, FolderOpen, Layers, MessageCircleQuestion, MoreVertical, Paperclip, Plug,
+  ClipboardList, Ghost, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, TerminalSquare, TriangleAlert, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -36,6 +36,13 @@ function savedPolicy(): AgentPolicy {
   }
 }
 
+/** What was just sent shows at once (`echo-` items); the computer's own copy replaces it. */
+const ECHO = "echo-";
+function withoutEcho(c: Chat, batch: AgentLiveEvent[]): Chat {
+  if (!batch.some((e) => e.type === "turnStart" || e.type === "queued")) return c;
+  return { ...c, items: c.items.filter((i) => !i.key.startsWith(ECHO)) };
+}
+
 function toBase64(f: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -46,7 +53,7 @@ function toBase64(f: Blob): Promise<string> {
 }
 
 /** Open the chat on the computer and follow it: reopened when the app comes back or reconnects. */
-function useChat(cwd: string, providerId: string, initial: string | null) {
+function useChat(cwd: string, providerId: string, initial: string | null, ghost: boolean) {
   const [chat, setChat] = useState<Chat | null>(null);
   const [error, setError] = useState<string | null>(null);
   const id = useRef(initial);
@@ -64,7 +71,7 @@ function useChat(cwd: string, providerId: string, initial: string | null) {
       frame = 0;
       const batch = queued;
       queued = [];
-      setChat((c) => (c ? applyAll(c, batch) : c));
+      setChat((c) => (c ? applyAll(withoutEcho(c, batch), batch) : c));
     };
     const off = onEvent<{ sessionId: string; event: AgentLiveEvent; seq?: number }>("agent-event", (p) => {
       if (p.sessionId !== id.current && id.current) return;
@@ -77,7 +84,7 @@ function useChat(cwd: string, providerId: string, initial: string | null) {
     });
     const open = async () => {
       try {
-        const o = await host<AgentOpened>("agent_open", { cwd, providerId, sessionId: id.current });
+        const o = await host<AgentOpened>("agent_open", { cwd, providerId, sessionId: id.current, ghost });
         if (disposed) return;
         id.current = o.sessionId;
         const seq = o.seq ?? 0;
@@ -110,11 +117,14 @@ function useChat(cwd: string, providerId: string, initial: string | null) {
     };
   }, [cwd, providerId, online]);
 
+  // A ghost chat ends when its screen closes (and nothing of it is kept, agent.rs).
+  useEffect(() => () => { if (ghost && id.current) void host("agent_close", { sessionId: id.current }).catch(() => {}); }, [ghost]);
+
   return { chat, setChat, error, setError };
 }
 
-export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; providerId: string; sessionId: string | null; first?: string }) {
-  const { chat, setChat, error, setError } = useChat(cwd, providerId, sessionId);
+export function AgentChat({ cwd, providerId, sessionId, first, ghost = false }: { cwd: string; providerId: string; sessionId: string | null; first?: string; ghost?: boolean }) {
+  const { chat, setChat, error, setError } = useChat(cwd, providerId, sessionId, ghost);
   const readonly = useApp((s) => s.machines.find((m) => m.id === s.current)?.access === "readonly");
   const info = useApp((s) => s.chats.find((c) => c.sessionId === chat?.sessionId));
   const [policy, setPolicyState] = useState(savedPolicy);
@@ -132,13 +142,17 @@ export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; 
   };
 
   const send = async (text: string): Promise<boolean> => {
-    if (!chat || chat.busy || (!text.trim() && !attachments.length)) return false;
+    if (!chat || (!text.trim() && !attachments.length)) return false;
+    // shown right away; while it works, the computer queues it (`queued`)
+    const echo = `${ECHO}${Date.now()}`;
+    setChat((c) => c && { ...c, busy: true, items: [...c.items, { kind: "user", key: echo, text: text.trim(), attachments, queued: c.busy }] });
     try {
       // the window decides when the conversation gets summarized
       await host("agent_send", { sessionId: chat.sessionId, text: text.trim(), policy, model: chat.model || null, attachments, contextWindow: contextWindow(chat.model, models).tokens });
       setAttachments([]);
       return true;
     } catch (e) {
+      setChat((c) => c && { ...c, busy: c.items.some((i) => i.kind === "user" && i.key === echo) ? chat.busy : c.busy, items: c.items.filter((i) => i.key !== echo) });
       setError(errMsg(e));
       return false;
     }
@@ -165,7 +179,7 @@ export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; 
   const stop = () => { if (chat) void host("agent_stop", { sessionId: chat.sessionId }).catch(toastErr); };
 
   const waiting = chat?.items.some((i) => i.kind === "tool" && ((i.status === "approval" && i.request) || (i.status === "question" && i.question)));
-  const where = `${folderName(cwd)} · ${chat?.providerName ?? "DevCat Agent"}`;
+  const where = ghost ? "keeps nothing · ends when you leave" : `${folderName(cwd)} · ${chat?.providerName ?? "DevCat Agent"}`;
   const sub = !chat ? where : waiting ? <span className="text-warn">⚠ needs you · {folderName(cwd)}</span> : chat.busy ? <span className="text-warn">◐ working · {folderName(cwd)}</span> : where;
   const fromPhone = info?.origin.startsWith("phone:") ?? !sessionId;
   /** A shell in the chat's folder, in the Terminal screen. */
@@ -181,13 +195,13 @@ export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; 
   };
 
   return (
-    <Screen title={chat?.title || folderName(cwd) || "Chat"} sub={sub} scroll={false} className="flex flex-col"
+    <Screen title={ghost ? <span className="flex items-center gap-1.5"><Ghost className="size-4" />Ghost chat</span> : chat?.title || folderName(cwd) || "Chat"} sub={sub} scroll={false} className="flex flex-col"
       right={chat && <button aria-label="Chat menu" className="flex size-9 items-center justify-center text-muted" onClick={() => setMenu(true)}><MoreVertical className="size-5" /></button>}>
       {!chat ? (
         error ? <div className="p-3"><Empty icon={<Bot className="size-8" />} title="DevCat Agent couldn't start"><span className="text-danger">{error}</span></Empty></div> : <Loading text="Opening the chat…" />
       ) : (
         <>
-          <Conversation chat={chat} cwd={cwd} readonly={readonly} policy={policy} onSend={(t) => void send(t)} onDecide={decide} onReply={reply} />
+          <Conversation chat={chat} cwd={cwd} ghost={ghost} readonly={readonly} policy={policy} onSend={(t) => void send(t)} onDecide={decide} onReply={reply} />
           {error && (
             <div className="px-3 pb-1">
               <div className="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-[12.5px] text-danger">
@@ -215,14 +229,14 @@ export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; 
       )}
       <Sheet open={menu} onClose={() => setMenu(false)} title={folderName(cwd)}>
         {chat && <ContextDetails chat={chat} models={models} />}
-        <Row onClick={() => { setMenu(false); nav.push({ s: "files", dir: cwd, root: cwd }); }} icon={<FolderOpen className="size-4" />} title="Browse files" chevron />
-        {!readonly && <Row onClick={() => { setMenu(false); void openTerminal(); }} icon={<TerminalSquare className="size-4" />} title="Open a terminal here" meta={cwd} chevron />}
+        {!ghost && <Row onClick={() => { setMenu(false); nav.push({ s: "files", dir: cwd, root: cwd }); }} icon={<FolderOpen className="size-4" />} title="Browse files" chevron />}
+        {!readonly && !ghost && <Row onClick={() => { setMenu(false); void openTerminal(); }} icon={<TerminalSquare className="size-4" />} title="Open a terminal here" meta={cwd} chevron />}
         {!readonly && chat?.busy && <Row onClick={() => { setMenu(false); stop(); }} icon={<Square className="size-4" />} title="Stop the agent" />}
         {!readonly && fromPhone && <Row onClick={() => { setMenu(false); setEnd(true); }} icon={<X className="size-4 text-danger" />} title={<span className="text-danger">End chat</span>} />}
       </Sheet>
       <Confirm open={end} danger title="End this chat?" confirm="End chat" onCancel={() => setEnd(false)}
         onConfirm={() => { setEnd(false); if (chat) void host("agent_close", { sessionId: chat.sessionId }).then(() => nav.back()).catch(toastErr); }}>
-        It stops on the computer. The conversation is kept: resume it from Session history.
+        {ghost ? "It stops on the computer, and everything of it is deleted." : "It stops on the computer. The conversation is kept: resume it from Session history."}
       </Confirm>
     </Screen>
   );
@@ -230,27 +244,44 @@ export function AgentChat({ cwd, providerId, sessionId, first }: { cwd: string; 
 
 // ------------------------------------------------------------------ conversation
 
-function Conversation({ chat, cwd, readonly, policy, onSend, onDecide, onReply }: {
-  chat: Chat; cwd: string; readonly: boolean; policy: AgentPolicy; onSend: (t: string) => void; onDecide: (id: string, d: AgentDecision) => void; onReply: (id: string, t: string) => void;
+function Conversation({ chat, cwd, ghost, readonly, policy, onSend, onDecide, onReply }: {
+  chat: Chat; cwd: string; ghost: boolean; readonly: boolean; policy: AgentPolicy; onSend: (t: string) => void; onDecide: (id: string, d: AgentDecision) => void; onReply: (id: string, t: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  // Follows the newest text while at the bottom. A finger on the list stops that (streamed text
+  // would pull it back down on every piece and the chat couldn't be scrolled while working).
   const stick = useRef(true);
+  const touching = useRef(false);
+  const [away, setAway] = useState(false);
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (el && stick.current && !touching.current) el.scrollTop = el.scrollHeight;
   }, [chat.items]);
   const onScroll = () => {
     const el = scroller.current;
-    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (!el) return;
+    const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stick.current = atEnd;
+    setAway(!atEnd);
+  };
+  const toEnd = () => {
+    const el = scroller.current;
+    if (!el) return;
+    stick.current = true;
+    setAway(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
   const lastUser = chat.items.map((i) => i.kind).lastIndexOf("user");
   const blocks = useMemo(() => toBlocks(chat.items), [chat.items]);
   const ctx: ItemCtx = { cwd, readonly, onDecide, onReply };
   return (
-    <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+      onTouchStart={() => { touching.current = true; stick.current = false; }}
+      onTouchEnd={() => { touching.current = false; onScroll(); }} onTouchCancel={() => { touching.current = false; onScroll(); }}>
       <div className="flex flex-col gap-3 px-3.5 pt-4 pb-3">
         {chat.items.length === 0 ? (
-          <Welcome chat={chat} cwd={cwd} policy={policy} onSend={readonly ? undefined : onSend} />
+          <Welcome chat={chat} cwd={cwd} ghost={ghost} policy={policy} onSend={readonly ? undefined : onSend} />
         ) : (
           blocks.map((b) => b.kind === "steps"
             ? <Steps key={b.items[0].key} items={b.items} ctx={ctx} live={chat.busy && b.last === chat.items.length - 1} working={chat.busy && b.last > lastUser} />
@@ -259,13 +290,29 @@ function Conversation({ chat, cwd, readonly, policy, onSend, onDecide, onReply }
         {chat.busy && blocks[blocks.length - 1]?.kind !== "steps" && <Working items={chat.items} />}
       </div>
     </div>
+    {away && (
+      <button onClick={toEnd} className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line bg-raised/95 px-3 py-1.5 text-[12.5px] font-semibold shadow-lg active:bg-hover">
+        <ArrowDown className="size-3.5" />Latest
+      </button>
+    )}
+    </div>
   );
 }
 
 type ItemCtx = { cwd: string; readonly: boolean; onDecide: (id: string, d: AgentDecision) => void; onReply: (id: string, t: string) => void };
 
-function Welcome({ chat, cwd, policy, onSend }: { chat: Chat; cwd: string; policy: AgentPolicy; onSend?: (t: string) => void }) {
+function Welcome({ chat, cwd, ghost, policy, onSend }: { chat: Chat; cwd: string; ghost: boolean; policy: AgentPolicy; onSend?: (t: string) => void }) {
   const p = POLICIES.find((x) => x.id === policy)!;
+  if (ghost) {
+    return (
+      <div className="flex flex-col items-center gap-3 px-4 pt-[10vh] text-center">
+        <div className="flex size-12 items-center justify-center rounded-2xl bg-fg/10"><Ghost className="size-6" /></div>
+        <h2 className="text-[17px] font-semibold">A ghost chat</h2>
+        <p className="text-[13px] text-muted">It starts from nothing: no project, no memory, no connections. When you leave this screen it ends, and everything in it is deleted from the computer.</p>
+        <p className="text-[11.5px] text-faint">{chat.providerName} · {chat.model}</p>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col items-center gap-4 pt-[8vh] text-center">
       <div className="flex size-11 items-center justify-center rounded-xl bg-accent/15 text-accent"><Bot className="size-6" /></div>
@@ -647,7 +694,7 @@ function Composer({ chat, models, policy, onPolicy, onModel, attachments, setAtt
   }, [text]);
 
   const submit = async () => {
-    if ((!text.trim() && !attachments.length) || chat.busy) return;
+    if (!text.trim() && !attachments.length) return;
     const t = text;
     setText("");
     if (!(await onSend(t))) setText(t);
@@ -710,7 +757,7 @@ function Composer({ chat, models, policy, onPolicy, onModel, attachments, setAtt
             </svg>
             {pct}%
           </span>
-          {chat.busy ? (
+          {chat.busy && !text.trim() && !attachments.length ? (
             <button aria-label="Stop" onClick={onStop} className="flex size-9 shrink-0 items-center justify-center rounded-full bg-fg text-app active:opacity-85"><Square className="size-3.5 fill-current" /></button>
           ) : (
             <button aria-label="Send" onClick={() => void submit()} disabled={!text.trim() && !attachments.length}

@@ -4,13 +4,15 @@ import { loadUnicode } from "../../../src/lib/xtermUnicode";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import clsx from "clsx";
-import { Bot, FolderOpen, ImagePlus, Keyboard, MoreVertical, Send, Square } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
+import { Bot, ChevronDown, ChevronUp, ChevronsDown, FolderOpen, History, ImagePlus, Keyboard, MoreVertical, Send, Square } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { onEvent } from "../lib/rpc";
 import { host, nav, toast, toastErr, useApp } from "../lib/store";
 import { uploadPasteImage } from "../lib/transfer";
 import type { AgentStatus, AiProvider, ClaudeProject, PtyInfo, SessionMeta } from "../lib/types";
 import { Btn, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Screen, Section, Seg, Sheet, Spinner, TextArea, ago, folderName, useLoad } from "../ui";
+import { Markdown } from "./files";
+import { useFocus, useInFocus } from "../lib/focus";
 
 const THEME = {
   background: "#0a0b0d", foreground: "#e6e8ec", cursor: "#f5a524", cursorAccent: "#0a0b0d", selectionBackground: "#f5a52440",
@@ -34,6 +36,14 @@ const KEYS: [string, string][] = [["1", "1"], ["2", "2"], ["3", "3"], ["Esc", "\
 const FONT = "\"JetBrains Mono\", \"SF Mono\", Menlo, monospace";
 /** Width of one character cell per px of font size (monospace). */
 const CELL = 0.602;
+
+/** Columns and rows that fill `el` at `fontSize`. */
+function phoneSize(el: HTMLElement, fontSize: number): { cols: number; rows: number } {
+  return {
+    cols: Math.max(30, Math.floor((el.clientWidth - 8) / (fontSize * CELL))),
+    rows: Math.max(12, Math.floor((el.clientHeight - 8) / (fontSize * 1.1 * 1.17))),
+  };
+}
 
 /** Columns and rows for a new terminal at the default text size on this screen. */
 export function termSize(): { cols: number; rows: number } {
@@ -82,10 +92,41 @@ export function Terminal({ id }: { id: string }) {
   const [menu, setMenu] = useState(false);
   const [stop, setStop] = useState(false);
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem("devcat.mobile.termFont")) || 11);
-  const [fitWidth, setFitWidth] = useState(false);
+  /** The terminal takes the phone's width at normal text size, so the program wraps its lines
+   *  there (no sideways scrolling); on unless turned off. A terminal started on the computer
+   *  gets its own size back when this screen closes (`computerSize`). */
+  const [fitWidth, setFitWidthState] = useState(() => localStorage.getItem("devcat.mobile.termFit") !== "0");
+  const setFitWidth = (on: boolean) => { setFitWidthState(on); localStorage.setItem("devcat.mobile.termFit", on ? "1" : "0"); };
+  const fitRef = useRef(fitWidth);
+  fitRef.current = fitWidth;
+  const readonlyRef = useRef(readonly);
+  readonlyRef.current = readonly;
+  /** A computer-started terminal's size before this phone resized it (the computer puts it
+   *  back when this screen closes or the phone disconnects: dispatch.rs `restore_size`). */
+  const computerSize = useRef<{ cols: number; rows: number } | null>(null);
+  /** The computer doesn't resize its own terminals for phones (DevCat before PR #170). */
+  const noResize = useRef(false);
+  /** Ask the computer for this size; the view follows only if it did (a terminal started here
+   *  always does), so lines are never cut off by a view narrower than the program writes. */
+  const resizeTo = async (t: XTerm, want: { cols: number; rows: number }, fromHere: boolean): Promise<boolean> => {
+    const r = await host<{ resized?: boolean } | null>("pty_resize", { id, cols: want.cols, rows: want.rows }).catch(() => null);
+    if (!fromHere && !r?.resized) { noResize.current = true; return false; }
+    if (xt.current === t) t.resize(want.cols, want.rows);
+    return true;
+  };
   const [choices, setChoices] = useState<Choice[]>([]);
   /** Typing straight into the terminal; off, tapping it only scrolls (no keyboard popping up). */
   const [keyboard, setKeyboard] = useState(false);
+  /** Claude Code: Chat (the live terminal, first), or its History: the session transcript as a readable
+   *  chat that scrolls normally (Claude Code draws full-screen, so the terminal has no scrollback). */
+  const [view, setView] = useState<"chat" | "terminal">("terminal");
+  /** The terminal is scrolled up from its newest line. */
+  const [scrolledUp, setScrolledUp] = useState(false);
+  // Chat first every time (History is a tap away)
+  const pickView = (v: "chat" | "terminal") => setView(v);
+  /** Messages sent in the Chat view, shown until the transcript has them. */
+  const [sent, setSent] = useState<string[]>([]);
+  const seen = useMemo(() => (text: string) => setSent((x) => x.filter((y) => y !== text)), []);
 
   const write = (data: string) => {
     if (readonly) return;
@@ -99,16 +140,19 @@ export function Terminal({ id }: { id: string }) {
     loadUnicode(t);
     xt.current = t;
     t.onData((d) => write(d));
+    t.onScroll(() => { const b = t.buffer.active; setScrolledUp(b.viewportY < b.baseY); });
     const attach = async () => {
       try {
         const r = await host<{ info: PtyInfo; data: string }>("pty_attach", { id });
         if (disposed) return;
         setInfo(r.info);
         let cols = r.info.cols, rows = r.info.rows;
-        if (r.info.origin.startsWith("phone:") && box.current) {
-          // Terminals started here follow the phone's screen.
-          cols = Math.max(30, Math.floor((box.current.clientWidth - 8) / (fontSize * CELL)));
-          rows = Math.max(12, Math.floor((box.current.clientHeight - 8) / (fontSize * 1.1 * 1.17)));
+        const fromHere = r.info.origin.startsWith("phone:");
+        // Terminals started here follow the phone's screen; the computer's ones too while "fit"
+        // is on, once the computer has resized them (below)
+        const size = box.current ? phoneSize(box.current, fontSize) : null;
+        if (size && fromHere && (size.cols !== cols || size.rows !== rows)) {
+          ({ cols, rows } = size);
           void host("pty_resize", { id, cols, rows }).catch(() => {});
         }
         t.resize(cols, rows);
@@ -132,11 +176,53 @@ export function Terminal({ id }: { id: string }) {
     void attach();
     const onVis = () => { if (!document.hidden) void attach(); };
     document.addEventListener("visibilitychange", onVis);
+    // Touch scrolling: xterm scrolls its history with a wheel only, so a finger dragged up or down
+    // over the terminal scrolls it here (sideways stays with the page, for "normal text size").
+    let touch: { x: number; y: number; acc: number; vertical: boolean | null } | null = null;
+    const lineHeight = () => (Number(t.options.fontSize) || 11) * 1.1 * 1.17;
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) { touch = null; return; }
+      touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, acc: 0, vertical: null };
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!touch || e.touches.length !== 1) return;
+      const { clientX: x, clientY: y } = e.touches[0];
+      if (touch.vertical === null) {
+        const dx = Math.abs(x - touch.x), dy = Math.abs(y - touch.y);
+        if (dx < 6 && dy < 6) return;
+        touch.vertical = dy >= dx;
+      }
+      if (!touch.vertical) return;
+      e.preventDefault();
+      touch.acc += touch.y - y;
+      touch.y = y;
+      const lines = Math.trunc(touch.acc / lineHeight());
+      if (lines) {
+        if (t.buffer.active.type === "alternate") {
+          // a full-screen program (Claude Code, less, vim) has no scrollback here: send it the
+          // wheel, which xterm turns into what the program asked for (mouse wheel or arrows)
+          t.element?.querySelector(".xterm-screen")?.dispatchEvent(new WheelEvent("wheel", { deltaY: lines * lineHeight(), deltaMode: 0, bubbles: true, cancelable: true, clientX: x, clientY: y }));
+        } else {
+          t.scrollLines(lines);
+        }
+        touch.acc -= lines * lineHeight();
+      }
+    };
+    const onTouchEnd = () => { touch = null; };
+    const area = box.current;
+    area?.addEventListener("touchstart", onTouchStart, { passive: true });
+    area?.addEventListener("touchmove", onTouchMove, { passive: false });
+    area?.addEventListener("touchend", onTouchEnd);
     return () => {
       disposed = true;
       if (scan) clearTimeout(scan);
       offOut(); offLag(); offExit();
       document.removeEventListener("visibilitychange", onVis);
+      area?.removeEventListener("touchstart", onTouchStart);
+      area?.removeEventListener("touchmove", onTouchMove);
+      area?.removeEventListener("touchend", onTouchEnd);
+      // leaving it: the computer gives a terminal of its own its size back
+      computerSize.current = null;
       void host("pty_detach", { id }).catch(() => {});
       t.dispose();
       xt.current = null;
@@ -157,17 +243,38 @@ export function Terminal({ id }: { id: string }) {
     if (!keyboard) (document.activeElement as HTMLElement | null)?.blur();
   };
 
-  // text size / fit to width
+  // text size, and the phone's width: again when the terminal shows (not while History hides it:
+  // it has no size then), when the text size changes and when the phone turns
   useEffect(() => {
     const t = xt.current;
-    if (!t || !info || !box.current) return;
-    const size = fitWidth ? Math.max(5, Math.min(14, (box.current.clientWidth - 8) / (t.cols * CELL))) : fontSize;
-    t.options.fontSize = size;
+    const el = box.current;
+    if (!t || !info || !el) return;
+    const apply = () => {
+      t.options.fontSize = fontSize;
+      if (el.clientWidth === 0) return;
+      const fromHere = info.origin.startsWith("phone:");
+      if (fromHere || (fitWidth && !readonly && !noResize.current)) {
+        const want = phoneSize(el, fontSize);
+        if (want.cols === t.cols && want.rows === t.rows) return;
+        const own = { cols: t.cols, rows: t.rows };
+        void resizeTo(t, want, fromHere).then((ok) => { if (ok && !fromHere) computerSize.current ??= own; });
+      } else if (computerSize.current) {
+        // "fit" turned off: the computer's size again (scroll sideways to read it)
+        const own = computerSize.current;
+        computerSize.current = null;
+        void resizeTo(t, own, false);
+      }
+    };
+    apply();
     localStorage.setItem("devcat.mobile.termFont", String(fontSize));
-  }, [fontSize, fitWidth, info]);
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fontSize, fitWidth, info, view]);
 
   const send = () => {
     if (!text) { write("\r"); return; }
+    if (canChat && view === "chat") setSent((x) => [...x, text]);
     write(text);
     // A separate Enter, so the program doesn't treat it as part of a paste.
     setTimeout(() => write("\r"), 60);
@@ -201,15 +308,44 @@ export function Terminal({ id }: { id: string }) {
     void attach(imgs);
   };
 
+  /** A page up / down: through the scrollback, or for a full-screen program (no scrollback
+   *  here) as Page Up / Page Down keys. Down while scrolled up goes back to the newest line. */
+  const scrollPage = (dir: -1 | 1) => {
+    const t = xt.current;
+    if (!t) return;
+    if (t.buffer.active.type === "alternate") { if (!readonly) write(dir < 0 ? "\x1b[5~" : "\x1b[6~"); return; }
+    if (dir > 0 && scrolledUp) t.scrollToBottom(); else t.scrollPages(dir);
+  };
+
   const st = agent?.status;
+  const canChat = !!(term?.agent && agent?.sessionId && agent.cwd);
+  // back to the terminal: xterm measures again now that it's visible
+  useEffect(() => { if (view === "terminal") xt.current?.refresh(0, (xt.current?.rows ?? 1) - 1); }, [view]);
   const sub = exited ? "exited" : st === "waiting" ? <span className="text-warn">⚠ {agent?.message ?? "waiting for you"}</span> : st === "working" ? <span className="text-warn">◐ working</span> : st === "idle" ? <span className="text-ok">✓ done</span> : (term?.program ?? info?.program ?? "");
 
   return (
     <Screen title={folderName(cwdOf(term ?? info ?? undefined, agent)) || "Terminal"} sub={sub} scroll={false} className="flex flex-col gap-2 p-2"
       right={<button aria-label="Terminal menu" className="flex size-9 items-center justify-center text-muted" onClick={() => setMenu(true)}><MoreVertical className="size-5" /></button>}>
       {error && <ErrorBox error={error} />}
-      <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1" onPasteCapture={readonly ? undefined : pastedImages}>
-        <div ref={box} className="h-full min-w-full" />
+      {canChat && <Seg value={view} onChange={pickView} options={[{ value: "terminal", label: "Chat" }, { value: "chat", label: "History" }]} />}
+      {canChat && view === "chat" && <LiveTranscript cwd={agent!.cwd!} sessionId={agent!.sessionId!} working={agent?.status === "working"} pending={sent} onSeen={seen} />}
+      <div className={clsx("relative min-h-0 flex-1", canChat && view === "chat" && "hidden")}>
+        <div className="h-full overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1" onPasteCapture={readonly ? undefined : pastedImages}>
+          <div ref={box} className="h-full min-w-full" />
+        </div>
+        {/* scrolling without a wheel: a page up, back to the newest, and the whole session in History */}
+        <div className="absolute right-2 bottom-2 flex flex-col items-end gap-1.5">
+          {canChat && (
+            <button onClick={() => pickView("chat")} className="flex h-8 items-center gap-1 rounded-full border border-line bg-raised/95 px-3 text-[12px] font-semibold shadow-lg active:bg-hover">
+              <History className="size-3.5" />History
+            </button>
+          )}
+          <button aria-label="Scroll up a page" onClick={() => scrollPage(-1)} className="flex size-9 items-center justify-center rounded-full border border-line bg-raised/95 shadow-lg active:bg-hover"><ChevronUp className="size-5" /></button>
+          <button aria-label={scrolledUp ? "Back to the newest" : "Scroll down a page"} onClick={() => scrollPage(1)}
+            className={clsx("flex size-9 items-center justify-center rounded-full border shadow-lg active:bg-hover", scrolledUp ? "border-accent bg-accent text-accent-fg" : "border-line bg-raised/95")}>
+            {scrolledUp ? <ChevronsDown className="size-5" /> : <ChevronDown className="size-5" />}
+          </button>
+        </div>
       </div>
       {!readonly && choices.length > 0 && (
         <div className="space-y-1.5">
@@ -248,12 +384,13 @@ export function Terminal({ id }: { id: string }) {
       )}
       <Sheet open={menu} onClose={() => setMenu(false)} title={folderName(cwdOf(term ?? info ?? undefined, agent))}>
         <div className="text-[12px] text-muted">{cwdOf(term ?? info ?? undefined, agent)} · {info?.program} · {info && (fromPhone(info) ? `started from ${info.origin.slice(6)}` : "started on the computer")}{info ? ` ${ago(info.startedAt)}` : ""}</div>
-        <Item onClick={() => { setFitWidth(!fitWidth); setMenu(false); }} title={fitWidth ? "Normal text size" : "Fit text to screen width"} />
+        <Item onClick={() => { setFitWidth(!fitWidth); setMenu(false); }} title={fitWidth ? "Use the computer's width" : "Wrap lines to the phone's width"}
+          meta={fitWidth ? "Wider lines, scroll sideways to read them" : "Normal text size, no sideways scrolling"} />
         <div className="flex items-center gap-2 rounded-xl bg-raised px-3 py-2">
           <span className="flex-1 font-semibold">Text size</span>
-          <Btn size="sm" onClick={() => { setFitWidth(false); setFontSize((s) => Math.max(7, s - 1)); }}>A−</Btn>
+          <Btn size="sm" onClick={() => setFontSize((s) => Math.max(7, s - 1))}>A−</Btn>
           <span className="w-6 text-center tabular-nums">{fontSize}</span>
-          <Btn size="sm" onClick={() => { setFitWidth(false); setFontSize((s) => Math.min(18, s + 1)); }}>A+</Btn>
+          <Btn size="sm" onClick={() => setFontSize((s) => Math.min(18, s + 1))}>A+</Btn>
         </div>
         <Item onClick={() => { setMenu(false); const dir = cwdOf(term ?? info ?? undefined, agent); nav.push({ s: "files", dir, root: dir }); }} icon={<FolderOpen className="size-4" />} title="Browse files" chevron />
         {agent?.sessionId && agent.cwd && (
@@ -337,7 +474,14 @@ export function NewChat({ cwd: initial }: { cwd?: string }) {
 
 export function Sessions({ cwd: initial }: { cwd?: string }) {
   const projects = useLoad(() => host<ClaudeProject[]>("claude_projects"), []);
-  const sorted = useMemo(() => [...(projects.data ?? [])].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? "")), [projects.data]);
+  const shown = useInFocus();
+  // the focused project's folders (all, if none of them has sessions yet)
+  const sorted = useMemo(() => {
+    const all = [...(projects.data ?? [])].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? ""));
+    const mine = all.filter((p) => shown(p.cwd));
+    return mine.length ? mine : all;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects.data, useFocus((f) => f.focus)]);
   const [cwd, setCwd] = useState(initial ?? "");
   useEffect(() => { if (!cwd && sorted[0]) setCwd(sorted[0].cwd); }, [sorted, cwd]);
   const sessions = useLoad(() => (cwd ? host<SessionMeta[]>("claude_sessions", { cwd }) : Promise.resolve([] as SessionMeta[])), [cwd]);
@@ -374,6 +518,96 @@ export function Sessions({ cwd: initial }: { cwd?: string }) {
 }
 
 type AgentSession = { id: string; title: string; updatedMs: number; messages: number };
+
+/** A Claude Code session as a chat, kept up to date while it's on screen (from its transcript
+ *  file on the computer): scrolls like any list, whatever the terminal is drawing. */
+function LiveTranscript({ cwd, sessionId, working, pending, onSeen }: { cwd: string; sessionId: string; working: boolean; pending: string[]; onSeen: (text: string) => void }) {
+  const [entries, setEntries] = useState<unknown[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  const touching = useRef(false);
+  /** Entries already here: the computer sends only what's after them (and no tool output). */
+  const have = useRef<{ key: string; n: number }>({ key: "", n: 0 });
+  useEffect(() => {
+    let alive = true;
+    let busy = false;
+    const key = `${cwd}\u0000${sessionId}`;
+    if (have.current.key !== key) have.current = { key, n: 0 };
+    const load = () => {
+      // one at a time: a slow answer mustn't pile up requests behind it on the connection
+      if (document.hidden || busy) return;
+      busy = true;
+      const from = have.current.n;
+      host<unknown[] | { total: number; entries: unknown[] }>("claude_transcript", { cwd, sessionId, from })
+        .then((r) => {
+          if (!alive) return;
+          setError(null);
+          if (Array.isArray(r)) {
+            // a computer from before `from`: the whole transcript each time
+            have.current.n = r.length;
+            setEntries(r);
+          } else if (r.total < from) {
+            // the file got shorter (rewritten): start over
+            have.current.n = 0;
+            setEntries(null);
+          } else if (r.entries.length || from === 0) {
+            have.current.n = r.total;
+            setEntries((e) => (from === 0 ? r.entries : [...(e ?? []), ...r.entries]));
+          }
+        }, (e) => { if (alive) setError(String(e)); })
+        .finally(() => { busy = false; });
+    };
+    load();
+    // just sent something: look again soon, it's in the transcript within a moment
+    const soon = pending.length ? setTimeout(load, 900) : undefined;
+    const t = setInterval(load, working || pending.length ? 2000 : 6000);
+    return () => { alive = false; clearInterval(t); if (soon) clearTimeout(soon); };
+  }, [cwd, sessionId, working, pending.length]);
+  const list = useMemo(() => blocks(entries ?? []), [entries]);
+  // what was sent from here shows until the transcript has it
+  useEffect(() => {
+    const said = new Set(list.filter((b) => b.kind === "me").slice(-8).map((b) => b.text.trim()));
+    for (const p of pending) if (said.has(p.trim())) onSeen(p);
+  }, [list, pending, onSeen]);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && stick.current && !touching.current) el.scrollTop = el.scrollHeight;
+  }, [list.length, list[list.length - 1]?.text]);
+  // formatted text and code get their height after layout: stay at the end while it grows
+  useEffect(() => {
+    const el = scroller.current;
+    const body = el?.firstElementChild;
+    if (!el || !body) return;
+    const ro = new ResizeObserver(() => { if (stick.current && !touching.current) el.scrollTop = el.scrollHeight; });
+    ro.observe(body);
+    return () => ro.disconnect();
+  }, [entries !== null]);
+  const onScroll = () => {
+    const el = scroller.current;
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+  return (
+    <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border border-line bg-panel p-2.5"
+      onTouchStart={() => { touching.current = true; stick.current = false; }} onTouchEnd={() => { touching.current = false; onScroll(); }}>
+      {error ? <ErrorBox error={error} /> : !entries ? <Loading /> : list.length === 0 ? <Empty title="Nothing said yet" /> : (
+        <div className="flex flex-col gap-2">
+          {list.map((b, i) => b.kind === "tool" ? (
+            <div key={i} className="border-l-2 border-line py-0.5 pl-2.5 font-mono text-[11px] break-all text-muted">▸ {b.text}</div>
+          ) : b.kind === "me" ? (
+            <div key={i} className="selectable max-w-[92%] self-end rounded-xl bg-accent/15 px-3 py-2 text-[13.5px] break-words whitespace-pre-wrap">{b.text.length > 2500 ? `${b.text.slice(0, 2500)}…` : b.text}</div>
+          ) : (
+            <div key={i} className="selectable text-[13.5px]"><Markdown text={b.text.length > 6000 ? `${b.text.slice(0, 6000)}…` : b.text} /></div>
+          ))}
+          {pending.map((p, i) => (
+            <div key={`p${i}`} className="max-w-[92%] self-end rounded-xl bg-accent/10 px-3 py-2 text-[13.5px] break-words whitespace-pre-wrap opacity-70">{p}</div>
+          ))}
+          {(working || pending.length > 0) && <div className="flex items-center gap-2 text-[12px] text-muted"><Spinner className="size-3.5" />Working…</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 type Block = { kind: "me" | "ai" | "tool"; text: string };
 

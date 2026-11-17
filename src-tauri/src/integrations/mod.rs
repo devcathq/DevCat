@@ -389,12 +389,15 @@ pub struct Note {
     pub skip_links: Vec<String>,
     /// Opens the chat in DevCat Mobile.
     pub url: Option<String>,
+    /// What tapping the notification opens in DevCat Mobile: `{kind: "chat", sessionId, cwd,
+    /// providerId}` or `{kind: "terminal", ptyId}`. Phones only (`notify::to_phones`).
+    pub open: Option<Value>,
 }
 
 /// Send a note to the paired phones (DevCat Mobile), the notification channels and the linked
 /// chats that want it.
 pub async fn deliver(note: Note) {
-    crate::notify::to_phones(&note.title, &note.body, note.needs_you, false);
+    crate::notify::to_phones(&note.title, &note.body, note.needs_you, false, note.open.clone());
     let s = load();
     for c in s.channels.iter().filter(|c| c.enabled && if note.needs_you { c.on_input } else { c.on_done }) {
         if let Some(url) = crate::secrets::get(&channel_secret(&c.id))
@@ -715,7 +718,7 @@ pub async fn integrations_channel_remove(id: String) -> AppResult<Status> {
 pub async fn integrations_channel_test(id: String) -> AppResult<()> {
     let c = load().channels.into_iter().find(|c| c.id == id).ok_or_else(|| AppError::msg("No such channel"))?;
     let url = crate::secrets::get(&channel_secret(&id)).ok_or_else(|| AppError::msg("Its URL is missing from the keychain: add it again"))?;
-    let note = Note { title: "DevCat".into(), body: "Test notification: you'll get these when an agent finishes or needs you.".into(), needs_you: false, cwd: None, skip_links: vec![], url: None };
+    let note = Note { title: "DevCat".into(), body: "Test notification: you'll get these when an agent finishes or needs you.".into(), needs_you: false, cwd: None, skip_links: vec![], url: None, open: None };
     post_channel(c.kind, &url, &note).await
 }
 

@@ -36,8 +36,9 @@ pub fn init(data_dir: PathBuf) {
 /// Ghost chats (opened in a window of their own) keep nothing: their log, helpers' logs and
 /// attachments live in this temporary folder only while the chat is open, and are deleted when it
 /// closes (its tab or window closes, or the app quits; what a crash leaves is deleted at the next
-/// start). They don't read or write the shared memory, notes or rooms, aren't listed (Sessions,
-/// phones) and a phone can't open them. One folder per data folder, so DevCat Dev and DevCat
+/// start). They don't read or write the shared memory, notes or rooms and aren't listed (Sessions,
+/// phones). A phone can't open the window's ones; it has its own (`phone_ghost`), which end when
+/// it leaves the chat or stays away (remote/mod.rs `disconnected`). One folder per data folder, so DevCat Dev and DevCat
 /// don't delete each other's.
 fn ghost_dir() -> AppResult<PathBuf> {
     use std::hash::{Hash, Hasher};
@@ -49,6 +50,16 @@ fn ghost_dir() -> AppResult<PathBuf> {
 /// Whether `session_id` is an open ghost chat.
 pub fn is_ghost(session_id: &str) -> bool {
     RUNS.lock().get(session_id).is_some_and(|r| r.ghost.is_some())
+}
+
+/// Where an open ghost chat lives: its window's label, or [`phone_ghost`] of a phone.
+pub fn ghost_of(session_id: &str) -> Option<String> {
+    RUNS.lock().get(session_id).and_then(|r| r.ghost.clone())
+}
+
+/// What a phone's own ghost chats are tied to, in place of a window (never a window label).
+pub fn phone_ghost(device_id: &str) -> String {
+    format!("phone-ghost:{device_id}")
 }
 
 /// What integrations need to know about an open chat.
@@ -671,7 +682,8 @@ pub const SCHEDULE: &str = "schedule";
 #[allow(clippy::too_many_arguments)]
 pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, origin: &str, owner: &str, focus: Option<&str>, ghost: Option<&str>, connections: bool) -> AppResult<AgentOpened> {
     let existing = session_id.as_ref().and_then(|id| RUNS.lock().get(id).cloned());
-    if existing.as_ref().is_some_and(|r| r.ghost.is_some()) && origin != "desktop" {
+    // a phone opens only its own ghost chats again, never a window's
+    if existing.as_ref().is_some_and(|r| r.ghost.is_some() && origin != "desktop" && r.ghost.as_deref() != ghost) {
         return Err(AppError::msg("That chat is a ghost chat: it's only in its window on the computer."));
     }
     let run = match (existing, session_id) {

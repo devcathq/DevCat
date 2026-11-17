@@ -120,6 +120,9 @@ pub struct PhoneNote {
     pub needs_you: bool,
     /// From "Send a test": phones show it even while the app is on screen.
     pub test: bool,
+    /// What tapping it opens (`integrations::Note::open`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open: Option<Value>,
 }
 
 /// The last notifications, for a phone that was offline when they went out.
@@ -130,7 +133,7 @@ static BOOT: Lazy<String> = Lazy::new(|| hex::encode(crate::remote::store::rando
 
 /// Send a notification to the paired phones (DevCat Mobile shows it). Callers applied the
 /// rules already; "finished" / "needs you" turned off here stays off for phones too.
-pub(crate) fn to_phones(title: &str, body: &str, needs_you: bool, test: bool) {
+pub(crate) fn to_phones(title: &str, body: &str, needs_you: bool, test: bool, open: Option<Value>) {
     let s = load();
     if !test && !(if needs_you { s.on_input } else { s.on_done }) {
         return;
@@ -143,6 +146,7 @@ pub(crate) fn to_phones(title: &str, body: &str, needs_you: bool, test: bool) {
         body: body.chars().take(1000).collect(),
         needs_you,
         test,
+        open,
     };
     {
         let mut n = NOTES.lock();
@@ -167,7 +171,7 @@ pub(crate) async fn job(title: &str, message: &str, needs_you: bool) {
         return;
     }
     // the phones, the notification channels (Discord, Slack, webhooks) and linked chats
-    crate::integrations::deliver(crate::integrations::Note { title: title.into(), body: message.into(), needs_you, cwd: None, skip_links: vec![], url: None }).await;
+    crate::integrations::deliver(crate::integrations::Note { title: title.into(), body: message.into(), needs_you, cwd: None, skip_links: vec![], url: None, open: None }).await;
 }
 
 pub(crate) async fn on_change(status: &hooks::AgentStatus, change: hooks::Change) {
@@ -184,6 +188,7 @@ pub(crate) async fn on_change(status: &hooks::AgentStatus, change: hooks::Change
         cwd: status.cwd.clone(),
         skip_links: vec![],
         url: None,
+        open: Some(json!({ "kind": "terminal", "ptyId": status.pty_id })),
     })
     .await;
 }
@@ -205,7 +210,7 @@ pub async fn notify_save(settings: NotifySettings) -> AppResult<NotifySettings> 
 /// A test notification to the paired phones (the channels have their own test).
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn notify_test() -> AppResult<()> {
-    to_phones("DevCat", "Test notification: you'll get these when an agent finishes or needs you.", false, true);
+    to_phones("DevCat", "Test notification: you'll get these when an agent finishes or needs you.", false, true, None);
     Ok(())
 }
 
@@ -247,12 +252,13 @@ mod tests {
     #[test]
     fn phones_get_numbered_notes_and_tests_stay_live_only() {
         let before = SEQ.load(Ordering::Relaxed);
-        to_phones("api: finished", "done", false, false);
-        to_phones("DevCat", "test", false, true);
+        to_phones("api: finished", "done", false, false, Some(json!({ "kind": "terminal", "ptyId": "T1" })));
+        to_phones("DevCat", "test", false, true, None);
         let r = recent();
         let notes = r["notes"].as_array().unwrap();
         let last = notes.last().unwrap();
         assert_eq!((last["title"].as_str(), last["test"].as_bool()), (Some("api: finished"), Some(false)));
+        assert_eq!(last["open"]["ptyId"], "T1");
         assert!(last["seq"].as_u64().unwrap() > before);
         assert!(notes.iter().all(|n| n["test"] == false));
         assert_eq!(r["boot"], last["boot"]);

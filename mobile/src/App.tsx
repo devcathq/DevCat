@@ -10,7 +10,7 @@ import { Chats } from "./screens/chats";
 import { Terminals } from "./screens/terminals";
 import { AgentChat } from "./screens/agentchat";
 import { Browse, Data, Query, RedisKey, Row, Rows } from "./screens/data";
-import { Activity, Help, MachineSettings, More, Notify } from "./screens/more";
+import { Activity, Help, MachineSettings, More, Notify, Tools } from "./screens/more";
 import { FileView, Files, FilesHome } from "./screens/files";
 import { Cluster, NetLog, Network, Pod } from "./screens/ops";
 import { IS_MOCK, IS_WEB, isPairLink } from "./lib/env";
@@ -33,7 +33,7 @@ function screen(r: Route) {
     case "newchat": return <NewChat cwd={r.cwd} />;
     case "sessions": return <Sessions cwd={r.cwd} />;
     case "transcript": return <Transcript cwd={r.cwd} sessionId={r.sessionId} title={r.title} />;
-    case "agentchat": return <AgentChat cwd={r.cwd} providerId={r.providerId} sessionId={r.sessionId} first={r.first} />;
+    case "agentchat": return <AgentChat cwd={r.cwd} providerId={r.providerId} sessionId={r.sessionId} first={r.first} ghost={r.ghost} />;
     case "data": return <Data />;
     case "browse": return <Browse key={r.path.join("\u0000")} connId={r.connId} path={r.path} title={r.title} />;
     case "rows": return <Rows connId={r.connId} table={r.table} />;
@@ -44,6 +44,7 @@ function screen(r: Route) {
     case "netlog": return <NetLog id={r.id} name={r.name} />;
     case "cluster": return <Cluster />;
     case "pod": return <Pod connId={r.connId} namespace={r.namespace} name={r.name} />;
+    case "tools": return <Tools />;
     case "more": return <More />;
     case "notify": return <Notify />;
     case "help": return <Help />;
@@ -120,6 +121,29 @@ async function watchDeepLinks() {
   } catch { /* not available (browser bridge, desktop dev) */ }
 }
 
+/** What a tapped notification opens (watch.rs in src-tauri): a chat or a terminal, on a computer. */
+interface NotifyOpen { machine?: string; kind?: string; sessionId?: string; cwd?: string; providerId?: string; ptyId?: string }
+/** A tap that came while the app was still starting: opened once it's ready. */
+let pendingOpen: NotifyOpen | null = null;
+let booted = false;
+
+function openFromNotification(o: NotifyOpen) {
+  if (!booted) { pendingOpen = o; return; }
+  const { machines, current } = useApp.getState();
+  if (o.machine && o.machine !== current && machines.some((m) => m.id === o.machine)) selectMachine(o.machine);
+  if (o.kind === "chat" && o.sessionId && o.cwd && o.providerId) {
+    nav.reset([{ s: "computers" }, { s: "agents" }, { s: "agentchat", cwd: o.cwd, providerId: o.providerId, sessionId: o.sessionId }]);
+  } else if (o.kind === "terminal" && o.ptyId) {
+    nav.reset([{ s: "computers" }, { s: "agents" }, { s: "terminal", id: o.ptyId }]);
+  }
+}
+
+/** Startup is over (whichever way it went): a tap that came meanwhile opens now. */
+function ready() {
+  booted = true;
+  if (pendingOpen) { const o = pendingOpen; pendingOpen = null; openFromNotification(o); }
+}
+
 async function boot() {
   await startEvents();
   startStateEvents();
@@ -181,18 +205,24 @@ function mockStart() {
 export function App() {
   const stack = useApp((s) => s.stack);
   useEffect(() => {
-    void boot();
+    void boot().finally(ready);
     void import("@tauri-apps/plugin-notification").then(async (n) => {
+      // a tapped notification opens its chat or terminal
+      void n.onAction((e) => {
+        const open = e.notification?.extra?.open as NotifyOpen | undefined;
+        if (open) openFromNotification(open);
+      }).catch(() => {});
       if (!(await n.isPermissionGranted())) await n.requestPermission();
     }).catch(() => {});
     const visible = (v: boolean) => { if (!IS_WEB) void phone.visible(v).catch(() => {}); };
     visible(!document.hidden);
-    // Back from the background or a network change: start fresh connections.
+    // Back from the background: keep the connections that still answer, replace the others
+    // (dropping them all made every return a reconnect). A network change: start fresh ones.
     let hiddenAt = 0;
     const onVis = () => {
       visible(!document.hidden);
       if (document.hidden) { hiddenAt = Date.now(); return; }
-      if (Date.now() - hiddenAt > 20_000) void phone.networkChanged();
+      if (Date.now() - hiddenAt > 20_000) void phone.resume().catch(() => phone.networkChanged());
     };
     const onOnline = () => void phone.networkChanged();
     document.addEventListener("visibilitychange", onVis);
