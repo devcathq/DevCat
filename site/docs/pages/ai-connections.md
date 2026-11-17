@@ -7,6 +7,7 @@ An *AI connection* tells DevCat which agent CLI to start in the AI workspace. Cl
 | Agent | Command | API key variable |
 | --- | --- | --- |
 | Claude Code (built in) | `claude` | `ANTHROPIC_API_KEY` |
+| Cursor | `cursor-agent` (or `agent`) | `CURSOR_API_KEY` |
 | OpenAI Codex | `codex` | `OPENAI_API_KEY` |
 | Gemini CLI | `gemini` | `GEMINI_API_KEY` |
 | GitHub Copilot | `copilot` | `GH_TOKEN` |
@@ -190,6 +191,11 @@ written to a plain file.
 ## What differs between agents
 
 - **Claude Code** gets the session list, the launch options and the **Code Review** view.
+- **Cursor** gets launch options too (a model, and the **Agent** / **Plan** / **Ask** / **Force** mode) with a
+  **Restart cursor-agent** button, and each tab keeps its own Cursor chat: DevCat creates it when the tab starts
+  (`cursor-agent create-chat`) and resumes it (`--resume`) every time the agent restarts. Its id shows in the header.
+  Log in once with `cursor-agent login`, or add an API key to the connection. On a folder on an SSH host the tab
+  starts a fresh chat each time.
 - **Other agents** get a **Review** button that asks the agent itself to review the changes in its terminal.
 - **DevCat Agent** has a chat view instead of a terminal, its saved chats in the sidebar, and approvals on the phone.
 - The **Diff** view and extra terminals work the same for every agent.

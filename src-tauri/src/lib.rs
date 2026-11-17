@@ -497,6 +497,7 @@ pub fn run() {
             ai::ai_provider_save,
             ai::ai_provider_delete,
             ai::ai_provider_detect,
+            ai::ai_cursor_create_chat,
             // git tools
             gitx::commands::git_repos,
             gitx::commands::git_log,

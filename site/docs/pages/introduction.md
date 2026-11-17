@@ -12,7 +12,7 @@ No account. No server. Your machine, your keys, your agents.
 
 | Area | What it covers | Read |
 | --- | --- | --- |
-| AI workspace | Claude Code, Codex, Gemini CLI, Copilot, Aider, opencode or your own CLI in a real terminal, with the diff, code review and the project's files | [AI workspace](ai-workspace.md) |
+| AI workspace | Claude Code, Cursor, Codex, Gemini CLI, Copilot, Aider, opencode or your own CLI in a real terminal, with the diff, code review and the project's files | [AI workspace](ai-workspace.md) |
 | DevCat Agent | The built-in agent for any OpenAI- or Anthropic-compatible model, built to make the most of the prompt cache. Or a [ghost chat](ghost-chats.md) that keeps nothing | [AI connections](ai-connections.md#devcat-agent) |
 | Memory and rooms | One memory every agent shares, and rooms to build with other people, peer to peer and end-to-end encrypted | [Memory](memory.md), [Rooms](rooms.md) |
 | Git | Every repository in a folder, commit graph, blame, branches, stashes, fetch / pull / push | [Git](git.md) |

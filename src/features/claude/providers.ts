@@ -24,6 +24,7 @@ export interface KindInfo {
 
 export const KINDS: Record<AiKind, KindInfo> = {
   claude: { label: "Claude Code", program: "claude", keyEnv: "ANTHROPIC_API_KEY", keyEnvEditable: false, install: "curl -fsSL https://claude.ai/install.sh | bash", login: "Run claude once in a terminal to log in." },
+  cursor: { label: "Cursor", program: "cursor-agent", keyEnv: "CURSOR_API_KEY", keyEnvEditable: false, install: "curl https://cursor.com/install -fsS | bash", login: "Run cursor-agent login once, or set an API key." },
   codex: { label: "OpenAI Codex", program: "codex", keyEnv: "OPENAI_API_KEY", keyEnvEditable: false, install: "npm i -g @openai/codex", login: "Run codex login once, or set an API key." },
   gemini: { label: "Gemini CLI", program: "gemini", keyEnv: "GEMINI_API_KEY", keyEnvEditable: false, install: "npm i -g @google/gemini-cli", login: "Sign in with Google on first start, or set an API key." },
   copilot: { label: "GitHub Copilot", program: "copilot", keyEnv: "GH_TOKEN", keyEnvEditable: true, install: "npm i -g @github/copilot", login: "Use /login on first start, or set a GitHub token." },
@@ -33,7 +34,7 @@ export const KINDS: Record<AiKind, KindInfo> = {
   agent: { label: "DevCat Agent", program: "", keyEnv: null, keyEnvEditable: false, install: null, login: "Built in: talks to a model API directly. Nothing to install." },
 };
 
-export const KIND_ORDER: AiKind[] = ["claude", "agent", "codex", "gemini", "copilot", "aider", "opencode", "custom"];
+export const KIND_ORDER: AiKind[] = ["claude", "agent", "cursor", "codex", "gemini", "copilot", "aider", "opencode", "custom"];
 
 export const builtinClaude = (): AiProvider => ({ id: CLAUDE_PROVIDER_ID, name: "Claude Code", kind: "claude", args: [], env: [], builtin: true });
 

@@ -474,7 +474,7 @@ export interface TrafficSample {
 
 // ---- AI connections (mirror src-tauri/src/ai/mod.rs)
 
-export type AiKind = "claude" | "codex" | "gemini" | "copilot" | "aider" | "opencode" | "custom" | "agent";
+export type AiKind = "claude" | "cursor" | "codex" | "gemini" | "copilot" | "aider" | "opencode" | "custom" | "agent";
 /** Model API of a DevCat Agent connection. */
 /** A model a DevCat Agent API offers; `context` = its window in tokens, when known. */
 /** A model an agent connection offers; `price` is its list price in US dollars per million tokens. */

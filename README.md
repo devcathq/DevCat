@@ -34,7 +34,7 @@ memory**, and keep your agents going from **your phone** or a **Telegram / Disco
 
 | Area | Supported |
 | --- | --- |
-| AI | AI Workspace (terminal, diff, code review) running your installed coding agent: Claude Code (default), OpenAI Codex, Gemini CLI, GitHub Copilot, Aider, opencode or a custom CLI; or the built-in DevCat Agent (its own harness: tools, approvals, hooks, MCP, sandbox, helpers) with any OpenAI- or Anthropic-compatible model. Ask the agent about any connection, or start a ghost chat that keeps nothing |
+| AI | AI Workspace (terminal, diff, code review) running your installed coding agent: Claude Code (default), Cursor, OpenAI Codex, Gemini CLI, GitHub Copilot, Aider, opencode or a custom CLI; or the built-in DevCat Agent (its own harness: tools, approvals, hooks, MCP, sandbox, helpers) with any OpenAI- or Anthropic-compatible model. Ask the agent about any connection, or start a ghost chat that keeps nothing |
 | Memory | One memory every agent shares (Claude Code, Codex, Cursor, Gemini, DevCat Agent), synced between your own computers |
 | Rooms | Work with other people, peer to peer and end-to-end encrypted: files, docs, whiteboards, a thread, tasks, and everyone's agents |
 | MCP | Sync MCP: DevCat's MCP server in Claude Code, Codex, Cursor and Gemini CLI: databases, Kubernetes, Docker, RabbitMQ, VPNs and tunnels, adding connections, scheduled jobs and tickets, with off / read-only / full access per connection and per VPN, and an activity log |
@@ -274,7 +274,7 @@ of these step by step, with every keyboard shortcut on
 - **AI Workspace**: runs your installed coding-agent CLI in a real terminal (like iTerm2), with
   **Chat ⌥⇧⌘1 · Diff ⌥⇧⌘2**, extra terminals in the same folder (**+** or ⌥⇧⌘T, each its own tab next to Chat), a git-aware file tree (copy and paste files to and from Explorer / Finder) and file previews (code, Markdown, PDF, images,
   Excel/CSV with ⌘F / Ctrl+F to find in every row, Word). The agent is an *AI connection* picked in the sidebar header: [Claude Code](https://docs.claude.com/en/docs/claude-code)
-  by default, or OpenAI Codex, Gemini CLI, GitHub Copilot CLI, Aider, opencode or any custom command
+  by default, or Cursor (`cursor-agent`, with its model, mode and chat resumed on restart), OpenAI Codex, Gemini CLI, GitHub Copilot CLI, Aider, opencode or any custom command
   (args + env vars). Each uses its own login, or an optional API key kept in the OS keychain and passed as
   the provider's env var (e.g. `OPENAI_API_KEY`). With Claude Code you also get **Code Review ⌥⇧⌘3**,
   launch options and your Claude session list (resume or rename any session); other agents get a Review button that
