@@ -541,7 +541,13 @@ function TodoPanel({ items, busy }: { items: Item[]; busy: boolean }) {
   const todos = useMemo(() => {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      if (it.kind === "user") return [];
+      // a new message starts a new plan, unless the turn before it was cut short (step limit,
+      // stopped, error) and the user says "continue": that turn's plan carries on
+      if (it.kind === "user") {
+        const prev = items[i - 1];
+        if (prev?.kind === "end" && prev.end !== "answered") continue;
+        return [];
+      }
       if (it.kind === "tool" && it.name === "todo_write" && it.status !== "denied") return todoList(it.input);
     }
     return [];

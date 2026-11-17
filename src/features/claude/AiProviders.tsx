@@ -139,7 +139,7 @@ function useModelList(value: AgentSettings, providerId: string, apiKey: string) 
 }
 
 /** The harness's default (`MAX_STEPS`). */
-const DEFAULT_MAX_STEPS = 60;
+const DEFAULT_MAX_STEPS = 200;
 
 /** DevCat Agent: which model API to use, with presets for the common ones. The model itself is
  *  picked in the chat; here it only gets a default once the provider's list is known. */

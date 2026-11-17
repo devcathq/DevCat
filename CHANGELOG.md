@@ -12,6 +12,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **DevCat Agent keeps its plan through long work**: when a long chat is summarized to free the context window, the
+  agent's checklist now goes into the summary, so it carries on with the same plan instead of forgetting it. The plan
+  panel also stays when you say "continue" after the agent paused. And the agent now pauses after 200 steps per
+  message instead of 60 (change it with **Steps per turn** in the connection's settings; 0 means no limit).
+
 ## 0.27.0 - 2026-11-16
 
 - **JDBC connections** (#164): any database with a JDBC driver (SQLBase, Oracle, Db2, Informix, H2…) as a connection,
