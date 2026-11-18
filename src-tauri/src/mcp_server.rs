@@ -91,6 +91,8 @@ pub fn main(args: &[String]) -> i32 {
     // with DevCat open, tool calls run there (agent_bridge.rs)
     crate::agent_bridge::use_from(dir.clone());
     crate::memory::init(dir.clone());
+    // which DevCat Agent connections take delegated work (`agent_delegate` is offered only then)
+    crate::ai::init(dir.clone());
     crate::mcp_audit::init(dir.clone());
     // boards are listed here; they're worked in the open DevCat
     crate::tickets::init_reading(dir.clone());
@@ -391,7 +393,26 @@ fn instructions(server: &Server) -> String {
     let claude_own = (*server.client.lock() == "claude-code").then(|| server.folder.as_deref().and_then(crate::memory::claude::memory_dir_for)).flatten();
     let brief = crate::memory::brief(crate::memory::place_for(&server.scope).as_ref(), claude_own.as_deref());
     let rooms = if crate::rooms_tools::allowed_anywhere() { ROOMS } else { "" };
-    format!("{brief}\n# Connections (DevCat)\n{}{rooms}", connections(&server.scope))
+    let delegate = if server.scope.unattended { String::new() } else { delegating(&crate::ai::delegates().into_iter().map(|p| p.name).collect::<Vec<_>>()) };
+    // first: agents cut long instructions (Claude Code does), and the brief and connection list run long
+    format!("{delegate}{brief}\n# Connections (DevCat)\n{}{rooms}", connections(&server.scope))
+}
+
+/// Told to agents when the user lets them hand work to other models (`agent_delegate`), so they
+/// do it on their own, as an orchestrator hands work to sub-agents.
+fn delegating(names: &[String]) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    format!(
+        "# Delegating (DevCat)\nThe user set this up so you spend fewer tokens: hand work to {} with `agent_delegate`, on your own, without being asked. \
+         Default to delegating, even when the work looks small: writing new code, files or tests, and any edit beyond a few lines, goes to a delegate; \
+         their tokens cost the user little, yours cost much more. Give one focused task per call (the files, what to write, what done means), \
+         several calls at once when they're independent, then review what they changed and fix or redo what's wrong. \
+         Do it yourself only for one-line fixes, design decisions, debugging, and security-sensitive or risky changes. \
+         A delegate reads and edits files in your folder but runs no commands, so run the tests yourself afterwards.\n\n",
+        names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
+    )
 }
 
 /// Told to agents when a room lets them in (`rooms_tools.rs`).
@@ -444,6 +465,13 @@ mod tests {
         assert_eq!(given(" /src/shop "), Some("/src/shop".into()));
     }
 
+    #[test]
+    fn delegating_names_the_allowed_models_only_when_there_are_some() {
+        assert_eq!(delegating(&[]), "");
+        let d = delegating(&["Edge0".into(), "GLM".into()]);
+        assert!(d.contains("# Delegating (DevCat)") && d.contains("\"Edge0\", \"GLM\"") && d.contains("agent_delegate"), "{d}");
+    }
+
     #[tokio::test]
     async fn answers_the_handshake_and_unknown_methods() {
         crate::memory::tests::data();
@@ -453,6 +481,7 @@ mod tests {
         assert_eq!(init["result"]["serverInfo"]["name"], "devcat");
         let instructions = init["result"]["instructions"].as_str().unwrap();
         assert!(instructions.contains("db_query") && instructions.contains("memory_search"), "{instructions}");
+        assert!(!instructions.contains("# Delegating"), "nothing about delegating unless the user allowed a model");
         assert_eq!(*server.client.lock(), "codex");
         let newer = handle(&server, json!({ "id": 2, "method": "initialize", "params": { "protocolVersion": "2099-01-01" } })).await.unwrap();
         assert_eq!(newer["result"]["protocolVersion"], PROTOCOLS[0]);

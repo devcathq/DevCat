@@ -17,6 +17,16 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   with the new `db_open_query` tool: it opens SQL, a `.sql` file or a saved query in a query tab and, when asked, runs
   it there so you see the results in DevCat's grid. A read runs on a read-only session; a script that changes data
   runs only on a connection whose AI access lets agents change data, otherwise the tab opens and you press Run.
+- **Hand work to a cheaper or local model**: turn on **Coding agents may hand it work** for a DevCat Agent connection
+  (in AI connections), and Claude Code, Codex and other agents connected to DevCat get an `agent_delegate` tool: they
+  give that model a focused task in their folder, it reads and edits files there (no commands, web pages or edits
+  outside the folder, since nobody is there to approve them), and they get back only a short summary and the list of
+  changed files. Only the connections you turn it on for are offered.
+  The chat stays in DevCat so you can read what it did. Agents are told about the models you allowed when they
+  connect, so they hand work over on their own.
+- **Local models report their context window**: DevCat now reads the window llama.cpp-style servers report
+  (`meta.n_ctx`), so the DevCat Agent compacts in time on them, and scheduled jobs ask the model's own server before
+  guessing.
 
 ## 0.28.0 - 2026-11-17
 

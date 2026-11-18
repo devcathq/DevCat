@@ -40,6 +40,10 @@ pub(super) fn add(out: &mut Vec<Arc<dyn Tool>>, s: &Arc<Scope>, v: &View) {
     out.push(Arc::new(Jobs(s.clone())));
     out.push(Arc::new(JobSave(s.clone())));
     out.push(Arc::new(JobRun(s.clone())));
+    // only where the user let coding agents hand work to a DevCat Agent connection
+    if !crate::ai::delegates().is_empty() {
+        out.push(Arc::new(Delegate(s.clone())));
+    }
     if !boards(s).is_empty() {
         out.push(Arc::new(Tickets(s.clone())));
         out.push(Arc::new(TicketsFix(s.clone())));
@@ -365,6 +369,156 @@ impl Tool for SaveQuery {
             Ok(saved) => ToolOutput::ok(format!("Saved the query {} (id {}).", saved.name, saved.id)),
             Err(e) => ToolOutput::err(format!("Couldn't save the query: {e}")),
         }
+    }
+}
+
+// ---------- agent_delegate
+
+/// Longest answer `agent_delegate` hands back: the point is to spend the caller's tokens on the
+/// outcome, not the work.
+const MAX_DELEGATE_ANSWER: usize = 4000;
+/// Part of the model's window a task may take up on its own: the rest is for the DevCat Agent's
+/// instructions, the files it reads and its work.
+const TASK_SHARE: f64 = 0.25;
+
+/// Hands a task to a DevCat Agent connection the user allowed (`AgentSettings::delegate`: a
+/// cheaper or local model), in the caller's folder, and waits for it: the caller gets a short
+/// answer and the files it changed. The chat stays in DevCat for the user to read; it gets no
+/// DevCat tools (`connections: false`), so it can't hand work on in turn. Nobody watches it, so
+/// it never waits for the user: what would ask (commands, web pages, edits outside the folder) is
+/// refused at once (`agent_jobs::is_delegated`), and questions get "decide yourself".
+struct Delegate(Arc<Scope>);
+
+/// The allowed connection the model means, or the one there is.
+fn delegate_named(want: Option<&str>) -> Result<crate::ai::AiProvider, ToolOutput> {
+    let all = crate::ai::delegates();
+    let names = || all.iter().map(|p| format!("\"{}\"", p.name)).collect::<Vec<_>>().join(", ");
+    if all.is_empty() {
+        return Err(ToolOutput::err("No DevCat Agent connection takes delegated work: the user turns on \"Coding agents may hand it work\" for one in DevCat (AI connections)."));
+    }
+    match want {
+        Some(w) => all.iter().find(|p| p.id == w).or_else(|| all.iter().find(|p| p.name.eq_ignore_ascii_case(w))).cloned().ok_or_else(|| ToolOutput::err(format!("\"{w}\" doesn't take delegated work. These do: {}.", names()))),
+        None if all.len() == 1 => Ok(all[0].clone()),
+        None => Err(ToolOutput::err(format!("Say which `agent`: {}.", names()))),
+    }
+}
+
+/// Whether the task alone fits in its share of the window (about 4 characters a token).
+fn task_fits(task: &str, window: u64) -> Result<(), String> {
+    let tokens = task.chars().count() as u64 / 4;
+    let room = (window as f64 * TASK_SHARE) as u64;
+    if tokens > room {
+        return Err(format!("The task is about {tokens} tokens, and this model's window is {window}: keep it under {room}. Split it, or name the files for it to read instead of pasting them."));
+    }
+    Ok(())
+}
+
+/// At most `max` characters of `text`, saying when there was more.
+fn clip(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((i, _)) => format!("{}\n[… cut: the full answer is in the chat in DevCat]", &text[..i]),
+        None => text.to_string(),
+    }
+}
+
+#[async_trait]
+impl Tool for Delegate {
+    fn spec(&self) -> ToolSpec {
+        let names: Vec<String> = crate::ai::delegates().into_iter().map(|p| p.name).collect();
+        ToolSpec {
+            name: "agent_delegate".into(),
+            description: format!(
+                "Hand a self-contained task to another model through DevCat (a cheaper or local one the user allowed: {}), to save your own tokens: it works in your folder with file tools (read, glob, grep, edit; no commands, web pages or edits outside the folder, since nobody approves them) and you get back a short summary and the files it changed, never its whole work. Good for mechanical edits, drafting, renames, boilerplate, summarizing files. Its context is smaller than yours: give one focused task, name the files and what done means, don't paste big files (it reads them). Check what it changed before you rely on it. Takes minutes; needs DevCat open.",
+                if names.is_empty() { "none yet".into() } else { names.join(", ") }
+            ),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "What to do, with the files and what done means" },
+                    "agent": { "type": "string", "description": "Which allowed DevCat Agent connection (name or id); needed when there are several" },
+                    "folder": { "type": "string", "description": "Where it works: your folder (default) or a folder in it" },
+                    "mode": { "type": "string", "enum": ["auto-edit", "plan"], "description": "auto-edit (default): it edits files in the folder; plan: it only reads and answers" }
+                },
+                "required": ["task"]
+            }),
+        }
+    }
+    fn kind(&self, input: &Value, _: &ToolCtx) -> Kind {
+        if arg(input, "mode").as_deref() == Some("plan") { Kind::Query } else { Kind::EditOutside }
+    }
+    fn summary(&self, input: &Value) -> String {
+        let task = arg(input, "task").unwrap_or_default();
+        format!("{}: {}", arg(input, "agent").unwrap_or_else(|| "delegate".into()), task.chars().take(80).collect::<String>())
+    }
+    fn timeout(&self, _: &Value) -> Duration {
+        Duration::from_secs(60 * 60)
+    }
+    async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
+        // chats run in the app: not in `devcat mcp` with DevCat closed, nor `devcat serve` without the scheduler
+        if let Err(e) = jobs_here() {
+            return ToolOutput::err(e.content.replace("Scheduled jobs live", "Delegated work runs"));
+        }
+        let Some(task) = arg(&input, "task") else { return ToolOutput::err("Missing `task`: what it should do.") };
+        let p = match delegate_named(arg(&input, "agent").as_deref()) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let root = job_folder(&self.0, ctx);
+        let folder = match arg(&input, "folder") {
+            Some(f) => local_path(ctx, &f),
+            None => root.clone(),
+        };
+        if !within(&folder, &root) {
+            return ToolOutput::err(format!("It works in your folder ({root}) or a folder in it, not {folder}."));
+        }
+        if !Path::new(&folder).is_dir() {
+            return ToolOutput::err(format!("There's no folder {folder}."));
+        }
+        let policy = match arg(&input, "mode").as_deref().unwrap_or("auto-edit") {
+            "auto-edit" => Policy::AutoEdit,
+            "plan" => Policy::Plan,
+            m => return ToolOutput::err(format!("Unknown mode {m}: auto-edit or plan.")),
+        };
+        let window = crate::ai::provider_context_window(&p.id).await.unwrap_or(128_000);
+        if let Err(why) = task_fits(&task, window) {
+            return ToolOutput::err(why);
+        }
+        let opened = match crate::agent::open(folder.clone(), p.id.clone(), None, "delegate", crate::agent::SCHEDULE, None, None, false).await {
+            Ok(o) => o,
+            Err(e) => return ToolOutput::err(format!("Couldn't start {}: {e}", p.name)),
+        };
+        let sid = opened.session_id;
+        let title = format!("Delegated · {}", task.split_whitespace().take(8).collect::<Vec<_>>().join(" "));
+        let _ = crate::agent::agent_rename(sid.clone(), title.clone()).await;
+        agent_jobs::delegated(&sid, Some(title));
+        let prompt = format!(
+            "{task}\n\n(Another coding agent handed you this task and reads only your final message. Work in this folder. When done, end with a short summary, at most 150 words: what you changed (file paths), what you checked, and anything left undone or uncertain. Don't paste file contents or diffs.)"
+        );
+        let started = std::time::Instant::now();
+        let result = crate::agent::run_turn(&sid, &prompt, policy, Some(window), false).await;
+        let took = started.elapsed().as_secs();
+        agent_jobs::delegated(&sid, None);
+        let answer = crate::agent::last_answer(&sid).unwrap_or_default();
+        let changed: Vec<String> = crate::agent::changed_files(&sid)
+            .into_iter()
+            .map(|f| Path::new(&f).strip_prefix(&folder).map(|r| r.to_string_lossy().into_owned()).unwrap_or(f))
+            .collect();
+        crate::agent::close_if_idle(&sid);
+        let (end, error) = match result {
+            Ok(r) => r,
+            Err(e) => ("error".into(), Some(e.to_string())),
+        };
+        let head = match (end.as_str(), &error) {
+            ("answered", _) => format!("{} finished in {took} s.", p.name),
+            ("stepLimit", _) => format!("{} stopped at its step limit after {took} s without finishing.", p.name),
+            ("stopped", _) => format!("{} was stopped.", p.name),
+            (_, Some(e)) => format!("{} failed: {e}", p.name),
+            _ => format!("{} didn't finish ({end}).", p.name),
+        };
+        let files = if changed.is_empty() { "Files changed: none.".to_string() } else { format!("Files changed: {}.", changed.join(", ")) };
+        let body = if answer.is_empty() { "(No answer.)".to_string() } else { clip(&answer, MAX_DELEGATE_ANSWER) };
+        let out = format!("{head} {files}\n\n{body}");
+        if end == "answered" { ToolOutput::ok(out) } else { ToolOutput::err(out) }
     }
 }
 
@@ -1041,6 +1195,17 @@ mod tests {
         assert_eq!(v["savedQueryId"], Value::Null);
         assert_eq!(v["run"], "read-only", "openedFiles.ts reads full / read-only");
         assert_eq!(serde_json::to_value(AutoRun::Full).unwrap(), "full");
+    }
+
+    #[test]
+    fn delegated_tasks_fit_the_models_window_and_answers_stay_short() {
+        assert!(task_fits(&"x".repeat(4 * 8_000), 32_768).is_ok(), "8k tokens fit a quarter of 32k");
+        let why = task_fits(&"x".repeat(4 * 9_000), 32_768).unwrap_err();
+        assert!(why.contains("9000 tokens") && why.contains("under 8192"), "{why}");
+        assert!(task_fits(&"x".repeat(4 * 40_000), 196_608).is_ok());
+        assert_eq!(clip("short", 10), "short");
+        let long = clip(&"é".repeat(20), 10);
+        assert!(long.starts_with(&"é".repeat(10)) && long.contains("[… cut"), "{long}");
     }
 
     #[test]

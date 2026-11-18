@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { Bot, Check, ChevronDown, Copy, Eye, EyeOff, KeyRound, Plus, Settings2, Trash2, X } from "lucide-react";
 import { useEffect, useState, type MouseEvent } from "react";
 import { toast } from "sonner";
-import { Badge, Button, Dialog, Field, IconButton, Input, Select, Spinner } from "../../components/ui";
+import { Badge, Button, Checkbox, Dialog, Field, IconButton, Input, Select, Spinner } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { AgentSettings, AiDetect, AiEnvVar, AiKind, AiProvider } from "../../lib/types";
 import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
@@ -160,7 +160,7 @@ function AgentFields({ value, onChange, providerId, apiKey }: { value: AgentSett
         <Field label="Provider" hint={preset?.keyHint ?? "Any OpenAI- or Anthropic-compatible API."}>
           <Select value={preset?.label ?? ""} onChange={(e) => {
             const p = AGENT_PRESETS.find((x) => x.label === e.target.value);
-            if (p) onChange({ ...p.settings, maxSteps: value.maxSteps });
+            if (p) onChange({ ...p.settings, maxSteps: value.maxSteps, delegate: value.delegate });
           }}>
             {!preset && <option value="">Custom</option>}
             {AGENT_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}
@@ -193,6 +193,9 @@ function AgentFields({ value, onChange, providerId, apiKey }: { value: AgentSett
           const n = Math.floor(Number(e.target.value));
           onChange({ ...value, maxSteps: e.target.value === "" || !Number.isFinite(n) || n < 0 ? null : n });
         }} />
+      </Field>
+      <Field label="Coding agents" hint="Claude Code, Codex and other agents connected to DevCat (and DevCat Agent chats) can hand this model a task with agent_delegate: it works in their folder and may read and edit files there, but runs no commands. Useful for a cheaper or local model.">
+        <Checkbox label="Coding agents may hand it work" checked={!!value.delegate} onChange={(v) => onChange({ ...value, delegate: v })} />
       </Field>
     </>
   );

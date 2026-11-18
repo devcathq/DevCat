@@ -68,6 +68,25 @@ static FILE: OnceCell<PathBuf> = OnceCell::new();
 static LOCK: Mutex<()> = Mutex::new(());
 /// Jobs running now: job id -> the run's chat.
 static RUNNING: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(Default::default);
+/// Chats a coding agent handed work to (`agent_delegate`), by session id, with their titles.
+static DELEGATED: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(Default::default);
+
+/// Whether the chat is a coding agent's delegated task: nobody watches it, so what would ask the
+/// user (commands, web pages, edits outside the folder) is refused at once instead of waiting.
+pub fn is_delegated(session_id: &str) -> bool {
+    DELEGATED.lock().contains_key(session_id)
+}
+
+/// What a delegated chat is told when it asks for something it may not do.
+pub const DELEGATED_DENY: &str = "Not in a delegated task: nobody is there to approve commands, web pages or edits outside the folder. Use read, glob, grep and edit instead, and say in your summary what still needs a command.";
+
+/// A delegated chat started (`name`) or ended (`None`).
+pub fn delegated(session_id: &str, name: Option<String>) {
+    match name {
+        Some(n) => DELEGATED.lock().insert(session_id.to_string(), n),
+        None => DELEGATED.lock().remove(session_id),
+    };
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -260,9 +279,8 @@ async fn run(job: Job) {
     let _ = record(&job.id, JobRun { started_ms, session_id: Some(session_id.clone()), end: None, error: None, finished_ms: None });
     let when = Local.timestamp_millis_opt(started_ms as i64).single().map(|t| t.format("%b %-d, %H:%M").to_string()).unwrap_or_default();
     let _ = crate::agent::agent_rename(session_id.clone(), format!("{} · {when}", job.name)).await;
-    let model = crate::ai::agent_config(&job.provider_id).map(|(_, cfg)| cfg.model).unwrap_or_default();
-    // as the chat would: the model's window if the catalog knows it, else a common one
-    let window = crate::ai::context_window(&model).await.unwrap_or(128_000);
+    // as the chat would: the window the model's API or the catalog reports, else a common one
+    let window = crate::ai::provider_context_window(&job.provider_id).await.unwrap_or(128_000);
     let (end, error) = match crate::agent::run_turn(&session_id, &job.prompt, job.policy, Some(window), job.sandbox).await {
         Ok(r) => r,
         Err(e) => ("error".into(), Some(e.to_string())),
