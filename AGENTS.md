@@ -53,7 +53,10 @@ bridge (`Call::unattended`: a call can narrow its scope, never widen it). `devca
 `mcp_audit.rs` (the UI's MCP activity). `devcat_open_file` (`workspace.rs`) shows the user a file in the window
 through `opened::show`, the same queue as a file opened with DevCat: it returns only where the file opened, never its
 content, opens a `.ovpn` as text rather than in the VPN import form (`OpenedFile::agent`), and an unattended run
-doesn't get it.
+doesn't get it. `db_open_query` (`workspace.rs`, `opened::show_query`, "opened-queries") opens SQL in a query tab
+the same way and may run it there once (`autoRun`): a read by its words runs on a read-only session
+(`db_execute_read_only`), anything else only where `may_change` allows (`run_mode`), since the window's own session
+would otherwise run what the agent may not.
 
 Judging a query by its words can be fooled, so a query DevCat lets through only because it looks like a read (an
 agent's `Kind::Query`, read access over MCP, `db_export`, a read-only phone) runs on a read-only session

@@ -3,7 +3,9 @@
 //! `RunEvent::Opened`; Windows / Linux as command-line arguments, either at launch or, while
 //! DevCat runs, through the single-instance plugin. Agents open files the same way with the
 //! `devcat_open_file` tool ([`show`]). They're queued until a window takes them
-//! (`take_opened_files`) after the "opened-files" poke.
+//! (`take_opened_files`) after the "opened-files" poke. Queries an agent opens in the query
+//! editor (`db_open_query`, [`show_query`]) wait the same way (`take_opened_queries` after
+//! "opened-queries").
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -23,6 +25,10 @@ pub struct OpenedFile {
 }
 
 static PENDING: Mutex<Vec<OpenedFile>> = Mutex::new(Vec::new());
+
+pub use crate::agent_tools::OpenedQuery;
+
+static PENDING_QUERIES: Mutex<Vec<OpenedQuery>> = Mutex::new(Vec::new());
 
 /// VPN profiles DevCat imports when opened (everything else opens in the editor).
 pub fn is_vpn_profile(p: &Path) -> bool {
@@ -86,6 +92,22 @@ pub fn show(app: &AppHandle, path: &Path) -> Result<String, String> {
     PENDING.lock().push(f);
     let _ = app.emit("opened-files", ());
     Ok(shown)
+}
+
+/// Opens `q` in a query tab for an agent (`db_open_query`), or says why it can't.
+pub fn show_query(app: &AppHandle, q: OpenedQuery) -> Result<(), String> {
+    if app.webview_windows().is_empty() {
+        return Err("DevCat has no window open to show it in: the user opens DevCat's window and asks again.".into());
+    }
+    PENDING_QUERIES.lock().push(q);
+    let _ = app.emit("opened-queries", ());
+    Ok(())
+}
+
+/// Queries waiting to be opened (each is handed out once).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn take_opened_queries() -> Vec<OpenedQuery> {
+    std::mem::take(&mut *PENDING_QUERIES.lock())
 }
 
 /// `path` as a file an agent opens, or why it isn't one.
@@ -156,4 +178,5 @@ mod tests {
         assert_eq!(take_opened_files(), [f]);
         assert!(take_opened_files().is_empty());
     }
+
 }

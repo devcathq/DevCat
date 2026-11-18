@@ -14,6 +14,7 @@ import { setCloseGuard, useTabs } from "../../../store/tabs";
 import { confirmDialog } from "../../connections/dialogs";
 import { basename } from "../format";
 import { HtmlPreview, ScriptsButton, useHtmlScripts } from "./HtmlPreview";
+import { isSqlFile, OpenInQueryEditor } from "../../query/OpenInQueryEditor";
 import { WrapButton, useWrap } from "./simple";
 
 type Ed = Parameters<OnMount>[0];
@@ -160,6 +161,7 @@ export function TextEditor({ preview, root, slot, tabId, hidden, reload, onDirty
                 {!saving && <Save className="size-3.5" />}Save
               </Button>
             </>}
+          {isSqlFile(path) && <OpenInQueryEditor path={path} getText={() => edRef.current?.getValue() ?? preview.text ?? ""} />}
           {/* after Save, so it doesn't shift when "Modified" appears */}
           {isHtml && (
             <div className="flex h-6 items-center rounded-md border border-line bg-app p-px text-[12px]">

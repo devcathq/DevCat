@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Run .sql files in the query editor**: a `.sql` file's tab has a **Query editor** button that opens the script
+  (with any unsaved edits) on a connection you pick, either just opened or run right away. Agents can do the same
+  with the new `db_open_query` tool: it opens SQL, a `.sql` file or a saved query in a query tab and, when asked, runs
+  it there so you see the results in DevCat's grid. A read runs on a read-only session; a script that changes data
+  runs only on a connection whose AI access lets agents change data, otherwise the tab opens and you press Run.
+
 ## 0.28.0 - 2026-11-17
 
 - **DevCat Agent keeps its plan through long work** (#172): when a long chat is summarized to free the context window, the
