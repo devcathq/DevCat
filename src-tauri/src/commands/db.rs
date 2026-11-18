@@ -23,7 +23,9 @@ pub async fn db_execute(state: St, conn_id: String, script: String, opts: ExecOp
 }
 
 /// `db_execute` on a read-only session (`St::read_only_driver`), for a caller that may only read
-/// (a read-only phone): the driver and server refuse writes, not only DevCat's look at the words.
+/// (a read-only phone, a query an agent opened and DevCat runs as a read): the driver and server
+/// refuse writes, not only DevCat's look at the words.
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn db_execute_read_only(state: St, conn_id: String, script: String, opts: ExecOptions) -> AppResult<Vec<QueryResult>> {
     let d = state.read_only_driver(&conn_id).await?;
     execute_on(state, d, conn_id, script, opts, Some(false)).await

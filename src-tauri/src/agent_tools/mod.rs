@@ -27,6 +27,7 @@ mod k8s;
 mod network;
 mod rabbitmq;
 mod workspace;
+pub use workspace::OpenedQuery;
 
 use crate::db::{ExecOptions, QueryResult, TableRef};
 use crate::models::{ConnectionConfig, ConnectionKind, McpAccess, Project};

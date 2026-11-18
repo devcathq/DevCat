@@ -236,6 +236,7 @@ pub fn run() {
             // windows
             windows::open_window,
             opened::take_opened_files,
+            opened::take_opened_queries,
             // connections
             commands::connections::list_connections,
             commands::connections::get_connection,
@@ -280,6 +281,7 @@ pub fn run() {
             commands::db::db_children,
             commands::db::db_list_databases,
             commands::db::db_execute,
+            commands::db::db_execute_read_only,
             commands::db::db_cancel,
             commands::db::db_table_data,
             commands::db::db_table_structure,
