@@ -57,6 +57,12 @@ doesn't get it. `db_open_query` (`workspace.rs`, `opened::show_query`, "opened-q
 the same way and may run it there once (`autoRun`): a read by its words runs on a read-only session
 (`db_execute_read_only`), anything else only where `may_change` allows (`run_mode`), since the window's own session
 would otherwise run what the agent may not.
+`agent_delegate` (`workspace.rs`) hands a task to a DevCat Agent connection only if the user turned
+on `AgentSettings::delegate` for it (`ai::delegates`; off by default, and no tool at all without one): a chat in the
+caller's folder (or below, like jobs), never Bypass, where whatever would ask the user is refused at once
+(`agent_jobs::is_delegated`: nobody watches it, and the caller would wait forever), with no DevCat tools (`connections: false`, so it can't
+delegate on), a task capped to a share of the model's window (`task_fits`), and only a short answer and the changed
+files back. It needs the open DevCat and isn't offered to unattended runs.
 
 Judging a query by its words can be fooled, so a query DevCat lets through only because it looks like a read (an
 agent's `Kind::Query`, read access over MCP, `db_export`, a read-only phone) runs on a read-only session

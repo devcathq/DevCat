@@ -136,6 +136,10 @@ pub struct AgentSettings {
     /// default ([`devcat_harness::MAX_STEPS`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
+    /// Coding agents (Claude Code, Codex… over `devcat mcp`, and DevCat Agent chats) may hand it
+    /// work with `agent_delegate`. Off unless the user turns it on for this connection.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delegate: bool,
 }
 
 impl AiProvider {
@@ -199,6 +203,11 @@ pub fn agent_config(provider_id: &str) -> AppResult<(AiProvider, devcat_harness:
     Ok((p, cfg))
 }
 
+/// DevCat Agent connections the user lets coding agents hand work to (`AgentSettings::delegate`).
+pub fn delegates() -> Vec<AiProvider> {
+    store().and_then(|st| st.list()).unwrap_or_default().into_iter().filter(|p| p.kind == AiKind::Agent && p.agent.as_ref().is_some_and(|a| a.delegate)).collect()
+}
+
 /// Steps per turn for a DevCat Agent connection (its setting, read fresh so a change applies to
 /// open chats on their next turn).
 pub fn agent_max_steps(provider_id: &str) -> u32 {
@@ -224,6 +233,17 @@ pub async fn ai_agent_models(settings: AgentSettings, provider_id: Option<String
         }
     }
     Ok(models)
+}
+
+/// The context window of a DevCat Agent connection's model: what its own API says (local servers
+/// such as llama.cpp report the window they loaded), else OpenRouter's catalog.
+pub async fn provider_context_window(provider_id: &str) -> Option<u64> {
+    let (_, cfg) = agent_config(provider_id).ok()?;
+    let listed = tokio::time::timeout(std::time::Duration::from_secs(8), devcat_harness::llm::list_models(&cfg)).await.ok().and_then(Result::ok);
+    if let Some(c) = listed.into_iter().flatten().find(|m| m.id == cfg.model).and_then(|m| m.context) {
+        return Some(c);
+    }
+    context_window(&cfg.model).await
 }
 
 /// A model's context window from OpenRouter's catalog, when it lists the model (scheduled jobs

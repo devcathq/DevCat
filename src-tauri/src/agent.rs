@@ -278,6 +278,10 @@ struct UiApprover {
 #[async_trait]
 impl Approver for UiApprover {
     async fn decide(&self, req: &ApprovalRequest) -> (Decision, String) {
+        // a coding agent's delegated task waits for nobody (`agent_delegate`)
+        if crate::agent_jobs::is_delegated(&self.session_id) {
+            return (Decision::Deny { reason: Some(crate::agent_jobs::DELEGATED_DENY.into()) }, "delegated".into());
+        }
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(req.tool_use_id.clone(), tx);
         self.send(json!({ "type": "approval", "request": req }));
@@ -291,6 +295,10 @@ impl Approver for UiApprover {
     }
 
     async fn ask(&self, q: &Question) -> Option<String> {
+        // nobody answers a delegated task's questions: it decides, and says so in its summary
+        if crate::agent_jobs::is_delegated(&self.session_id) {
+            return Some("Nobody can answer here (a delegated task): make the most sensible choice yourself and mention it in your summary.".into());
+        }
         let (tx, rx) = oneshot::channel();
         self.questions.lock().insert(q.tool_use_id.clone(), tx);
         self.send(json!({ "type": "question", "question": q }));
