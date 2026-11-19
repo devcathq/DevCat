@@ -28,7 +28,7 @@ use std::path::PathBuf;
 static DIR: OnceCell<PathBuf> = OnceCell::new();
 /// Board file writes, one at a time.
 static WRITE: Mutex<()> = Mutex::new(());
-/// Runs kept per board.
+/// Runs kept per board (and older ones the watch still needs, see `trim`).
 const HISTORY: usize = 200;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,8 +129,14 @@ fn one() -> u32 {
 fn three() -> u32 {
     3
 }
+fn sixty() -> u32 {
+    60
+}
 fn devcat_prefix() -> String {
     "devcat/".into()
+}
+fn wontfix() -> Option<Column> {
+    Some(Column { id: "wontfix".into(), name: "wontfix".into() })
 }
 
 /// A connected board and what the agent does with it.
@@ -215,6 +221,10 @@ pub struct Board {
     /// Where a ticket goes when the agent couldn't finish it (None: back where it was).
     #[serde(default)]
     pub failed_to: Option<Column>,
+    /// GitHub: the label of an issue whose pull request was closed without a merge (the issue is
+    /// closed as not planned), `wontfix` unless the board says another (None: no label).
+    #[serde(default = "wontfix")]
+    pub not_planned_to: Option<Column>,
     /// Only tickets with this label (empty: all of the column).
     #[serde(default)]
     pub label: String,
@@ -249,10 +259,23 @@ pub struct Board {
     /// boards with a worktree for each ticket: in place, one at a time.
     #[serde(default = "one")]
     pub parallel_runs: u32,
+    /// Longest the agent may work on one ticket, in minutes (1 to 1440); then it's stopped. A
+    /// worktree's setup command gets the same.
+    #[serde(default = "sixty")]
+    pub time_limit_min: u32,
     /// The default prompt: added to every ticket's (conventions, how to test…). A ticket fixed with
     /// a prompt of its own gets that one instead.
     #[serde(default)]
     pub instructions: String,
+}
+
+/// What became of a run's pull request, once the watch loop saw it closed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PrState {
+    Merged,
+    /// Closed without a merge.
+    Closed,
 }
 
 /// What happened to one ticket.
@@ -298,10 +321,9 @@ pub struct RunRecord {
     pub pr_number: Option<u64>,
     #[serde(default)]
     pub pr_url: Option<String>,
-    /// What became of the pull request, once the watch loop saw it closed: `merged`, or `closed`
-    /// without a merge (None: open, still followed at each check).
+    /// What became of the pull request (None: open, still followed at each check).
     #[serde(default)]
-    pub pr_state: Option<String>,
+    pub pr_state: Option<PrState>,
 }
 
 /// Whether boards can be read here (the app and `devcat serve` also work them; `devcat mcp` only
@@ -385,11 +407,44 @@ pub fn record(board: &str, r: RunRecord) {
     let _g = WRITE.lock();
     let mut h = history(board);
     h.insert(0, r);
-    h.truncate(HISTORY);
+    trim(&mut h);
     if let Ok(d) = dir() {
         let _ = write_json(&d.join("history").join(format!("{board}.json")), &h);
     }
     crate::events::emit("tickets-changed", serde_json::json!({ "board": board }));
+}
+
+/// Keeps the newest `HISTORY` runs (newest first), and older ones the watch loop still needs: a
+/// run whose pull request is open (followed at each check), and each ticket's latest run and
+/// latest one that ended (not stopped), which the "after its last run ended" rule reads.
+fn trim(h: &mut Vec<RunRecord>) {
+    let mut extra = h.len().saturating_sub(HISTORY);
+    if extra == 0 {
+        return;
+    }
+    let (mut latest, mut ended) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    let needed: Vec<bool> = h
+        .iter()
+        .map(|r| {
+            let last = latest.insert(r.ticket_id.clone());
+            let last_ended = r.outcome != "stopped" && ended.insert(r.ticket_id.clone());
+            (r.pr_number.is_some() && r.pr_state.is_none()) || last || last_ended
+        })
+        .collect();
+    // the oldest go first
+    let mut gone = vec![false; h.len()];
+    for i in (0..h.len()).rev().filter(|i| !needed[*i]) {
+        if extra == 0 {
+            break;
+        }
+        gone[i] = true;
+        extra -= 1;
+    }
+    let mut i = 0;
+    h.retain(|_| {
+        i += 1;
+        !gone[i - 1]
+    });
 }
 
 /// Changes the board's run records in place (e.g. what became of a run's pull request).
@@ -467,6 +522,7 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     b.interval_min = b.interval_min.clamp(1, 24 * 60);
     b.max_per_run = b.max_per_run.clamp(1, 20);
     b.parallel_runs = b.parallel_runs.clamp(1, 4);
+    b.time_limit_min = b.time_limit_min.clamp(1, 24 * 60);
     if b.kind == TrackerKind::Github {
         let t = token(&b);
         github::on_save(&mut b, t).await?;

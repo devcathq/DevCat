@@ -82,12 +82,13 @@ pub fn linear_filter(team: &str, state: &str, assigned: Assigned) -> Value {
     f
 }
 
-/// Whether a Trello card with these members is wanted (`me`: the token's member id).
-pub fn trello_wanted(members: &[String], me: &str, assigned: Assigned) -> bool {
+/// Whether a ticket with these assignees is wanted, for a tracker that can't filter by assignee
+/// itself (Trello: member ids; GitHub: logins; `me`: the token owner's).
+pub fn assignee_wanted(assignees: &[String], me: &str, assigned: Assigned) -> bool {
     match assigned {
         Assigned::Anyone => true,
-        Assigned::Me => members.iter().any(|m| m == me),
-        Assigned::MeOrNobody => members.is_empty() || members.iter().any(|m| m == me),
+        Assigned::Me => assignees.iter().any(|m| m == me),
+        Assigned::MeOrNobody => assignees.is_empty() || assignees.iter().any(|m| m == me),
     }
 }
 
@@ -218,7 +219,7 @@ impl Tracker {
                     .flatten()
                     .filter(|c| {
                         let ids: Vec<String> = c["idMembers"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-                        trello_wanted(&ids, &me, self.board.assigned)
+                        assignee_wanted(&ids, &me, self.board.assigned)
                     })
                     .take(MAX_TICKETS)
                     .map(trello_ticket)
@@ -314,7 +315,7 @@ impl Tracker {
     // ------------------------------------------------------------ attachments
 
     /// An attachment's bytes, at most `MAX_ATTACHMENT`. The token only goes to the tracker's own
-    /// hosts: Jira's site, trello.com, uploads.linear.app, GitHub's (`github::upload_token`). A
+    /// hosts: Jira's site, trello.com, uploads.linear.app, GitHub's (`github::image_fetch`). A
     /// failed request is tried once more.
     pub async fn download(&self, a: &Attachment) -> AppResult<Vec<u8>> {
         let mut url = reqwest::Url::parse(&a.url).map_err(|_| AppError::msg(format!("{}: not a link DevCat can download", a.name)))?;
@@ -333,7 +334,11 @@ impl Tracker {
                     .header("Authorization", format!("OAuth oauth_consumer_key=\"{}\", oauth_token=\"{}\"", self.board.user.trim(), self.token)),
             ),
             TrackerKind::Linear if host == "uploads.linear.app" => Some(self.http.get(url.clone()).header("Authorization", &self.token)),
-            TrackerKind::Github => super::github::upload_token(&url, &self.board).map(|token| if token { self.http.get(url.clone()).bearer_auth(&self.token) } else { self.http.get(url.clone()) }),
+            TrackerKind::Github => match super::github::image_fetch(&url, &self.board) {
+                super::github::ImageFetch::NotStored => None,
+                super::github::ImageFetch::WithoutToken => Some(self.http.get(url.clone())),
+                super::github::ImageFetch::WithToken => Some(self.http.get(url.clone()).bearer_auth(&self.token)),
+            },
             _ => None,
         };
         let Some(rb) = request() else { return Err(AppError::msg(format!("{}: not stored on the tracker", a.name))) };
@@ -526,11 +531,11 @@ mod tests {
         assert_eq!(linear_filter("ENG", "s", Assigned::Me)["assignee"], json!({ "isMe": { "eq": true } }));
         assert_eq!(linear_filter("ENG", "s", Assigned::MeOrNobody)["or"][1], json!({ "assignee": { "null": true } }));
         let (me, other) = ("m1".to_string(), "m2".to_string());
-        assert!(trello_wanted(&[other.clone()], &me, Assigned::Anyone));
-        assert!(!trello_wanted(&[other.clone()], &me, Assigned::Me));
-        assert!(trello_wanted(&[other, me.clone()], &me, Assigned::Me));
-        assert!(!trello_wanted(&[], &me, Assigned::Me));
-        assert!(trello_wanted(&[], &me, Assigned::MeOrNobody));
+        assert!(assignee_wanted(&[other.clone()], &me, Assigned::Anyone));
+        assert!(!assignee_wanted(&[other.clone()], &me, Assigned::Me));
+        assert!(assignee_wanted(&[other, me.clone()], &me, Assigned::Me));
+        assert!(!assignee_wanted(&[], &me, Assigned::Me));
+        assert!(assignee_wanted(&[], &me, Assigned::MeOrNobody));
     }
 
     #[test]

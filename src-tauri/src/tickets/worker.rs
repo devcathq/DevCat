@@ -13,7 +13,7 @@
 //!    or "failed" (else back where it was; "needs info" when the agent asked questions and the
 //!    board has that column). On GitHub every run's branch is pushed (unfinished work too), and a
 //!    fixed ticket's gets a draft pull request into its base branch (`github::pull_request`),
-//!    linked in the comment.
+//!    linked in the comment; when it can't have one, the ticket goes to "failed" with the reason.
 use super::github::Base;
 use super::trackers::Tracker;
 use super::{Board, Isolation, RunRecord, Ticket, TrackerKind};
@@ -32,8 +32,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Longest the agent may work on one ticket.
-const TICKET_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const CLAUDE_MAX_TURNS: u32 = 200;
 /// DevCat Agent: "continue" after a step limit, at most this many times.
 const AGENT_ROUNDS: usize = 4;
@@ -80,6 +78,9 @@ struct Job {
     /// Queued tickets the person answered the agent's questions about.
     replies: HashMap<String, Reply>,
     repo: std::path::PathBuf,
+    /// A worktree board's clone's shared git settings when the job started (`shared_setup`): a
+    /// run runs no git in the clone once they changed (another run's agent may have done it).
+    settings: Option<Vec<u8>>,
     started: i64,
 }
 
@@ -112,6 +113,12 @@ fn in_this_run<F: std::future::Future>(f: F) -> impl std::future::Future<Output 
 
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+/// Longest the agent may work on one ticket, and a worktree's setup command run: the board's time
+/// limit.
+fn time_limit(b: &Board) -> Duration {
+    Duration::from_secs(u64::from(b.time_limit_min.clamp(1, 24 * 60)) * 60)
 }
 
 pub fn jobs() -> HashMap<String, JobView> {
@@ -248,7 +255,8 @@ fn queue(b: Board, ids: Vec<String>, prompt: Option<String>, reply: Option<Reply
                 }
                 q
             });
-            jobs.insert(b.id.clone(), Job { cancel: Cancel::default(), queue, runs: vec![], wake: Default::default(), prompts, replies, repo, started: now_ms() });
+            let settings = (b.isolation == Isolation::Worktree).then(|| shared_setup(&b.repo));
+            jobs.insert(b.id.clone(), Job { cancel: Cancel::default(), queue, runs: vec![], wake: Default::default(), prompts, replies, repo, settings, started: now_ms() });
             true
         }
     };
@@ -475,13 +483,28 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         rec.summary = format!("The agent changed no files. {}", a.summary);
     }
 
-    // only fixed work gets one: the rest isn't for review
-    if fixed && pushed && let Some(base) = &base {
-        stage(&b.id, &format!("Opening a pull request into {} ({})", base.branch, base.from));
-        super::github::pull_request(tr, &t, rec, base, &a.pr_body).await;
+    // GitHub: only fixed work gets a pull request, the rest isn't for review. Fixed work without
+    // one (not pushed, or GitHub refused it) is for a person too, with the reason in the comment.
+    let (mut for_review, mut pr_note) = (fixed, None);
+    if fixed && let Some(base) = &base {
+        let made = if pushed {
+            stage(&b.id, &format!("Opening a pull request into {} ({})", base.branch, base.from));
+            super::github::pull_request(tr, &t, rec, base, &a.pr_body).await
+        } else {
+            Err(AppError::msg(rec.notes.iter().rev().find(|n| n.starts_with("Push failed")).cloned().unwrap_or_else(|| "the branch wasn't pushed".into())))
+        };
+        pr_note = match made {
+            Ok(true) => None,
+            Ok(false) => Some("Draft pull requests are not available in this repository, so this pull request is ready for review.".to_string()),
+            Err(e) => {
+                for_review = false;
+                let again = b.pick_from.as_ref().map(|c| format!(", or add the label `{}` again to let DevCat try again", c.id)).unwrap_or_default();
+                Some(format!("DevCat couldn't open the pull request: {e}\n\nThe work is on the branch below: open a pull request from it yourself{again}."))
+            }
+        };
     }
 
-    let target = if fixed {
+    let target = if for_review {
         b.done_to.clone()
     } else if rec.outcome == "needs_info" && b.needs_info_to.is_some() {
         b.needs_info_to.clone()
@@ -497,7 +520,7 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
     }
     if b.comment {
         stage(&b.id, "Commenting");
-        if let Err(e) = tr.comment(&t, &comment_text(b, rec, pushed)).await {
+        if let Err(e) = tr.comment(&t, &comment_text(b, rec, pushed, pr_note.as_deref())).await {
             rec.notes.push(format!("Couldn't comment: {e}"));
         }
     }
@@ -759,14 +782,18 @@ async fn run_agent(b: &Board, t: &Ticket, wc: &WorkingCopy, images: &[Image], cu
                 max_turns: CLAUDE_MAX_TURNS,
                 program: Some(l.program.into()),
                 env: l.env,
-                timeout: TICKET_TIMEOUT,
+                timeout: time_limit(b),
                 images: if with_images { images.iter().map(|i| (i.media_type.clone(), i.data.clone())).collect() } else { vec![] },
                 mcp,
                 session: session.clone(),
                 resume,
             };
             let c = cancel.clone();
-            let o = crate::claude::headless::run(job, activity, move || c.is_cancelled()).await?;
+            let started = tokio::time::Instant::now();
+            let o = crate::claude::headless::run(job, activity, move || c.is_cancelled()).await.map_err(|e| {
+                // headless's own message doesn't say which limit
+                if started.elapsed() >= time_limit(b) && !cancel.is_cancelled() { AppError::msg(format!("The agent took longer than the board's time limit ({} min) and was stopped", b.time_limit_min)) } else { e }
+            })?;
             let mut a = o.structured.as_ref().map(answer_of).unwrap_or_else(|| parse_answer(&o.text));
             a.cost_usd = o.cost_usd;
             Ok(a)
@@ -846,7 +873,7 @@ async fn run_devcat_agent(
         }
         _ => {}
     };
-    let deadline = tokio::time::Instant::now() + TICKET_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + time_limit(b);
     let mut text = prompt.to_string();
     let mut images = Some(images);
     for _ in 0..AGENT_ROUNDS {
@@ -855,7 +882,7 @@ async fn run_devcat_agent(
         match turn {
             Err(_) => {
                 cancel.cancel();
-                return Err(AppError::msg("The agent took too long and was stopped"));
+                return Err(AppError::msg(format!("The agent took longer than the board's time limit ({} min) and was stopped", b.time_limit_min)));
             }
             Ok(Err(e)) => return Err(AppError::msg(e.to_string())),
             Ok(Ok(TurnEnd::Answered)) => return Ok(parse_answer(&last_text)),
@@ -877,7 +904,9 @@ fn headline(outcome: &str) -> &'static str {
     }
 }
 
-pub fn comment_text(b: &Board, r: &RunRecord, pushed: bool) -> String {
+/// `pr_note`: GitHub, what to know about the run's pull request (it's not a draft, or why there's
+/// none).
+pub fn comment_text(b: &Board, r: &RunRecord, pushed: bool, pr_note: Option<&str>) -> String {
     let mut c = format!("DevCat agent {}.", headline(&r.outcome));
     if let Some(m) = &r.moved_to {
         c.push_str(&format!(" Moved to {m}."));
@@ -889,6 +918,9 @@ pub fn comment_text(b: &Board, r: &RunRecord, pushed: bool) -> String {
     }
     if let Some(pr) = &r.pr_url {
         c.push_str(&format!("\n\nPull request: {pr}"));
+    }
+    if let Some(n) = pr_note {
+        c.push_str(&format!("\n\n{n}"));
     }
     if let Some(br) = &r.branch {
         let where_ = if pushed { "pushed to origin" } else { "not pushed, on the developer's computer" };
@@ -993,29 +1025,33 @@ fn no_hooks() -> std::path::PathBuf {
 /// git there (not even `status`), since the settings are no longer the user's. Read from the
 /// files, without running git.
 fn git_setup(repo: &str) -> Vec<u8> {
-    fn add(out: &mut Vec<u8>, path: &Path) {
-        out.extend_from_slice(path.to_string_lossy().as_bytes());
-        out.push(0);
-        if let Ok(meta) = std::fs::symlink_metadata(path) {
-            if meta.is_dir() {
-                let mut names: Vec<_> = std::fs::read_dir(path).into_iter().flatten().flatten().map(|e| e.path()).collect();
-                names.sort();
-                for p in names {
-                    add(out, &p);
-                }
-            } else if meta.file_type().is_symlink() {
-                out.extend_from_slice(std::fs::read_link(path).unwrap_or_default().to_string_lossy().as_bytes());
-            } else {
-                out.extend_from_slice(&std::fs::read(path).unwrap_or_default());
-            }
-        }
-        out.push(0);
+    let (dot_git, git_dir, common) = git_dirs(Path::new(repo));
+    let mut out = Vec::new();
+    add_setup(&mut out, &dot_git);
+    for dir in [&git_dir, &common] {
+        setup_of(&mut out, dir);
     }
-    let dot_git = Path::new(repo).join(".git");
-    // a worktree or submodule: `.git` is a file naming the folder
+    out
+}
+
+/// The part of `git_setup` that a clone's worktrees share: the settings in its common git folder.
+/// `repo` is the clone or a folder inside it, found without running git ("" outside a repository).
+/// A worktree board's job notes it when it starts (`Job::settings`), and its runs check it before
+/// they run git in the clone (`WorkingCopy::worktree`): an agent of another run may have changed it.
+fn shared_setup(repo: &str) -> Vec<u8> {
+    let Some(top) = Path::new(repo).ancestors().find(|p| p.join(".git").exists()) else { return vec![] };
+    let mut out = Vec::new();
+    setup_of(&mut out, &git_dirs(top).2);
+    out
+}
+
+/// A repository's `.git` (a folder, or for a worktree or submodule a file naming its folder), the
+/// git folder it names, and the common git folder (a worktree's clone's).
+fn git_dirs(repo: &Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let dot_git = repo.join(".git");
     let git_dir = match std::fs::read_to_string(&dot_git) {
         Ok(s) => match s.trim().strip_prefix("gitdir:") {
-            Some(d) => Path::new(repo).join(d.trim()),
+            Some(d) => repo.join(d.trim()),
             None => dot_git.clone(),
         },
         Err(_) => dot_git.clone(),
@@ -1024,14 +1060,34 @@ fn git_setup(repo: &str) -> Vec<u8> {
         Ok(c) => git_dir.join(c.trim()),
         Err(_) => git_dir.clone(),
     };
-    let mut out = Vec::new();
-    add(&mut out, &dot_git);
-    for dir in [&git_dir, &common] {
-        for part in ["config", "config.worktree", "info/attributes", "hooks", "commondir"] {
-            add(&mut out, &dir.join(part));
+    (dot_git, git_dir, common)
+}
+
+/// The settings in one git folder that can make git run a program (see `git_setup`).
+fn setup_of(out: &mut Vec<u8>, dir: &Path) {
+    for part in ["config", "config.worktree", "info/attributes", "hooks", "commondir"] {
+        add_setup(out, &dir.join(part));
+    }
+}
+
+/// `path` and what it holds (a folder: everything in it), as bytes.
+fn add_setup(out: &mut Vec<u8>, path: &Path) {
+    out.extend_from_slice(path.to_string_lossy().as_bytes());
+    out.push(0);
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.is_dir() {
+            let mut names: Vec<_> = std::fs::read_dir(path).into_iter().flatten().flatten().map(|e| e.path()).collect();
+            names.sort();
+            for p in names {
+                add_setup(out, &p);
+            }
+        } else if meta.file_type().is_symlink() {
+            out.extend_from_slice(std::fs::read_link(path).unwrap_or_default().to_string_lossy().as_bytes());
+        } else {
+            out.extend_from_slice(&std::fs::read(path).unwrap_or_default());
         }
     }
-    out
+    out.push(0);
 }
 
 /// `<prefix>abc-12-fix-the-login-redirect` (prefix e.g. `devcat/`).
@@ -1119,6 +1175,32 @@ pub(crate) async fn delete_branch(repo: &str, branch: &str, sha: &str) -> Option
         return Some(format!("it's checked out in {wt}"));
     }
     git(clone, &["update-ref", "-d", &mine, sha]).await.err().map(|e| format!("couldn't delete it: {e}"))
+}
+
+/// A run goes on from `branch`, which the clone has and origin too (fetched): the clone's gets
+/// origin's newer commits (someone pushed to it), so they aren't lost and the run's push isn't
+/// refused. Moved with `update-ref` (no checkout, nothing written into the clone's config), and
+/// not while a worktree has it checked out (making the worktree fails then anyway). Both have
+/// commits the other lacks: a person brings them together, DevCat doesn't force either. Whether
+/// the clone's branch moved.
+async fn newest(clone: &str, branch: &str) -> AppResult<bool> {
+    let (mine, theirs) = (format!("refs/heads/{branch}"), format!("refs/remotes/origin/{branch}"));
+    let has = |a: String, b: String| async move { git(clone, &["merge-base", "--is-ancestor", &a, &b]).await.is_ok() };
+    if has(theirs.clone(), mine.clone()).await {
+        return Ok(false);
+    }
+    if !has(mine.clone(), theirs.clone()).await {
+        return Err(AppError::msg(format!(
+            "{branch} has commits in {clone} that origin doesn't have, and origin's has commits the clone doesn't: bring them together (merge or rebase, then push), then run the ticket again"
+        )));
+    }
+    if checked_out_at(clone, branch).await.is_some() {
+        return Ok(false);
+    }
+    let sha = |r: String| async move { git(clone, &["rev-parse", "--verify", &r]).await.map(|s| s.trim().to_string()) };
+    let (old, new) = (sha(mine.clone()).await?, sha(theirs).await?);
+    git(clone, &["update-ref", &mine, &new, &old]).await?;
+    Ok(true)
 }
 
 /// Hides `.worktrees/` in the clone's own exclude file (`<common git dir>/info/exclude`, never
@@ -1345,6 +1427,20 @@ impl WorkingCopy {
     /// touched: the user may have changes and any branch checked out there. Then the board's
     /// files are copied in and its setup command runs there.
     async fn worktree(b: &Board, t: &Ticket, earlier: Option<&str>, base: Option<&Base>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+        // The clone's shared git settings as the job found them (else as they are now): another
+        // run's agent that changed them (`git config` in its worktree writes the clone's config)
+        // gets no git run here, not even this run's fetch.
+        let before = JOBS.lock().get(&b.id).and_then(|j| j.settings.clone()).unwrap_or_else(|| shared_setup(&b.repo));
+        let unchanged = || {
+            if shared_setup(&b.repo) == before {
+                return Ok(());
+            }
+            Err(AppError::msg(format!(
+                "Git's own settings in {} (its .git config, attributes or hooks) changed while the board worked, maybe by another ticket's agent, so DevCat runs no git there: check .git before you run git in it, then run the ticket again",
+                b.repo
+            )))
+        };
+        unchanged()?;
         let clone = match git(&b.repo, &["rev-parse", "--show-toplevel"]).await {
             Ok(top) => top.trim().to_string(),
             Err(_) => return Err(AppError::msg(format!("{} is not a git repository: a worktree for each ticket needs one (or run the board in place)", b.repo))),
@@ -1352,6 +1448,8 @@ impl WorkingCopy {
         // Parallel runs make their worktrees one after another (fetch, exclude file, branch).
         let turn = clone_lock(&clone);
         let turn = turn.lock().await;
+        // another run's agent worked while this one waited
+        unchanged()?;
         let remote = git(&clone, &["remote", "get-url", "origin"]).await.is_ok();
         if remote {
             stage(&b.id, "Fetching from origin");
@@ -1367,10 +1465,14 @@ impl WorkingCopy {
         if path.exists() {
             return Err(AppError::msg(format!("{at} is there already (left by an earlier run?): remove it with git worktree remove, then try again")));
         }
+        if local && on_origin && newest(&clone, &branch).await? {
+            log(&b.id, format!("{branch} took origin's newer commits"));
+        }
         // the user removed the worktree an earlier run left: it's no longer kept
         let _ = std::fs::remove_file(kept_mark(&at));
         let from = if local { branch.clone() } else if on_origin { format!("origin/{branch}") } else { base_of(&clone, b, remote, base).await? };
         exclude_worktrees(&clone).await?;
+        unchanged()?;
         // `--no-track`: no upstream written into the clone's config (shared by every worktree,
         // and watched by `git_setup`).
         let made = if local { git(&clone, &["worktree", "add", "-q", &at, &branch]).await } else { git(&clone, &["worktree", "add", "-q", "--no-track", "-b", &branch, &at, &from]).await };
@@ -1631,7 +1733,7 @@ async fn setup(b: &Board, at: &str, cancel: &Cancel) -> Result<(), String> {
         }))
     };
     let readers = [read(child.stdout.take().map(|r| Box::new(r) as _)), read(child.stderr.take().map(|r| Box::new(r) as _))];
-    let deadline = tokio::time::Instant::now() + TICKET_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + time_limit(b);
     let status = loop {
         tokio::select! {
             s = child.wait() => break s.ok(),
@@ -1659,7 +1761,7 @@ async fn setup(b: &Board, at: &str, cancel: &Cancel) -> Result<(), String> {
             None => "The setup command was ended by a signal, so the agent didn't start.".into(),
         },
         None if cancel.is_cancelled() => "Stopped.".into(),
-        None => format!("The setup command took longer than {} minutes and was stopped, so the agent didn't start.", TICKET_TIMEOUT.as_secs() / 60),
+        None => format!("The setup command took longer than the board's time limit ({} min) and was stopped, so the agent didn't start.", time_limit(b).as_secs() / 60),
     };
     Err(with_output(&why, &lines.lock()))
 }
@@ -2329,7 +2431,7 @@ pub(crate) mod tests {
         r.branch = Some("devcat/a".into());
         r.files_changed = 2;
         r.moved_to = Some("Testing".into());
-        let c = comment_text(&b, &r, false);
+        let c = comment_text(&b, &r, false, None);
         assert!(c.starts_with("DevCat agent fixed this. Moved to Testing."));
         assert!(c.contains("Changed x.") && c.contains("How to test:\nLog in") && c.contains("2 files changed"));
         assert!(b.comment && b.interval_min == 10 && b.branch_prefix == "devcat/" && b.target_branch.is_empty(), "defaults");
@@ -2489,6 +2591,29 @@ pub(crate) mod tests {
         assert!(rec.outcome == "error" && rec.summary.contains("not on a branch"), "{}", rec.summary);
         assert!(!out.join("prompt.jsonl").exists(), "the agent never ran");
         assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), CALC);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The board's time limit stops the agent (boards saved before the setting: 60 minutes): an
+    /// agent that works longer than one minute is stopped when it's up, and the run ends as an
+    /// error that names the limit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn board_time_limit() {
+        let old: Board = serde_json::from_value(json!({ "name": "b", "kind": "jira" })).unwrap();
+        assert_eq!(old.time_limit_min, 60);
+        let (site, _) = mock_jira().await;
+        let dir = temp_dir("time-limit");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let (slow, _) = stand_in("fixed", "sleep 150").await;
+        let t0 = std::time::Instant::now();
+        let rec = fix_one(&Board { time_limit_min: 1, ..board_on(&site, cwd, &slow) }, "ABC-1", None, None, &Cancel::default()).await;
+        let took = t0.elapsed().as_secs();
+        assert_eq!(rec.outcome, "error", "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.summary.contains("the board's time limit (1 min)"), "{}", rec.summary);
+        assert!((60..100).contains(&took), "stopped after {took} s");
+        assert_eq!(head(cwd).await, "main");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2984,6 +3109,31 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// An agent that changes the clone's shared git settings (`git config` in its worktree writes
+    /// the clone's config): the board's next run runs no git in the clone, not even its fetch
+    /// (which would run the agent's `uploadpack`), and fails with the guard's message.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shared_settings_guard() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("shared-guard").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py; git config remote.origin.uploadpack \"touch '$OUT/fetched'; git-upload-pack\"").await;
+        let b = saved(worktree_board(&site, cwd, &fixer)).await;
+        enqueue(b.clone(), vec!["ABC-1".into(), "ABC-3".into()], None).unwrap();
+        let runs = when_done(&b.id).await;
+        assert_eq!(runs.iter().map(|r| r.ticket_id.as_str()).collect::<Vec<_>>(), ["ABC-3", "ABC-1"], "{runs:?}");
+        let (second, first) = (&runs[0], &runs[1]);
+        assert!(first.notes.iter().any(|n| n.contains("changed git's own settings")), "its own guard: {:?}", first.notes);
+        assert_eq!(second.outcome, "error", "{} {:?}", second.summary, second.notes);
+        assert!(second.summary.contains("changed while the board worked") && second.summary.contains("runs no git there"), "{}", second.summary);
+        assert!(!out.join("fetched").exists(), "no fetch with the agent's settings");
+        assert_eq!(std::fs::read_to_string(out.join("prompt.jsonl")).unwrap().lines().count(), 1, "the second agent never ran");
+        assert_eq!(worktrees(cwd).await, vec![dir.join(WORKTREE).to_string_lossy().into_owned()], "only the first run's worktree, kept");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// The setup command's output goes to the activity of the run it belongs to, with parallel
     /// runs on the board (it's read in tasks of its own, which `RUN` doesn't follow by itself).
     #[cfg(unix)]
@@ -2994,7 +3144,7 @@ pub(crate) mod tests {
         let b = Board { id: uuid::Uuid::new_v4().to_string(), setup_command: "echo ready-$((40 + 2))".into(), allow_commands: true, ..worktree_board("http://127.0.0.1:9", dir.to_str().unwrap(), "none") };
         let run = |id: u64, t: &str| (id, RunView { ticket_id: t.into(), ..Default::default() });
         let mine = RUN_IDS.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
-        JOBS.lock().insert(b.id.clone(), Job { cancel: Cancel::default(), queue: Default::default(), runs: vec![run(mine, "ABC-1"), run(mine + 1, "ABC-2")], wake: Default::default(), prompts: Default::default(), replies: Default::default(), repo: dir.clone(), started: now_ms() });
+        JOBS.lock().insert(b.id.clone(), Job { cancel: Cancel::default(), queue: Default::default(), runs: vec![run(mine, "ABC-1"), run(mine + 1, "ABC-2")], wake: Default::default(), prompts: Default::default(), replies: Default::default(), repo: dir.clone(), settings: None, started: now_ms() });
         RUN.scope(mine, setup(&b, dir.to_str().unwrap(), &Cancel::default())).await.unwrap();
         let logs: Vec<Vec<String>> = JOBS.lock().remove(&b.id).unwrap().runs.into_iter().map(|(_, r)| r.log).collect();
         assert!(logs[0].iter().any(|l| l == "ready-42"), "in its run: {logs:?}");

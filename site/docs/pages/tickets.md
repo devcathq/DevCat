@@ -54,6 +54,8 @@ to the column you chose, the move is skipped and the reason shows in the history
   ticket you fix with a prompt of its own (below) gets that prompt instead.
 - **Let the agent run commands**: off by default, so the agent can only read and edit files in the
   repository. Turn it on to let it build and run tests. It will then run any command it decides to, as you.
+- **Time limit**: the longest the agent works on one ticket, in minutes (default 60). When it's up, DevCat stops
+  the agent and the run ends with an error; the ticket goes back where it was.
 
 ## Fix tickets
 
@@ -95,7 +97,10 @@ uncommitted work and any branch in the repository while it works. The repository
 
 1. DevCat fetches from `origin` and makes a git worktree at `.worktrees/<key>-<title>` inside the repository. Its
    branch is the ticket's own branch when it has one already (an earlier run's work, here or on `origin`), else a
-   new `devcat/<key>-<title>` from the **Base branch** on `origin` (empty: `origin`'s default branch).
+   new `devcat/<key>-<title>` from the **Base branch** on `origin` (empty: `origin`'s default branch). When
+   `origin`'s copy of the ticket's branch has newer commits (someone pushed to it), the run starts from them, so they
+   stay and the push goes through. When your copy and `origin`'s both have commits the other doesn't, the run fails
+   before the agent starts: merge or rebase them and push, then run the ticket again. DevCat never forces a push.
 2. DevCat adds `.worktrees/` to the repository's local exclude file (`.git/info/exclude`), so the folder never
    shows as untracked and nothing needs committing.
 3. DevCat copies the **Files to copy** from the repository into the worktree, for example `.env` (one path a line;
@@ -104,7 +109,7 @@ uncommitted work and any branch in the repository while it works. The repository
    tells you about a file it didn't copy.
 4. DevCat runs the **Setup command** in the worktree (for example `pnpm install` or `go mod download`). It runs
    under the same rules as the agent's commands: only on a board that lets the agent run commands, as you, within
-   the run's time limit, and **Stop** ends it. Its output shows in the board's activity.
+   the board's **Time limit**, and **Stop** ends it. Its output shows in the board's activity.
 5. The agent works in the worktree. DevCat commits there and, with **Push** on, pushes a fixed ticket's branch.
 6. DevCat removes the worktree. The branch keeps the commits (a run that changed nothing leaves no branch).
 
@@ -131,15 +136,21 @@ always do one ticket at a time.
 
 On a GitHub board the repository's labels are the columns. A new board takes issues labelled
 `ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed, `needs-info`
-when the agent has questions and `ready-for-human` when it fails; change any of them in the board's settings. Saving the board checks the
+when the agent has questions, `ready-for-human` when it fails and `wontfix` when its pull request is closed without
+a merge; change any of them in the board's settings. Saving the board checks the
 token and the repository, reads the token owner's login, and creates the labels the repository doesn't have yet.
 
-- The agent takes open issues with the trigger label (never pull requests), filtered by **Assigned to**.
+- The agent takes open issues with the trigger label (never pull requests), filtered by **Assigned to**. A new
+  GitHub board starts with **Me**: the issues assigned to the token's owner, so the team decides whose computer
+  works on which issue. Choose **Me, or nobody yet** to take unassigned issues too.
 - Moving an issue removes its current state label and adds the new one, so it always has exactly one.
 - Branches are named `<your login>/<number>-<title>`, e.g. `octo/12-fix-the-login`.
 - New GitHub boards start with **A worktree for each ticket**, and the branch is always pushed: a fixed issue's
   branch gets a draft pull request. The issue's comment has the summary, how to test and the pull request's link,
-  and the history links it too.
+  and the history links it too. A repository without draft pull requests (a private one on GitHub Free) gets a pull
+  request that's ready for review, and the comment says so. If DevCat can't open the pull request (GitHub refuses
+  it, or the push fails), the issue gets `ready-for-human` instead of `agent-review`, and the comment says why and
+  names the branch.
 - The pull request goes into the issue's base branch, and a worktree's new branch starts from it. The base branch
   is the branch in a `Base: <branch>` line in the issue, else in its parent issue, else the board's **Base branch**,
   else the repository's default branch. So the slices of a feature can go into its feature branch: put
@@ -148,7 +159,9 @@ token and the repository, reads the token owner's login, and creates the labels 
   it says `Part of #<number>`.
 - The agent writes the pull request's description. When the repository has a pull request template
   (`pull_request_template.md` in `.github/`, the top folder or `docs/`), the description follows its sections.
-  DevCat adds the issue's link and a line that says the DevCat agent opened it.
+  DevCat adds the issue's link and a line that says the DevCat agent opened it. The description always says how the
+  agent checked its work: when it doesn't have the agent's testing steps, DevCat adds them in a **How it was
+  checked** section.
 - The agent reads the issue's comments from people with write access to the repository (all of them, oldest
   first), never comments from anyone else: anyone can comment on a public issue. The images uploaded to the issue
   and to those comments are shown to it, also in a private repository; images from other sites stay links.
@@ -165,7 +178,8 @@ token and the repository, reads the token owner's login, and creates the labels 
 - With **Watch** on, each check also looks at the pull requests DevCat opened that are still open. When one is
   merged, the issue loses `agent-review` and is closed if it's still open (GitHub closes it only for a pull request
   into the default branch). When one is closed without a merge, the issue is closed as not planned, gets `wontfix`
-  as its only state label and a comment that links the pull request, and its branch is deleted on GitHub and in your
+  (**When its pull request closes without a merge, label**) as its only state label and a comment that links the
+  pull request, and its branch is deleted on GitHub and in your
   repository. A branch with commits after the pull request's last one stays (someone's work), and so does a branch
   that a worktree has checked out; the comment says so. To try again, reopen the issue and add the trigger label.
 
