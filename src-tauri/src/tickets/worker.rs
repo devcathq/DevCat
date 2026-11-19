@@ -501,7 +501,8 @@ pub fn prompt(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom: Opt
     let desc = t.description.trim();
     p.push_str(&format!("Description:\n{}\n", if desc.is_empty() { "(none)" } else { desc }));
     if !t.comments.is_empty() {
-        p.push_str("Recent comments (oldest first):\n");
+        // GitHub: only these, anyone can comment on a public issue
+        p.push_str(if b.kind == TrackerKind::Github { "Comments from people with write access to the repository (oldest first):\n" } else { "Recent comments (oldest first):\n" });
         for c in &t.comments {
             p.push_str(&format!("- {}: {}\n", c.author, c.text.trim()));
         }
