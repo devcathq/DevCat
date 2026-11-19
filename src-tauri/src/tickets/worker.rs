@@ -940,6 +940,14 @@ async fn base_of(clone: &str, b: &Board, remote: bool) -> AppResult<String> {
     }
 }
 
+/// The worktree (or the clone itself) that has `branch` checked out, as `git worktree list`
+/// says (its messages differ between git versions).
+async fn checked_out_at(clone: &str, branch: &str) -> Option<String> {
+    let list = git(clone, &["worktree", "list", "--porcelain"]).await.ok()?;
+    let want = format!("branch refs/heads/{branch}");
+    list.split("\n\n").find(|w| w.lines().any(|l| l == want)).and_then(|w| w.lines().find_map(|l| l.strip_prefix("worktree ")).map(str::to_string))
+}
+
 /// Hides `.worktrees/` in the clone's own exclude file (`<common git dir>/info/exclude`, never
 /// committed), so the worktrees never show as untracked files there.
 async fn exclude_worktrees(clone: &str) -> AppResult<()> {
@@ -1133,6 +1141,10 @@ impl WorkingCopy {
         if let Err(e) = made {
             if !local && !on_origin {
                 let _ = git(&clone, &["branch", "-q", "-D", &branch]).await;
+            }
+            // git refuses a branch checked out in another worktree (or in the clone itself)
+            if local && let Some(other) = checked_out_at(&clone, &branch).await {
+                return Err(AppError::msg(format!("{branch} is checked out in {other}: switch that worktree to another branch (or remove it), then try again")));
             }
             return Err(AppError::msg(format!("Couldn't make a worktree for {branch}: {e}")));
         }
@@ -2217,6 +2229,36 @@ mod tests {
         assert_eq!(git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap(), "# release\n    # fixed\n");
         assert_eq!(git(origin, &["rev-parse", "release"]).await.unwrap(), release, "release is untouched");
         assert!(!has_ref(cwd, "refs/heads/release").await, "no local release branch made");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The ticket's branch is checked out somewhere else (another worktree, or the clone itself):
+    /// the run fails naming that place, the agent doesn't start, and no branch or worktree is left.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_branch_busy() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("wt-busy").await;
+        let cwd = dir.to_str().unwrap();
+        let other = dir.with_extension("other");
+        git(cwd, &["worktree", "add", "-q", "-b", BRANCH, other.to_str().unwrap()]).await.unwrap();
+        let branches = git(cwd, &["branch", "--list"]).await.unwrap();
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let rec = fix_one(&worktree_board(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "error", "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.summary.contains(&format!("{BRANCH} is checked out in {}", other.display())) && rec.summary.contains("switch"), "{}", rec.summary);
+        assert!(!out.join("prompt.jsonl").exists(), "the agent never ran");
+        assert_eq!(worktrees(cwd).await, vec![other.to_string_lossy().into_owned()], "no worktree made");
+        assert!(!dir.join(WORKTREE).exists());
+        assert_eq!(git(cwd, &["branch", "--list"]).await.unwrap(), branches, "no branch made or deleted");
+
+        git(cwd, &["worktree", "remove", "--force", other.to_str().unwrap()]).await.unwrap();
+        git(cwd, &["checkout", "-q", BRANCH]).await.unwrap();
+        let rec = fix_one(&worktree_board(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert!(rec.outcome == "error" && rec.summary.contains(&format!("{BRANCH} is checked out in {cwd}")), "{}", rec.summary);
+        assert!(worktrees(cwd).await.is_empty() && !dir.join(WORKTREE).exists());
+        assert_eq!(head(cwd).await, BRANCH);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }
