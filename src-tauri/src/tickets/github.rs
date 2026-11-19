@@ -12,6 +12,7 @@
 //! request template; one that needs information or failed gets none, only the comment. The
 //! watch loop then follows that pull request (`follow_pull_requests`): merged, the issue is
 //! closed; closed without a merge, the issue is closed as not planned and the branch deleted.
+//! Adding the trigger label again after a run runs the issue again (`ready`), on its branch.
 //!
 //! The agent gets the issue's body and the comments of people with write access (`can_write`),
 //! with the images GitHub stores for them (`images`).
@@ -322,15 +323,17 @@ pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord, base: &
 }
 
 /// Whether the watch may queue the issue: the last one to add the trigger label (the board's
-/// pick-from label) did so after the board was made, and may write to the repository or is on
-/// the board's allowlist, so a stranger's label can't make the agent run; and no open issue
-/// blocks it, so it starts at the first check after its last blocker closes. Sending an issue to
-/// the agent by hand skips this.
-pub async fn ready(tr: &Tracker, t: &Ticket) -> AppResult<bool> {
+/// pick-from label) did so after the board was made and after the issue's last run ended
+/// (`ended`), and may write to the repository or is on the board's allowlist, so a stranger's
+/// label can't make the agent run; and no open issue blocks it, so it starts at the first check
+/// after its last blocker closes. So a run's issue runs again only when someone adds the label
+/// again (after answering the agent's questions, say). Sending an issue to the agent by hand
+/// skips this.
+pub async fn ready(tr: &Tracker, t: &Ticket, ended: Option<i64>) -> AppResult<bool> {
     let label = tr.board.pick_from.as_ref().map(|c| c.id.clone()).unwrap_or_default();
     let Some(ev) = tr.gh_labeled(&t.id, &label).await? else { return Ok(false) };
-    // the backlog from before the board: by hand only
-    if chrono::DateTime::parse_from_rfc3339(&s(&ev, "created_at")).map(|d| d.timestamp_millis()).unwrap_or(0) <= tr.board.created {
+    // the backlog from before the board: by hand only; a label from before the last run: done
+    if chrono::DateTime::parse_from_rfc3339(&s(&ev, "created_at")).map(|d| d.timestamp_millis()).unwrap_or(0) <= tr.board.created.max(ended.unwrap_or(0)) {
         return Ok(false);
     }
     let who = s(&ev["actor"], "login");
@@ -1098,6 +1101,67 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// The trigger label added again after a run ended (the questions answered, needs-info swapped
+    /// back for ready-for-agent) starts a new run at the next check, and nothing else does. The new
+    /// run is a new Claude session with the new comment in its prompt, on the earlier run's branch
+    /// (also after the issue was renamed), whose commits it keeps. Answering in DevCat still goes
+    /// on in the last run's session.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn labeled_again_runs_again() {
+        use super::super::worker::{check_column, git, reply, tests::*};
+        tickets_data();
+        let mut data = one_issue();
+        data.permissions.insert("ana".into(), "write".into());
+        data.events.insert(7, vec![labeled("ready-for-agent", "ana", &(chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339())]);
+        let gh = MockGithub::start(data).await;
+        let (dir, remote) = clone_with_origin("gh-again").await;
+        let (cwd, origin) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        let (asker, _) = stand_in("needs_info", "echo '    # started' >> calc.py").await;
+        let saved = super::super::tickets_board_save(board(&gh.url, cwd, &asker)).await.unwrap();
+        // made before ana added the label
+        let made = saved.created - 120_000;
+        let b = Board { created: made, ..saved };
+        check_column(&b).await.unwrap();
+        let runs = when_done(&b.id).await;
+        assert_eq!((runs.len(), runs[0].outcome.as_str(), runs[0].branch.as_deref()), (1, "needs_info", Some(BRANCH)), "{runs:?}");
+        assert!(gh.comments_on(7)[0].contains("add the label `ready-for-agent` again"), "{:?}", gh.comments_on(7));
+        assert!(queued(&b).await.is_empty(), "no label added since the run");
+
+        // ana answers, renames the issue and swaps needs-info for ready-for-agent
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        {
+            let mut g = gh.gh.lock();
+            g.comments.get_mut(&7).unwrap().push(comment(90, "ana", "Divide by len(xs), please."));
+            let i = g.issues.get_mut(&7).unwrap();
+            i["title"] = json!("average() is wrong for [2, 4]");
+            i["labels"] = json!([{ "name": "bug" }, { "name": "ready-for-agent" }]);
+            g.events.get_mut(&7).unwrap().push(labeled("ready-for-agent", "ana", &chrono::Utc::now().to_rfc3339()));
+        }
+        let (fixer, out) = stand_in("fixed", "echo '    # answered' >> calc.py").await;
+        let b = Board { created: made, ..super::super::tickets_board_save(Board { provider_id: fixer, ..b }).await.unwrap() };
+        assert_eq!(queued(&b).await, vec!["7"]);
+        check_column(&b).await.unwrap();
+        let runs = when_done(&b.id).await;
+        assert_eq!((runs.len(), runs[0].outcome.as_str(), runs[0].branch.as_deref()), (2, "fixed", Some(BRANCH)), "{} {:?}", runs[0].summary, runs[0].notes);
+        let args = std::fs::read_to_string(out.join("args.txt")).unwrap();
+        assert!(!args.contains("--resume"), "a new session: {args}");
+        let (text, _) = prompt_of(&out);
+        assert!(text.contains("Divide by len(xs), please."), "{text}");
+        let calc = git(origin, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap();
+        assert!(calc.contains("# started\n    # answered"), "on the earlier work: {calc}");
+        assert!(git(origin, &["log", "--format=%s", BRANCH]).await.unwrap().contains("WIP #7"), "its commit kept");
+        assert!(queued(&b).await.is_empty(), "the label was added before this run");
+
+        reply(b.clone(), "7".into(), "Keep the signature.".into()).unwrap();
+        let runs = when_done(&b.id).await;
+        assert_eq!((runs.len(), runs[0].outcome.as_str()), (3, "fixed"), "{} {:?}", runs[0].summary, runs[0].notes);
+        let args = std::fs::read_to_string(out.join("args.txt")).unwrap();
+        assert!(args.contains("--resume\nstandin-1"), "the last run's session: {args}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// Issue #7 fixed by the stand-in on a board in a new clone, its run in the board's history
     /// (as the queue keeps it), and the draft pull request's last commit (`head.sha`) set to what
     /// was pushed: (board, the run, clone, origin).
@@ -1178,6 +1242,7 @@ pub(crate) mod tests {
         let comments = gh.comments_on(7);
         assert_eq!(comments.len(), 1, "{comments:?}");
         assert!(comments[0].contains("couldn't finish") && comments[0].contains("Stand-in summary.") && comments[0].contains(&format!("Branch: {BRANCH} (pushed")), "{}", comments[0]);
+        assert!(comments[0].contains("add the label `ready-for-agent` again"), "how to get another run: {}", comments[0]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }
