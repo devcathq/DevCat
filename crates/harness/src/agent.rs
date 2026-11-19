@@ -183,7 +183,9 @@ impl Default for Cancel {
 
 impl Cancel {
     pub fn cancel(&self) {
-        let _ = self.0.send(true);
+        // `send` stores nothing when no one is subscribed (e.g. a ticket run polling
+        // `is_cancelled`), so the stop would be lost.
+        self.0.send_replace(true);
     }
     pub fn is_cancelled(&self) -> bool {
         *self.0.borrow()
@@ -799,4 +801,21 @@ async fn fit(session: &Session, id: &str, name: &str, out: ToolOutput) -> ToolOu
         ));
     }
     ToolOutput { content, ..out }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A stop with no turn waiting on it yet is kept: the turn (or the poller) that looks later
+    /// still sees it, and a wait started after it ends at once.
+    #[tokio::test]
+    async fn cancel_is_remembered() {
+        let c = Cancel::default();
+        c.cancel();
+        assert!(c.is_cancelled(), "a stop with no one waiting is lost");
+        assert!(c.clone().is_cancelled(), "clones share it");
+        tokio::time::timeout(Duration::from_secs(1), c.cancelled()).await.expect("a wait after the stop ends at once");
+    }
 }

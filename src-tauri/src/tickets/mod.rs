@@ -1,5 +1,5 @@
-//! Tickets: connect a Jira project, Trello board or Linear team, and let an agent work through the
-//! tickets in one column. For each ticket DevCat makes a branch in the board's repository, runs
+//! Tickets: connect a Jira project, Trello board, Linear team or GitHub repository, and let an
+//! agent work through the tickets in one column. For each ticket DevCat makes a branch in the board's repository, runs
 //! the agent (Claude Code or DevCat Agent) on it, commits what it changed, comments on the ticket
 //! and moves it on (e.g. To Do → In Progress → Testing). A board can also watch its column and
 //! pick up new tickets by itself, and post what happened to a Slack webhook.
@@ -13,6 +13,10 @@
 //!
 //! Events: `tickets-job` ({ board, job | null }) while a board works, `tickets-changed`
 //! ({ board }) when its history changes.
+pub mod github;
+#[cfg(test)]
+pub(crate) mod mock_github;
+pub mod recover;
 pub mod trackers;
 pub mod worker;
 
@@ -25,7 +29,7 @@ use std::path::PathBuf;
 static DIR: OnceCell<PathBuf> = OnceCell::new();
 /// Board file writes, one at a time.
 static WRITE: Mutex<()> = Mutex::new(());
-/// Runs kept per board.
+/// Runs kept per board (and older ones the watch still needs, see `trim`).
 const HISTORY: usize = 200;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,6 +38,7 @@ pub enum TrackerKind {
     Jira,
     Trello,
     Linear,
+    Github,
 }
 
 impl TrackerKind {
@@ -42,6 +47,7 @@ impl TrackerKind {
             TrackerKind::Jira => "Jira",
             TrackerKind::Trello => "Trello",
             TrackerKind::Linear => "Linear",
+            TrackerKind::Github => "GitHub",
         }
     }
 }
@@ -54,6 +60,18 @@ pub enum Assigned {
     Anyone,
     Me,
     MeOrNobody,
+}
+
+/// How a run gets its working copy (`worker::WorkingCopy`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Isolation {
+    /// The board's repositories themselves, switched to the ticket's branch for the run and back.
+    #[default]
+    InPlace,
+    /// A git worktree for each ticket in `<clone>/.worktrees`, made from origin's base branch:
+    /// the user goes on working in the clone meanwhile.
+    Worktree,
 }
 
 /// A column of a board: a Jira status, a Trello list, a Linear workflow state.
@@ -106,11 +124,20 @@ fn yes() -> bool {
 fn ten() -> u32 {
     10
 }
+fn one() -> u32 {
+    1
+}
 fn three() -> u32 {
     3
 }
+fn sixty() -> u32 {
+    60
+}
 fn devcat_prefix() -> String {
     "devcat/".into()
+}
+fn wontfix() -> Option<Column> {
+    Some(Column { id: "wontfix".into(), name: "wontfix".into() })
 }
 
 /// A connected board and what the agent does with it.
@@ -121,14 +148,19 @@ pub struct Board {
     pub id: String,
     pub name: String,
     pub kind: TrackerKind,
-    /// Jira: the site (https://acme.atlassian.net, or a Data Center URL).
+    /// When the board was first saved (ms since 1970; 0: before boards kept it). A GitHub
+    /// board's watch leaves issues alone that got their trigger label before this.
+    #[serde(default)]
+    pub created: i64,
+    /// Jira: the site (https://acme.atlassian.net, or a Data Center URL). GitHub: the API address
+    /// (https://api.github.com, or https://<host>/api/v3 for GitHub Enterprise Server).
     #[serde(default)]
     pub site: String,
     /// Jira Cloud: the account's email (empty: the token is a Data Center personal access token).
     /// Trello: the API key.
     #[serde(default)]
     pub user: String,
-    /// Jira: project key. Trello: board link or id. Linear: team key.
+    /// Jira: project key. Trello: board link or id. Linear: team key. GitHub: the repository, `owner/name`.
     #[serde(default)]
     pub project: String,
     /// Write-only: Some(token) stores it in the keychain, None keeps the saved one.
@@ -141,11 +173,30 @@ pub struct Board {
     pub webhook: Option<String>,
     #[serde(default)]
     pub has_webhook: bool,
+    /// GitHub: the token owner's login, read when the board is saved (its branches are `<login>/…`).
+    #[serde(default)]
+    pub login: String,
+    /// GitHub: logins whose trigger label the watch takes although they can't write to the
+    /// repository (e.g. a triage bot). Anyone with write access counts anyway.
+    #[serde(default)]
+    pub allowlist: Vec<String>,
 
     /// The git repository the agent works in, or a folder of repositories (the agent may change any
     /// of them; each gets the ticket's branch).
     #[serde(default)]
     pub repo: String,
+    /// In place (boards saved before this setting), or a worktree for each ticket (one repository).
+    #[serde(default)]
+    pub isolation: Isolation,
+    /// Worktree: files (or folders) git ignores that each new worktree gets from the clone, e.g.
+    /// `.env`, as paths inside the clone. A worktree has only the tracked files otherwise.
+    #[serde(default)]
+    pub copy_files: Vec<String>,
+    /// Worktree: a command run in each new worktree before the agent starts (e.g. `pnpm install`),
+    /// like the agent's commands, so only on a board that lets the agent run them. If it fails,
+    /// the run fails.
+    #[serde(default)]
+    pub setup_command: String,
     /// The DevCat project the board works for (None: the one whose code folder holds `repo`, if
     /// any). The agent gets its memory and connections, like a chat in that project.
     #[serde(default)]
@@ -164,9 +215,17 @@ pub struct Board {
     /// Where a fixed ticket goes (e.g. Testing).
     #[serde(default)]
     pub done_to: Option<Column>,
+    /// Where a ticket goes when the agent needs answers from a person, e.g. GitHub's `needs-info`
+    /// label (None: as when it couldn't finish it).
+    #[serde(default)]
+    pub needs_info_to: Option<Column>,
     /// Where a ticket goes when the agent couldn't finish it (None: back where it was).
     #[serde(default)]
     pub failed_to: Option<Column>,
+    /// GitHub: the label of an issue whose pull request was closed without a merge (the issue is
+    /// closed as not planned), `wontfix` unless the board says another (None: no label).
+    #[serde(default = "wontfix")]
+    pub not_planned_to: Option<Column>,
     /// Only tickets with this label (empty: all of the column).
     #[serde(default)]
     pub label: String,
@@ -197,10 +256,27 @@ pub struct Board {
     /// Tickets per check, at most.
     #[serde(default = "three")]
     pub max_per_run: u32,
+    /// Tickets worked on at the same time, each in its own worktree and branch (1 to 4). Only for
+    /// boards with a worktree for each ticket: in place, one at a time.
+    #[serde(default = "one")]
+    pub parallel_runs: u32,
+    /// Longest the agent may work on one ticket, in minutes (1 to 1440); then it's stopped. A
+    /// worktree's setup command gets the same.
+    #[serde(default = "sixty")]
+    pub time_limit_min: u32,
     /// The default prompt: added to every ticket's (conventions, how to test…). A ticket fixed with
     /// a prompt of its own gets that one instead.
     #[serde(default)]
     pub instructions: String,
+}
+
+/// What became of a run's pull request, once the watch loop saw it closed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PrState {
+    Merged,
+    /// Closed without a merge.
+    Closed,
 }
 
 /// What happened to one ticket.
@@ -241,6 +317,14 @@ pub struct RunRecord {
     /// The person's answer to the agent's questions (from the Tickets chat) that started this run.
     #[serde(default)]
     pub reply: Option<String>,
+    /// GitHub: the pull request DevCat opened for the run (its number and link).
+    #[serde(default)]
+    pub pr_number: Option<u64>,
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// What became of the pull request (None: open, still followed at each check).
+    #[serde(default)]
+    pub pr_state: Option<PrState>,
 }
 
 /// Whether boards can be read here (the app and `devcat serve` also work them; `devcat mcp` only
@@ -257,6 +341,8 @@ pub fn init_reading(data_dir: PathBuf) {
 
 pub fn init(data_dir: PathBuf) {
     let _ = DIR.set(data_dir.join("tickets"));
+    // what a crash left: runs cut short, and worktrees in the worktree boards' clones
+    worker::tidy_worktrees();
     worker::start_watch();
 }
 
@@ -322,7 +408,51 @@ pub fn record(board: &str, r: RunRecord) {
     let _g = WRITE.lock();
     let mut h = history(board);
     h.insert(0, r);
-    h.truncate(HISTORY);
+    trim(&mut h);
+    if let Ok(d) = dir() {
+        let _ = write_json(&d.join("history").join(format!("{board}.json")), &h);
+    }
+    crate::events::emit("tickets-changed", serde_json::json!({ "board": board }));
+}
+
+/// Keeps the newest `HISTORY` runs (newest first), and older ones the watch loop still needs: a
+/// run whose pull request is open (followed at each check), and each ticket's latest run and
+/// latest one that ended (not stopped), which the "after its last run ended" rule reads.
+fn trim(h: &mut Vec<RunRecord>) {
+    let mut extra = h.len().saturating_sub(HISTORY);
+    if extra == 0 {
+        return;
+    }
+    let (mut latest, mut ended) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    let needed: Vec<bool> = h
+        .iter()
+        .map(|r| {
+            let last = latest.insert(r.ticket_id.clone());
+            let last_ended = r.outcome != "stopped" && ended.insert(r.ticket_id.clone());
+            (r.pr_number.is_some() && r.pr_state.is_none()) || last || last_ended
+        })
+        .collect();
+    // the oldest go first
+    let mut gone = vec![false; h.len()];
+    for i in (0..h.len()).rev().filter(|i| !needed[*i]) {
+        if extra == 0 {
+            break;
+        }
+        gone[i] = true;
+        extra -= 1;
+    }
+    let mut i = 0;
+    h.retain(|_| {
+        i += 1;
+        !gone[i - 1]
+    });
+}
+
+/// Changes the board's run records in place (e.g. what became of a run's pull request).
+pub fn update_history(board: &str, f: impl FnMut(&mut RunRecord)) {
+    let _g = WRITE.lock();
+    let mut h = history(board);
+    h.iter_mut().for_each(f);
     if let Ok(d) = dir() {
         let _ = write_json(&d.join("history").join(format!("{board}.json")), &h);
     }
@@ -375,8 +505,29 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     if !b.target_branch.is_empty() && !valid_branch(&b.target_branch) {
         return Err(AppError::msg(format!("\"{}\" isn't a git branch name", b.target_branch)));
     }
+    b.copy_files = b.copy_files.iter().map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+    if let Some(f) = b.copy_files.iter().find(|f| !worker::inside(f)) {
+        return Err(AppError::msg(format!("\"{f}\" isn't a path inside the repository: write it like .env or config/local.yml")));
+    }
+    b.setup_command = b.setup_command.trim().to_string();
+    if b.isolation == Isolation::Worktree && !b.setup_command.is_empty() && !b.allow_commands {
+        return Err(AppError::msg("The setup command runs programs, like the agent's commands: turn on “Let the agent run commands” (Agent section, under Working copy), or clear the setup command"));
+    }
+    let mut allow: Vec<String> = vec![];
+    for l in b.allowlist.iter().map(|l| l.trim().trim_start_matches('@').to_lowercase()).filter(|l| !l.is_empty()) {
+        if !allow.contains(&l) {
+            allow.push(l);
+        }
+    }
+    b.allowlist = allow;
     b.interval_min = b.interval_min.clamp(1, 24 * 60);
     b.max_per_run = b.max_per_run.clamp(1, 20);
+    b.parallel_runs = b.parallel_runs.clamp(1, 4);
+    b.time_limit_min = b.time_limit_min.clamp(1, 24 * 60);
+    if b.kind == TrackerKind::Github {
+        let t = token(&b);
+        github::on_save(&mut b, t).await?;
+    }
     if let Some(t) = b.token.take().filter(|t| !t.trim().is_empty()) {
         crate::secrets::set(&token_key(&b.id), t.trim())?;
     }
@@ -390,9 +541,16 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     {
         let _g = WRITE.lock();
         let mut list = load_boards()?;
+        let now = chrono::Utc::now().timestamp_millis();
         match list.iter_mut().find(|x| x.id == b.id) {
-            Some(x) => *x = b.clone(),
-            None => list.push(b.clone()),
+            Some(x) => {
+                b.created = if x.created > 0 { x.created } else { now };
+                *x = b.clone()
+            }
+            None => {
+                b.created = now;
+                list.push(b.clone())
+            }
         }
         let clean: Vec<Board> = list.into_iter().map(|x| Board { token: None, webhook: None, has_token: false, has_webhook: false, ..x }).collect();
         write_json(&boards_path()?, &clean)?;

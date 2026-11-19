@@ -12,6 +12,74 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Tickets: Stop stops the agent** (#203): **Stop** on a board's run ends the agent within a few seconds, and the
+  run is recorded as stopped, with nothing pushed and the ticket back where it was. Before, the agent worked on to
+  the end and its work was pushed. **Stop** and the board's **Time limit** also act while Claude Code sends output
+  all the time.
+- **Tickets: a worktree for each ticket** (#191): set a board's **Working copy** to **A worktree for each ticket**
+  and the agent works in a git worktree in the repository's `.worktrees` folder, made from the latest **Base branch**
+  on origin (or from the ticket's own branch when it has one, with any newer commits someone pushed to it on origin;
+  when your copy and origin's both have commits the other lacks, the run fails and asks you to bring them
+  together). You can keep working in the repository meanwhile, with your own changes and branch. DevCat commits
+  there, pushes when the board says so and removes the worktree; the branch stays. Existing boards stay **In
+  place**.
+- **Tickets: worktree setup** (#192): a board with a worktree for each ticket can copy **Files to copy** (files git
+  ignores, such as `.env`) from your repository into each new worktree, and run a **Setup command** (such as
+  `pnpm install`) there before the agent starts. The command needs **Let the agent run commands**. If it fails, the
+  run fails without the agent, with the command's output in the history and the ticket's comment.
+- **Tickets: worktrees after a crash** (#194): when DevCat starts, it removes the worktrees and folders that runs
+  left in a worktree board's `.worktrees` folder when DevCat stopped in the middle (a worktree a run kept for you to
+  look at stays). A run whose branch is checked out in another worktree fails with a message that names it.
+- **Tickets: runs cut short by a crash** (#203): when DevCat quits or crashes during a ticket's run, Claude Code
+  stops too (on macOS and Linux) instead of working on unseen. At the next start, DevCat moves the ticket from the
+  working column to the board's failed column (`ready-for-human` on GitHub) with a comment that names the branch
+  and says how to try again, and adds the run to the history. A ticket someone moved since stays where it is.
+- **Tickets: GitHub boards** (#195): connect a GitHub repository (`owner/name`, an API address for GitHub Enterprise
+  and a personal access token). Labels are the columns: the agent takes open issues labelled `ready-for-agent` and
+  assigned to you (**Assigned to** starts at **Me** on a new GitHub board), labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
+  draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review` (a ready
+  one, and the comment says so, where the repository has no draft pull requests). When DevCat can't open the pull
+  request, the issue gets `ready-for-human` with a comment that says why and names the branch. Saving the board
+  checks the token and creates the labels the repository lacks.
+- **Tickets: parallel runs** (#193): a board with a worktree for each ticket can work on up to 4 tickets at the same
+  time (**Parallel runs** in the board's settings, default 1), each in its own worktree and branch. The **Working**
+  panel shows each ticket with its log, and the other tickets wait. Boards that run in place still do one at a time.
+- **Tickets: what the agent reads on GitHub** (#197): the agent gets the issue's comments from people with write
+  access to the repository (such as an Agent Brief, or answers to its questions), and none from anyone else. The
+  images in the issue and in those comments are shown to it, also in a private repository.
+- **Tickets: GitHub issues the agent can't finish** (#198): when the agent has questions, its branch is pushed, the
+  issue's comment has the questions and the issue gets the label `needs-info` (**When the agent has questions,
+  label** in the board's settings). When it fails, its unfinished work is committed, pushed, and the comment has the
+  reason and the branch, with the label `ready-for-human`. Neither opens a pull request.
+- **Tickets: GitHub issues the agent may take** (#196): a watching GitHub board takes an issue only when the person
+  who added its trigger label can write to the repository or is listed in **Also take labels from**, when no open
+  issue blocks it (GitHub's issue dependencies or a `Blocked by: #n` line in its body; it starts after its last
+  blocker closes), and when the label was added after the board was created. Fix older issues from the list.
+- **Tickets: pull request follow-up** (#201): at each check, a watched GitHub board looks at the pull requests DevCat
+  opened. When one merges, the issue loses `agent-review` and is closed if it's still open. When one closes without
+  a merge, the issue is closed as not planned with the label `wontfix` (**When its pull request closes without a
+  merge, label** in the board's settings) and a comment that links the pull request,
+  and the branch is deleted on GitHub and in your repository, unless it has newer commits there (or a worktree has
+  it checked out). The history shows what became of each pull request.
+- **Tickets: pull request base and template** (#200): a GitHub issue's pull request goes into the branch of a
+  `Base: <branch>` line in the issue, else in its parent issue, else the board's **Base branch**, else the default
+  branch, and its worktree starts from that branch. A pull request into the default branch says `Closes #<number>`,
+  into another branch `Part of #<number>`. The agent writes the description in the format of the repository's pull
+  request template, and DevCat adds a line that says the DevCat agent opened it. When the description doesn't say how
+  the agent checked its work (neither its testing steps nor a **How it was checked** section, at any heading level),
+  DevCat adds a **How it was checked** section with the agent's testing steps.
+- **Tickets: run a GitHub issue again** (#199): add the trigger label to an issue again (after you answer the
+  agent's questions, or to send a `ready-for-human` issue back) and a watched GitHub board runs it again at the next
+  check, in a new conversation that reads the new comments, on the issue's branch with the earlier commits. Without
+  a new label it doesn't run again. The comment for questions or a failure says how.
+- **Tickets: a time limit for each board** (#189): **Time limit** in a board's settings (minutes, default 60) is
+  the longest the agent works on one ticket, and a worktree's **Setup command** runs. When it's up, DevCat stops it
+  and the run ends with an error that names the limit.
+- **Tickets: connecting a GitHub board** (#203): **Let the agent run commands** is now right under **Working copy**,
+  above the **Setup command**, and the dialog says before you click **Connect** when a setup command needs it (with
+  **Turn it on**). When the token can't see the repository (a private repository answers 404 to such a token), the
+  error (on **Connect** and on **Load columns**) says so and how to give the token access. **Create a token** opens GitHub's fine-grained token form with the
+  name, owner and permissions filled in; the hint says to choose **Only select repositories** and the repository.
 - **`devcat serve` keeps the computer awake, also with the lid closed**: while it runs (in a terminal or as the
   background service), the computer doesn't sleep, also when the screen locks or the lid closes, so phones reach it.
   On macOS that turns system sleep off, which asks for your password once, and back on when it stops. Linux uses a

@@ -82,7 +82,8 @@ agent's `Kind::Query`, read access over MCP, `db_export`, a read-only phone) run
 (`St::read_only_driver`), where the driver and, where it can, the server refuse writes. A kubeconfig an agent names
 may not log in by running a program (`infra::k8s::agent_kubeconfig_problem`). The ticket worker runs git without
 the repository's hooks unless the board allows commands, and no git at all in a repository whose git settings
-(config, attributes, hooks) changed while the agent worked (`tickets::worker::git_setup`).
+(config, attributes, hooks) changed while the agent worked (`tickets::worker::git_setup`), nor in a worktree
+board's clone whose shared settings changed since its job started (`shared_setup`: another run's agent).
 
 One exception to "both get it": what can't be undone is for the DevCat Agent only (`db_drop_database`,
 `db_restore`, `k8s_delete`, `docker_remove`, `rmq_delete`, `net_profile_delete`, `db_import` emptying the table

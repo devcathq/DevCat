@@ -789,7 +789,7 @@ impl Tool for Tickets {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "tickets_list".into(),
-            description: "The user's DevCat ticket boards (Jira, Trello, Linear) and their tickets. Without `board`: each board with its tracker, repository and columns. With `board`: the tickets in `column` (default the board's \"pick from\" column) with key, title, description, labels, assignees and comments; `ticket` (key or id) for one in full. `history: true`: what DevCat's agent did on the board's tickets lately.".into(),
+            description: "The user's DevCat ticket boards (Jira, Trello, Linear, GitHub) and their tickets. Without `board`: each board with its tracker, repository and columns. With `board`: the tickets in `column` (default the board's \"pick from\" column) with key, title, description, labels, assignees and comments; `ticket` (key or id) for one in full. `history: true`: what DevCat's agent did on the board's tickets lately.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

@@ -1,6 +1,6 @@
 # Tickets
 
-Connect a Jira project, Trello board or Linear team and let your coding agent work through its tickets. You
+Connect a Jira project, Trello board, Linear team or GitHub repository and let your coding agent work through its tickets. You
 choose the column it takes tickets from (say, **To Do**). For each ticket the agent fixes it on its own git
 branch, DevCat commits the work, comments on the ticket with what changed and how to test it, and moves it on
 (say, to **Testing**). Each result can also be posted to a Slack channel.
@@ -16,6 +16,7 @@ list). The list shows each board and what the agent is doing on it; click one to
 | Jira Data Center / Server | Site, project key; leave **Email** empty | Personal access token |
 | Trello | API key, board link (`https://trello.com/b/…`) | [Token](https://trello.com/power-ups/admin) for that key |
 | Linear | Team key (`ENG` for `ENG-123`) | [Personal API key](https://linear.app/settings/account/security) |
+| GitHub | Repository (`owner/name`); **API address** `https://api.github.com` (GitHub Enterprise Server: `https://<host>/api/v3`) | [Personal access token](https://github.com/settings/personal-access-tokens/new): fine-grained with **Only select repositories** and the repository, and Issues, Pull requests and Contents read and write; or classic with the `repo` scope. Step by step: [Set up a GitHub board](github-board.md) |
 
 Tokens are kept in the system keychain. Click **Load columns** to read the board's columns (Jira statuses,
 Trello lists, Linear workflow states), then choose:
@@ -45,17 +46,24 @@ to the column you chose, the move is skipped and the reason shows in the history
   agent's work never mixes with yours. In a folder, each repository gets the ticket's branch and the agent
   changes the ones the ticket needs; a repository with uncommitted changes (or not on a branch) is left alone,
   and the ticket's history says so.
+- **Working copy**: **In place** (the agent works in the repository itself, as above) or **A worktree for each
+  ticket** (below). Boards made before this setting stay in place.
+- **Let the agent run commands** (right under **Working copy**): off by default, so the agent can only read and
+  edit files in the repository. Turn it on to let it build and run tests. It will then run any command it decides
+  to, as you. A worktree's **Setup command** needs it: the dialog says so at the field, and the board isn't saved
+  without it.
 - **AI connection**: Claude Code (your login, or a Claude Code connection with an API key) or a DevCat Agent
   connection (any model API). Optionally a **Model** (`sonnet`, `haiku`…).
 - **Default prompt**: what the agent is told with every ticket: conventions, where things are, how to test. A
   ticket you fix with a prompt of its own (below) gets that prompt instead.
-- **Let the agent run commands**: off by default, so the agent can only read and edit files in the
-  repository. Turn it on to let it build and run tests. It will then run any command it decides to, as you.
+- **Time limit**: the longest the agent works on one ticket, in minutes (default 60). When it's up, DevCat stops
+  the agent and the run ends with an error; the ticket goes back where it was.
 
 ## Fix tickets
 
 Pick tickets in the list and click **Fix with the agent**, or use the robot icon on a single ticket. Tickets
-are done one at a time; the panel on the right shows what the agent is doing, and **Stop** stops it.
+are done one at a time (a board with a worktree for each ticket can do a few at once, see below); the panel on
+the right shows what the agent is doing, and **Stop** stops it.
 
 To tell the agent something for particular tickets, click **With a prompt…** (or the speech bubble on a single
 ticket). The prompt starts as the board's default prompt; what you write replaces it for those tickets, that
@@ -72,16 +80,134 @@ For each ticket:
    onto it. Unfinished work still goes on a new `devcat/…` branch, so it never lands on yours. In a folder,
    repositories without that branch are left alone.
 2. The agent reads the ticket (title, description, labels, recent comments) and makes the change. The
-   ticket's images (screenshots attached in Jira or Trello, or pasted into a Linear description) are shown to
-   it: png, jpeg, gif or webp, up to 6 of them and 5 MB each. Other attachments are only named.
+   ticket's images (screenshots attached in Jira or Trello, pasted into a Linear description or uploaded to a GitHub
+   issue) are shown to it: png, jpeg, gif or webp, up to 6 of them and 5 MB each. Other attachments are only named.
 3. It answers **fixed**, **needs a person** (with its questions) or **couldn't fix**.
 4. DevCat commits what changed on the branch (unfinished work too, marked `WIP`) and switches the
    repository back to the branch it was on. In a folder, the repositories the agent didn't change have their
    branch removed, and the comment names the ones it did. With **Push** on, a fixed ticket's branch is pushed to `origin`.
 5. The ticket gets a comment (the summary, how to test, the branch) and moves to *done* or *needs a person*.
 
-If the agent is stopped or crashes, the ticket goes back where it was, without a comment. A ticket the agent
-changed nothing for has its branch removed.
+If you click **Stop** or the agent crashes, the run ends (after Stop, within a few seconds) and the ticket goes back
+where it was, without a comment. Its work so far stays committed on the branch, not pushed, and no pull request is
+opened. A ticket the agent changed nothing for has its branch removed. With **Watch** on, the next check can take it
+again.
+
+If DevCat quits or crashes during a run, the next start stops that run's agent if it still works, moves the ticket
+to your *needs a person* column (else back where it was) with a comment that names the branch, and shows the run in
+**History** with the outcome "error". A ticket someone moved since is left alone. On macOS and Linux, the agent of an
+unattended run also stops when DevCat quits or crashes. For GitHub boards, see
+[Set up a GitHub board](github-board.md).
+
+### A worktree for each ticket
+
+With **Working copy** set to **A worktree for each ticket**, the agent never touches your checkout: keep your
+uncommitted work and any branch in the repository while it works. The repository must be one git repository
+(not a folder of them). For each ticket:
+
+1. DevCat fetches from `origin` and makes a git worktree at `.worktrees/<key>-<title>` inside the repository. Its
+   branch is the ticket's own branch when it has one already (an earlier run's work, here or on `origin`), else a
+   new `devcat/<key>-<title>` from the **Base branch** on `origin` (empty: `origin`'s default branch). When
+   `origin`'s copy of the ticket's branch has newer commits (someone pushed to it), the run starts from them, so they
+   stay and the push goes through. When your copy and `origin`'s both have commits the other doesn't, the run fails
+   before the agent starts: merge or rebase them and push, then run the ticket again. DevCat never forces a push.
+2. DevCat adds `.worktrees/` to the repository's local exclude file (`.git/info/exclude`), so the folder never
+   shows as untracked and nothing needs committing.
+3. DevCat copies the **Files to copy** from the repository into the worktree, for example `.env` (one path a line;
+   a folder copies with everything in it). A worktree has only the committed files otherwise. DevCat copies only
+   files that git ignores, because the agent's commit would take any other file to `origin`; the ticket's history
+   tells you about a file it didn't copy.
+4. DevCat runs the **Setup command** in the worktree (for example `pnpm install` or `go mod download`). It runs
+   under the same rules as the agent's commands: only on a board that lets the agent run commands, as you, within
+   the board's **Time limit**, and **Stop** ends it. Its output shows in the board's activity.
+5. The agent works in the worktree. DevCat commits there and, with **Push** on, pushes a fixed ticket's branch.
+6. DevCat removes the worktree. The branch keeps the commits (a run that changed nothing leaves no branch).
+
+If the setup command fails, the agent doesn't start: the run ends as failed, and the end of the command's output
+is in the history and the ticket's comment. DevCat removes the worktree, and nothing the command changed is
+committed.
+
+The guard against changes to git's settings works the same: if the agent changed the repository's git config,
+attributes or hooks, DevCat runs no git, and the worktree stays as it is for you to look at.
+
+If DevCat quits or crashes in the middle of a run, the next start also removes what that run left in `.worktrees`
+(the branch stays) and puts the ticket right as above. A worktree a run left for you to look at stays until you
+remove it.
+
+A ticket's branch can be checked out in one place only. If it's checked out in another worktree, or in the
+repository itself, the run fails and names that folder: switch it to another branch (or remove the worktree), then
+run the ticket again.
+
+**Parallel runs** (1 to 4, default 1) sets how many tickets the agent works on at the same time. Each runs in its
+own worktree on its own branch, and the panel on the right shows each one with its log. The other tickets wait
+until a run ends. A ticket you fix again while the agent works on it waits for that run. Boards that run in place
+always do one ticket at a time.
+
+### GitHub boards
+
+For a step-by-step setup, see [Set up a GitHub board](github-board.md). On a GitHub board the repository's labels
+are the columns. A new board takes issues labelled
+`ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed, `needs-info`
+when the agent has questions, `ready-for-human` when it fails and `wontfix` when its pull request is closed without
+a merge; change any of them in the board's settings. Saving the board checks the
+token and the repository, reads the token owner's login, and creates the labels the repository doesn't have yet.
+
+- The agent takes open issues with the trigger label (never pull requests), filtered by **Assigned to**. A new
+  GitHub board starts with **Me**: the issues assigned to the token's owner, so the team decides whose computer
+  works on which issue. Choose **Me, or nobody yet** to take unassigned issues too.
+- Moving an issue removes its current state label and adds the new one, so it always has exactly one.
+- Branches are named `<your login>/<number>-<title>`, e.g. `octo/12-fix-the-login`.
+- New GitHub boards start with **A worktree for each ticket**, and the branch is always pushed: a fixed issue's
+  branch gets a draft pull request. The issue's comment has the summary, how to test and the pull request's link,
+  and the history links it too. A repository without draft pull requests (a private one on GitHub Free) gets a pull
+  request that's ready for review, and the comment says so. If DevCat can't open the pull request (GitHub refuses
+  it, or the push fails), the issue gets `ready-for-human` instead of `agent-review`, and the comment says why and
+  names the branch.
+- The pull request goes into the issue's base branch, and a worktree's new branch starts from it. The base branch
+  is the branch in a `Base: <branch>` line in the issue, else in its parent issue, else the board's **Base branch**,
+  else the repository's default branch. So the slices of a feature can go into its feature branch: put
+  `Base: feat/login` in the parent issue.
+- A pull request into the default branch says `Closes #<number>` (merging it closes the issue); into another branch
+  it says `Part of #<number>`.
+- The agent writes the pull request's description. When the repository has a pull request template
+  (`pull_request_template.md` in `.github/`, the top folder or `docs/`), the description follows its sections.
+  DevCat adds the issue's link and a line that says the DevCat agent opened it. The description always says how the
+  agent checked its work: when it has neither the agent's testing steps nor a heading named **How it was checked**
+  (say, from your template), DevCat adds them in a **How it was checked** section.
+- The agent reads the issue's comments from people with write access to the repository (all of them, oldest
+  first), never comments from anyone else: anyone can comment on a public issue. The images uploaded to the issue
+  and to those comments are shown to it, also in a private repository; images from other sites stay links.
+- When the agent has questions, its work so far is pushed to the branch, the comment has the questions and the
+  branch, and the issue gets `needs-info`. When it fails (or the **Setup command** fails), its unfinished work is
+  committed (marked WIP) and pushed, the comment has the reason and the branch, and the issue gets
+  `ready-for-human`, so a person can go on from there. Neither opens a pull request.
+- To run an issue again, add the trigger label again, e.g. after you answer the agent's questions in a comment
+  (swap `needs-info` for `ready-for-agent`), or to send a `ready-for-human` issue back to the agent. The next check
+  starts a new run: a new conversation that reads all the comments, the new ones too, and goes on from the issue's
+  branch with the earlier commits. Without a new label, an issue the agent already worked on doesn't run again.
+  You can still answer the agent in DevCat instead, which goes on in its last conversation.
+- Labels, comments and pull requests appear as the token's owner.
+- With **Watch** on, each check also looks at the pull requests DevCat opened that are still open. When one is
+  merged, the issue loses `agent-review` and is closed if it's still open (GitHub closes it only for a pull request
+  into the default branch). When one is closed without a merge, the issue is closed as not planned, gets `wontfix`
+  (**When its pull request closes without a merge, label**) as its only state label and a comment that links the
+  pull request, and its branch is deleted on GitHub and in your
+  repository. A branch with commits after the pull request's last one stays (someone's work), and so does a branch
+  that a worktree has checked out; the comment says so. To try again, reopen the issue and add the trigger label.
+
+When the board watches the repository, an issue with the trigger label waits until it passes three checks:
+
+- **Who added the label.** The person who last added it must be able to write to the repository (write,
+  maintain or admin), or be listed in **Also take labels from** (e.g. a triage bot's login). A label from anyone
+  else is ignored, so a stranger can't make the agent run commands on your computer. This needs a token that can
+  write to the repository.
+- **Blockers.** The issue must have no open blocker: none in GitHub's issue dependencies ("Blocked by") and none
+  in a `Blocked by: #12, #13` line in its body. It starts at the first check after its last blocker closes.
+- **The backlog.** The label must have been added after the board was created, so a new board doesn't start on
+  every issue that was labelled before it. To send one of those to the agent, fix it from the list. For an issue
+  the agent already worked on, the label must have been added after its last run ended.
+
+Fixing issues from the list skips these checks: you choose them yourself.
 
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
 workspace, where you can read what it did and carry on from there.
@@ -90,8 +216,8 @@ workspace, where you can read what it did and carry on from there.
 
 Turn on **Watch** (in the board's toolbar or its settings): every few minutes DevCat checks the column and
 works on new tickets, a few at a time. A ticket the agent has already tried isn't picked up again by itself; fix
-it again from the list when it's ready. Watching only runs while DevCat is open, and skips a round while the
-repository has uncommitted changes.
+it again from the list when it's ready (on a GitHub board, add the trigger label again). Watching only runs while DevCat is open, and (in place) skips a round
+while the repository has uncommitted changes.
 
 ## Slack
 

@@ -7,6 +7,7 @@
 //!   comments, and it exists on both Cloud and Data Center.
 //! - Trello (API key + token). Columns are the board's lists.
 //! - Linear (personal API key). Columns are the team's workflow states.
+//! - GitHub (personal access token). Columns are the repository's labels: see `github.rs`.
 use super::{Assigned, Attachment, Board, Column, Comment, Ticket, TrackerKind};
 use crate::error::{AppError, AppResult};
 use reqwest::{Client, RequestBuilder, Response};
@@ -24,9 +25,12 @@ const LINEAR_API: &str = "https://api.linear.app/graphql";
 const TRELLO_API: &str = "https://api.trello.com/1";
 
 pub struct Tracker {
-    http: Client,
-    board: Board,
-    token: String,
+    pub(super) http: Client,
+    pub(super) board: Board,
+    pub(super) token: String,
+    /// Whether each GitHub login (lowercase) may write to the board's repository, as asked during
+    /// this tracker's life (one run, or one check of a column): see `github::can_write`.
+    pub(super) writers: parking_lot::Mutex<std::collections::HashMap<String, bool>>,
 }
 
 fn http() -> AppResult<Client> {
@@ -34,7 +38,7 @@ fn http() -> AppResult<Client> {
 }
 
 /// The response's JSON, or an error with the status and the start of the body.
-async fn json_of(r: Response, what: &str) -> AppResult<Value> {
+pub(super) async fn json_of(r: Response, what: &str) -> AppResult<Value> {
     let status = r.status();
     let text = r.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -53,7 +57,7 @@ async fn json_of(r: Response, what: &str) -> AppResult<Value> {
     serde_json::from_str(&text).map_err(|e| AppError::msg(format!("{what}: unexpected answer ({e})")))
 }
 
-fn s(v: &Value, k: &str) -> String {
+pub(super) fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
@@ -78,12 +82,13 @@ pub fn linear_filter(team: &str, state: &str, assigned: Assigned) -> Value {
     f
 }
 
-/// Whether a Trello card with these members is wanted (`me`: the token's member id).
-pub fn trello_wanted(members: &[String], me: &str, assigned: Assigned) -> bool {
+/// Whether a ticket with these assignees is wanted, for a tracker that can't filter by assignee
+/// itself (Trello: member ids; GitHub: logins; `me`: the token owner's).
+pub fn assignee_wanted(assignees: &[String], me: &str, assigned: Assigned) -> bool {
     match assigned {
         Assigned::Anyone => true,
-        Assigned::Me => members.iter().any(|m| m == me),
-        Assigned::MeOrNobody => members.is_empty() || members.iter().any(|m| m == me),
+        Assigned::Me => assignees.iter().any(|m| m == me),
+        Assigned::MeOrNobody => assignees.is_empty() || assignees.iter().any(|m| m == me),
     }
 }
 
@@ -109,12 +114,16 @@ impl Tracker {
                 TrackerKind::Jira => "Enter the Jira project key",
                 TrackerKind::Trello => "Enter the Trello board (its link or id)",
                 TrackerKind::Linear => "Enter the Linear team key",
+                TrackerKind::Github => "Enter the repository as owner/name",
             }));
+        }
+        if board.kind == TrackerKind::Github && !super::github::is_repo(&board.project) {
+            return Err(AppError::msg(format!("\"{}\" isn't a repository: enter it as owner/name", board.project.trim())));
         }
         if board.kind == TrackerKind::Jira && !board.site.trim().starts_with("http") {
             return Err(AppError::msg("Enter the Jira site, e.g. https://acme.atlassian.net"));
         }
-        Ok(Tracker { http: http()?, board: board.clone(), token: token.trim().to_string() })
+        Ok(Tracker { http: http()?, board: board.clone(), token: token.trim().to_string(), writers: Default::default() })
     }
 
     // ------------------------------------------------------------ requests
@@ -175,6 +184,7 @@ impl Tracker {
                 states.sort_by(|a, b| a["position"].as_f64().unwrap_or(0.0).total_cmp(&b["position"].as_f64().unwrap_or(0.0)));
                 Ok(states.into_iter().map(|st| Column { id: s(st, "id"), name: s(st, "name") }).collect())
             }
+            TrackerKind::Github => self.gh_columns().await,
         }
     }
 
@@ -209,7 +219,7 @@ impl Tracker {
                     .flatten()
                     .filter(|c| {
                         let ids: Vec<String> = c["idMembers"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-                        trello_wanted(&ids, &me, self.board.assigned)
+                        assignee_wanted(&ids, &me, self.board.assigned)
                     })
                     .take(MAX_TICKETS)
                     .map(trello_ticket)
@@ -226,6 +236,7 @@ impl Tracker {
                 out.reverse(); // newest first from the API
                 Ok(out)
             }
+            TrackerKind::Github => self.gh_list(column).await,
         }
     }
 
@@ -280,6 +291,7 @@ impl Tracker {
                 t.attachments = linear_images(&t.description);
                 Ok(t)
             }
+            TrackerKind::Github => self.gh_get(id).await,
         }
     }
 
@@ -303,7 +315,8 @@ impl Tracker {
     // ------------------------------------------------------------ attachments
 
     /// An attachment's bytes, at most `MAX_ATTACHMENT`. The token only goes to the tracker's own
-    /// hosts: Jira's site, trello.com, uploads.linear.app. A failed request is tried once more.
+    /// hosts: Jira's site, trello.com, uploads.linear.app, GitHub's (`github::image_fetch`). A
+    /// failed request is tried once more.
     pub async fn download(&self, a: &Attachment) -> AppResult<Vec<u8>> {
         let mut url = reqwest::Url::parse(&a.url).map_err(|_| AppError::msg(format!("{}: not a link DevCat can download", a.name)))?;
         let host = url.host_str().unwrap_or_default().to_string();
@@ -321,6 +334,11 @@ impl Tracker {
                     .header("Authorization", format!("OAuth oauth_consumer_key=\"{}\", oauth_token=\"{}\"", self.board.user.trim(), self.token)),
             ),
             TrackerKind::Linear if host == "uploads.linear.app" => Some(self.http.get(url.clone()).header("Authorization", &self.token)),
+            TrackerKind::Github => match super::github::image_fetch(&url, &self.board) {
+                super::github::ImageFetch::NotStored => None,
+                super::github::ImageFetch::WithoutToken => Some(self.http.get(url.clone())),
+                super::github::ImageFetch::WithToken => Some(self.http.get(url.clone()).bearer_auth(&self.token)),
+            },
             _ => None,
         };
         let Some(rb) = request() else { return Err(AppError::msg(format!("{}: not stored on the tracker", a.name))) };
@@ -371,6 +389,7 @@ impl Tracker {
                 }
                 Ok(())
             }
+            TrackerKind::Github => self.gh_move(t, column).await,
         }
     }
 
@@ -391,6 +410,7 @@ impl Tracker {
                 }
                 Ok(())
             }
+            TrackerKind::Github => self.gh_comment(t, text).await,
         }
     }
 }
@@ -511,11 +531,11 @@ mod tests {
         assert_eq!(linear_filter("ENG", "s", Assigned::Me)["assignee"], json!({ "isMe": { "eq": true } }));
         assert_eq!(linear_filter("ENG", "s", Assigned::MeOrNobody)["or"][1], json!({ "assignee": { "null": true } }));
         let (me, other) = ("m1".to_string(), "m2".to_string());
-        assert!(trello_wanted(&[other.clone()], &me, Assigned::Anyone));
-        assert!(!trello_wanted(&[other.clone()], &me, Assigned::Me));
-        assert!(trello_wanted(&[other, me.clone()], &me, Assigned::Me));
-        assert!(!trello_wanted(&[], &me, Assigned::Me));
-        assert!(trello_wanted(&[], &me, Assigned::MeOrNobody));
+        assert!(assignee_wanted(&[other.clone()], &me, Assigned::Anyone));
+        assert!(!assignee_wanted(&[other.clone()], &me, Assigned::Me));
+        assert!(assignee_wanted(&[other, me.clone()], &me, Assigned::Me));
+        assert!(!assignee_wanted(&[], &me, Assigned::Me));
+        assert!(assignee_wanted(&[], &me, Assigned::MeOrNobody));
     }
 
     #[test]
