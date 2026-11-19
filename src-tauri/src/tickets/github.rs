@@ -6,8 +6,10 @@
 //! `agent-working`, `agent-review`, `needs-info`, `ready-for-human`), and moving it swaps that
 //! label for the new one, so it keeps exactly one. Saving the board reads the token owner's login
 //! (the branches are `<login>/<number>-<slug>`) and creates the state labels the repository
-//! lacks. Every run's branch is pushed: a fixed issue gets a draft pull request into the default
-//! branch that closes it; one that needs information or failed gets none, only the comment. The
+//! lacks. Every run's branch is pushed: a fixed issue gets a draft pull request into its base
+//! branch (`Tracker::gh_base`: the issue's `Base:` line, its parent's, the board's base branch or
+//! the default branch), with a body the agent writes in the format of the repository's pull
+//! request template; one that needs information or failed gets none, only the comment. The
 //! watch loop then follows that pull request (`follow_pull_requests`): merged, the issue is
 //! closed; closed without a merge, the issue is closed as not planned and the branch deleted.
 //!
@@ -21,6 +23,7 @@ use super::{Assigned, Attachment, Board, Column, Comment, Isolation, RunRecord, 
 use crate::error::{AppError, AppResult};
 use reqwest::{Method, RequestBuilder};
 use serde_json::{Value, json};
+use std::path::Path;
 
 /// Issues read from one label, at most (as for the other trackers' columns).
 const MAX_ISSUES: usize = 50;
@@ -28,6 +31,8 @@ const MAX_ISSUES: usize = 50;
 const LABEL_PAGES: usize = 10;
 /// Event pages read for an issue's trigger label, at most (100 events each).
 const EVENT_PAGES: usize = 10;
+/// The part of a pull request template the agent gets, at most (bytes).
+const MAX_TEMPLATE: usize = 8000;
 /// The label of an issue whose pull request closed without a merge (as the triage skills name it).
 const WONTFIX: &str = "wontfix";
 /// Comment pages read for the prompt, at most (100 comments each).
@@ -227,27 +232,87 @@ fn full() -> reqwest::header::HeaderMap {
     h
 }
 
-/// What a fixed issue's draft pull request says: the agent's summary, how to test it, the line
-/// that closes the issue when it merges, and who made it.
-pub fn pr_body(t: &Ticket, rec: &RunRecord) -> String {
-    let mut body = rec.summary.trim().to_string();
-    if !rec.testing.trim().is_empty() {
-        body.push_str(&format!("\n\n## How to test\n\n{}", rec.testing.trim()));
+/// An issue's base branch (`Tracker::gh_base`).
+#[derive(Debug, Clone)]
+pub struct Base {
+    pub branch: String,
+    /// It's the repository's default branch: a merge there closes the issue.
+    pub default: bool,
+    /// Where the rule found it, for the run's messages (e.g. "the issue's Base: line").
+    pub from: &'static str,
+}
+
+/// The branch of a `Base: <branch>` line in an issue's text (e.g. `**Base:** `feat/x``), the
+/// first one that names a branch.
+pub fn base_line(text: &str) -> Option<String> {
+    text.lines().find_map(|l| {
+        let l = l.trim().trim_start_matches(['-', '*', ' ']);
+        let rest = l.get(..5).filter(|p| p.eq_ignore_ascii_case("base:"))?;
+        let v = l[rest.len()..].trim().trim_start_matches('*').trim().trim_matches('`').trim();
+        Some(v.to_string()).filter(|v| super::valid_branch(v))
+    })
+}
+
+/// The repository's pull request template in `dir` (the run's working copy), as GitHub finds
+/// it: `pull_request_template.md` in `.github/`, the top folder or `docs/` (any case), else the
+/// first of several in a `PULL_REQUEST_TEMPLATE/` folder there. At most `MAX_TEMPLATE` bytes.
+pub fn pr_template(dir: &Path) -> Option<String> {
+    let entries = |d: &Path| -> Vec<std::path::PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect();
+        v.sort();
+        v
+    };
+    let named = |p: &Path, n: &str| p.file_name().is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(n));
+    let places = [dir.join(".github"), dir.to_path_buf(), dir.join("docs")];
+    let file = places.iter().flat_map(|d| entries(d)).find(|p| p.is_file() && named(p, "pull_request_template.md")).or_else(|| {
+        let folder = places.iter().flat_map(|d| entries(d)).find(|p| p.is_dir() && named(p, "pull_request_template"))?;
+        entries(&folder).into_iter().find(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")))
+    })?;
+    let text = std::fs::read_to_string(file).ok()?;
+    let text = text.trim();
+    let mut end = text.len().min(MAX_TEMPLATE);
+    while !text.is_char_boundary(end) {
+        end -= 1;
     }
-    body.push_str(&format!("\n\nCloses {}\n\nOpened by the DevCat agent.", t.key));
+    Some(text[..end].to_string()).filter(|t| !t.is_empty())
+}
+
+/// What the agent is told about the `pr_body` of its answer: in the format of `template` when
+/// the repository has one.
+pub fn pr_body_text(template: Option<&str>) -> String {
+    let mut p = String::from(
+        "- pr_body: the description of the pull request DevCat opens when the ticket is fixed (Markdown, in the ticket's language). \
+         Don't add a link to the issue (Closes #n) or a line about DevCat: DevCat adds them.",
+    );
+    match template {
+        Some(t) => p.push_str(&format!(" Write it in the format of the repository's pull request template below: keep its headings and fill in each section.\n<template>\n{t}\n</template>\n")),
+        None => p.push_str(" Say what changed and why, and how to test it.\n"),
+    }
+    p
+}
+
+/// What a fixed issue's draft pull request says: the agent's body (`agent`: in the format of the
+/// repository's template; else the summary and how to test it), the issue's link (`Closes #n`
+/// into the default branch, where a merge closes it; `Part of #n` into another branch), and who
+/// made it.
+pub fn pr_body(t: &Ticket, rec: &RunRecord, base: &Base, agent: &str) -> String {
+    let mut body = agent.trim().to_string();
+    if body.is_empty() {
+        body = rec.summary.trim().to_string();
+        if !rec.testing.trim().is_empty() {
+            body.push_str(&format!("\n\n## How to test\n\n{}", rec.testing.trim()));
+        }
+    }
+    body.push_str(&format!("\n\n{} {}\n\nOpened by the DevCat agent.", if base.default { "Closes" } else { "Part of" }, t.key));
     body
 }
 
-/// A fixed issue's pushed branch (`rec.branch`) becomes a draft pull request into the base
-/// branch: the run's number and link (`rec.pr_number`, `rec.pr_url`), or a note when GitHub
-/// refused it.
-pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord) {
+/// A fixed issue's pushed branch (`rec.branch`) becomes a draft pull request into `base`, with
+/// `body` (the agent's, see `pr_body`): the run's number and link (`rec.pr_number`,
+/// `rec.pr_url`), or a note when GitHub refused it.
+pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord, base: &Base, body: &str) {
     let Some(head) = rec.branch.clone() else { return };
-    let made = async {
-        let base = tr.gh_base().await?;
-        tr.gh_pull_request(&head, &base, &t.title, &pr_body(t, rec)).await
-    };
-    match made.await {
+    match tr.gh_pull_request(&head, &base.branch, &t.title, &pr_body(t, rec, base, body)).await {
         Ok((n, url)) => {
             rec.pr_number = Some(n);
             rec.pr_url = Some(url);
@@ -371,13 +436,29 @@ impl Tracker {
         }
     }
 
-    /// Where pull requests go: the base branch of a worktree board, else the repository's default branch.
-    async fn gh_base(&self) -> AppResult<String> {
-        if self.board.isolation == Isolation::Worktree && !self.board.target_branch.trim().is_empty() {
-            return Ok(self.board.target_branch.trim().to_string());
-        }
+    /// Where `t`'s pull request goes (and a worktree's new branch starts): the issue's `Base:`
+    /// line, else its parent issue's, else the board's base branch, else the default branch.
+    pub(super) async fn gh_base(&self, t: &Ticket) -> AppResult<Base> {
         let v = json_of(self.gh_repo(Method::GET, "").send().await?, "GitHub repository").await?;
-        Some(s(&v, "default_branch")).filter(|b| !b.is_empty()).ok_or_else(|| AppError::msg("GitHub didn't say the repository's default branch"))
+        let default = Some(s(&v, "default_branch")).filter(|b| !b.is_empty()).ok_or_else(|| AppError::msg("GitHub didn't say the repository's default branch"))?;
+        let (branch, from) = match base_line(&t.description) {
+            Some(b) => (b, "the issue's Base: line"),
+            None => match self.gh_parent(t).await?.and_then(|p| base_line(&s(&p, "body"))) {
+                Some(b) => (b, "the parent issue's Base: line"),
+                None if !self.board.target_branch.trim().is_empty() => (self.board.target_branch.trim().to_string(), "the board's base branch"),
+                None => (default.clone(), "the default branch"),
+            },
+        };
+        Ok(Base { default: branch == default, branch, from })
+    }
+
+    /// The issue's parent issue (sub-issues), if it has one.
+    async fn gh_parent(&self, t: &Ticket) -> AppResult<Option<Value>> {
+        let r = self.gh_repo(Method::GET, &format!("/issues/{}/parent", t.id)).send().await?;
+        if r.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        json_of(r, "GitHub parent issue").await.map(Some)
     }
 
     // ------------------------------------------------------------ labels
@@ -651,6 +732,19 @@ pub(crate) mod tests {
         assert_eq!(tr.download(&t.attachments[0]).await.unwrap(), b"\x89PNG data", "{:?}", gh.requests());
     }
 
+    /// An issue's `Base: <branch>` line, in any case, also in bold or with the branch in
+    /// backticks; a value that can't be a branch name is no base.
+    #[test]
+    fn base_lines() {
+        assert_eq!(base_line("Fix it.\n\nBase: feat/github\nMore text").as_deref(), Some("feat/github"));
+        assert_eq!(base_line("**Base:** `release/1.2`").as_deref(), Some("release/1.2"));
+        assert_eq!(base_line("  base:  develop  \r\n").as_deref(), Some("develop"));
+        assert_eq!(base_line("- Base: main").as_deref(), Some("main"));
+        assert_eq!(base_line("No base here.\nThe database: big"), None);
+        assert_eq!(base_line("Base: two words"), None);
+        assert_eq!(base_line("Base:"), None);
+    }
+
     /// A GitHub board on `site` for `acme/calc` with the default state labels, a worktree for each
     /// ticket and `provider` as its agent, working in `repo`. A new id each time (boards.json is
     /// shared by the tests).
@@ -893,6 +987,84 @@ pub(crate) mod tests {
         assert_eq!((rec.outcome.as_str(), rec.pr_number), ("fixed", pr["number"].as_u64()), "{} {:?}", rec.summary, rec.notes);
         assert_eq!(gh.gh.lock().pulls.len(), 1);
         assert!(git(origin, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# again"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The base branch is the issue's `Base:` line, else its parent issue's, else the board's base
+    /// branch (else the default branch, above): the worktree starts from it on origin and the
+    /// pull request goes into it, saying `Part of #n` (only a pull request into the default
+    /// branch closes the issue).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn base_branch_rule() {
+        use super::super::worker::{fix_one, git, tests::*};
+        tickets_data();
+        let mut data = Gh::new("octo", "acme/calc")
+            .with_issue(3, "The feature", "Slices go into the feature branch.\n\nBase: feat/avg", &[], &[])
+            .with_issue(7, "Own base", "Fix average.\n\n**Base:** `feat/own`", &["ready-for-agent"], &["octo"])
+            .with_issue(8, "Parent base", "Fix average.", &["ready-for-agent"], &["octo"])
+            .with_issue(9, "Board base", "Fix average.", &["ready-for-agent"], &["octo"]);
+        data.parents.insert(8, 3);
+        let gh = MockGithub::start(data).await;
+        let (dir, remote) = clone_with_origin("gh-base").await;
+        let (cwd, origin) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        // each base on origin only, one commit ahead of main
+        for br in ["feat/own", "feat/avg", "develop"] {
+            git(cwd, &["checkout", "-q", "-b", br, "main"]).await.unwrap();
+            std::fs::write(dir.join("base.txt"), br).unwrap();
+            git(cwd, &["add", "."]).await.unwrap();
+            git(cwd, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", br]).await.unwrap();
+            git(cwd, &["push", "-q", "origin", br]).await.unwrap();
+            git(cwd, &["checkout", "-q", "main"]).await.unwrap();
+            git(cwd, &["branch", "-q", "-D", br]).await.unwrap();
+        }
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let b = super::super::tickets_board_save(Board { target_branch: "develop".into(), ..board(&gh.url, cwd, &fixer) }).await.unwrap();
+        for (n, branch, base) in [(7, "octo/7-own-base", "feat/own"), (8, "octo/8-parent-base", "feat/avg"), (9, "octo/9-board-base", "develop")] {
+            let rec = fix_one(&b, &n.to_string(), None, None, &devcat_harness::Cancel::default()).await;
+            assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("fixed", Some(branch)), "#{n}: {} {:?}", rec.summary, rec.notes);
+            assert_eq!(git(origin, &["show", &format!("{branch}:base.txt")]).await.unwrap().trim(), base, "#{n}: the worktree started from origin/{base}");
+            let pr = gh.gh.lock().pulls.values().find(|p| p["head"]["ref"] == branch).cloned().unwrap_or_else(|| panic!("#{n}: no pull request: {:?}", gh.requests()));
+            assert_eq!(pr["base"]["ref"].as_str(), Some(base), "#{n}");
+            let body = pr["body"].as_str().unwrap();
+            assert!(body.contains(&format!("Part of #{n}")) && !body.contains("Closes"), "#{n}: {body}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The agent gets the repository's pull request template and writes the body in its format
+    /// (`pr_body` in its structured result); DevCat adds the issue's link and its own line.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pull_request_template() {
+        use super::super::worker::{fix_one, git, tests::*};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (dir, remote) = clone_with_origin("gh-template").await;
+        let cwd = dir.to_str().unwrap();
+        std::fs::create_dir_all(dir.join(".github")).unwrap();
+        std::fs::write(dir.join(".github/PULL_REQUEST_TEMPLATE.md"), "## What changed\n\n## Risk\n").unwrap();
+        git(cwd, &["add", "."]).await.unwrap();
+        git(cwd, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "template"]).await.unwrap();
+        git(cwd, &["push", "-q", "origin", "main"]).await.unwrap();
+        let body = "## What changed\n\naverage divides by the count.\n\n## Risk\n\nLow.";
+        let answer = json!({ "status": "fixed", "summary": "Stand-in summary.", "testing": "Run it.", "pr_body": body });
+        let (fixer, out) = stand_in_answer(answer, "echo '    # fixed' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, cwd, &fixer)).await.unwrap();
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!(rec.outcome, "fixed", "{} {:?}", rec.summary, rec.notes);
+
+        let args = std::fs::read_to_string(out.join("args.txt")).unwrap();
+        assert!(args.contains("\"pr_body\""), "the result schema asks for the body: {args}");
+        let prompt = std::fs::read_to_string(out.join("prompt.jsonl")).unwrap();
+        assert!(prompt.contains("pr_body") && prompt.contains("## What changed\\n\\n## Risk"), "the agent gets the template: {prompt}");
+
+        let pr = gh.gh.lock().pulls.values().next().cloned().unwrap_or_else(|| panic!("no pull request: {:?}", gh.requests()));
+        let got = pr["body"].as_str().unwrap();
+        assert!(got.starts_with(body) && got.contains("Closes #7") && got.contains("DevCat"), "{got}");
+        assert!(!got.contains("Stand-in summary."), "the agent's body, not the summary: {got}");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }

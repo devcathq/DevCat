@@ -233,7 +233,7 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
           )}
           <div className="grid grid-cols-2 gap-3">
             {wt ? (
-              <Field label="Base branch" hint="New branches start from it on origin. Empty: origin's default branch.">
+              <Field label="Base branch" hint={gh ? "New branches start from it on origin, and pull requests go into it. An issue's (or its parent's) “Base: <branch>” line wins. Empty: the default branch." : "New branches start from it on origin. Empty: origin's default branch."}>
                 <Input value={b.targetBranch} onChange={(e) => set({ targetBranch: e.target.value })} placeholder="main" />
               </Field>
             ) : gh ? null : <Field label="Branch" hint={existing ? "Fixed tickets are committed straight onto it (it must exist). Unfinished work goes on a new branch instead." : "Each ticket gets its own branch, made from the one the repository is on."}>
@@ -277,7 +277,7 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
             <Checkbox label="Let the agent run commands (builds, tests) without asking" checked={b.allowCommands} onChange={(v) => set({ allowCommands: v })} />
             <Checkbox label="Comment on the ticket with what was done and how to test it" checked={b.comment} onChange={(v) => set({ comment: v })} />
             {gh
-              ? <p className="text-[13px] text-muted">A fixed issue's branch is pushed and gets a draft pull request into {wt && b.targetBranch.trim() ? b.targetBranch.trim() : "the default branch"} that closes the issue.</p>
+              ? <p className="text-[13px] text-muted">A fixed issue's branch is pushed and gets a draft pull request into its base branch ({wt && b.targetBranch.trim() ? b.targetBranch.trim() : "the default branch"}, unless the issue says another), written in the format of the repository's pull request template.</p>
               : <Checkbox label={onto ? `Push ${b.targetBranch.trim() || "the branch"} to origin when fixed (pulled from origin first)` : "Push the ticket's branch to origin when fixed"} checked={b.push} onChange={(v) => set({ push: v })} />}
             <div className="flex items-center gap-2">
               <Checkbox label="Watch the column: work on new tickets every" checked={b.watch} onChange={(v) => set({ watch: v })} />
