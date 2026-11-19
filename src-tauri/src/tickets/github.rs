@@ -87,6 +87,28 @@ pub fn issue_ticket(i: &Value, states: &[String]) -> Ticket {
     }
 }
 
+/// The issues a body's `Blocked by: #12, #13` lines name (in this repository: `owner/name#n` is
+/// left out). Markdown around it is fine: `- **Blocked by:** #12`.
+pub fn blocked_by(body: &str) -> Vec<u64> {
+    let mut out = vec![];
+    for line in body.lines() {
+        let l = line.replace(['*', '_'], "");
+        let l = l.trim_start_matches(|c: char| c.is_whitespace() || "-+>".contains(c)).to_lowercase();
+        let Some(rest) = l.strip_prefix("blocked by") else { continue };
+        let b = rest.as_bytes();
+        for (i, _) in rest.match_indices('#') {
+            let alone = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b"/-_.".contains(&b[i - 1]));
+            let digits: String = rest[i + 1..].chars().take_while(char::is_ascii_digit).collect();
+            if let (true, Ok(n)) = (alone, digits.parse::<u64>()) {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Saving a GitHub board: the token works, the repository is there and the token may write to it
 /// (DevCat pushes branches, labels issues and opens pull requests as the token's owner). Sets the
 /// owner's login and the branches' prefix `<login>/`, turns push on (a pull request needs the
@@ -138,12 +160,16 @@ pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord) {
 
 /// Whether the watch may queue the issue: the last one to add the trigger label (the board's
 /// pick-from label) may write to the repository or is on the board's allowlist, so a stranger's
-/// label can't make the agent run. Sending an issue to the agent by hand skips this.
+/// label can't make the agent run; and no open issue blocks it, so it starts at the first check
+/// after its last blocker closes. Sending an issue to the agent by hand skips this.
 pub async fn ready(tr: &Tracker, t: &Ticket) -> AppResult<bool> {
     let label = tr.board.pick_from.as_ref().map(|c| c.id.clone()).unwrap_or_default();
     let Some(ev) = tr.gh_labeled(&t.id, &label).await? else { return Ok(false) };
     let who = s(&ev["actor"], "login");
-    Ok(tr.board.allowlist.iter().any(|l| l.eq_ignore_ascii_case(&who)) || can_write(tr, &who).await?)
+    if !tr.board.allowlist.iter().any(|l| l.eq_ignore_ascii_case(&who)) && !can_write(tr, &who).await? {
+        return Ok(false);
+    }
+    Ok(!tr.gh_blocked(t).await?)
 }
 
 /// Whether `login` may write to the board's repository (collaborator permission write, maintain
@@ -284,6 +310,24 @@ impl Tracker {
             }
         }
         Ok(last)
+    }
+
+    /// Whether an open issue blocks this one: in GitHub's issue dependencies (blockers may be in
+    /// other repositories) or in a `Blocked by:` line of its body.
+    async fn gh_blocked(&self, t: &Ticket) -> AppResult<bool> {
+        let r = self.gh_repo(Method::GET, &format!("/issues/{}/dependencies/blocked_by", t.id)).query(&[("per_page", "100")]).send().await?;
+        // 404: a GitHub without issue dependencies (an older Enterprise Server)
+        if r.status().as_u16() != 404 && json_of(r, "GitHub issue blockers").await?.as_array().into_iter().flatten().any(|i| s(i, "state") == "open") {
+            return Ok(true);
+        }
+        for n in blocked_by(&t.description).into_iter().filter(|n| n.to_string() != t.id) {
+            let r = self.gh_repo(Method::GET, &format!("/issues/{n}")).send().await?;
+            // 404: no such issue, nothing to wait for
+            if r.status().as_u16() != 404 && s(&json_of(r, &format!("GitHub issue #{n}")).await?, "state") == "open" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Swaps the issue's state labels (as it has them now) for `label` ("": none), leaving its
@@ -472,6 +516,43 @@ pub(crate) mod tests {
         assert_eq!(b.allowlist, vec!["eve"]);
         assert_eq!(queued(&b).await, vec!["7", "8", "10", "11", "12"], "eve is on the allowlist");
         assert_eq!(queued(&Board { max_per_run: 2, ..b }).await, vec!["7", "8"], "at most max_per_run");
+    }
+
+    #[test]
+    fn blocked_by_lines() {
+        let body = "Fix it.\nBlocked by: #12, #13\n- **Blocked by** #14\n  blocked by:#15 and acme/other#16\nNot blocked by #17 here.\nBlocked by: nothing";
+        assert_eq!(blocked_by(body), vec![12, 13, 14, 15]);
+        assert!(blocked_by("").is_empty());
+    }
+
+    /// An issue with an open blocker, in GitHub's dependencies or in a `Blocked by:` line, waits;
+    /// the next check after its last blocker closes takes it.
+    #[tokio::test]
+    async fn blocked_issues_wait() {
+        tickets_data();
+        let mut data = Gh::new("octo", "acme/calc")
+            .with_issue(7, "Blocked on GitHub", "", &["ready-for-agent"], &["octo"])
+            .with_issue(8, "Blocked in its body", "Do it.\n\nBlocked by: #21, #22", &["ready-for-agent"], &["octo"])
+            .with_issue(9, "Its blockers are closed", "**Blocked by:** #23", &["ready-for-agent"], &["octo"])
+            .with_issue(20, "Open blocker", "", &[], &[])
+            .with_issue(21, "Closed blocker", "", &[], &[])
+            .with_issue(22, "Open blocker", "", &[], &[])
+            .with_issue(23, "Closed blocker", "", &[], &[]);
+        for n in [21, 23] {
+            data.issues.get_mut(&n).unwrap()["state"] = json!("closed");
+        }
+        data.blocked_by = [(7, vec![20, 21]), (9, vec![21])].into_iter().collect();
+        for n in [7, 8, 9] {
+            data.events.insert(n, vec![labeled("ready-for-agent", "ana", &soon())]);
+        }
+        data.permissions.insert("ana".into(), "write".into());
+        let gh = MockGithub::start(data).await;
+        let b = super::super::tickets_board_save(board(&gh.url, "", "")).await.unwrap();
+        assert_eq!(queued(&b).await, vec!["9"]);
+        gh.gh.lock().issues.get_mut(&20).unwrap()["state"] = json!("closed");
+        assert_eq!(queued(&b).await, vec!["7", "9"], "#7's last blocker closed");
+        gh.gh.lock().issues.get_mut(&22).unwrap()["state"] = json!("closed");
+        assert_eq!(queued(&b).await, vec!["7", "8", "9"], "#8's last blocker closed");
     }
 
     /// The issue the run tests work on, and its branch.
