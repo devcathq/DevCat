@@ -28,7 +28,7 @@ use std::path::PathBuf;
 static DIR: OnceCell<PathBuf> = OnceCell::new();
 /// Board file writes, one at a time.
 static WRITE: Mutex<()> = Mutex::new(());
-/// Runs kept per board.
+/// Runs kept per board (and older ones the watch still needs, see `trim`).
 const HISTORY: usize = 200;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -399,11 +399,44 @@ pub fn record(board: &str, r: RunRecord) {
     let _g = WRITE.lock();
     let mut h = history(board);
     h.insert(0, r);
-    h.truncate(HISTORY);
+    trim(&mut h);
     if let Ok(d) = dir() {
         let _ = write_json(&d.join("history").join(format!("{board}.json")), &h);
     }
     crate::events::emit("tickets-changed", serde_json::json!({ "board": board }));
+}
+
+/// Keeps the newest `HISTORY` runs (newest first), and older ones the watch loop still needs: a
+/// run whose pull request is open (followed at each check), and each ticket's latest run and
+/// latest one that ended (not stopped), which the "after its last run ended" rule reads.
+fn trim(h: &mut Vec<RunRecord>) {
+    let mut extra = h.len().saturating_sub(HISTORY);
+    if extra == 0 {
+        return;
+    }
+    let (mut latest, mut ended) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    let needed: Vec<bool> = h
+        .iter()
+        .map(|r| {
+            let last = latest.insert(r.ticket_id.clone());
+            let last_ended = r.outcome != "stopped" && ended.insert(r.ticket_id.clone());
+            (r.pr_number.is_some() && r.pr_state.is_none()) || last || last_ended
+        })
+        .collect();
+    // the oldest go first
+    let mut gone = vec![false; h.len()];
+    for i in (0..h.len()).rev().filter(|i| !needed[*i]) {
+        if extra == 0 {
+            break;
+        }
+        gone[i] = true;
+        extra -= 1;
+    }
+    let mut i = 0;
+    h.retain(|_| {
+        i += 1;
+        !gone[i - 1]
+    });
 }
 
 /// Changes the board's run records in place (e.g. what became of a run's pull request).

@@ -1299,6 +1299,37 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// The history's cap (200 runs) keeps what the watch needs: a run whose pull request is open,
+    /// still followed, and an issue's last run, so a label added before it doesn't run it again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn history_keeps_what_the_watch_needs() {
+        use super::super::worker::check_column;
+        tickets_data();
+        let mut data = one_issue().with_issue(8, "Asked a question", "", &["ready-for-agent"], &["octo"]);
+        data.permissions.insert("ana".into(), "write".into());
+        data.events.insert(8, vec![labeled("ready-for-agent", "ana", &chrono::Utc::now().to_rfc3339())]);
+        let gh = MockGithub::start(data).await;
+        let (b, rec, dir, remote) = fixed_and_recorded(&gh, "gh-history").await;
+        let b = Board { created: b.created - 120_000, ..b };
+        let now = chrono::Utc::now().timestamp_millis();
+        let run = |id: &str, outcome: &str| RunRecord { ticket_id: id.into(), key: format!("#{id}"), outcome: outcome.into(), pr_number: None, pr_url: None, started: now, finished: now, ..rec.clone() };
+        // #8's run ended after ana labelled it; then 250 runs of another issue
+        super::super::record(&b.id, run("8", "needs_info"));
+        for _ in 0..250 {
+            super::super::record(&b.id, run("9", "error"));
+        }
+        let h = super::super::history(&b.id);
+        assert_eq!(h.len(), 200);
+        assert!(h.iter().any(|r| r.ticket_id == "7") && h.iter().any(|r| r.ticket_id == "8"), "kept");
+        assert!(queued(&b).await.is_empty(), "#8's label is from before its last run");
+        close_pull(&gh, rec.pr_number.unwrap(), true);
+        check_column(&b).await.unwrap();
+        assert_eq!(gh.gh.lock().issues[&7]["state"].as_str(), Some("closed"), "the open pull request is still followed: {:?}", gh.requests());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// The agent couldn't do it: its work in progress is committed (WIP) and pushed, the comment
     /// has the reason and the branch, the issue's one state label is ready-for-human, and no pull
     /// request is opened.
