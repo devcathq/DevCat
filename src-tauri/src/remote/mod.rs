@@ -219,6 +219,8 @@ pub struct RemoteStatus {
     pub web_available: bool,
     /// The relay this computer is connected to (phones on other networks come in through it).
     pub relay_connected: Option<String>,
+    /// The computer is kept from sleeping for paired phones right now (`stay_awake`).
+    pub staying_awake: bool,
 }
 
 pub(crate) fn status_now() -> AppResult<RemoteStatus> {
@@ -237,11 +239,20 @@ pub(crate) fn status_now() -> AppResult<RemoteStatus> {
         web_error: r.host.web_error(),
         web_available: web::has_assets(),
         relay_connected: r.host.home_relay(),
+        staying_awake: crate::keep_awake::held_for_phones(),
         settings: s,
     })
 }
 
+/// Keep the computer from sleeping while it serves paired phones (the `stay_awake` setting): only
+/// with remote access running and at least one phone paired.
+fn sync_awake() {
+    let Some(r) = REMOTE.get() else { return };
+    crate::keep_awake::hold_for_phones(r.host.is_running() && r.host.store.settings().stay_awake && !r.host.store.devices().is_empty());
+}
+
 fn push_status() {
+    sync_awake();
     if let Ok(s) = status_now() {
         crate::events::emit("remote-status", s);
     }
@@ -421,6 +432,7 @@ pub async fn start_headless(change: impl FnOnce(&mut RemoteSettings)) -> AppResu
         r.host.store.save_settings(&s)?;
     }
     r.host.start(s.port, s.web, s.relay_value().as_deref()).await.map_err(AppError::msg)?;
+    sync_awake();
     status_now()
 }
 
@@ -428,6 +440,7 @@ pub async fn shutdown() {
     if let Some(r) = REMOTE.get() {
         r.host.stop().await;
     }
+    crate::keep_awake::hold_for_phones(false);
 }
 
 // ---------------------------------------------------------------- commands

@@ -112,7 +112,7 @@ export function relativePath(path: string, root?: string | null): string | null 
 /** Kinds of image agents read; others (HEIC from an iPhone, …) are turned into JPEG first. */
 const AGENT_IMAGES: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
 
-async function asAgentImage(file: Blob): Promise<{ blob: Blob; ext: string }> {
+export async function asAgentImage(file: Blob): Promise<{ blob: Blob; ext: string }> {
   const ext = AGENT_IMAGES[file.type];
   if (ext) return { blob: file, ext };
   const img = await createImageBitmap(file).catch(() => { throw "This image type can't be read. Try a screenshot or a JPEG/PNG."; });

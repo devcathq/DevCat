@@ -15,6 +15,8 @@ export interface RemoteSettings {
   /** How phones on other networks get here: iroh's public relays, your own relay, or not at all. */
   relay: RelayChoice;
   relayUrl?: string | null;
+  /** While phones are paired, keep the computer from sleeping (the screen may turn off and lock). */
+  stayAwake: boolean;
 }
 
 export type RelayChoice = "public" | "custom" | "off";
@@ -66,6 +68,8 @@ export interface RemoteStatus {
   webAvailable: boolean;
   /** The relay this computer is connected to right now. */
   relayConnected?: string | null;
+  /** The computer is kept from sleeping for paired phones right now. */
+  stayingAwake?: boolean;
 }
 
 export type Access = "full" | "readonly";

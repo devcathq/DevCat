@@ -63,7 +63,7 @@ export type Route =
   | { s: "transcript"; cwd: string; sessionId: string; title: string }
   /** A DevCat Agent chat: `sessionId` null = a new one; `first` = a message to send right away;
    *  `ghost`: a ghost chat (no project, keeps nothing, ends when this screen closes). */
-  | { s: "agentchat"; cwd: string; providerId: string; sessionId: string | null; first?: string; ghost?: boolean }
+  | { s: "agentchat"; cwd: string; providerId: string; sessionId: string | null; first?: string; firstFiles?: File[]; ghost?: boolean }
   | { s: "browse"; connId: string; path: string[]; title: string }
   | { s: "rows"; connId: string; table: TableRef }
   | { s: "row"; connId: string; table: TableRef; row: Record<string, CellValue> | null; pk: string[] }

@@ -1,7 +1,7 @@
 // Keeps the screen and system awake (like Caffeine / Amphetamine): the cup in the title bar turns
 // it on (for a while or until turned off), and shows how long is left while it's on.
 import { listen } from "@tauri-apps/api/event";
-import { Coffee, Laptop, Power, Timer } from "lucide-react";
+import { Check, Coffee, Laptop, Power, Timer } from "lucide-react";
 import { useEffect, useState, type MouseEvent } from "react";
 import { toast } from "sonner";
 import { api, errMsg } from "../../lib/api";
@@ -19,7 +19,7 @@ function remaining(until: number, now: number): string {
 
 /** Keep-awake state, shared by all windows: read once, then follow the backend's broadcasts. */
 export function useKeepAwake() {
-  const [state, setState] = useState<KeepAwakeState>({ on: false });
+  const [state, setState] = useState<KeepAwakeState>({ on: false, onStart: true });
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     api.keepAwakeStatus().then((s) => { if (s) setState(s); }).catch(() => {});
@@ -52,6 +52,9 @@ export function useKeepAwake() {
       : []),
     "separator",
     { label: "Allow sleep", icon: <Power className="size-3.5" />, disabled: !state.on, onClick: () => void set(false) },
+    "separator",
+    // on unless turned off here (keep_awake.rs `start_default`)
+    { label: "Turn on when DevCat starts", icon: state.onStart ? <Check className="size-3.5" /> : <span className="size-3.5" />, onClick: () => void api.keepAwakeSetStart(!state.onStart).then((s) => { if (s) setState(s); }).catch((e) => toast.error(errMsg(e))) },
   ];
   /** Until turned off, also with the lid closed: macOS sleep is turned off (with the password). */
   async function lidClosed() {

@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner";
 import { Button, Checkbox, Dialog, Field, Input, Select, Spinner } from "../../components/ui";
 import { errMsg } from "../../lib/api";
+import { IS_MAC } from "../../lib/windows";
 import {
   MOBILE_RELEASES_URL, mobileApi, pathLabel,
   type Access, type AuditEntry, type Device, type NotifySettings, type PairInfo, type RelayChoice, type RemoteSettings,
@@ -254,6 +255,17 @@ function RemoteTab() {
             {s.web && !status.webAvailable && <div className="mt-1 text-[11.5px] text-warn">This build of DevCat doesn't include the browser version; the QR code is for the app.</div>}
           </div>
         </div>
+        <div className="flex items-start gap-3">
+          <Toggle on={s.stayAwake} disabled={busy} onChange={(on) => void save({ ...s, stayAwake: on })} />
+          <div className="min-w-0 flex-1 text-[12.5px]">
+            <div className="font-medium">Stay reachable when the screen is off or locked</div>
+            <div className="text-[11.5px] text-muted">
+              While a phone is paired and remote access is on, this computer doesn't go to sleep, so agents keep working and phones can connect. The screen
+              still turns off and locks as usual. Closing a laptop's lid still puts it to sleep{IS_MAC ? <> (for that: ☕ in the title bar › Keep awake with the lid closed)</> : null}.
+            </div>
+            {status.stayingAwake && <div className="mt-1 text-[11.5px] text-ok">Keeping this computer awake for your paired phones.</div>}
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name phones see" hint="Default: this computer's name">
             <Input value={draft.hostName ?? ""} placeholder={status.hostName} onChange={(e) => setDraft({ ...draft, hostName: e.target.value })} />
@@ -459,7 +471,7 @@ function HelpTab() {
           <li>DevCat is running here and <b>Remote access</b> is on</li>
           <li>With relays on (Connection settings), both need internet; otherwise both on the <b>same Wi-Fi</b> (guest networks often keep devices apart)</li>
           <li>The QR code holds one of this computer's addresses; if it has several (Wi-Fi and Ethernet), pick the one the phone can reach under <b>Address in the code</b></li>
-          <li>This computer isn't asleep: turn on <b>Keep awake</b> (☕ in the title bar)</li>
+          <li>This computer isn't asleep: keep <b>Stay reachable when the screen is off or locked</b> on (Connection settings), and for a closed laptop lid turn on <b>Keep awake</b> (☕ in the title bar)</li>
           <li>macOS firewall: allow DevCat to accept incoming connections if it asks</li>
           <li>VPN on the phone: some VPNs block the local network; turn it off or allow LAN access</li>
         </ul>

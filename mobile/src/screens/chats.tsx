@@ -2,12 +2,13 @@
 // project folder, with DevCat Agent, Claude Code or another agent), then the agents running and
 // the recent ones. Terminals without an agent are in the Terminal tab (terminals.tsx).
 import clsx from "clsx";
-import { AlertTriangle, ArrowUp, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, Clock, FolderOpen, Ghost, History, Sparkles, TerminalSquare } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ArrowUp, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, Clock, FolderOpen, Ghost, History, ImagePlus, Sparkles, TerminalSquare, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { claim, focusFolders, focusedProject, useFocus, useInFocus } from "../lib/focus";
 import { host, nav, refreshAgents, toastErr, useApp } from "../lib/store";
 import type { AgentChatInfo, AgentStatus, AiProvider, ClaudeProject, PtyInfo } from "../lib/types";
 import { Btn, Empty, ErrorBox, Input, Screen, Section, Sheet, Spinner, TextArea, ago, duration, folderName, useLoad } from "../ui";
+import { uploadPasteImage } from "../lib/transfer";
 import { termSize } from "./agents";
 import { ProjectBar } from "./focus";
 
@@ -90,17 +91,38 @@ function useAgentChoices(): AgentChoice[] {
   }, [providers.data]);
 }
 
-/** Start an agent: a DevCat Agent chat, or a terminal running Claude Code / another CLI agent. */
-export async function startAgent(cwd: string, choice: AgentChoice, message: string) {
+/** Start an agent: a DevCat Agent chat, or a terminal running Claude Code / another CLI agent.
+ *  `images` go with the first message: attached in a chat; for a terminal agent saved on the
+ *  computer (paste_dir) and their paths put after the message. */
+export async function startAgent(cwd: string, choice: AgentChoice, message: string, images: File[] = []) {
   claim(cwd);
   if (choice.chat) {
-    nav.push({ s: "agentchat", cwd, providerId: choice.id, sessionId: null, first: message || undefined });
+    nav.push({ s: "agentchat", cwd, providerId: choice.id, sessionId: null, first: message || undefined, firstFiles: images.length ? images : undefined });
     return;
   }
+  const paths: string[] = [];
+  for (const f of images) paths.push(await uploadPasteImage(f));
+  const prompt = [message, ...paths.map((p) => (p.includes(" ") ? `"${p}"` : p))].filter(Boolean).join(" ");
   const { cols, rows } = termSize();
-  const info = await host<PtyInfo>("pty_open", { cwd, program: choice.id ? null : "claude", args: message ? [message] : [], cols, rows, providerId: choice.id || null });
+  const info = await host<PtyInfo>("pty_open", { cwd, program: choice.id ? null : "claude", args: prompt ? [prompt] : [], cols, rows, providerId: choice.id || null });
   useApp.setState({ terms: [...useApp.getState().terms.filter((t) => t.id !== info.id), info] });
   nav.push({ s: "terminal", id: info.id });
+}
+
+/** A picked image, small, with a button to take it out again. */
+function Thumb({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    const u = URL.createObjectURL(file);
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [file]);
+  return (
+    <span className="relative size-14 shrink-0 overflow-hidden rounded-lg border border-line bg-hover">
+      {url && <img src={url} alt={file.name} className="size-full object-cover" />}
+      <button aria-label="Remove image" onClick={onRemove} className="absolute top-0.5 right-0.5 flex size-5 items-center justify-center rounded-full bg-black/60 text-white"><X className="size-3" /></button>
+    </span>
+  );
 }
 
 function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }) {
@@ -113,6 +135,10 @@ function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }
   const [text, setText] = useState("");
   const [sheet, setSheet] = useState<"folder" | "agent" | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Images to send with the first message. */
+  const [images, setImages] = useState<File[]>([]);
+  const picker = useRef<HTMLInputElement>(null);
+  const addImages = (fs: File[]) => setImages((x) => [...x, ...fs.filter((f) => f.type.startsWith("image/"))]);
   /** A ghost chat: DevCat Agent in an empty scratch folder, keeping nothing (agent.rs). */
   const [ghost, setGhost] = useState(false);
   // a folder of the focused project, else the most recent one
@@ -128,15 +154,17 @@ function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }
   const pickAgent = (c: AgentChoice) => { setAgentId(c.id); localStorage.setItem(KEY_AGENT, c.id); setSheet(null); };
   const go = async () => {
     if (ghost && agent) {
-      nav.push({ s: "agentchat", cwd: "", providerId: agent.id, sessionId: null, first: text.trim() || undefined, ghost: true });
+      nav.push({ s: "agentchat", cwd: "", providerId: agent.id, sessionId: null, first: text.trim() || undefined, firstFiles: images.length ? images : undefined, ghost: true });
       setText("");
+      setImages([]);
       return;
     }
     if (!cwd || !agent) return;
     setBusy(true);
     try {
-      await startAgent(cwd, agent, text.trim());
+      await startAgent(cwd, agent, text.trim(), images);
       setText("");
+      setImages([]);
     } catch (e) {
       toastErr(e);
     } finally {
@@ -146,9 +174,15 @@ function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }
   if (readonly) return null;
   return (
     <div className={clsx("rounded-2xl border p-2.5 shadow-sm", ghost ? "border-fg/40 border-dashed bg-panel" : "border-line bg-raised focus-within:border-accent/70")}>
-      <TextArea rows={2} value={text} disabled={offline} placeholder={offline ? "Connect to the computer to start an agent" : ghost ? "Ask anything. Nothing of this chat is kept…" : "Ask an agent to build, fix or explain…"}
+      {images.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 px-1 pb-2">
+          {images.map((f, i) => <Thumb key={i} file={f} onRemove={() => setImages((x) => x.filter((y) => y !== f))} />)}
+        </div>
+      )}
+      <TextArea rows={2} value={text} disabled={offline}
+        onPaste={(e) => { const fs = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/")); if (fs.length) { e.preventDefault(); addImages(fs); } }} placeholder={offline ? "Connect to the computer to start an agent" : ghost ? "Ask anything. Nothing of this chat is kept…" : "Ask an agent to build, fix or explain…"}
         className="max-h-40 min-h-14 resize-none border-0 bg-transparent px-1 focus:border-0"
-        onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && text.trim()) { e.preventDefault(); void go(); } }} />
+        onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && (text.trim() || images.length)) { e.preventDefault(); void go(); } }} />
       <div className="mt-1 flex items-center gap-1.5">
         {ghost ? (
           <span className="flex h-8 min-w-0 items-center gap-1 rounded-full bg-hover/60 px-2.5 text-[12.5px] text-muted">No project · keeps nothing</span>
@@ -164,6 +198,10 @@ function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }
           </>
         )}
         <span className="flex-1" />
+        <input ref={picker} type="file" accept="image/*" multiple hidden onChange={(e) => { const fs = Array.from(e.target.files ?? []); e.target.value = ""; addImages(fs); }} />
+        <button aria-label="Add image" disabled={offline || busy} onClick={() => picker.current?.click()} className="flex size-9 shrink-0 items-center justify-center rounded-full text-muted active:bg-hover disabled:opacity-40">
+          <ImagePlus className="size-[18px]" />
+        </button>
         {chatAgent && (
           <button aria-label="Ghost chat" aria-pressed={ghost} title="Ghost chat: keeps nothing" onClick={() => setGhost(!ghost)}
             className={clsx("flex size-9 shrink-0 items-center justify-center rounded-full", ghost ? "bg-fg text-app" : "text-muted active:bg-hover")}>

@@ -10,10 +10,16 @@
 //! lid closed" ([`lid`]) also turns system sleep off (`pmset -a disablesleep 1`, which asks for an
 //! admin password), like Amphetamine's closed-display mode, and turns it back on when keep awake
 //! ends (turned off, its time is up, DevCat quits, or at the next start after a crash).
+//!
+//! Two things turn it on without a click: the app turns keep awake on when it starts, unless the
+//! user turned that off ([`keep_awake_set_start`], `<data>/keep-awake.json`), and while phones are
+//! paired the computer itself is kept from sleeping, so they can reach it with the screen off or
+//! locked ([`hold_for_phones`], the remote settings' `stay_awake`): that one lets the screen sleep.
 use crate::error::{AppError, AppResult};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -25,6 +31,18 @@ pub struct KeepAwakeState {
     pub until: Option<i64>,
     /// Also with the lid closed: system sleep is off (macOS, see [`lid`]).
     pub lid: bool,
+    /// The app turns keep awake on when it starts (on unless the user turned it off).
+    pub on_start: bool,
+}
+
+/// "Turn on when DevCat starts": on until the user turns it off (`<data>/keep-awake.json`).
+static ON_START: AtomicBool = AtomicBool::new(true);
+static PREFS: once_cell::sync::OnceCell<std::path::PathBuf> = once_cell::sync::OnceCell::new();
+
+/// The state as windows see it: with the "when DevCat starts" choice.
+fn shown(mut s: KeepAwakeState) -> KeepAwakeState {
+    s.on_start = ON_START.load(Ordering::Relaxed);
+    s
 }
 
 /// Where to note that DevCat turned system sleep off (`<data>/keep-awake-lid`), so a crash
@@ -35,6 +53,11 @@ static MARKER: once_cell::sync::OnceCell<std::path::PathBuf> = once_cell::sync::
 /// was killed), turn it back on now (this asks for the admin password).
 pub fn init(data_dir: std::path::PathBuf) {
     let _ = MARKER.set(data_dir.join("keep-awake-lid"));
+    let prefs = data_dir.join("keep-awake.json");
+    if let Some(on) = std::fs::read(&prefs).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).and_then(|v| v.get("onStart").and_then(|x| x.as_bool())) {
+        ON_START.store(on, Ordering::Relaxed);
+    }
+    let _ = PREFS.set(prefs);
     if MARKER.get().is_some_and(|m| m.exists()) {
         std::thread::spawn(|| {
             if let Err(e) = lid::restore("DevCat quit while keeping your Mac awake with the lid closed. Enter your password to let it sleep again.") {
@@ -111,6 +134,8 @@ async fn restore_lid() -> Result<(), String> {
 enum Cmd {
     On(mpsc::Sender<Result<(), String>>),
     Off,
+    /// Keep the computer (not the screen) from sleeping, for paired phones.
+    Phones(bool),
 }
 
 struct Holder {
@@ -126,6 +151,7 @@ static HOLDER: Lazy<Mutex<Holder>> = Lazy::new(|| {
         .name("keep-awake".into())
         .spawn(move || {
             let mut guard: Option<keepawake::KeepAwake> = None;
+            let mut phones: Option<keepawake::KeepAwake> = None;
             while let Ok(cmd) = rx.recv() {
                 match cmd {
                     Cmd::On(reply) => {
@@ -148,6 +174,26 @@ static HOLDER: Lazy<Mutex<Holder>> = Lazy::new(|| {
                         let _ = reply.send(Ok(()));
                     }
                     Cmd::Off => guard = None,
+                    Cmd::Phones(false) => phones = None,
+                    Cmd::Phones(true) => {
+                        if phones.is_none() {
+                            // the system only: the screen may turn off and lock
+                            match keepawake::Builder::default()
+                                .display(false)
+                                .idle(true)
+                                .reason("Paired phones can reach DevCat")
+                                .app_name("DevCat")
+                                .app_reverse_domain(crate::APP_ID)
+                                .create()
+                            {
+                                Ok(g) => phones = Some(g),
+                                Err(e) => {
+                                    FOR_PHONES.store(false, Ordering::Relaxed);
+                                    eprintln!("keep awake: couldn't keep the computer awake for paired phones: {e}");
+                                }
+                            }
+                        }
+                    }
                 }
             }
         })
@@ -156,12 +202,53 @@ static HOLDER: Lazy<Mutex<Holder>> = Lazy::new(|| {
 });
 
 fn broadcast(state: &KeepAwakeState) {
-    crate::events::emit("keep-awake", state);
+    crate::events::emit("keep-awake", shown(state.clone()));
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub fn keep_awake_status() -> KeepAwakeState {
-    HOLDER.lock().state.clone()
+    shown(HOLDER.lock().state.clone())
+}
+
+/// Whether the app turns keep awake on when it starts. Changing it changes nothing now. The
+/// user's choice in the window: not for phones (keep it out of the dispatcher).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn keep_awake_set_start(on: bool) -> AppResult<KeepAwakeState> {
+    if let Some(p) = PREFS.get() {
+        std::fs::write(p, serde_json::to_vec(&serde_json::json!({ "onStart": on }))?)?;
+    }
+    ON_START.store(on, Ordering::Relaxed);
+    let state = keep_awake_status();
+    crate::events::emit("keep-awake", &state);
+    Ok(state)
+}
+
+/// When the app starts: keep awake on, until turned off, unless the user turned that off.
+pub fn start_default() {
+    if !ON_START.load(Ordering::Relaxed) {
+        return;
+    }
+    crate::rt::spawn(async {
+        if let Err(e) = keep_awake_set(true, None, None).await {
+            eprintln!("keep awake: couldn't turn on at start: {e}");
+        }
+    });
+}
+
+/// The computer is kept from sleeping for paired phones ([`hold_for_phones`]).
+static FOR_PHONES: AtomicBool = AtomicBool::new(false);
+
+/// Keep the computer from sleeping while phones are paired and remote access runs, so they reach
+/// it with the screen off or locked (the screen itself still sleeps; a closed lid still sleeps
+/// the computer, see [`lid`]). Decided in `remote::sync_awake`.
+pub fn hold_for_phones(on: bool) {
+    if FOR_PHONES.swap(on, Ordering::Relaxed) != on {
+        let _ = HOLDER.lock().tx.send(Cmd::Phones(on));
+    }
+}
+
+pub fn held_for_phones() -> bool {
+    FOR_PHONES.load(Ordering::Relaxed)
 }
 
 /// Turn keep-awake on (for `minutes`, or until turned off) or off. `lid`: also with the lid closed
@@ -196,7 +283,7 @@ pub async fn keep_awake_set(on: bool, minutes: Option<u32>, lid: Option<bool>) -
                 .map_err(|_| AppError::msg("Keep-awake did not respond"))?
                 .map_err(|e| AppError::msg(format!("Could not keep the system awake: {e}")))?;
             let until = minutes.filter(|m| *m > 0).map(|m| chrono::Utc::now().timestamp_millis() + i64::from(m) * 60_000);
-            h.state = KeepAwakeState { on: true, until, lid: want_lid };
+            h.state = KeepAwakeState { on: true, until, lid: want_lid, on_start: false };
         } else {
             let _ = h.tx.send(Cmd::Off);
             h.state = KeepAwakeState::default();
@@ -205,6 +292,7 @@ pub async fn keep_awake_set(on: bool, minutes: Option<u32>, lid: Option<bool>) -
         (h.state.clone(), h.generation)
     };
     broadcast(&state);
+    let state = shown(state);
     if let (true, Some(m)) = (on, minutes.filter(|m| *m > 0)) {
         crate::rt::spawn(async move {
             tokio::time::sleep(Duration::from_secs(u64::from(m) * 60)).await;
@@ -236,6 +324,7 @@ pub fn shutdown() {
     let lid = {
         let h = HOLDER.lock();
         let _ = h.tx.send(Cmd::Off);
+        let _ = h.tx.send(Cmd::Phones(false));
         h.state.lid
     };
     if lid {

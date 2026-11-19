@@ -33,7 +33,7 @@ function screen(r: Route) {
     case "newchat": return <NewChat cwd={r.cwd} />;
     case "sessions": return <Sessions cwd={r.cwd} />;
     case "transcript": return <Transcript cwd={r.cwd} sessionId={r.sessionId} title={r.title} />;
-    case "agentchat": return <AgentChat cwd={r.cwd} providerId={r.providerId} sessionId={r.sessionId} first={r.first} ghost={r.ghost} />;
+    case "agentchat": return <AgentChat cwd={r.cwd} providerId={r.providerId} sessionId={r.sessionId} first={r.first} firstFiles={r.firstFiles} ghost={r.ghost} />;
     case "data": return <Data />;
     case "browse": return <Browse key={r.path.join("\u0000")} connId={r.connId} path={r.path} title={r.title} />;
     case "rows": return <Rows connId={r.connId} table={r.table} />;

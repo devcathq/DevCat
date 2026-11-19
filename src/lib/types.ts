@@ -574,7 +574,7 @@ export interface UpdateInfo { version: string; currentVersion: string; date?: st
 
 // ---- keep awake (mirror src-tauri/src/keep_awake.rs)
 /** `lid`: also with the lid closed (macOS: system sleep is off while it's on). */
-export interface KeepAwakeState { on: boolean; until?: number | null; lid?: boolean }
+export interface KeepAwakeState { on: boolean; until?: number | null; lid?: boolean; /** Turns on when DevCat starts. */ onStart?: boolean }
 
 // ---- DevCat Agent (crates/harness) ----
 export type AgentPolicy = "plan" | "ask" | "auto-edit" | "bypass";

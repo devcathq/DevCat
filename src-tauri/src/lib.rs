@@ -178,6 +178,8 @@ pub fn run() {
             review::channel::add_capability(app.handle())?;
             review::set_data_dir(dir.clone());
             init_backend(dir.clone());
+            // keep awake is on from the start, unless the user turned that off
+            keep_awake::start_default();
             // scheduled DevCat Agent jobs run in the app (where they're managed), not in `devcat serve`
             agent_jobs::init(dir);
             // agents' MCP configs point at this program: right again if DevCat moved
@@ -216,6 +218,7 @@ pub fn run() {
             keep_awake::keep_awake_status,
             fonts::fonts_list,
             keep_awake::keep_awake_set,
+            keep_awake::keep_awake_set_start,
             integrations::integrations_status,
             integrations::integrations_bot_add,
             integrations::integrations_bot_enable,

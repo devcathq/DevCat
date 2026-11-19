@@ -269,7 +269,7 @@ const SHELL_SESSION = [
 
 const PHONE_ID = "8f3c1d9e" + "a".repeat(48) + "77e21a0b";
 const remoteStatus = {
-  settings: { enabled: true, hostName: null, port: 47100, publicAddr: null, web: true, relay: "public", relayUrl: null },
+  settings: { enabled: true, hostName: null, port: 47100, publicAddr: null, web: true, relay: "public", relayUrl: null, stayAwake: true },
   running: true, error: null, id: "4be1" + "c".repeat(56) + "93d0", hostName: "Acme MacBook Pro", addrs: ["192.168.1.24:47100"],
   clients: [{ deviceId: PHONE_ID, name: "Ava's iPhone", platform: "ios", access: "full", since: NOW - 600_000, addr: "192.168.1.31:53120" }],
   pairingExpires: null, pending: [], webRunning: true, webError: null, webAvailable: true, relayConnected: "https://euc1-1.relay.n0.iroh.link./",
