@@ -189,6 +189,11 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
                 {(Object.keys(ASSIGNED) as Board["assigned"][]).map((k) => <option key={k} value={k}>{ASSIGNED[k]}</option>)}
               </Select>
             </Field>
+            {gh && (
+              <Field label="Also take labels from" hint="Logins, comma-separated. A label from anyone who can't write to the repository is ignored, unless they're here.">
+                <Input value={b.allowlist.join(",")} onChange={(e) => set({ allowlist: e.target.value.split(",") })} placeholder="triage-bot, ana" />
+              </Field>
+            )}
             {!gh && <Field label="Only tickets labelled" hint="Empty: every ticket in the column."><Input value={b.label} onChange={(e) => set({ label: e.target.value })} placeholder="agent" /></Field>}
             <Field label="Board name"><Input value={b.name} onChange={(e) => set({ name: e.target.value })} placeholder={`${TRACKERS[b.kind]} ${b.project}`.trim()} /></Field>
           </div>
