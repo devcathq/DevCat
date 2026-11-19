@@ -353,6 +353,7 @@ fn error_record(ticket_id: &str, why: String) -> RunRecord {
         reply: None,
         pr_number: None,
         pr_url: None,
+        pr_state: None,
     }
 }
 
@@ -1070,6 +1071,35 @@ async fn checked_out_at(clone: &str, branch: &str) -> Option<String> {
     let list = git(clone, &["worktree", "list", "--porcelain"]).await.ok()?;
     let want = format!("branch refs/heads/{branch}");
     list.split("\n\n").find(|w| w.lines().any(|l| l == want)).and_then(|w| w.lines().find_map(|l| l.strip_prefix("worktree ")).map(str::to_string))
+}
+
+/// Deletes `branch` from the clone of `repo` if it still points at `sha` (the last commit of its
+/// pull request, closed without a merge), and origin's copy of it there, so a new attempt on the
+/// issue starts afresh instead of going on from it. Why it stays, when it does (None: deleted, or
+/// not there): commits of someone's after `sha`, or a worktree (or the clone) has it checked out.
+pub(crate) async fn delete_branch(repo: &str, branch: &str, sha: &str) -> Option<String> {
+    let clone = match git(repo, &["rev-parse", "--show-toplevel"]).await {
+        Ok(top) => top.trim().to_string(),
+        Err(e) => return Some(format!("{repo} isn't a git repository: {e}")),
+    };
+    let clone = clone.as_str();
+    let at = |r: String| async move { git(clone, &["rev-parse", "--verify", "--quiet", &r]).await.map(|s| s.trim().to_string()).ok() };
+    // `update-ref` with the old value: only while it's still there, and unlike `branch -D` it
+    // doesn't touch the clone's config (shared by the worktrees, watched by `git_setup`)
+    let theirs = format!("refs/remotes/origin/{branch}");
+    if at(theirs.clone()).await.as_deref() == Some(sha) {
+        let _ = git(clone, &["update-ref", "-d", &theirs, sha]).await;
+    }
+    let mine = format!("refs/heads/{branch}");
+    match at(mine.clone()).await {
+        None => return None,
+        Some(now) if now != sha => return Some("it has commits after the pull request's last one".into()),
+        Some(_) => {}
+    }
+    if let Some(wt) = checked_out_at(clone, branch).await {
+        return Some(format!("it's checked out in {wt}"));
+    }
+    git(clone, &["update-ref", "-d", &mine, sha]).await.err().map(|e| format!("couldn't delete it: {e}"))
 }
 
 /// Hides `.worktrees/` in the clone's own exclude file (`<common git dir>/info/exclude`, never
@@ -1791,7 +1821,8 @@ pub fn where_text(branch: &str, made: bool, repos: &[Repo], skipped: &[(String, 
 // ---------------------------------------------------------------- watching
 
 /// Boards with `watch` on: every `interval_min`, queue the column's tickets the agent hasn't
-/// tried yet (a ticket it tried is only done again when asked). Only with a window open.
+/// tried yet (a ticket it tried is only done again when asked); a GitHub board also follows its
+/// pull requests (`github::follow_pull_requests`). Only with a window open.
 pub fn start_watch() {
     crate::rt::spawn(async {
         let mut last: HashMap<String, i64> = HashMap::new();
@@ -1817,8 +1848,12 @@ pub fn start_watch() {
     });
 }
 
-async fn check_column(b: &Board) -> AppResult<()> {
+pub(crate) async fn check_column(b: &Board) -> AppResult<()> {
     let Some(col) = &b.pick_from else { return Ok(()) };
+    // also when there's nothing new to work on, or the clone isn't ready
+    if b.kind == TrackerKind::Github {
+        super::github::follow_pull_requests(b, &Tracker::new(b, super::token(b))?).await;
+    }
     if !WorkingCopy::ready(b).await {
         return Ok(());
     }
