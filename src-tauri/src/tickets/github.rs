@@ -1409,6 +1409,41 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// Stop while the agent works (it would take minutes): the run ends within seconds as
+    /// stopped, nothing is pushed, no pull request or comment, and the issue gets its trigger
+    /// label back.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopped_run() {
+        use super::super::worker::{enqueue, git, stop, tests::*};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (dir, remote) = clone_with_origin("gh-stop").await;
+        let (cwd, origin) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        let (slow, out) = stand_in("fixed", "echo '    # half done' >> calc.py; touch \"$OUT/working\"; sleep 150").await;
+        let b = super::super::tickets_board_save(board(&gh.url, cwd, &slow)).await.unwrap();
+        enqueue(b.clone(), vec!["7".into()], None).unwrap();
+        for _ in 0..600 {
+            if out.join("working").exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(out.join("working").exists(), "the agent never started");
+        let t0 = std::time::Instant::now();
+        stop(&b.id);
+        let runs = when_done(&b.id).await;
+        let took = t0.elapsed();
+        assert!(took < std::time::Duration::from_secs(10), "ended {took:?} after Stop");
+        assert_eq!((runs.len(), runs[0].outcome.as_str(), runs[0].summary.as_str()), (1, "stopped", "Stopped."), "{:?}", runs[0].notes);
+        assert_eq!(git(origin, &["for-each-ref", "--format=%(refname)", "refs/heads"]).await.unwrap().trim(), "refs/heads/main", "nothing pushed");
+        assert!(gh.sent("POST /repos/acme/calc/pulls").is_empty() && gh.comments_on(7).is_empty(), "{:?}", gh.requests());
+        assert_eq!(gh.labels_of(7), vec!["bug", "ready-for-agent"], "{:?}", gh.requests());
+        assert!(worktrees(cwd).await.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// The agent couldn't do it: its work in progress is committed (WIP) and pushed, the comment
     /// has the reason and the branch, the issue's one state label is ready-for-human, and no pull
     /// request is opened.
