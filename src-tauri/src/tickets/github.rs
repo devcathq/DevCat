@@ -423,6 +423,50 @@ pub(crate) mod tests {
         assert_eq!(issue_ticket(&json!({ "number": 8, "labels": [{ "name": "bug" }] }), &states).column, "", "no state label");
     }
 
+    /// The images of an issue and its comments: GitHub's uploads only (not other sites, camo or
+    /// emoji), from `body_html` when GitHub sent it, else the markdown; each once, in order, with
+    /// names told apart.
+    #[test]
+    fn finds_images() {
+        let b = board("", "", "");
+        let found = |texts: &[Value]| images(&b, &texts.iter().collect::<Vec<_>>()).into_iter().map(|a| (a.name, a.url)).collect::<Vec<_>>();
+        let pair = |n: &str, u: &str| (n.to_string(), u.to_string());
+        let issue = json!({ "body": "Broken:\n<img width=\"300\" alt=\"image\" src=\"https://github.com/user-attachments/assets/a1\" />\n![](https://example.com/x.png) ![log](<https://user-images.githubusercontent.com/1/b2.png> \"the log\")\n![image](https://github.com/user-attachments/assets/c3)" });
+        assert_eq!(found(&[issue.clone()]), vec![
+            pair("image", "https://github.com/user-attachments/assets/a1"),
+            pair("log", "https://user-images.githubusercontent.com/1/b2.png"),
+            pair("image 2", "https://github.com/user-attachments/assets/c3"),
+        ], "markdown");
+        let html = json!({ "body": "![image](https://github.com/user-attachments/assets/a1)",
+            "body_html": "<p><a href=\"x\"><img src=\"https://private-user-images.githubusercontent.com/9/1-a1.png?jwt=e.y&amp;x=1\" alt=\"image\"></a> <img class=\"emoji\" alt=\":+1:\" src=\"https://github.com/images/icons/emoji/unicode/1f44d.png\"> <img src=\"https://camo.githubusercontent.com/abc\" alt=\"ext\"></p>" });
+        let comment = json!({ "body": "![again](https://github.com/user-attachments/assets/a1) ![d4](https://github.com/user-attachments/assets/d4)" });
+        assert_eq!(found(&[html, comment]), vec![
+            pair("image", "https://private-user-images.githubusercontent.com/9/1-a1.png?jwt=e.y&x=1"),
+            pair("again", "https://github.com/user-attachments/assets/a1"),
+            pair("d4", "https://github.com/user-attachments/assets/d4"),
+        ], "html, then a comment's markdown");
+        let ghe = Board { site: "https://ghe.acme.com/api/v3".into(), ..board("", "", "") };
+        let on = |u: &str| upload_token(&reqwest::Url::parse(u).unwrap(), &ghe);
+        assert_eq!((on("https://ghe.acme.com/user-attachments/assets/a1"), on("https://media.ghe.acme.com/user/1/a.png?jwt=x"), on("https://github.com/user-attachments/assets/a1")), (Some(true), Some(false), None), "GitHub Enterprise Server: its own hosts");
+        let on = |u: &str| upload_token(&reqwest::Url::parse(u).unwrap(), &b);
+        assert_eq!((on("https://github.com/user-attachments/assets/a1"), on("https://private-user-images.githubusercontent.com/9/a.png?jwt=x"), on("https://github.com/acme/calc")), (Some(true), Some(false), None));
+    }
+
+    /// A public repository's uploads are read from their upload links, with the token.
+    #[tokio::test]
+    async fn public_images_with_the_token() {
+        let mut data = one_issue();
+        data.public = true;
+        data.images.insert("a1".into(), b"\x89PNG data".to_vec());
+        let gh = MockGithub::start(data).await;
+        let up = format!("{}/user-attachments/assets/a1", gh.url);
+        gh.gh.lock().issues.get_mut(&7).unwrap()["body"] = json!(format!("![shot]({up})"));
+        let tr = Tracker::new(&board(&gh.url, "", ""), "t".into()).unwrap();
+        let t = tr.get("7").await.unwrap();
+        assert_eq!(t.attachments.iter().map(|a| a.url.as_str()).collect::<Vec<_>>(), vec![up.as_str()]);
+        assert_eq!(tr.download(&t.attachments[0]).await.unwrap(), b"\x89PNG data", "{:?}", gh.requests());
+    }
+
     /// A GitHub board on `site` for `acme/calc` with the default state labels, a worktree for each
     /// ticket and `provider` as its agent, working in `repo`. A new id each time (boards.json is
     /// shared by the tests).
