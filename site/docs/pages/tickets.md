@@ -57,7 +57,8 @@ to the column you chose, the move is skipped and the reason shows in the history
 ## Fix tickets
 
 Pick tickets in the list and click **Fix with the agent**, or use the robot icon on a single ticket. Tickets
-are done one at a time; the panel on the right shows what the agent is doing, and **Stop** stops it.
+are done one at a time (a board with a worktree for each ticket can do a few at once, see below); the panel on
+the right shows what the agent is doing, and **Stop** stops it.
 
 To tell the agent something for particular tickets, click **With a prompt…** (or the speech bubble on a single
 ticket). The prompt starts as the board's default prompt; what you write replaces it for those tickets, that
@@ -101,6 +102,11 @@ uncommitted work and any branch in the repository while it works. The repository
 
 The guard against changes to git's settings works the same: if the agent changed the repository's git config,
 attributes or hooks, DevCat runs no git, and the worktree stays as it is for you to look at.
+
+**Parallel runs** (1 to 4, default 1) sets how many tickets the agent works on at the same time. Each runs in its
+own worktree on its own branch, and the panel on the right shows each one with its log. The other tickets wait
+until a run ends. A ticket you fix again while the agent works on it waits for that run. Boards that run in place
+always do one ticket at a time.
 
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
 workspace, where you can read what it did and carry on from there.

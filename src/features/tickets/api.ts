@@ -56,12 +56,16 @@ export interface Board {
   watch: boolean;
   intervalMin: number;
   maxPerRun: number;
+  /** Tickets worked on at the same time (1 to 4), each in its own worktree; in place always 1. */
+  parallelRuns: number;
   instructions: string;
 }
 
-export interface JobView {
-  key?: string | null; title?: string | null; url?: string | null;
-  stage: string; log: string[]; queue: string[]; started: number; stopping: boolean;
+/** A board's job: the tickets worked on now (several with parallel runs) and the ones waiting (ids). */
+export interface JobView { runs: RunView[]; queue: string[]; started: number; stopping: boolean }
+export interface RunView {
+  ticketId: string; key?: string | null; title?: string | null; url?: string | null;
+  stage: string; log: string[]; started: number;
 }
 
 export type Outcome = "fixed" | "needs_info" | "failed" | "error" | "stopped";
@@ -86,7 +90,7 @@ export const TRACKERS: Record<TrackerKind, string> = { jira: "Jira", trello: "Tr
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
   pickFrom: null, working: null, doneTo: null, failedTo: null, label: "", assigned: "anyone",
-  comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
+  comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, parallelRuns: 1, instructions: "",
   isolation: "inPlace",
 });
 

@@ -220,6 +220,11 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
               </Field>
             )}
           </div>
+          {wt && (
+            <Field label="Parallel runs" hint="Tickets the agent works on at the same time (1 to 4), each in its own worktree and branch. The others wait.">
+              <Input type="number" min={1} max={4} className="w-16" value={b.parallelRuns} onChange={(e) => set({ parallelRuns: Number(e.target.value) || 1 })} />
+            </Field>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="AI connection" hint="Claude Code or a DevCat Agent connection.">
               <Select value={b.providerId} onChange={(e) => set({ providerId: e.target.value })}>
