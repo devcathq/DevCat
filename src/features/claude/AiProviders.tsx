@@ -15,6 +15,16 @@ import {
   openManageProviders, providerLabel, saveProvider, selectProvider, splitArgs, useProviders, useSelectedProvider, type InstallState,
   AGENT_PRESETS,
 } from "./providers";
+import { ConnectionUsage, usageTone, useUsage, watchUsage } from "./usage";
+
+/** "· 58%" after a connection in the list: its most used plan limit. */
+function UsagePercent({ providerId }: { providerId: string }) {
+  const u = useUsage((s) => s.byId[providerId]);
+  useEffect(() => { watchUsage(); }, []);
+  if (u?.percent == null) return null;
+  const p = Math.round(u.percent);
+  return <span className={clsx("tabular-nums", { ok: "", warn: "text-warn", danger: "text-danger" }[usageTone(p)])} title={u.windows.map((w) => `${w.label}: ${Math.round(w.percent)}%`).join("\n")}> · {p}% used</span>;
+}
 
 function StatusDot({ state, className }: { state: InstallState; className?: string }) {
   return (
@@ -314,7 +324,7 @@ export function AiConnectionsDialog() {
               <StatusDot state={installState(p, detect)} />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px]">{p.name}</div>
-                <div className="truncate text-[11px] text-faint" title={p.login ?? undefined}>{p.kind === "claude" && p.login ? p.login : KINDS[p.kind].label}{p.id === selectedId ? " · default" : ""}</div>
+                <div className="truncate text-[11px] text-faint" title={p.login ?? undefined}>{p.kind === "claude" && p.login ? p.login : KINDS[p.kind].label}{p.id === selectedId ? " · default" : ""}<UsagePercent providerId={p.id} /></div>
               </div>
               {p.hasApiKey && <KeyRound className="size-3 shrink-0 text-faint" aria-label="API key stored" />}
             </button>
@@ -354,6 +364,13 @@ export function AiConnectionsDialog() {
             </Field>
             </>}
             {form.kind === "claude" && <ClaudeLogin form={form} onOwnLogin={(ownLogin) => set({ ownLogin })} />}
+            {form.kind === "antigravity" && (
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted">Antigravity account</span>
+                <span className="text-[11px] text-faint">Uses the Google account agy is signed in with on this computer (run <code>agy</code> once to sign in, <code>/logout</code> in it to switch). Its 5-hour and weekly limits show below and in the title bar.</span>
+              </div>
+            )}
+            {form.id && <ConnectionUsage providerId={form.id} />}
 
             <div className="flex flex-col gap-1">
               <span className="text-xs text-muted">API key</span>

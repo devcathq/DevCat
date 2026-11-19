@@ -472,7 +472,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
   };
 
   return (
-    <div className="relative h-full w-full bg-app px-2 pt-1.5 pb-1" onMouseDown={() => termRef.current?.term.focus()}
+    <div className="relative h-full w-full bg-panel px-2 pt-1.5 pb-1" onMouseDown={() => termRef.current?.term.focus()}
       onDragOver={(e) => { if (isFileDrag(e.dataTransfer)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDropping(true); } }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropping(false); }}
       onDrop={(e) => void onDrop(e)}>

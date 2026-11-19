@@ -277,7 +277,7 @@ impl Backend for AppBackend {
         let r = dispatch::call(client, cmd, &args).await;
         if !ghost && !dispatch::NOT_AUDITED.contains(&cmd) {
             if let Some(rm) = REMOTE.get() {
-                let reads = ["fs_list", "list_connections", "list_projects", "open_connection_ids", "host_info", "claude_projects", "claude_sessions", "ai_providers_list", "keep_awake_status", "net_list", "net_status", "db_children", "db_list_databases", "saved_queries_list", "history_list", "k8s_connect", "k8s_namespaces", "k8s_list", "k8s_cluster_overview", "k8s_metrics", "db_table_structure"];
+                let reads = ["fs_list", "list_connections", "list_projects", "open_connection_ids", "host_info", "claude_projects", "claude_sessions", "ai_providers_list", "ai_usage", "keep_awake_status", "net_list", "net_status", "db_children", "db_list_databases", "saved_queries_list", "history_list", "k8s_connect", "k8s_namespaces", "k8s_list", "k8s_cluster_overview", "k8s_metrics", "db_table_structure"];
                 // Log changes and data reads, not the background refreshes.
                 if (!reads.contains(&cmd) && !dispatch::audit_skip(cmd, &args)) || r.is_err() {
                     rm.host.store.audit(&AuditEntry {

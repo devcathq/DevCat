@@ -498,6 +498,7 @@ pub fn run() {
             agent_jobs::agent_job_delete,
             agent_jobs::agent_job_run,
             ai::ai_providers_list,
+            ai::usage::ai_usage,
             ai::ai_agent_models,
             ai::ai_provider_save,
             ai::ai_provider_delete,

@@ -474,7 +474,7 @@ export interface TrafficSample {
 
 // ---- AI connections (mirror src-tauri/src/ai/mod.rs)
 
-export type AiKind = "claude" | "cursor" | "codex" | "gemini" | "copilot" | "aider" | "opencode" | "custom" | "agent";
+export type AiKind = "claude" | "cursor" | "codex" | "gemini" | "antigravity" | "copilot" | "aider" | "opencode" | "custom" | "agent";
 /** Model API of a DevCat Agent connection. */
 /** A model a DevCat Agent API offers; `context` = its window in tokens, when known. */
 /** A model an agent connection offers; `price` is its list price in US dollars per million tokens. */
@@ -505,6 +505,21 @@ export interface AiProvider {
   ownLogin?: boolean;
   /** Read-only: the email a Claude Code connection is logged in with. */
   login?: string | null;
+}
+/** One plan limit (mirror src-tauri/src/ai/usage.rs). */
+export interface UsageWindow { label: string; /** Used, 0–100. */ percent: number; resetsAt?: string | null }
+/** How much of a Claude Code / Antigravity connection's plan is used. */
+export interface AiUsage {
+  providerId: string;
+  kind: AiKind;
+  plan?: string | null;
+  windows: UsageWindow[];
+  /** The most used window, 0–100. */
+  percent?: number | null;
+  /** Why there are no numbers. */
+  error?: string | null;
+  /** Unix ms read. */
+  at: number;
 }
 export interface AiDetect {
   kind: AiKind;

@@ -1,7 +1,7 @@
 // Shapes the computer sends (desktop types are shared with ../../../src/lib/types).
 export type {
   CellValue, ColumnDef, ConnectionConfig, ConnectionKind, HistoryEntry, NetProfile, NetStatus, Project, QueryResult,
-  RowChange, SavedQuery, SessionMeta, ClaudeProject, TableDataPage, TableRef, TableStructure, TrafficSample, TreeNode, AiProvider,
+  RowChange, SavedQuery, SessionMeta, ClaudeProject, TableDataPage, TableRef, TableStructure, TrafficSample, TreeNode, AiProvider, AiUsage,
   AgentChatInfo,
 } from "../../../src/lib/types";
 import type { CellValue, TableRef } from "../../../src/lib/types";

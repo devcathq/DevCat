@@ -1,8 +1,10 @@
 // AI connections: which coding-agent CLI the AI workspace terminal runs (Claude Code by default).
 // Profiles live in the backend (API keys in the OS keychain, never sent back here); the selected
-// one is persisted per machine in localStorage and used for new chats.
+// one is the window's own (each window picks its agent: `windowStorage`, a new window starts from
+// the main window's) and used for new chats.
 import { create } from "zustand";
 import { api, errMsg } from "../../lib/api";
+import { windowStorage } from "../../lib/windows";
 import type { AgentSettings, AiDetect, AiKind, AiProvider } from "../../lib/types";
 
 /** Id of the implicit Claude Code profile. */
@@ -27,6 +29,7 @@ export const KINDS: Record<AiKind, KindInfo> = {
   cursor: { label: "Cursor", program: "cursor-agent", keyEnv: "CURSOR_API_KEY", keyEnvEditable: false, install: "curl https://cursor.com/install -fsS | bash", login: "Run cursor-agent login once, or set an API key." },
   codex: { label: "OpenAI Codex", program: "codex", keyEnv: "OPENAI_API_KEY", keyEnvEditable: false, install: "npm i -g @openai/codex", login: "Run codex login once, or set an API key." },
   gemini: { label: "Gemini CLI", program: "gemini", keyEnv: "GEMINI_API_KEY", keyEnvEditable: false, install: "npm i -g @google/gemini-cli", login: "Sign in with Google on first start, or set an API key." },
+  antigravity: { label: "Antigravity", program: "agy", keyEnv: "GEMINI_API_KEY", keyEnvEditable: false, install: "curl -fsSL https://antigravity.google/cli/install.sh | bash", login: "Run agy once and sign in with your Google account (the Antigravity login), or set a Gemini API key." },
   copilot: { label: "GitHub Copilot", program: "copilot", keyEnv: "GH_TOKEN", keyEnvEditable: true, install: "npm i -g @github/copilot", login: "Use /login on first start, or set a GitHub token." },
   aider: { label: "Aider", program: "aider", keyEnv: "OPENAI_API_KEY", keyEnvEditable: true, install: "pip install aider-chat", login: "Aider reads the API key of the model's vendor." },
   opencode: { label: "opencode", program: "opencode", keyEnv: "OPENAI_API_KEY", keyEnvEditable: true, install: "npm i -g opencode-ai", login: "Run opencode auth login once, or set an API key." },
@@ -34,7 +37,7 @@ export const KINDS: Record<AiKind, KindInfo> = {
   agent: { label: "DevCat Agent", program: "", keyEnv: null, keyEnvEditable: false, install: null, login: "Built in: talks to a model API directly. Nothing to install." },
 };
 
-export const KIND_ORDER: AiKind[] = ["claude", "agent", "cursor", "codex", "gemini", "copilot", "aider", "opencode", "custom"];
+export const KIND_ORDER: AiKind[] = ["claude", "agent", "cursor", "codex", "gemini", "antigravity", "copilot", "aider", "opencode", "custom"];
 
 export const builtinClaude = (): AiProvider => ({ id: CLAUDE_PROVIDER_ID, name: "Claude Code", kind: "claude", args: [], env: [], builtin: true });
 
@@ -78,7 +81,7 @@ interface ProvidersState {
 }
 
 function loadSelected(): string {
-  try { return localStorage.getItem(KEY_SELECTED) || CLAUDE_PROVIDER_ID; } catch { return CLAUDE_PROVIDER_ID; }
+  try { return windowStorage.getItem(KEY_SELECTED) || localStorage.getItem(KEY_SELECTED) || CLAUDE_PROVIDER_ID; } catch { return CLAUDE_PROVIDER_ID; }
 }
 
 export const useProviders = create<ProvidersState>(() => ({
@@ -97,9 +100,8 @@ let watching = false;
 export function loadProviders(force = false): Promise<void> {
   if (!watching) {
     watching = true;
-    // Other windows may have edited the profiles / selection.
+    // Other windows may have edited the profiles (not this window's pick: each window keeps its own).
     window.addEventListener("focus", () => void loadProviders(true));
-    window.addEventListener("storage", (e) => { if (e.key === KEY_SELECTED) useProviders.setState({ selectedId: loadSelected() }); });
   }
   if (useProviders.getState().loaded && !force) return Promise.resolve();
   if (loading) return loading;
@@ -124,7 +126,7 @@ export async function detectProviders(force = false) {
 }
 
 export function selectProvider(id: string) {
-  try { localStorage.setItem(KEY_SELECTED, id); } catch { /* private mode */ }
+  try { windowStorage.setItem(KEY_SELECTED, id); } catch { /* private mode */ }
   useProviders.setState({ selectedId: id });
 }
 

@@ -142,7 +142,7 @@ export function Scan() {
   useEffect(() => { void start(); }, []);
   return (
     <Screen title="Scan pairing code">
-      <div className="flex aspect-square items-center justify-center rounded-2xl bg-[radial-gradient(circle_at_50%_40%,#2a2f39,#0a0b0d_70%)]">
+      <div className="flex aspect-square items-center justify-center rounded-2xl bg-[radial-gradient(circle_at_50%_40%,var(--color-line),var(--color-term)_70%)]">
         {busy ? <Spinner /> : <div className="size-48 rounded-2xl border-[3px] border-accent" />}
       </div>
       <div className="text-center text-[13px] text-muted">Point the camera at the QR code in <b className="text-fg">DevCat → 📱 Mobile</b> on your computer.</div>

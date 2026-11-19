@@ -478,6 +478,7 @@ export function demoInvoke(cmd: string, args: Record<string, unknown>, emit: Emi
     case "memory_save": return args.memory;
     case "memory_delete": return null;
     case "ai_providers_list": return providersList;
+    case "ai_usage": return [{ providerId: "claude", kind: "claude", plan: "max", percent: 58, at: Date.now(), windows: [{ label: "5-hour", percent: 12, resetsAt: new Date(Date.now() + 3 * 3600_000).toISOString() }, { label: "Weekly", percent: 58, resetsAt: new Date(Date.now() + 5 * 86400_000).toISOString() }, { label: "Weekly · Fable", percent: 4, resetsAt: new Date(Date.now() + 5 * 86400_000).toISOString() }] }];
     case "ai_provider_save": {
       const saved = { ...(args.provider as Record<string, unknown>), id: (args.provider as { id?: string }).id || `p-${Date.now()}` };
       (providersList as unknown[]).push(saved);

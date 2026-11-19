@@ -2,6 +2,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import "./index.css";
+// light / dark before the first paint
+import "./lib/theme";
 
 // iOS lays the on-screen keyboard over the page instead of shrinking it: fit the app to what's
 // visible. The app is pinned (position: fixed, index.css) to the visible area's top, so when iOS
