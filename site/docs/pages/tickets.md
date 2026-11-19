@@ -16,7 +16,7 @@ list). The list shows each board and what the agent is doing on it; click one to
 | Jira Data Center / Server | Site, project key; leave **Email** empty | Personal access token |
 | Trello | API key, board link (`https://trello.com/b/…`) | [Token](https://trello.com/power-ups/admin) for that key |
 | Linear | Team key (`ENG` for `ENG-123`) | [Personal API key](https://linear.app/settings/account/security) |
-| GitHub | Repository (`owner/name`); **API address** `https://api.github.com` (GitHub Enterprise Server: `https://<host>/api/v3`) | [Personal access token](https://github.com/settings/personal-access-tokens/new): fine-grained with **Only select repositories** and the repository, and Issues, Pull requests and Contents read and write; or classic with the `repo` scope |
+| GitHub | Repository (`owner/name`); **API address** `https://api.github.com` (GitHub Enterprise Server: `https://<host>/api/v3`) | [Personal access token](https://github.com/settings/personal-access-tokens/new): fine-grained with **Only select repositories** and the repository, and Issues, Pull requests and Contents read and write; or classic with the `repo` scope. Step by step: [Set up a GitHub board](github-board.md) |
 
 Tokens are kept in the system keychain. Click **Load columns** to read the board's columns (Jira statuses,
 Trello lists, Linear workflow states), then choose:
@@ -136,7 +136,8 @@ always do one ticket at a time.
 
 ### GitHub boards
 
-On a GitHub board the repository's labels are the columns. A new board takes issues labelled
+For a step-by-step setup, see [Set up a GitHub board](github-board.md). On a GitHub board the repository's labels
+are the columns. A new board takes issues labelled
 `ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed, `needs-info`
 when the agent has questions, `ready-for-human` when it fails and `wontfix` when its pull request is closed without
 a merge; change any of them in the board's settings. Saving the board checks the
