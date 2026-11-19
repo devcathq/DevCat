@@ -40,6 +40,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   who added its trigger label can write to the repository or is listed in **Also take labels from**, when no open
   issue blocks it (GitHub's issue dependencies or a `Blocked by: #n` line in its body; it starts after its last
   blocker closes), and when the label was added after the board was created. Fix older issues from the list.
+- **Tickets: pull request follow-up** (#201): at each check, a watched GitHub board looks at the pull requests DevCat
+  opened. When one merges, the issue loses `agent-review` and is closed if it's still open. When one closes without
+  a merge, the issue is closed as not planned with the label `wontfix` and a comment that links the pull request,
+  and the branch is deleted on GitHub and in your repository, unless it has newer commits there (or a worktree has
+  it checked out). The history shows what became of each pull request.
 
 ## 0.31.0 - 2026-11-19
 
