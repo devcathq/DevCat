@@ -161,6 +161,15 @@ pub struct Board {
     /// In place (boards saved before this setting), or a worktree for each ticket (one repository).
     #[serde(default)]
     pub isolation: Isolation,
+    /// Worktree: files (or folders) git ignores that each new worktree gets from the clone, e.g.
+    /// `.env`, as paths inside the clone. A worktree has only the tracked files otherwise.
+    #[serde(default)]
+    pub copy_files: Vec<String>,
+    /// Worktree: a command run in each new worktree before the agent starts (e.g. `pnpm install`),
+    /// like the agent's commands, so only on a board that lets the agent run them. If it fails,
+    /// the run fails.
+    #[serde(default)]
+    pub setup_command: String,
     /// The DevCat project the board works for (None: the one whose code folder holds `repo`, if
     /// any). The agent gets its memory and connections, like a chat in that project.
     #[serde(default)]
@@ -389,6 +398,14 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     }
     if !b.target_branch.is_empty() && !valid_branch(&b.target_branch) {
         return Err(AppError::msg(format!("\"{}\" isn't a git branch name", b.target_branch)));
+    }
+    b.copy_files = b.copy_files.iter().map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+    if let Some(f) = b.copy_files.iter().find(|f| !worker::inside(f)) {
+        return Err(AppError::msg(format!("\"{f}\" isn't a path inside the repository: write it like .env or config/local.yml")));
+    }
+    b.setup_command = b.setup_command.trim().to_string();
+    if b.isolation == Isolation::Worktree && !b.setup_command.is_empty() && !b.allow_commands {
+        return Err(AppError::msg("The setup command runs programs, like the agent's commands: let the agent run commands, or clear the setup command"));
     }
     b.interval_min = b.interval_min.clamp(1, 24 * 60);
     b.max_per_run = b.max_per_run.clamp(1, 20);
