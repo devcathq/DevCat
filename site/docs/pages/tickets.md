@@ -102,6 +102,13 @@ uncommitted work and any branch in the repository while it works. The repository
 The guard against changes to git's settings works the same: if the agent changed the repository's git config,
 attributes or hooks, DevCat runs no git, and the worktree stays as it is for you to look at.
 
+If DevCat stops in the middle of a run (a crash), the next start removes what that run left in `.worktrees`
+(the branch stays). A worktree a run left for you to look at stays until you remove it.
+
+A ticket's branch can be checked out in one place only. If it's checked out in another worktree, or in the
+repository itself, the run fails and names that folder: switch it to another branch (or remove the worktree), then
+run the ticket again.
+
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
 workspace, where you can read what it did and carry on from there.
 
