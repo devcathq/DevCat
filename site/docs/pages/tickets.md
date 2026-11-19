@@ -124,8 +124,8 @@ run the ticket again.
 ### GitHub boards
 
 On a GitHub board the repository's labels are the columns. A new board takes issues labelled
-`ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed and
-`ready-for-human` when it needs a person; change any of them in the board's settings. Saving the board checks the
+`ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed, `needs-info`
+when the agent has questions and `ready-for-human` when it fails; change any of them in the board's settings. Saving the board checks the
 token and the repository, reads the token owner's login, and creates the labels the repository doesn't have yet.
 
 - The agent takes open issues with the trigger label (never pull requests), filtered by **Assigned to**.
@@ -134,6 +134,10 @@ token and the repository, reads the token owner's login, and creates the labels 
 - New GitHub boards start with **A worktree for each ticket**, and the branch is always pushed: a fixed issue's
   branch gets a draft pull request into the default branch (or the **Base branch**) that says `Closes #<number>`.
   The issue's comment has the summary, how to test and the pull request's link, and the history links it too.
+- When the agent has questions, its work so far is pushed to the branch, the comment has the questions and the
+  branch, and the issue gets `needs-info`. When it fails (or the **Setup command** fails), its unfinished work is
+  committed (marked WIP) and pushed, the comment has the reason and the branch, and the issue gets
+  `ready-for-human`, so a person can go on from there. Neither opens a pull request.
 - Labels, comments and pull requests appear as the token's owner.
 
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI

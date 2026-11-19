@@ -29,6 +29,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
   draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review`. Saving
   the board checks the token and creates the labels the repository lacks.
+- **Tickets: GitHub issues the agent can't finish** (#198): when the agent has questions, its branch is pushed, the
+  issue's comment has the questions and the issue gets the label `needs-info` (**When the agent has questions,
+  label** in the board's settings). When it fails, its unfinished work is committed, pushed, and the comment has the
+  reason and the branch, with the label `ready-for-human`. Neither opens a pull request.
 
 ## 0.31.0 - 2026-11-19
 

@@ -129,8 +129,8 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
                 key={k}
                 disabled={!isNew}
                 onClick={() => {
-                  const { site, isolation, push, branchPrefix, pickFrom, working, doneTo, failedTo } = newBoard(k);
-                  set({ kind: k, site, isolation, push, branchPrefix, pickFrom, working, doneTo, failedTo });
+                  const { site, isolation, push, branchPrefix, pickFrom, working, doneTo, needsInfoTo, failedTo } = newBoard(k);
+                  set({ kind: k, site, isolation, push, branchPrefix, pickFrom, working, doneTo, needsInfoTo, failedTo });
                   setColumns([]);
                 }}
                 className={clsx("h-7 rounded-md border px-3 text-[13px]", b.kind === k ? "border-accent bg-accent/15 text-accent" : "border-line bg-raised text-muted hover:bg-hover", !isNew && b.kind !== k && "opacity-40")}
@@ -183,7 +183,8 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
             <Field label={gh ? "Take issues labelled" : "Take tickets from"}>{colSelect(b.pickFrom, (c) => set({ pickFrom: c }))}</Field>
             <Field label={gh ? "While the agent works, label" : "While the agent works, move to"}>{colSelect(b.working, (c) => set({ working: c }), "Leave it where it is")}</Field>
             <Field label={gh ? "When fixed (draft pull request), label" : "When fixed, move to"}>{colSelect(b.doneTo, (c) => set({ doneTo: c }))}</Field>
-            <Field label={gh ? "When it needs a person, label" : "When it needs a person, move to"}>{colSelect(b.failedTo, (c) => set({ failedTo: c }), "Back where it was")}</Field>
+            {gh && <Field label="When the agent has questions, label">{colSelect(b.needsInfoTo, (c) => set({ needsInfoTo: c }), "Same as when it fails")}</Field>}
+            <Field label={gh ? "When it fails (no pull request), label" : "When it needs a person, move to"}>{colSelect(b.failedTo, (c) => set({ failedTo: c }), "Back where it was")}</Field>
             <Field label="Assigned to" hint="Me: whoever the token belongs to.">
               <Select value={b.assigned} onChange={(e) => set({ assigned: e.target.value as Board["assigned"] })}>
                 {(Object.keys(ASSIGNED) as Board["assigned"][]).map((k) => <option key={k} value={k}>{ASSIGNED[k]}</option>)}
