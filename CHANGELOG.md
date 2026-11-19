@@ -48,6 +48,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   a merge, the issue is closed as not planned with the label `wontfix` and a comment that links the pull request,
   and the branch is deleted on GitHub and in your repository, unless it has newer commits there (or a worktree has
   it checked out). The history shows what became of each pull request.
+- **Tickets: pull request base and template** (#200): a GitHub issue's pull request goes into the branch of a
+  `Base: <branch>` line in the issue, else in its parent issue, else the board's **Base branch**, else the default
+  branch, and its worktree starts from that branch. A pull request into the default branch says `Closes #<number>`,
+  into another branch `Part of #<number>`. The agent writes the description in the format of the repository's pull
+  request template, and DevCat adds a line that says the DevCat agent opened it.
 - **Tickets: run a GitHub issue again** (#199): add the trigger label to an issue again (after you answer the
   agent's questions, or to send a `ready-for-human` issue back) and a watched GitHub board runs it again at the next
   check, in a new conversation that reads the new comments, on the issue's branch with the earlier commits. Without
