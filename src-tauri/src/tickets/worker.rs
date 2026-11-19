@@ -316,7 +316,7 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         v.url = Some(t.url.clone());
     });
 
-    let mut wc = WorkingCopy::open(b, &t, reply, rec).await?;
+    let mut wc = WorkingCopy::open(b, &t, reply, cancel, rec).await?;
 
     let from = t.column.clone();
     if let Some(w) = &b.working {
@@ -329,14 +329,19 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         }
     }
 
-    let images = ticket_images(b, tr, &t, rec).await;
-
-    stage(&b.id, "Agent working");
-    if custom.is_some() {
-        log(&b.id, "With your prompt for this ticket (instead of the board's default)".into());
-    }
     let session = Arc::new(Mutex::new(None));
-    let answer = run_agent(b, &t, &wc, &images, custom, reply, cancel, &session).await;
+    let answer = match wc.failed.clone() {
+        // The worktree's setup command failed: no agent in a broken worktree.
+        Some(why) => Ok(Answer { status: "failed".into(), summary: why, testing: String::new(), cost_usd: None }),
+        None => {
+            let images = ticket_images(b, tr, &t, rec).await;
+            stage(&b.id, "Agent working");
+            if custom.is_some() {
+                log(&b.id, "With your prompt for this ticket (instead of the board's default)".into());
+            }
+            run_agent(b, &t, &wc, &images, custom, reply, cancel, &session).await
+        }
+    };
     rec.session_id = session.lock().clone();
     rec.provider_id = Some(provider_of(b).to_string());
     rec.cwd = Some(wc.cwd.clone());
@@ -1069,6 +1074,9 @@ struct WorkingCopy {
     skipped_setups: Vec<Option<Vec<u8>>>,
     /// The repositories (indexes in `repos`) with work to push, once saved.
     changed: Vec<usize>,
+    /// Worktree: the setup command failed (why, with its output), so the run fails without the
+    /// agent. What the command changed is undone, so there's nothing to commit.
+    failed: Option<String>,
 }
 
 /// What `save` did.
@@ -1081,10 +1089,10 @@ struct Saved {
 
 impl WorkingCopy {
     /// The working copy for a run on `t`, ready for the agent.
-    async fn open(b: &Board, t: &Ticket, reply: Option<&Reply>, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+    async fn open(b: &Board, t: &Ticket, reply: Option<&Reply>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
         match b.isolation {
             Isolation::InPlace => WorkingCopy::in_place(b, t, reply, rec).await,
-            Isolation::Worktree => WorkingCopy::worktree(b, t, reply, rec).await,
+            Isolation::Worktree => WorkingCopy::worktree(b, t, reply, cancel, rec).await,
         }
     }
 
@@ -1151,14 +1159,15 @@ impl WorkingCopy {
         }
         let setups = repos.iter().map(|r| git_setup(&r.path)).collect();
         let skipped_setups = skipped.iter().map(|(name, _, _)| repos_dir(&b.repo, name).map(|p| git_setup(&p))).collect();
-        Ok(WorkingCopy { isolation: Isolation::InPlace, cwd: b.repo.clone(), clone: String::new(), keep: false, repos, skipped, own, cont: cont.is_some(), branch, new_branch, existed, setups, skipped_setups, changed: vec![] })
+        Ok(WorkingCopy { isolation: Isolation::InPlace, cwd: b.repo.clone(), clone: String::new(), keep: false, repos, skipped, own, cont: cont.is_some(), branch, new_branch, existed, setups, skipped_setups, changed: vec![], failed: None })
     }
 
     /// A git worktree of the board's clone at `<clone>/.worktrees/<number>-<slug>`, on the
     /// ticket's branch: the one it has already (the last run's work, here or on origin), else a
     /// new one from origin's base branch (`base_of`), fetched first. The clone itself isn't
-    /// touched: the user may have changes and any branch checked out there.
-    async fn worktree(b: &Board, t: &Ticket, reply: Option<&Reply>, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+    /// touched: the user may have changes and any branch checked out there. Then the board's
+    /// files are copied in and its setup command runs there.
+    async fn worktree(b: &Board, t: &Ticket, reply: Option<&Reply>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
         let clone = match git(&b.repo, &["rev-parse", "--show-toplevel"]).await {
             Ok(top) => top.trim().to_string(),
             Err(_) => return Err(AppError::msg(format!("{} is not a git repository: a worktree for each ticket needs one (or run the board in place)", b.repo))),
@@ -1197,9 +1206,29 @@ impl WorkingCopy {
         }
         let cont = local || on_origin;
         stage(&b.id, &format!("{} {branch} in .worktrees/{}{}", if cont { "On" } else { "Branch" }, branch_name("", t), if cont { String::new() } else { format!(" (from {from})") }));
+        copy_files(b, &clone, &at, rec).await;
+        // Before the guard's snapshot below: what the command changes in git's settings (a hooks
+        // folder set by `npm install`) is the user's, not the agent's.
+        let failed = match setup(b, &at, cancel).await {
+            Ok(()) => None,
+            Err(_) if cancel.is_cancelled() => {
+                let _ = git(&clone, &["worktree", "remove", "--force", &at]).await;
+                if !cont {
+                    let _ = git(&clone, &["branch", "-q", "-D", &branch]).await;
+                }
+                return Err(AppError::msg("Stopped"));
+            }
+            Err(why) => {
+                // nothing of a half-done setup is committed
+                let _ = git(&at, &["reset", "-q", "--hard"]).await;
+                let _ = git(&at, &["clean", "-q", "-fd"]).await;
+                log(&b.id, "✗ The setup command failed".into());
+                Some(why)
+            }
+        };
         let repos = vec![Repo { path: at.clone(), name: String::new(), original: from }];
         let setups = vec![git_setup(&at)];
-        Ok(WorkingCopy { isolation: Isolation::Worktree, cwd: at, clone, keep: false, repos, skipped: vec![], own: true, cont, new_branch: branch.clone(), branch, existed: vec![cont], setups, skipped_setups: vec![], changed: vec![] })
+        Ok(WorkingCopy { isolation: Isolation::Worktree, cwd: at, clone, keep: false, repos, skipped: vec![], own: true, cont, new_branch: branch.clone(), branch, existed: vec![cont], setups, skipped_setups: vec![], changed: vec![], failed })
     }
 
     /// What the agent is told about where it works.
@@ -1347,6 +1376,155 @@ impl Repo {
     fn label(&self) -> &str {
         if self.name.is_empty() { &self.path } else { &self.name }
     }
+}
+
+/// Copies the board's files (`.env`, a folder of local settings…) from the clone into a new
+/// worktree at `at`. Only ones git ignores: a file git would commit (or one it tracks) would go
+/// to origin with the agent's work. What isn't copied goes to the notes; the run goes on.
+async fn copy_files(b: &Board, clone: &str, at: &str, rec: &mut RunRecord) {
+    for f in b.copy_files.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {
+        let from = Path::new(clone).join(f);
+        if !inside(f) || !from.exists() {
+            rec.notes.push(format!("Didn't copy {f} into the worktree: there's no {f} in {clone}"));
+            continue;
+        }
+        // a folder pattern (`local/`) matches only with the slash
+        let probe = if from.is_dir() { format!("{}/", f.trim_end_matches('/')) } else { f.to_string() };
+        if git(at, &["check-ignore", "-q", "--", &probe]).await.is_err() {
+            rec.notes.push(format!("Didn't copy {f} into the worktree: git doesn't ignore it, so it would be committed with the agent's work (add it to .gitignore)"));
+            continue;
+        }
+        // a link the user made (`.env` → a shared one): its target, as a link would break there
+        let from = std::fs::canonicalize(&from).unwrap_or(from);
+        if let Err(e) = copy_path(&from, &Path::new(at).join(f)) {
+            rec.notes.push(format!("Couldn't copy {f} into the worktree: {e}"));
+        }
+    }
+}
+
+/// Runs the board's setup command in a new worktree `at` (none: Ok). Under the rules of the
+/// agent's commands: only on a board that lets the agent run them (where git's hooks run too),
+/// with the PATH Claude Code gets, within the run's time limit, and stopped with the run. Its
+/// output goes to the job's activity. Err: why it failed, with the end of its output.
+async fn setup(b: &Board, at: &str, cancel: &Cancel) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let command = b.setup_command.trim();
+    if command.is_empty() {
+        return Ok(());
+    }
+    if !b.allow_commands {
+        return Err("The setup command didn't run: it runs programs, like the agent's commands, so the board must let the agent run commands (board settings).".into());
+    }
+    stage(&b.id, "Running the setup command");
+    let mut cmd = if cfg!(windows) {
+        let mut c = crate::claude::locate::tool_command("powershell").await;
+        c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+        c
+    } else {
+        let mut c = crate::claude::locate::tool_command(if Path::new("/bin/bash").exists() { "/bin/bash" } else { "/bin/sh" }).await;
+        c.arg("-c");
+        c
+    };
+    cmd.arg(command).current_dir(at).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    // Its own process group, so a stop or the time limit ends what it started too (npm's children).
+    #[cfg(unix)]
+    // SAFETY: setsid is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("The setup command didn't start: {e}"))?;
+    let lines: Arc<Mutex<Vec<String>>> = Arc::default();
+    let read = |r: Option<Box<dyn tokio::io::AsyncRead + Send + Unpin>>| {
+        let (lines, board) = (lines.clone(), b.id.clone());
+        tokio::spawn(async move {
+            let Some(r) = r else { return };
+            let mut r = BufReader::new(r).lines();
+            while let Ok(Some(l)) = r.next_line().await {
+                log(&board, l.clone());
+                lines.lock().push(l);
+            }
+        })
+    };
+    let readers = [read(child.stdout.take().map(|r| Box::new(r) as _)), read(child.stderr.take().map(|r| Box::new(r) as _))];
+    let deadline = tokio::time::Instant::now() + TICKET_TIMEOUT;
+    let status = loop {
+        tokio::select! {
+            s = child.wait() => break s.ok(),
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                if cancel.is_cancelled() || tokio::time::Instant::now() >= deadline {
+                    #[cfg(unix)]
+                    if let Some(pid) = child.id() {
+                        // SAFETY: a plain kill(2) of the group it leads.
+                        unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                    }
+                    let _ = child.kill().await;
+                    break None;
+                }
+            }
+        }
+    };
+    // What it printed; not waiting for ever on something it left running with the output open.
+    for r in readers {
+        let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
+    }
+    let why = match status {
+        Some(s) if s.success() => return Ok(()),
+        Some(s) => match s.code() {
+            Some(c) => format!("The setup command failed (exit code {c}), so the agent didn't start."),
+            None => "The setup command was ended by a signal, so the agent didn't start.".into(),
+        },
+        None if cancel.is_cancelled() => "Stopped.".into(),
+        None => format!("The setup command took longer than {} minutes and was stopped, so the agent didn't start.", TICKET_TIMEOUT.as_secs() / 60),
+    };
+    Err(with_output(&why, &lines.lock()))
+}
+
+/// `why` with the end of a command's output (the last lines, where the error usually is).
+fn with_output(why: &str, lines: &[String]) -> String {
+    const LINES: usize = 40;
+    const CHARS: usize = 4000;
+    let mut tail = lines[lines.len().saturating_sub(LINES)..].join("\n");
+    if tail.chars().count() > CHARS {
+        tail = format!("…{}", tail.chars().skip(tail.chars().count() - CHARS).collect::<String>());
+    }
+    if tail.trim().is_empty() {
+        return format!("{why} It printed nothing.");
+    }
+    let cut = if lines.len() > LINES { format!(" (its last {LINES} lines)") } else { String::new() };
+    format!("{why} Its output{cut}:\n\n```\n{}\n```", tail.trim_end())
+}
+
+/// Whether `f` is a path inside a folder: relative, no `..`, not into `.git`.
+pub(super) fn inside(f: &str) -> bool {
+    use std::path::Component;
+    let p = Path::new(f);
+    !f.trim().is_empty() && p.components().all(|c| matches!(c, Component::Normal(n) if n != ".git") || c == Component::CurDir)
+}
+
+/// Copies a file, or a folder with everything in it (links in it as links).
+fn copy_path(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if let Some(d) = to.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    if meta.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            copy_path(&e.path(), &to.join(e.file_name()))?;
+        }
+    } else if meta.file_type().is_symlink() {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(std::fs::read_link(from)?, to)?;
+        #[cfg(not(unix))]
+        std::fs::copy(from, to).map(drop)?;
+    } else {
+        std::fs::copy(from, to)?;
+    }
+    Ok(())
 }
 
 /// Folders below `folder` (two levels at most) that are git repositories.
@@ -2282,6 +2460,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// A clone like `clone_with_origin` whose `.gitignore` hides `.env` and `local/`, with the
+    /// user's untracked `.env`, `local/db.yml` and `notes.txt` (which git doesn't ignore).
+    async fn clone_with_env(what: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = temp_dir(what);
+        repo_at(&dir, &[("calc.py", CALC), (".gitignore", ".env\nlocal/\n")]).await;
+        let remote = with_origin(&dir).await;
+        std::fs::write(dir.join(".env"), "TOKEN=mine\n").unwrap();
+        std::fs::create_dir_all(dir.join("local")).unwrap();
+        std::fs::write(dir.join("local/db.yml"), "db: dev\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "my notes\n").unwrap();
+        (dir, remote)
+    }
+
+    /// A worktree gets the board's files from the clone before the agent starts, but only ones git
+    /// ignores: a file git would commit with the agent's work stays out (with a note).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_copies_files() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_env("wt-copy").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", "cat .env local/db.yml > \"$OUT/seen.txt\"; ls notes.txt > \"$OUT/notes.txt\" 2>&1; echo '    # fixed' >> calc.py").await;
+        let b = Board { copy_files: vec![".env".into(), "local".into(), "notes.txt".into(), "missing.txt".into()], ..worktree_board(&site, cwd, &fixer) };
+        let rec = fix_one(&b, "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.files_changed), ("fixed", 1), "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(std::fs::read_to_string(out.join("seen.txt")).unwrap(), "TOKEN=mine\ndb: dev\n", "the agent had the copies");
+        assert!(std::fs::read_to_string(out.join("notes.txt")).unwrap().contains("No such file"), "notes.txt isn't copied");
+        assert!(rec.notes.iter().any(|n| n.contains("notes.txt") && n.contains(".gitignore")), "{:?}", rec.notes);
+        assert!(rec.notes.iter().any(|n| n.contains("missing.txt")), "{:?}", rec.notes);
+        assert_eq!(git(cwd, &["show", "--name-only", "--format=", BRANCH]).await.unwrap().trim(), "calc.py", "only the agent's change is committed");
+        assert!(worktrees(cwd).await.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The setup command runs in the new worktree after the copies and before the agent, on a
+    /// board that lets the agent run commands; what it makes (git ignores it) is there for the agent.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_setup_command() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_env("wt-setup").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", "cat local/ready > \"$OUT/ready.txt\"; echo '    # fixed' >> calc.py").await;
+        let setup = format!("pwd -P > '{}/setup-cwd.txt'\nmkdir -p local && cp .env local/ready", out.display());
+        let b = Board { copy_files: vec![".env".into()], setup_command: setup, allow_commands: true, ..worktree_board(&site, cwd, &fixer) };
+        let rec = fix_one(&b, "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.files_changed), ("fixed", 1), "{} {:?}", rec.summary, rec.notes);
+        let wt = dir.join(WORKTREE);
+        assert_eq!(std::fs::read_to_string(out.join("setup-cwd.txt")).unwrap().trim(), wt.to_str().unwrap(), "it ran in the worktree");
+        assert_eq!(std::fs::read_to_string(out.join("ready.txt")).unwrap(), "TOKEN=mine\n", "after the copies, before the agent");
+        assert_eq!(git(cwd, &["show", "--name-only", "--format=", BRANCH]).await.unwrap().trim(), "calc.py");
+        assert!(!dir.join("local/ready").exists(), "the clone is untouched");
+        assert!(worktrees(cwd).await.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A setup command that fails ends the run as failed before the agent starts: its output is in
+    /// the result and the ticket's comment, and nothing is left (no worktree, no new branch).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_setup_fails() {
+        let (site, seen) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("wt-setup-fails").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let setup = "echo '    # setup' >> calc.py\necho 'go: missing module' >&2\nexit 3".to_string();
+        let rec = fix_one(&Board { setup_command: setup, allow_commands: true, ..worktree_board(&site, cwd, &fixer) }, "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref(), rec.files_changed), ("failed", None, 0), "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.summary.contains("exit code 3") && rec.summary.contains("go: missing module"), "{}", rec.summary);
+        assert!(!out.join("prompt.jsonl").exists(), "the agent never ran");
+        assert!(seen.lock().iter().any(|r| r.starts_with("POST /rest/api/2/issue/ABC-1/comment") && r.contains("go: missing module")), "{:?}", seen.lock());
+        assert!(worktrees(cwd).await.is_empty() && !dir.join(WORKTREE).exists(), "the worktree is removed");
+        assert!(git(cwd, &["branch", "--list", "devcat/*"]).await.unwrap().trim().is_empty(), "no branch left");
+        assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), CALC);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// The ticket's branch is checked out somewhere else (another worktree, or the clone itself):
     /// the run fails naming that place, the agent doesn't start, and no branch or worktree is left.
     #[cfg(unix)]
@@ -2308,6 +2566,25 @@ mod tests {
         assert!(rec.outcome == "error" && rec.summary.contains(&format!("{BRANCH} is checked out in {cwd}")), "{}", rec.summary);
         assert!(worktrees(cwd).await.is_empty() && !dir.join(WORKTREE).exists());
         assert_eq!(head(cwd).await, BRANCH);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The setup command runs programs, so like the agent's commands only on a board that lets the
+    /// agent run them: elsewhere it doesn't run, and the run fails saying why.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_setup_needs_commands() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("wt-setup-off").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let setup = format!("touch '{}/ran'", out.display());
+        let rec = fix_one(&Board { setup_command: setup, ..worktree_board(&site, cwd, &fixer) }, "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "failed", "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.summary.contains("let the agent run commands"), "{}", rec.summary);
+        assert!(!out.join("ran").exists() && !out.join("prompt.jsonl").exists(), "neither the command nor the agent ran");
+        assert!(worktrees(cwd).await.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }

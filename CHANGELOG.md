@@ -17,6 +17,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   on origin (or from the ticket's own branch when it has one). You can keep working in the repository meanwhile,
   with your own changes and branch. DevCat commits there, pushes when the board says so and removes the worktree;
   the branch stays. Existing boards stay **In place**.
+- **Tickets: worktree setup** (#192): a board with a worktree for each ticket can copy **Files to copy** (files git
+  ignores, such as `.env`) from your repository into each new worktree, and run a **Setup command** (such as
+  `pnpm install`) there before the agent starts. The command needs **Let the agent run commands**. If it fails, the
+  run fails without the agent, with the command's output in the history and the ticket's comment.
 - **Tickets: worktrees after a crash** (#194): when DevCat starts, it removes the worktrees and folders that runs
   left in a worktree board's `.worktrees` folder when DevCat stopped in the middle (a worktree a run kept for you to
   look at stays). A run whose branch is checked out in another worktree fails with a message that names it.

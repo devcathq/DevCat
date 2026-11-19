@@ -36,6 +36,10 @@ export interface Board {
   repo: string;
   /** "worktree": each ticket in `<repo>/.worktrees`, made from origin; `targetBranch` is then the base branch. */
   isolation: Isolation;
+  /** Worktree: paths (git ignores them, e.g. ".env") copied from `repo` into each new worktree. */
+  copyFiles: string[];
+  /** Worktree: run in each new worktree before the agent (only with `allowCommands`); a failure fails the run. */
+  setupCommand: string;
   /** DevCat project whose memory and connections the agent gets (null: the one `repo` is in). */
   projectId?: string | null;
   providerId: string;
@@ -87,7 +91,7 @@ export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
   pickFrom: null, working: null, doneTo: null, failedTo: null, label: "", assigned: "anyone",
   comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
-  isolation: "inPlace",
+  isolation: "inPlace", copyFiles: [], setupCommand: "",
 });
 
 export const tickets = {
