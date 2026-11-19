@@ -64,6 +64,7 @@ pub async fn run(job: Job, activity: Arc<dyn Fn(String) + Send + Sync>, cancelle
         close_after_result: true,
         program: job.program.clone(),
         env: job.env.clone(),
+        own_group: true,
     };
     let run_id = spawn_run(sink, &job.cwd, spec).await?;
     write_to(&run_id, &user_message(&job.prompt, &job.images)).await?;
