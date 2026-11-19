@@ -137,13 +137,8 @@ pub async fn on_save(b: &mut Board, token: String) -> AppResult<()> {
     let tr = Tracker::new(b, token)?;
     let login = tr.gh_login().await?;
     let r = tr.gh_repo(Method::GET, "").send().await?;
-    // GitHub hides a private repository from a token that can't see it: 404, as for a wrong name
     if r.status().as_u16() == 404 {
-        return Err(AppError::msg(format!(
-            "GitHub repository {} was not found with this token: check the owner/name, or give the token access to it. A private repository answers 404 to a token that can't see it \
-             (a fine-grained token needs it under Repository access, “Only select repositories”)",
-            b.project.trim()
-        )));
+        return Err(repo_not_found(&b.project));
     }
     let repo = json_of(r, "GitHub repository").await?;
     if repo["permissions"]["push"] == json!(false) {
@@ -153,6 +148,16 @@ pub async fn on_save(b: &mut Board, token: String) -> AppResult<()> {
     b.branch_prefix = format!("{login}/");
     b.push = true;
     tr.gh_create_labels(&states(b)).await
+}
+
+/// The error for a 404 from the board's repository (saving, Load columns). GitHub hides a private
+/// repository from a token that can't see it: 404, as for a wrong name.
+fn repo_not_found(project: &str) -> AppError {
+    AppError::msg(format!(
+        "GitHub repository {} was not found with this token: check the owner/name, or give the token access to it. A private repository answers 404 to a token that can't see it \
+         (a fine-grained token needs it under Repository access, “Only select repositories”)",
+        project.trim()
+    ))
 }
 
 /// Whether `login` may write to the board's repository: its collaborator permission is write,
@@ -520,6 +525,7 @@ impl Tracker {
 
     /// What a list below the board's repository (`path`) holds, 100 a page, at most `pages` pages
     /// (it ends at a page that isn't full). `html`: with GitHub's rendering of bodies (`full`).
+    /// A 404 from a list right below the repository (`/labels`) means the token can't see it.
     async fn gh_pages(&self, path: &str, html: bool, pages: usize, what: &str) -> AppResult<Vec<Value>> {
         let mut all = vec![];
         for page in 1..=pages {
@@ -527,7 +533,11 @@ impl Tracker {
             if html {
                 rb = rb.headers(full());
             }
-            let list = json_of(rb.send().await?, what).await?.as_array().cloned().unwrap_or_default();
+            let r = rb.send().await?;
+            if r.status().as_u16() == 404 && path.matches('/').count() == 1 {
+                return Err(repo_not_found(&self.board.project));
+            }
+            let list = json_of(r, what).await?.as_array().cloned().unwrap_or_default();
             let got = list.len();
             all.extend(list);
             if got < 100 {
@@ -842,6 +852,14 @@ pub(crate) mod tests {
         assert!(gh.requests().iter().any(|r| r == "GET /user") && gh.requests().iter().any(|r| r == "GET /repos/acme/calc"), "{:?}", gh.requests());
         let cols = super::super::tickets_columns(saved.clone()).await.unwrap();
         assert_eq!(cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["bug", "ready-for-agent", "agent-working", "agent-review", "needs-info", "ready-for-human", "wontfix"], "the columns are the labels");
+        // Load columns with a token that can't see the repository: the same message as on save
+        gh.gh.lock().canned.push(("GET /repos/acme/calc/labels".into(), 404, json!({ "message": "Not Found" })));
+        let e = super::super::tickets_columns(saved.clone()).await.unwrap_err().to_string();
+        assert!(e.contains("acme/calc was not found with this token") && e.contains("private") && e.contains("Only select repositories"), "{e}");
+        assert!(!e.contains("check the site"), "{e}");
+        gh.gh.lock().canned.clear();
+        let e = super::super::tickets_columns(Board { project: "acme/nope".into(), ..saved.clone() }).await.unwrap_err().to_string();
+        assert!(e.contains("acme/nope was not found with this token"), "{e}");
 
         let refused = |b: Board| async move { super::super::tickets_board_save(b).await.unwrap_err().to_string() };
         let e = refused(Board { project: "acme/nope".into(), ..board(&gh.url, "", "") }).await;

@@ -88,8 +88,16 @@ For each ticket:
    branch removed, and the comment names the ones it did. With **Push** on, a fixed ticket's branch is pushed to `origin`.
 5. The ticket gets a comment (the summary, how to test, the branch) and moves to *done* or *needs a person*.
 
-If the agent is stopped or crashes, the ticket goes back where it was, without a comment. A ticket the agent
-changed nothing for has its branch removed.
+If you click **Stop** or the agent crashes, the run ends (after Stop, within a few seconds) and the ticket goes back
+where it was, without a comment. Its work so far stays committed on the branch, not pushed, and no pull request is
+opened. A ticket the agent changed nothing for has its branch removed. With **Watch** on, the next check can take it
+again.
+
+If DevCat quits or crashes during a run, the next start stops that run's agent if it still works, moves the ticket
+to your *needs a person* column (else back where it was) with a comment that names the branch, and shows the run in
+**History** with the outcome "error". A ticket someone moved since is left alone. On macOS and Linux, the agent of an
+unattended run also stops when DevCat quits or crashes. For GitHub boards, see
+[Set up a GitHub board](github-board.md).
 
 ### A worktree for each ticket
 
@@ -122,8 +130,9 @@ committed.
 The guard against changes to git's settings works the same: if the agent changed the repository's git config,
 attributes or hooks, DevCat runs no git, and the worktree stays as it is for you to look at.
 
-If DevCat stops in the middle of a run (a crash), the next start removes what that run left in `.worktrees`
-(the branch stays). A worktree a run left for you to look at stays until you remove it.
+If DevCat quits or crashes in the middle of a run, the next start also removes what that run left in `.worktrees`
+(the branch stays) and puts the ticket right as above. A worktree a run left for you to look at stays until you
+remove it.
 
 A ticket's branch can be checked out in one place only. If it's checked out in another worktree, or in the
 repository itself, the run fails and names that folder: switch it to another branch (or remove the worktree), then

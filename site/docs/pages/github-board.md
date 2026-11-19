@@ -116,10 +116,10 @@ Then:
 
 ## 5. Troubleshooting
 
-- **"GitHub repository owner/name was not found with this token"** when you connect: check the owner/name. A
-  private repository answers 404 to a token that can't see it: edit the token on GitHub and add the repository
-  under **Repository access**, **Only select repositories** (or create a new token, step 2). In an organization,
-  the token's **Resource owner** must be the organization, and an owner may have to approve it.
+- **"GitHub repository owner/name was not found with this token"** when you connect or click **Load columns**: check
+  the owner/name. A private repository answers 404 to a token that can't see it: edit the token on GitHub and add
+  the repository under **Repository access**, **Only select repositories** (or create a new token, step 2). In an
+  organization, the token's **Resource owner** must be the organization, and an owner may have to approve it.
 - **"The setup command runs programs … turn on “Let the agent run commands”"**: the switch is in the **Agent**
   section, right under **Working copy**. Turn it on (or click **Turn it on** under the **Setup command**), or
   clear the setup command.
