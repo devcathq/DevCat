@@ -104,7 +104,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
   const tick = useTickets((s) => s.ticks[board.id] ?? 0);
   // The columns we know of: the board's own (refetched from the tracker when listing).
   const columns = useMemo(() => {
-    const all = [board.pickFrom, board.working, board.doneTo, board.failedTo].filter((c): c is NonNullable<typeof c> => !!c);
+    const all = [board.pickFrom, board.working, board.doneTo, board.needsInfoTo, board.failedTo].filter((c): c is NonNullable<typeof c> => !!c);
     return all.filter((c, i) => all.findIndex((x) => x.id === c.id) === i);
   }, [board]);
 

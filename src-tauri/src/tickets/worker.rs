@@ -10,8 +10,9 @@
 //! 4. DevCat commits what changed (unfinished work too, marked WIP, and on a new branch when the
 //!    board commits to an existing one), goes back to the original
 //!    branch, pushes if the board says so, comments on the ticket and moves it to "done" (fixed)
-//!    or "failed" (else back where it was). On GitHub a fixed ticket's branch is always pushed and
-//!    gets a draft pull request (`github::pull_request`), linked in the comment.
+//!    or "failed" (else back where it was; "needs info" when the agent asked questions and the
+//!    board has that column). On GitHub every run's branch is pushed (unfinished work too), and a
+//!    fixed ticket's gets a draft pull request (`github::pull_request`), linked in the comment.
 use super::trackers::Tracker;
 use super::{Board, Isolation, RunRecord, Ticket, TrackerKind};
 use crate::agent_tools::Scope;
@@ -430,8 +431,9 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
     let files = rec.files_changed;
     let fixed = said_fixed && (files > 0 || earlier) && saved;
     let mut pushed = false;
-    // a pull request needs the branch on GitHub
-    if fixed && (b.push || b.kind == TrackerKind::Github) {
+    // GitHub: a pull request needs the branch there, and unfinished work goes there too, for
+    // whoever takes it on (a person, or the next run once the questions are answered).
+    if (fixed && b.push) || (b.kind == TrackerKind::Github && answer.is_ok()) {
         stage(&b.id, "Pushing");
         pushed = wc.push(b, rec).await;
     }
@@ -457,12 +459,19 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         rec.summary = format!("The agent changed no files. {}", a.summary);
     }
 
-    if pushed && b.kind == TrackerKind::Github {
+    // only fixed work gets one: the rest isn't for review
+    if fixed && pushed && b.kind == TrackerKind::Github {
         stage(&b.id, "Opening a pull request");
         super::github::pull_request(tr, &t, rec).await;
     }
 
-    let target = if fixed { b.done_to.clone() } else { b.failed_to.clone().or_else(|| (t.column != from).then(|| super::Column { id: from.clone(), name: "where it was".into() })) };
+    let target = if fixed {
+        b.done_to.clone()
+    } else if rec.outcome == "needs_info" && b.needs_info_to.is_some() {
+        b.needs_info_to.clone()
+    } else {
+        b.failed_to.clone().or_else(|| (t.column != from).then(|| super::Column { id: from.clone(), name: "where it was".into() }))
+    };
     if let Some(c) = &target {
         stage(&b.id, &format!("Moving to {}", c.name));
         match tr.move_to(&t, &c.id).await {
