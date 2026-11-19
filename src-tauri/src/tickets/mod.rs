@@ -16,6 +16,7 @@
 pub mod github;
 #[cfg(test)]
 pub(crate) mod mock_github;
+pub mod recover;
 pub mod trackers;
 pub mod worker;
 
@@ -340,7 +341,7 @@ pub fn init_reading(data_dir: PathBuf) {
 
 pub fn init(data_dir: PathBuf) {
     let _ = DIR.set(data_dir.join("tickets"));
-    // what a crash left in the worktree boards' clones
+    // what a crash left: runs cut short, and worktrees in the worktree boards' clones
     worker::tidy_worktrees();
     worker::start_watch();
 }

@@ -26,6 +26,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Tickets: worktrees after a crash** (#194): when DevCat starts, it removes the worktrees and folders that runs
   left in a worktree board's `.worktrees` folder when DevCat stopped in the middle (a worktree a run kept for you to
   look at stays). A run whose branch is checked out in another worktree fails with a message that names it.
+- **Tickets: runs cut short by a crash** (#203): when DevCat quits or crashes during a ticket's run, Claude Code
+  stops too (on macOS and Linux) instead of working on unseen. At the next start, DevCat moves the ticket from the
+  working column to the board's failed column (`ready-for-human` on GitHub) with a comment that names the branch
+  and says how to try again, and adds the run to the history. A ticket someone moved since stays where it is.
 - **Tickets: GitHub boards** (#195): connect a GitHub repository (`owner/name`, an API address for GitHub Enterprise
   and a personal access token). Labels are the columns: the agent takes open issues labelled `ready-for-agent` and
   assigned to you (**Assigned to** starts at **Me** on a new GitHub board), labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a

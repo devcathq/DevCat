@@ -337,7 +337,7 @@ async fn run_one(board_id: String, run: u64, ticket_id: String, prompt: Option<S
     emit(&board_id);
 }
 
-fn error_record(ticket_id: &str, why: String) -> RunRecord {
+pub(super) fn error_record(ticket_id: &str, why: String) -> RunRecord {
     RunRecord {
         ticket_id: ticket_id.into(),
         key: ticket_id.into(),
@@ -420,6 +420,8 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
     let mut wc = WorkingCopy::open(b, &t, earlier.as_deref(), base.as_ref(), cancel, rec).await?;
 
     let from = t.column.clone();
+    // a quit or crash from here on leaves the ticket in "working": the next start puts it right
+    let flight = super::recover::InFlight::start(b, &t, &wc.branch, &wc.cwd);
     if let Some(w) = &b.working {
         match tr.move_to(&t, &w.id).await {
             Ok(()) => {
@@ -440,7 +442,7 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
             if custom.is_some() {
                 log(&b.id, "With your prompt for this ticket (instead of the board's default)".into());
             }
-            run_agent(b, &t, &wc, &images, custom, reply, cancel, &session).await
+            run_agent(b, &t, &wc, &images, custom, reply, cancel, &session, &flight).await
         }
     };
     rec.session_id = session.lock().clone();
@@ -730,9 +732,9 @@ fn provider_of(b: &Board) -> &str {
 /// `wc`: where the agent works. `session`: set to the chat's session id (Claude's, or the DevCat
 /// Agent's), to open it later in the AI workspace.
 /// `reply`: the person's answer to the agent's last run, which it goes on from (in that chat, when
-/// it was with the same AI connection).
+/// it was with the same AI connection). `flight`: the run's note, which gets Claude Code's process.
 #[allow(clippy::too_many_arguments)]
-async fn run_agent(b: &Board, t: &Ticket, wc: &WorkingCopy, images: &[Image], custom: Option<&str>, reply: Option<&Reply>, cancel: &Cancel, session: &Arc<Mutex<Option<String>>>) -> AppResult<Answer> {
+async fn run_agent(b: &Board, t: &Ticket, wc: &WorkingCopy, images: &[Image], custom: Option<&str>, reply: Option<&Reply>, cancel: &Cancel, session: &Arc<Mutex<Option<String>>>, flight: &super::recover::InFlight) -> AppResult<Answer> {
     let providers = crate::ai::providers().await?;
     let id = provider_of(b);
     let p = providers.into_iter().find(|p| p.id == id).ok_or_else(|| AppError::msg("The board's AI connection is gone: choose another one"))?;
@@ -787,6 +789,7 @@ async fn run_agent(b: &Board, t: &Ticket, wc: &WorkingCopy, images: &[Image], cu
                 mcp,
                 session: session.clone(),
                 resume,
+                spawned: Some(flight.agent()),
             };
             let c = cancel.clone();
             let started = tokio::time::Instant::now();
@@ -1231,15 +1234,20 @@ fn kept_mark(worktree: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{worktree}.kept"))
 }
 
-/// DevCat starting: `prune_worktrees` for each worktree board (not one with a job already).
+/// DevCat starting: the runs a quit or crash cut short have their agents stopped (they may still
+/// work in their worktrees), `prune_worktrees` for each worktree board (not one with a job
+/// already), then their tickets are put right (`recover`; the tracker may be slow to answer).
 pub fn tidy_worktrees() {
     crate::rt::spawn(async {
-        let Ok(boards) = super::load_boards() else { return };
-        for b in boards.iter().filter(|b| b.isolation == Isolation::Worktree) {
-            if !JOBS.lock().contains_key(&b.id) {
-                prune_worktrees(b).await;
+        let cut = super::recover::cut_short().await;
+        if let Ok(boards) = super::load_boards() {
+            for b in boards.iter().filter(|b| b.isolation == Isolation::Worktree) {
+                if !JOBS.lock().contains_key(&b.id) {
+                    prune_worktrees(b).await;
+                }
             }
         }
+        super::recover::put_back(cut).await;
     });
 }
 

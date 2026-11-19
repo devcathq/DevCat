@@ -37,6 +37,10 @@ pub(super) struct Spawn {
     pub program: Option<std::path::PathBuf>,
     /// Extra environment (an AI connection's variables and API key).
     pub env: Vec<(String, String)>,
+    /// Unattended runs (Unix): Claude Code in a process group of its own, so stopping the run also
+    /// stops the commands it started, and so it's stopped when DevCat quits or crashes
+    /// (`watchdog`) instead of working on, unseen, until its turn ends.
+    pub own_group: bool,
 }
 
 /// Command line flags for a run (without the binary).
@@ -209,11 +213,18 @@ struct Run {
     exited: watch::Receiver<bool>,
     stopping: AtomicBool,
     pid: Option<u32>,
+    /// Its own process group, whose id is `pid` (`Spawn::own_group`).
+    group: bool,
     /// Label of the window that started the run (stopped when it closes).
     owner: Mutex<Option<String>>,
 }
 
 static RUNS: Lazy<Mutex<HashMap<String, Arc<Run>>>> = Lazy::new(Default::default);
+
+/// The process id of a run's program, while it runs.
+pub(super) fn run_pid(run_id: &str) -> Option<u32> {
+    RUNS.lock().get(run_id).and_then(|r| r.pid)
+}
 
 fn get_run(run_id: &str) -> AppResult<Arc<Run>> {
     RUNS.lock().get(run_id).cloned().ok_or_else(|| AppError::msg(format!("Claude run {run_id} is not running")))
@@ -291,7 +302,14 @@ pub(super) async fn spawn_run(sink: Sink, cwd: &str, spec: Spawn) -> AppResult<S
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    if spec.own_group {
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().map_err(|e| AppError::msg(format!("Failed to start claude: {e}")))?;
+    let group = cfg!(unix) && spec.own_group && child.id().is_some();
+    #[cfg(unix)]
+    let mut watch = if group { child.id().and_then(|pid| watchdog(pid).map_err(|e| eprintln!("claude: no watchdog for run {pid}: {e}")).ok()) } else { None };
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let (kill_tx, kill_rx) = oneshot::channel();
@@ -312,6 +330,7 @@ pub(super) async fn spawn_run(sink: Sink, cwd: &str, spec: Spawn) -> AppResult<S
         exited: exit_rx,
         stopping: AtomicBool::new(false),
         pid: child.id(),
+        group,
         owner: Mutex::new(None),
     });
     RUNS.lock().insert(run_id.clone(), run.clone());
@@ -358,10 +377,25 @@ pub(super) async fn spawn_run(sink: Sink, cwd: &str, spec: Spawn) -> AppResult<S
         let status = tokio::select! {
             s = child.wait() => s,
             _ = kill_rx => {
+                if r.group {
+                    kill_group(r.pid);
+                }
                 let _ = child.start_kill();
                 child.wait().await
             }
         };
+        if r.group {
+            // what it started and left running (the group outlives its leader)
+            kill_group(r.pid);
+            #[cfg(unix)]
+            if let Some(mut w) = watch.take() {
+                // a line: the run ended here, the watchdog leaves
+                if let Some(mut i) = w.stdin.take() {
+                    let _ = i.write_all(b"\n").await;
+                }
+                let _ = w.wait().await;
+            }
+        }
         let _ = tokio::time::timeout(Duration::from_secs(2), stdout_task).await;
         let _ = tokio::time::timeout(Duration::from_millis(500), stderr_task).await;
         r.state.lock().fail_waiters("Claude exited");
@@ -386,6 +420,38 @@ pub(super) async fn spawn_run(sink: Sink, cwd: &str, spec: Spawn) -> AppResult<S
     });
     Ok(run_id)
 }
+
+/// A small shell that stops the process group `pgid` (an unattended run, `Spawn::own_group`) when
+/// DevCat goes away: it waits for a line on its input, which only DevCat holds. When DevCat quits
+/// or crashes (even kill -9) the input closes without that line, and it sends the group SIGTERM,
+/// then SIGKILL. A run that ends in DevCat sends the line, and it leaves. In its own process
+/// group, so a Ctrl+C meant for DevCat (in a terminal) doesn't stop it first.
+#[cfg(unix)]
+fn watchdog(pgid: u32) -> std::io::Result<tokio::process::Child> {
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.args(["-c", "read _ || { kill -TERM -\"$1\"; sleep 2; kill -KILL -\"$1\"; } 2>/dev/null", "devcat-watchdog", &pgid.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0);
+    cmd.spawn()
+}
+
+/// Kills the process group `pgid` (its leader's pid) with all in it. Also right after the leader
+/// ended: its id isn't given to another process while the group has members (and pids are given
+/// out in turn, so not within moments either).
+#[cfg(unix)]
+fn kill_group(pgid: Option<u32>) {
+    if let Some(p) = pgid {
+        // SAFETY: a plain signal to the run's own process group.
+        unsafe {
+            libc::killpg(p as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_pgid: Option<u32>) {}
 
 // ---------------------------------------------------------------- claude_info
 
@@ -665,7 +731,11 @@ pub fn shutdown_all() {
         // SIGTERM lets claude tear down its own children (MCP servers, shells).
         #[cfg(unix)]
         unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            if run.group {
+                libc::killpg(pid as libc::pid_t, libc::SIGTERM);
+            } else {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
         }
         #[cfg(windows)]
         {
@@ -681,6 +751,30 @@ pub fn shutdown_all() {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    /// An unattended run's process group is stopped when DevCat goes away (the watchdog's input
+    /// closes without a line, as when DevCat is killed), and left alone when the run ends in
+    /// DevCat (a line).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn watchdog_stops_the_group() {
+        let agent = || tokio::process::Command::new("/bin/sh").args(["-c", "sleep 30 & wait"]).process_group(0).kill_on_drop(true).spawn().unwrap();
+        let mut gone = agent();
+        let mut w = watchdog(gone.id().unwrap()).unwrap();
+        drop(w.stdin.take());
+        let ended = tokio::time::timeout(Duration::from_secs(5), gone.wait()).await;
+        assert!(ended.is_ok_and(|s| s.is_ok_and(|s| !s.success())), "DevCat gone: the agent is stopped");
+        let _ = w.wait().await;
+
+        let mut fine = agent();
+        let mut w = watchdog(fine.id().unwrap()).unwrap();
+        w.stdin.take().unwrap().write_all(b"\n").await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(5), w.wait()).await.is_ok(), "the watchdog leaves");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(fine.try_wait().unwrap().is_none(), "the agent works on");
+        kill_group(fine.id());
+        assert!(tokio::time::timeout(Duration::from_secs(5), fine.wait()).await.is_ok(), "kill_group stops it");
+    }
 
     #[test]
     fn args_default() {

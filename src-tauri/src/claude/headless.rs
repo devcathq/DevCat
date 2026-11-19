@@ -30,6 +30,9 @@ pub struct Job {
     pub session: Arc<parking_lot::Mutex<Option<String>>>,
     /// Go on with this Claude session instead of starting one.
     pub resume: Option<String>,
+    /// Told the program's process id once it started (the ticket worker notes it, to stop it
+    /// after a crash: `tickets::recover`).
+    pub spawned: Option<Arc<dyn Fn(u32) + Send + Sync>>,
 }
 
 pub struct Outcome {
@@ -64,8 +67,12 @@ pub async fn run(job: Job, activity: Arc<dyn Fn(String) + Send + Sync>, cancelle
         close_after_result: true,
         program: job.program.clone(),
         env: job.env.clone(),
+        own_group: true,
     };
     let run_id = spawn_run(sink, &job.cwd, spec).await?;
+    if let (Some(f), Some(pid)) = (&job.spawned, super::runner::run_pid(&run_id)) {
+        f(pid);
+    }
     write_to(&run_id, &user_message(&job.prompt, &job.images)).await?;
 
     let deadline = tokio::time::Instant::now() + job.timeout;
