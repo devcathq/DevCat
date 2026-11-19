@@ -2174,4 +2174,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }
+
+    /// An agent in a worktree that changes git's settings (the clone's shared config): no git
+    /// afterwards, so the work stays uncommitted and the worktree is left for the user.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_guard() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("wt-guard").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py; git config core.sshCommand 'ssh -v'").await;
+        let rec = fix_one(&worktree_board(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("failed", None), "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.notes.iter().any(|n| n.contains("changed git's own settings")), "{:?}", rec.notes);
+        let wt = dir.join(WORKTREE);
+        assert!(rec.notes.iter().any(|n| n.contains(&format!("The worktree {} was left", wt.display()))), "{:?}", rec.notes);
+        assert_eq!(worktrees(cwd).await, vec![wt.to_string_lossy().into_owned()]);
+        assert_eq!(changed_files(wt.to_str().unwrap()).await.unwrap(), 1, "the work is still there, uncommitted");
+        assert!(git(remote.to_str().unwrap(), &["branch", "--list", "devcat/*"]).await.unwrap().trim().is_empty(), "nothing pushed");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// On a worktree board the branch setting is the base: the ticket's new branch starts from
+    /// origin's `release` (which the clone only has as origin's), and nothing lands on `release`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_base_branch() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("wt-base").await;
+        let (cwd, origin) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        git(cwd, &["checkout", "-q", "-b", "release"]).await.unwrap();
+        std::fs::write(dir.join("calc.py"), "# release\n").unwrap();
+        git(cwd, &["commit", "-qam", "release"]).await.unwrap();
+        git(cwd, &["push", "-q", "origin", "release"]).await.unwrap();
+        let release = git(cwd, &["rev-parse", "release"]).await.unwrap();
+        git(cwd, &["checkout", "-q", "main"]).await.unwrap();
+        git(cwd, &["branch", "-q", "-D", "release"]).await.unwrap();
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let rec = fix_one(&Board { target_branch: "release".into(), ..worktree_board(&site, cwd, &fixer) }, "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("fixed", Some(BRANCH)), "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap(), "# release\n    # fixed\n");
+        assert_eq!(git(origin, &["rev-parse", "release"]).await.unwrap(), release, "release is untouched");
+        assert!(!has_ref(cwd, "refs/heads/release").await, "no local release branch made");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
 }
