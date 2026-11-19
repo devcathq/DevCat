@@ -12,6 +12,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.32.0 - 2026-11-19
+
 - **Tickets: Stop stops the agent** (#203): **Stop** on a board's run ends the agent within a few seconds, and the
   run is recorded as stopped, with nothing pushed and the ticket back where it was. Before, the agent worked on to
   the end and its work was pushed. **Stop** and the board's **Time limit** also act while Claude Code sends output
@@ -80,7 +82,7 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   **Turn it on**). When the token can't see the repository (a private repository answers 404 to such a token), the
   error (on **Connect** and on **Load columns**) says so and how to give the token access. **Create a token** opens GitHub's fine-grained token form with the
   name, owner and permissions filled in; the hint says to choose **Only select repositories** and the repository.
-- **`devcat serve` keeps the computer awake, also with the lid closed**: while it runs (in a terminal or as the
+- **`devcat serve` keeps the computer awake, also with the lid closed** (#204): while it runs (in a terminal or as the
   background service), the computer doesn't sleep, also when the screen locks or the lid closes, so phones reach it.
   On macOS that turns system sleep off, which asks for your password once, and back on when it stops. Linux uses a
   systemd inhibitor; on Windows set closing the lid to "Do nothing". Start it with `--no-lid` to let the lid sleep it,
