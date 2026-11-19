@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Tickets: a worktree for each ticket** (#191): set a board's **Working copy** to **A worktree for each ticket**
+  and the agent works in a git worktree in the repository's `.worktrees` folder, made from the latest **Base branch**
+  on origin (or from the ticket's own branch when it has one). You can keep working in the repository meanwhile,
+  with your own changes and branch. DevCat commits there, pushes when the board says so and removes the worktree;
+  the branch stays. Existing boards stay **In place**.
+
 ## 0.31.0 - 2026-11-19
 
 - **Plan usage for Claude Code and Antigravity** (#187): the title bar shows how much of your plan is used (click it

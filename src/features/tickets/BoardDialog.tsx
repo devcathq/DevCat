@@ -11,7 +11,7 @@ import { Button, Checkbox, Dialog, ErrorBox, Field, Input, Select, Textarea } fr
 import { api, errMsg } from "../../lib/api";
 import type { AiProvider } from "../../lib/types";
 import { useConnections } from "../../store/connections";
-import { ASSIGNED, TRACKERS, newBoard, tickets, type Board, type Column, type TrackerKind } from "./api";
+import { ASSIGNED, TRACKERS, newBoard, tickets, type Board, type Column, type Isolation, type TrackerKind } from "./api";
 import { projectForFolder } from "./store";
 
 const TOKEN_HELP: Record<TrackerKind, { url: string; text: string }> = {
@@ -32,6 +32,9 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
   const isNew = !board;
   // Commit to an existing branch (main, staging…) instead of a new one per ticket.
   const [existing, setExisting] = useState(!!board?.targetBranch);
+  // A worktree for each ticket: always a new branch, made from the base branch (`targetBranch`).
+  const wt = b.isolation === "worktree";
+  const onto = existing && !wt;
   const set = (p: Partial<Board>) => setB((x) => ({ ...x, ...p }));
   const projects = useConnections((s) => s.projects);
   const detected = projectForFolder(projects, b.repo);
@@ -75,8 +78,8 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
     setSaving(true);
     setError(null);
     try {
-      if (existing && !b.targetBranch.trim()) throw new Error("Type the branch the agent commits to (main, staging…)");
-      const saved = await tickets.save(withSecrets({ ...b, targetBranch: existing ? b.targetBranch : "" }));
+      if (onto && !b.targetBranch.trim()) throw new Error("Type the branch the agent commits to (main, staging…)");
+      const saved = await tickets.save(withSecrets({ ...b, targetBranch: onto || wt ? b.targetBranch : "" }));
       toast.success(isNew ? "Board connected" : "Board saved");
       onSaved(saved);
     } catch (e) {
@@ -190,14 +193,24 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
               <Button onClick={() => void pickRepo()}><FolderOpen className="size-3.5" />Choose</Button>
             </div>
           </Field>
+          <Field label="Working copy" hint={wt ? "Each ticket gets a git worktree in the repository's .worktrees folder, made from origin and removed after the run (its branch stays). You can keep working in the repository meanwhile. One repository, not a folder." : "The agent works in the repository itself, which must have no uncommitted changes."}>
+            <Select value={b.isolation} onChange={(e) => set({ isolation: e.target.value as Isolation })}>
+              <option value="inPlace">In place</option>
+              <option value="worktree">A worktree for each ticket</option>
+            </Select>
+          </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Branch" hint={existing ? "Fixed tickets are committed straight onto it (it must exist). Unfinished work goes on a new branch instead." : "Each ticket gets its own branch, made from the one the repository is on."}>
+            {wt ? (
+              <Field label="Base branch" hint="New branches start from it on origin. Empty: origin's default branch.">
+                <Input value={b.targetBranch} onChange={(e) => set({ targetBranch: e.target.value })} placeholder="main" />
+              </Field>
+            ) : <Field label="Branch" hint={existing ? "Fixed tickets are committed straight onto it (it must exist). Unfinished work goes on a new branch instead." : "Each ticket gets its own branch, made from the one the repository is on."}>
               <Select value={existing ? "existing" : "new"} onChange={(e) => setExisting(e.target.value === "existing")}>
                 <option value="new">A new branch per ticket</option>
                 <option value="existing">An existing branch</option>
               </Select>
-            </Field>
-            {existing ? (
+            </Field>}
+            {onto ? (
               <Field label="Branch name" hint="E.g. main or staging.">
                 <Input value={b.targetBranch} onChange={(e) => set({ targetBranch: e.target.value })} placeholder="main" />
               </Field>
@@ -222,7 +235,7 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
           <div className="flex flex-col gap-2">
             <Checkbox label="Let the agent run commands (builds, tests) without asking" checked={b.allowCommands} onChange={(v) => set({ allowCommands: v })} />
             <Checkbox label="Comment on the ticket with what was done and how to test it" checked={b.comment} onChange={(v) => set({ comment: v })} />
-            <Checkbox label={existing ? `Push ${b.targetBranch.trim() || "the branch"} to origin when fixed (pulled from origin first)` : "Push the ticket's branch to origin when fixed"} checked={b.push} onChange={(v) => set({ push: v })} />
+            <Checkbox label={onto ? `Push ${b.targetBranch.trim() || "the branch"} to origin when fixed (pulled from origin first)` : "Push the ticket's branch to origin when fixed"} checked={b.push} onChange={(v) => set({ push: v })} />
             <div className="flex items-center gap-2">
               <Checkbox label="Watch the column: work on new tickets every" checked={b.watch} onChange={(v) => set({ watch: v })} />
               <Input type="number" min={1} className="w-16" value={b.intervalMin} onChange={(e) => set({ intervalMin: Number(e.target.value) || 10 })} />

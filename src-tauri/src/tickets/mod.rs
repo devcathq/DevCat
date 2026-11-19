@@ -56,6 +56,18 @@ pub enum Assigned {
     MeOrNobody,
 }
 
+/// How a run gets its working copy (`worker::WorkingCopy`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Isolation {
+    /// The board's repositories themselves, switched to the ticket's branch for the run and back.
+    #[default]
+    InPlace,
+    /// A git worktree for each ticket in `<clone>/.worktrees`, made from origin's base branch:
+    /// the user goes on working in the clone meanwhile.
+    Worktree,
+}
+
 /// A column of a board: a Jira status, a Trello list, a Linear workflow state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Column {
@@ -146,6 +158,9 @@ pub struct Board {
     /// of them; each gets the ticket's branch).
     #[serde(default)]
     pub repo: String,
+    /// In place (boards saved before this setting), or a worktree for each ticket (one repository).
+    #[serde(default)]
+    pub isolation: Isolation,
     /// The DevCat project the board works for (None: the one whose code folder holds `repo`, if
     /// any). The agent gets its memory and connections, like a chat in that project.
     #[serde(default)]
