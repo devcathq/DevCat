@@ -118,6 +118,9 @@ fn yes() -> bool {
 fn ten() -> u32 {
     10
 }
+fn one() -> u32 {
+    1
+}
 fn three() -> u32 {
     3
 }
@@ -212,6 +215,10 @@ pub struct Board {
     /// Tickets per check, at most.
     #[serde(default = "three")]
     pub max_per_run: u32,
+    /// Tickets worked on at the same time, each in its own worktree and branch (1 to 4). Only for
+    /// boards with a worktree for each ticket: in place, one at a time.
+    #[serde(default = "one")]
+    pub parallel_runs: u32,
     /// The default prompt: added to every ticket's (conventions, how to test…). A ticket fixed with
     /// a prompt of its own gets that one instead.
     #[serde(default)]
@@ -392,6 +399,7 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     }
     b.interval_min = b.interval_min.clamp(1, 24 * 60);
     b.max_per_run = b.max_per_run.clamp(1, 20);
+    b.parallel_runs = b.parallel_runs.clamp(1, 4);
     if let Some(t) = b.token.take().filter(|t| !t.trim().is_empty()) {
         crate::secrets::set(&token_key(&b.id), t.trim())?;
     }
