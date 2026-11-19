@@ -511,7 +511,7 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     }
     b.setup_command = b.setup_command.trim().to_string();
     if b.isolation == Isolation::Worktree && !b.setup_command.is_empty() && !b.allow_commands {
-        return Err(AppError::msg("The setup command runs programs, like the agent's commands: let the agent run commands, or clear the setup command"));
+        return Err(AppError::msg("The setup command runs programs, like the agent's commands: turn on “Let the agent run commands” (Agent section, under Working copy), or clear the setup command"));
     }
     let mut allow: Vec<String> = vec![];
     for l in b.allowlist.iter().map(|l| l.trim().trim_start_matches('@').to_lowercase()).filter(|l| !l.is_empty()) {

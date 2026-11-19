@@ -66,7 +66,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   branch, and its worktree starts from that branch. A pull request into the default branch says `Closes #<number>`,
   into another branch `Part of #<number>`. The agent writes the description in the format of the repository's pull
   request template, and DevCat adds a line that says the DevCat agent opened it. When the description doesn't say how
-  the agent checked its work, DevCat adds a **How it was checked** section with the agent's testing steps.
+  the agent checked its work (neither its testing steps nor a **How it was checked** section, at any heading level),
+  DevCat adds a **How it was checked** section with the agent's testing steps.
 - **Tickets: run a GitHub issue again** (#199): add the trigger label to an issue again (after you answer the
   agent's questions, or to send a `ready-for-human` issue back) and a watched GitHub board runs it again at the next
   check, in a new conversation that reads the new comments, on the issue's branch with the earlier commits. Without
@@ -74,6 +75,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Tickets: a time limit for each board** (#189): **Time limit** in a board's settings (minutes, default 60) is
   the longest the agent works on one ticket, and a worktree's **Setup command** runs. When it's up, DevCat stops it
   and the run ends with an error that names the limit.
+- **Tickets: connecting a GitHub board** (#203): **Let the agent run commands** is now right under **Working copy**,
+  above the **Setup command**, and the dialog says before you click **Connect** when a setup command needs it (with
+  **Turn it on**). When the token can't see the repository (a private repository answers 404 to such a token), the
+  error says so and how to give the token access. **Create a token** opens GitHub's fine-grained token form with the
+  name, owner and permissions filled in; the hint says to choose **Only select repositories** and the repository.
 
 ## 0.31.0 - 2026-11-19
 

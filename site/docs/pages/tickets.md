@@ -16,7 +16,7 @@ list). The list shows each board and what the agent is doing on it; click one to
 | Jira Data Center / Server | Site, project key; leave **Email** empty | Personal access token |
 | Trello | API key, board link (`https://trello.com/b/…`) | [Token](https://trello.com/power-ups/admin) for that key |
 | Linear | Team key (`ENG` for `ENG-123`) | [Personal API key](https://linear.app/settings/account/security) |
-| GitHub | Repository (`owner/name`); **API address** `https://api.github.com` (GitHub Enterprise Server: `https://<host>/api/v3`) | [Personal access token](https://github.com/settings/personal-access-tokens/new): fine-grained with Issues, Pull requests and Contents read and write, or classic with the `repo` scope |
+| GitHub | Repository (`owner/name`); **API address** `https://api.github.com` (GitHub Enterprise Server: `https://<host>/api/v3`) | [Personal access token](https://github.com/settings/personal-access-tokens/new): fine-grained with **Only select repositories** and the repository, and Issues, Pull requests and Contents read and write; or classic with the `repo` scope. Step by step: [Set up a GitHub board](github-board.md) |
 
 Tokens are kept in the system keychain. Click **Load columns** to read the board's columns (Jira statuses,
 Trello lists, Linear workflow states), then choose:
@@ -48,12 +48,14 @@ to the column you chose, the move is skipped and the reason shows in the history
   and the ticket's history says so.
 - **Working copy**: **In place** (the agent works in the repository itself, as above) or **A worktree for each
   ticket** (below). Boards made before this setting stay in place.
+- **Let the agent run commands** (right under **Working copy**): off by default, so the agent can only read and
+  edit files in the repository. Turn it on to let it build and run tests. It will then run any command it decides
+  to, as you. A worktree's **Setup command** needs it: the dialog says so at the field, and the board isn't saved
+  without it.
 - **AI connection**: Claude Code (your login, or a Claude Code connection with an API key) or a DevCat Agent
   connection (any model API). Optionally a **Model** (`sonnet`, `haiku`…).
 - **Default prompt**: what the agent is told with every ticket: conventions, where things are, how to test. A
   ticket you fix with a prompt of its own (below) gets that prompt instead.
-- **Let the agent run commands**: off by default, so the agent can only read and edit files in the
-  repository. Turn it on to let it build and run tests. It will then run any command it decides to, as you.
 - **Time limit**: the longest the agent works on one ticket, in minutes (default 60). When it's up, DevCat stops
   the agent and the run ends with an error; the ticket goes back where it was.
 
@@ -134,7 +136,8 @@ always do one ticket at a time.
 
 ### GitHub boards
 
-On a GitHub board the repository's labels are the columns. A new board takes issues labelled
+For a step-by-step setup, see [Set up a GitHub board](github-board.md). On a GitHub board the repository's labels
+are the columns. A new board takes issues labelled
 `ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed, `needs-info`
 when the agent has questions, `ready-for-human` when it fails and `wontfix` when its pull request is closed without
 a merge; change any of them in the board's settings. Saving the board checks the
@@ -160,8 +163,8 @@ token and the repository, reads the token owner's login, and creates the labels 
 - The agent writes the pull request's description. When the repository has a pull request template
   (`pull_request_template.md` in `.github/`, the top folder or `docs/`), the description follows its sections.
   DevCat adds the issue's link and a line that says the DevCat agent opened it. The description always says how the
-  agent checked its work: when it doesn't have the agent's testing steps, DevCat adds them in a **How it was
-  checked** section.
+  agent checked its work: when it has neither the agent's testing steps nor a heading named **How it was checked**
+  (say, from your template), DevCat adds them in a **How it was checked** section.
 - The agent reads the issue's comments from people with write access to the repository (all of them, oldest
   first), never comments from anyone else: anyone can comment on a public issue. The images uploaded to the issue
   and to those comments are shown to it, also in a private repository; images from other sites stay links.
