@@ -29,6 +29,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
   draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review`. Saving
   the board checks the token and creates the labels the repository lacks.
+- **Tickets: parallel runs** (#193): a board with a worktree for each ticket can work on up to 4 tickets at the same
+  time (**Parallel runs** in the board's settings, default 1), each in its own worktree and branch. The **Working**
+  panel shows each ticket with its log, and the other tickets wait. Boards that run in place still do one at a time.
 - **Tickets: GitHub issues the agent can't finish** (#198): when the agent has questions, its branch is pushed, the
   issue's comment has the questions and the issue gets the label `needs-info` (**When the agent has questions,
   label** in the board's settings). When it fails, its unfinished work is committed, pushed, and the comment has the
