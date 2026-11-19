@@ -96,8 +96,19 @@ uncommitted work and any branch in the repository while it works. The repository
    new `devcat/<key>-<title>` from the **Base branch** on `origin` (empty: `origin`'s default branch).
 2. DevCat adds `.worktrees/` to the repository's local exclude file (`.git/info/exclude`), so the folder never
    shows as untracked and nothing needs committing.
-3. The agent works in the worktree. DevCat commits there and, with **Push** on, pushes a fixed ticket's branch.
-4. DevCat removes the worktree. The branch keeps the commits (a run that changed nothing leaves no branch).
+3. DevCat copies the **Files to copy** from the repository into the worktree, for example `.env` (one path a line;
+   a folder copies with everything in it). A worktree has only the committed files otherwise. DevCat copies only
+   files that git ignores, because the agent's commit would take any other file to `origin`; the ticket's history
+   tells you about a file it didn't copy.
+4. DevCat runs the **Setup command** in the worktree (for example `pnpm install` or `go mod download`). It runs
+   under the same rules as the agent's commands: only on a board that lets the agent run commands, as you, within
+   the run's time limit, and **Stop** ends it. Its output shows in the board's activity.
+5. The agent works in the worktree. DevCat commits there and, with **Push** on, pushes a fixed ticket's branch.
+6. DevCat removes the worktree. The branch keeps the commits (a run that changed nothing leaves no branch).
+
+If the setup command fails, the agent doesn't start: the run ends as failed, and the end of the command's output
+is in the history and the ticket's comment. DevCat removes the worktree, and nothing the command changed is
+committed.
 
 The guard against changes to git's settings works the same: if the agent changed the repository's git config,
 attributes or hooks, DevCat runs no git, and the worktree stays as it is for you to look at.

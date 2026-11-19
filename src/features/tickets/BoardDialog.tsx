@@ -199,6 +199,16 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
               <option value="worktree">A worktree for each ticket</option>
             </Select>
           </Field>
+          {wt && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Files to copy" hint="One path a line, from the repository into each worktree: files git ignores, e.g. .env (a worktree has only the committed files).">
+                <Textarea rows={2} value={b.copyFiles.join("\n")} onChange={(e) => set({ copyFiles: e.target.value.split("\n") })} placeholder={".env\nconfig/local.yml"} />
+              </Field>
+              <Field label="Setup command" hint="Runs in each new worktree before the agent starts. Needs “Let the agent run commands”. If it fails, the run fails with its output.">
+                <Textarea rows={2} value={b.setupCommand} onChange={(e) => set({ setupCommand: e.target.value })} placeholder="pnpm install" />
+              </Field>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             {wt ? (
               <Field label="Base branch" hint="New branches start from it on origin. Empty: origin's default branch.">
