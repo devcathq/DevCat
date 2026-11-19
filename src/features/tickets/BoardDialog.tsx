@@ -1,4 +1,4 @@
-// Connect a board (Jira project, Trello board, Linear team) and say what the agent does with it:
+// Connect a board (Jira project, Trello board, Linear team, GitHub repository) and say what the agent does with it:
 // which column it takes tickets from, where they go while it works, when fixed and when it needs a
 // person; the project, repository and AI connection it works with; and an optional Slack webhook.
 import { open } from "@tauri-apps/plugin-dialog";
@@ -18,6 +18,7 @@ const TOKEN_HELP: Record<TrackerKind, { url: string; text: string }> = {
   jira: { url: "https://id.atlassian.com/manage-profile/security/api-tokens", text: "Create an API token" },
   trello: { url: "https://trello.com/power-ups/admin", text: "Get an API key and token" },
   linear: { url: "https://linear.app/settings/account/security", text: "Create a personal API key" },
+  github: { url: "https://github.com/settings/personal-access-tokens/new", text: "Create a token" },
 };
 
 export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; onClose: () => void; onSaved: (b: Board) => void }) {
@@ -34,7 +35,9 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
   const [existing, setExisting] = useState(!!board?.targetBranch);
   // A worktree for each ticket: always a new branch, made from the base branch (`targetBranch`).
   const wt = b.isolation === "worktree";
-  const onto = existing && !wt;
+  // GitHub: labels are the columns, a new `<login>/…` branch per issue, always pushed (for its pull request).
+  const gh = b.kind === "github";
+  const onto = existing && !wt && !gh;
   const set = (p: Partial<Board>) => setB((x) => ({ ...x, ...p }));
   const projects = useConnections((s) => s.projects);
   const detected = projectForFolder(projects, b.repo);
@@ -125,7 +128,11 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
               <button
                 key={k}
                 disabled={!isNew}
-                onClick={() => { set({ kind: k, pickFrom: null, working: null, doneTo: null, failedTo: null }); setColumns([]); }}
+                onClick={() => {
+                  const { site, isolation, push, branchPrefix, pickFrom, working, doneTo, failedTo } = newBoard(k);
+                  set({ kind: k, site, isolation, push, branchPrefix, pickFrom, working, doneTo, failedTo });
+                  setColumns([]);
+                }}
                 className={clsx("h-7 rounded-md border px-3 text-[13px]", b.kind === k ? "border-accent bg-accent/15 text-accent" : "border-line bg-raised text-muted hover:bg-hover", !isNew && b.kind !== k && "opacity-40")}
               >
                 {TRACKERS[k]}
@@ -148,7 +155,16 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
           {b.kind === "linear" && (
             <Field label="Team key" hint="The prefix of the team's issues: ENG for ENG-123."><Input value={b.project} onChange={(e) => set({ project: e.target.value.toUpperCase() })} placeholder="ENG" /></Field>
           )}
-          <Field label={b.kind === "linear" ? "API key" : b.kind === "trello" ? "Token" : "API token"} hint="Kept in the system keychain.">
+          {gh && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Repository" hint="owner/name"><Input value={b.project} onChange={(e) => set({ project: e.target.value.trim() })} placeholder="acme/shop" /></Field>
+              <Field label="API address" hint="GitHub Enterprise Server: https://<host>/api/v3"><Input value={b.site} onChange={(e) => set({ site: e.target.value })} placeholder="https://api.github.com" /></Field>
+            </div>
+          )}
+          <Field
+            label={b.kind === "linear" ? "API key" : b.kind === "trello" ? "Token" : gh ? "Personal access token" : "API token"}
+            hint={gh ? "Fine-grained (Issues, Pull requests and Contents: read and write) or classic (repo scope). Labels, comments and pull requests appear as its owner. Kept in the system keychain." : "Kept in the system keychain."}
+          >
             <div className="flex gap-2">
               <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={b.hasToken ? "Saved (type to replace)" : ""} />
               <Button onClick={() => void openUrl(help.url)} title={help.url}><ExternalLink className="size-3.5" />{help.text}</Button>
@@ -164,16 +180,16 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
             </Button>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Take tickets from">{colSelect(b.pickFrom, (c) => set({ pickFrom: c }))}</Field>
-            <Field label="While the agent works, move to">{colSelect(b.working, (c) => set({ working: c }), "Leave it where it is")}</Field>
-            <Field label="When fixed, move to">{colSelect(b.doneTo, (c) => set({ doneTo: c }))}</Field>
-            <Field label="When it needs a person, move to">{colSelect(b.failedTo, (c) => set({ failedTo: c }), "Back where it was")}</Field>
+            <Field label={gh ? "Take issues labelled" : "Take tickets from"}>{colSelect(b.pickFrom, (c) => set({ pickFrom: c }))}</Field>
+            <Field label={gh ? "While the agent works, label" : "While the agent works, move to"}>{colSelect(b.working, (c) => set({ working: c }), "Leave it where it is")}</Field>
+            <Field label={gh ? "When fixed (draft pull request), label" : "When fixed, move to"}>{colSelect(b.doneTo, (c) => set({ doneTo: c }))}</Field>
+            <Field label={gh ? "When it needs a person, label" : "When it needs a person, move to"}>{colSelect(b.failedTo, (c) => set({ failedTo: c }), "Back where it was")}</Field>
             <Field label="Assigned to" hint="Me: whoever the token belongs to.">
               <Select value={b.assigned} onChange={(e) => set({ assigned: e.target.value as Board["assigned"] })}>
                 {(Object.keys(ASSIGNED) as Board["assigned"][]).map((k) => <option key={k} value={k}>{ASSIGNED[k]}</option>)}
               </Select>
             </Field>
-            <Field label="Only tickets labelled" hint="Empty: every ticket in the column."><Input value={b.label} onChange={(e) => set({ label: e.target.value })} placeholder="agent" /></Field>
+            {!gh && <Field label="Only tickets labelled" hint="Empty: every ticket in the column."><Input value={b.label} onChange={(e) => set({ label: e.target.value })} placeholder="agent" /></Field>}
             <Field label="Board name"><Input value={b.name} onChange={(e) => set({ name: e.target.value })} placeholder={`${TRACKERS[b.kind]} ${b.project}`.trim()} /></Field>
           </div>
         </section>
@@ -214,13 +230,17 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
               <Field label="Base branch" hint="New branches start from it on origin. Empty: origin's default branch.">
                 <Input value={b.targetBranch} onChange={(e) => set({ targetBranch: e.target.value })} placeholder="main" />
               </Field>
-            ) : <Field label="Branch" hint={existing ? "Fixed tickets are committed straight onto it (it must exist). Unfinished work goes on a new branch instead." : "Each ticket gets its own branch, made from the one the repository is on."}>
+            ) : gh ? null : <Field label="Branch" hint={existing ? "Fixed tickets are committed straight onto it (it must exist). Unfinished work goes on a new branch instead." : "Each ticket gets its own branch, made from the one the repository is on."}>
               <Select value={existing ? "existing" : "new"} onChange={(e) => setExisting(e.target.value === "existing")}>
                 <option value="new">A new branch per ticket</option>
                 <option value="existing">An existing branch</option>
               </Select>
             </Field>}
-            {onto ? (
+            {gh ? (
+              <Field label="Branches" hint="Named after the token's owner (read when you save), e.g. for issue 12.">
+                <Input value={`${b.login || "<login>"}/12-fix-the-login`} disabled />
+              </Field>
+            ) : onto ? (
               <Field label="Branch name" hint="E.g. main or staging.">
                 <Input value={b.targetBranch} onChange={(e) => set({ targetBranch: e.target.value })} placeholder="main" />
               </Field>
@@ -245,7 +265,9 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
           <div className="flex flex-col gap-2">
             <Checkbox label="Let the agent run commands (builds, tests) without asking" checked={b.allowCommands} onChange={(v) => set({ allowCommands: v })} />
             <Checkbox label="Comment on the ticket with what was done and how to test it" checked={b.comment} onChange={(v) => set({ comment: v })} />
-            <Checkbox label={onto ? `Push ${b.targetBranch.trim() || "the branch"} to origin when fixed (pulled from origin first)` : "Push the ticket's branch to origin when fixed"} checked={b.push} onChange={(v) => set({ push: v })} />
+            {gh
+              ? <p className="text-[13px] text-muted">A fixed issue's branch is pushed and gets a draft pull request into {wt && b.targetBranch.trim() ? b.targetBranch.trim() : "the default branch"} that closes the issue.</p>
+              : <Checkbox label={onto ? `Push ${b.targetBranch.trim() || "the branch"} to origin when fixed (pulled from origin first)` : "Push the ticket's branch to origin when fixed"} checked={b.push} onChange={(v) => set({ push: v })} />}
             <div className="flex items-center gap-2">
               <Checkbox label="Watch the column: work on new tickets every" checked={b.watch} onChange={(v) => set({ watch: v })} />
               <Input type="number" min={1} className="w-16" value={b.intervalMin} onChange={(e) => set({ intervalMin: Number(e.target.value) || 10 })} />

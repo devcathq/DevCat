@@ -67,7 +67,7 @@ export default function TicketsTab() {
       ) : (
         <Empty icon={<ListTodo className="size-8" />} title="Let the agent work through your tickets">
           <p className="mb-3">
-            Connect a Jira project, Trello board or Linear team. The agent takes tickets from a column (say, To Do), fixes each one on its own branch,
+            Connect a Jira project, Trello board, Linear team or GitHub repository. The agent takes tickets from a column (say, To Do), fixes each one on its own branch,
             comments on the ticket and moves it on (say, to Testing). Results can go to Slack too.
           </p>
           <Button variant="primary" onClick={() => useTickets.getState().edit("new")}><Plus className="size-3.5" />Connect a board</Button>
@@ -466,6 +466,7 @@ function Thread({ board, runs, busy, ready, onBack, onSent }: {
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-faint">
                 {x.movedTo && <span>Moved to {x.movedTo}</span>}
                 {x.branch && <span className="flex items-center gap-1 font-mono"><GitBranch className="size-3" />{x.branch}</span>}
+                {x.prUrl && <button className="hover:text-fg" onClick={() => void openUrl(x.prUrl!)}>pull request #{x.prNumber}</button>}
                 {x.sessionId && x.cwd && (
                   <button className="flex items-center gap-1 hover:text-fg" title="Open the agent's chat in the AI workspace" onClick={() => openRun(x)}>
                     <MessageSquare className="size-3" />open in AI workspace
@@ -539,6 +540,7 @@ function HistoryItem({ r, onAnswer }: { r: RunRecord; onAnswer?: () => void }) {
         {r.repos?.length ? <span>{r.repos.join(", ")}</span> : r.filesChanged > 0 && <span>{r.filesChanged} file{r.filesChanged === 1 ? "" : "s"}</span>}
         {r.costUsd != null && <span>${r.costUsd.toFixed(2)}</span>}
         {r.url && <button className="hover:text-fg" onClick={() => void openUrl(r.url)}>open ticket</button>}
+        {r.prUrl && <button className="hover:text-fg" onClick={() => void openUrl(r.prUrl!)}>pull request #{r.prNumber}</button>}
         {canOpen && (
           <button className="flex items-center gap-1 hover:text-fg" title="Open the agent's chat in the AI workspace (you can continue it there)" onClick={() => openRun(r)}>
             <MessageSquare className="size-3" />open chat

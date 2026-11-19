@@ -1,6 +1,6 @@
 # Tickets
 
-Connect a Jira project, Trello board or Linear team and let your coding agent work through its tickets. You
+Connect a Jira project, Trello board, Linear team or GitHub repository and let your coding agent work through its tickets. You
 choose the column it takes tickets from (say, **To Do**). For each ticket the agent fixes it on its own git
 branch, DevCat commits the work, comments on the ticket with what changed and how to test it, and moves it on
 (say, to **Testing**). Each result can also be posted to a Slack channel.
@@ -16,6 +16,7 @@ list). The list shows each board and what the agent is doing on it; click one to
 | Jira Data Center / Server | Site, project key; leave **Email** empty | Personal access token |
 | Trello | API key, board link (`https://trello.com/b/…`) | [Token](https://trello.com/power-ups/admin) for that key |
 | Linear | Team key (`ENG` for `ENG-123`) | [Personal API key](https://linear.app/settings/account/security) |
+| GitHub | Repository (`owner/name`); **API address** `https://api.github.com` (GitHub Enterprise Server: `https://<host>/api/v3`) | [Personal access token](https://github.com/settings/personal-access-tokens/new): fine-grained with Issues, Pull requests and Contents read and write, or classic with the `repo` scope |
 
 Tokens are kept in the system keychain. Click **Load columns** to read the board's columns (Jira statuses,
 Trello lists, Linear workflow states), then choose:
@@ -119,6 +120,21 @@ If DevCat stops in the middle of a run (a crash), the next start removes what th
 A ticket's branch can be checked out in one place only. If it's checked out in another worktree, or in the
 repository itself, the run fails and names that folder: switch it to another branch (or remove the worktree), then
 run the ticket again.
+
+### GitHub boards
+
+On a GitHub board the repository's labels are the columns. A new board takes issues labelled
+`ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed and
+`ready-for-human` when it needs a person; change any of them in the board's settings. Saving the board checks the
+token and the repository, reads the token owner's login, and creates the labels the repository doesn't have yet.
+
+- The agent takes open issues with the trigger label (never pull requests), filtered by **Assigned to**.
+- Moving an issue removes its current state label and adds the new one, so it always has exactly one.
+- Branches are named `<your login>/<number>-<title>`, e.g. `octo/12-fix-the-login`.
+- New GitHub boards start with **A worktree for each ticket**, and the branch is always pushed: a fixed issue's
+  branch gets a draft pull request into the default branch (or the **Base branch**) that says `Closes #<number>`.
+  The issue's comment has the summary, how to test and the pull request's link, and the history links it too.
+- Labels, comments and pull requests appear as the token's owner.
 
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
 workspace, where you can read what it did and carry on from there.
