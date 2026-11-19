@@ -1651,4 +1651,194 @@ mod tests {
         assert!(c.contains("Changed x.") && c.contains("How to test:\nLog in") && c.contains("2 files changed"));
         assert!(b.comment && b.interval_min == 10 && b.branch_prefix == "devcat/" && b.target_branch.is_empty(), "defaults");
     }
+
+    // ------------------------------------------------------------ runs with a stand-in agent
+
+    /// Saving AI connections one at a time (the store has no lock).
+    static AI_SAVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// A stand-in for Claude Code: an AI connection whose program is a script. It runs the shell
+    /// line `act` in the folder it's started in (where the agent works), then answers `status`.
+    /// Returns the connection's id and the script's folder, where it writes the prompt it got
+    /// (`prompt.jsonl`).
+    #[cfg(unix)]
+    async fn stand_in(status: &str, act: &str) -> (String, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        crate::ai::init(std::env::temp_dir().join(format!("devcat-tickets-ai-{}", std::process::id())));
+        let id = format!("standin-{}", uuid::Uuid::new_v4());
+        let out = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("devcat-tickets-{id}"));
+        std::fs::create_dir_all(&out).unwrap();
+        let script = out.join("claude");
+        let result = json!({ "type": "result", "subtype": "success", "is_error": false, "session_id": "standin-1", "result": "Done.", "total_cost_usd": 0,
+            "structured_output": { "status": status, "summary": "Stand-in summary.", "testing": "Run it." } });
+        std::fs::write(&script, format!(
+            "#!/bin/sh\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *'\"type\":\"user\"'*) printf '%s\\n' \"$line\" >> '{}/prompt.jsonl'; break ;;\n  esac\ndone\n{act}\nprintf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"standin-1\"}}'\nprintf '%s\\n' '{result}'\ncat > /dev/null\nexit 0\n",
+            out.display()
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _lock = AI_SAVE.lock().await;
+        crate::ai::ai_provider_save(crate::ai::AiProvider { id: id.clone(), name: "Stand-in".into(), command: Some(script.to_string_lossy().into_owned()), builtin: false, ..crate::ai::store::builtin_claude() }).await.unwrap();
+        (id, out)
+    }
+
+    /// A Jira board on `mock_jira` whose agent is `provider`, working in `repo`.
+    fn board_on(site: &str, repo: &str, provider: &str) -> Board {
+        let col = |id: &str, name: &str| Some(super::super::Column { id: id.into(), name: name.into() });
+        let b: Board = serde_json::from_value(json!({ "id": "test", "name": "Test", "kind": "jira", "site": site, "project": "ABC", "token": "t", "repo": repo, "providerId": provider })).unwrap();
+        Board { pick_from: col("1", "To Do"), working: col("2", "In Progress"), done_to: col("3", "Testing"), ..b }
+    }
+
+    fn temp_dir(what: &str) -> std::path::PathBuf {
+        std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("devcat-tickets-{what}-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// A bare repository next to `dir` as its `origin`, with `main` pushed.
+    async fn with_origin(dir: &Path) -> std::path::PathBuf {
+        let remote = dir.with_extension("git");
+        git(dir.to_str().unwrap(), &["init", "-q", "--bare", remote.to_str().unwrap()]).await.unwrap();
+        git(dir.to_str().unwrap(), &["remote", "add", "origin", remote.to_str().unwrap()]).await.unwrap();
+        git(dir.to_str().unwrap(), &["push", "-q", "origin", "main"]).await.unwrap();
+        remote
+    }
+
+    async fn head(cwd: &str) -> String {
+        git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await.unwrap().trim().to_string()
+    }
+
+    const CALC: &str = "def average(xs):\n    return sum(xs)\n";
+    const BRANCH: &str = "devcat/abc-1-average-gives-the-wrong-result";
+
+    /// A ticket is worked on in its own branch, committed there, and the repository is given back
+    /// on the branch it was on; a run that changed nothing leaves no branch behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_on_its_own_branch() {
+        let (site, seen) = mock_jira().await;
+        let dir = temp_dir("run");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let rec = fix_one(&board_on(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "fixed", "{} {:?}", rec.summary, rec.notes);
+        assert_eq!((rec.branch.as_deref(), rec.files_changed, rec.cwd.as_deref()), (Some(BRANCH), 1, Some(cwd)));
+        assert_eq!(head(cwd).await, "main");
+        assert_eq!(changed_files(cwd).await.unwrap(), 0);
+        assert!(git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# fixed"));
+        assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), CALC);
+        assert!(seen.lock().iter().any(|r| r.starts_with("POST /rest/api/2/issue/ABC-1/comment") && r.contains(&format!("Branch: {BRANCH} (not pushed"))), "{:?}", seen.lock());
+
+        let (asker, _) = stand_in("needs_info", "true").await;
+        let rec = fix_one(&board_on(&site, cwd, &asker), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("needs_info", None), "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(head(cwd).await, "main");
+        assert_eq!(git(cwd, &["branch", "--list", "devcat/*"]).await.unwrap().trim(), BRANCH, "the empty branch is gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The user's own changes or a detached HEAD: no run, the agent doesn't start.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn refuses_a_clone_that_is_not_ready() {
+        let (site, _) = mock_jira().await;
+        let dir = temp_dir("refuse");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        std::fs::write(dir.join("mine.txt"), "mine\n").unwrap();
+        let rec = fix_one(&board_on(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "error");
+        assert!(rec.summary.contains("has uncommitted changes"), "{}", rec.summary);
+        std::fs::remove_file(dir.join("mine.txt")).unwrap();
+        git(cwd, &["checkout", "-q", "--detach"]).await.unwrap();
+        let rec = fix_one(&board_on(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert!(rec.outcome == "error" && rec.summary.contains("not on a branch"), "{}", rec.summary);
+        assert!(!out.join("prompt.jsonl").exists(), "the agent never ran");
+        assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), CALC);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A board that commits to its existing branch and pushes: a fix goes onto it and to origin;
+    /// unfinished work goes onto a new branch, not pushed; an answer goes on from that branch.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn existing_branch_pushed() {
+        let (site, seen) = mock_jira().await;
+        let dir = temp_dir("push");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let remote = with_origin(&dir).await;
+        let origin = remote.to_str().unwrap();
+        let board = |p: &str| Board { target_branch: "main".into(), push: true, ..board_on(&site, cwd, p) };
+
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let rec = fix_one(&board(&fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("fixed", Some("main")), "{} {:?}", rec.summary, rec.notes);
+        let main = git(cwd, &["rev-parse", "main"]).await.unwrap();
+        assert_eq!(git(origin, &["rev-parse", "main"]).await.unwrap(), main, "pushed");
+        assert!(git(cwd, &["show", "main:calc.py"]).await.unwrap().contains("# fixed"));
+        assert!(seen.lock().iter().any(|r| r.contains("Branch: main (pushed to origin)")), "{:?}", seen.lock());
+
+        let (half, _) = stand_in("needs_info", "echo '    # half' >> calc.py").await;
+        let rec = fix_one(&board(&half), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("needs_info", Some(BRANCH)), "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(git(cwd, &["rev-parse", "main"]).await.unwrap(), main, "main is untouched");
+        assert!(git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# half"));
+        assert!(git(origin, &["branch", "--list", "devcat/*"]).await.unwrap().trim().is_empty(), "unfinished work isn't pushed");
+        assert_eq!(head(cwd).await, "main");
+
+        let (done, _) = stand_in("fixed", "true").await;
+        let r = Reply { text: "Go on.".into(), asked: "Stand-in summary.".into(), branch: Some(BRANCH.into()), ..Default::default() };
+        let rec = fix_one(&board(&done), "ABC-1", None, Some(&r), &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref(), rec.files_changed), ("fixed", Some(BRANCH), 0), "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.notes.iter().any(|n| n.contains("merge it into main")), "{:?}", rec.notes);
+        assert_eq!(git(origin, &["rev-parse", BRANCH]).await.unwrap(), git(cwd, &["rev-parse", BRANCH]).await.unwrap(), "the earlier work is pushed");
+        assert_eq!(head(cwd).await, "main");
+        assert_eq!(git(cwd, &["branch", "--list", "devcat/*"]).await.unwrap().trim(), BRANCH, "the earlier branch stays");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// An agent that changes git's own settings: DevCat runs no git there afterwards, so the work
+    /// stays uncommitted on the ticket's branch.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_git_after_settings_changed() {
+        let (site, _) = mock_jira().await;
+        let dir = temp_dir("guard");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py; git config core.sshCommand 'ssh -v'").await;
+        let rec = fix_one(&board_on(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("failed", None), "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.notes.iter().any(|n| n.contains("changed git's own settings")), "{:?}", rec.notes);
+        assert_eq!(head(cwd).await, BRANCH);
+        assert_eq!(changed_files(cwd).await.unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder of repositories: the work is committed in the repository the agent changed; the
+    /// one with the user's changes is left alone.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_in_a_folder() {
+        let (site, seen) = mock_jira().await;
+        let root = temp_dir("folder");
+        repo_at(&root.join("calc-lib"), &[("calc.py", CALC)]).await;
+        repo_at(&root.join("web"), &[("index.html", "<h1>Shop</h1>\n")]).await;
+        std::fs::write(root.join("web/index.html"), "<h1>Shop (my edit)</h1>\n").unwrap();
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc-lib/calc.py").await;
+        let rec = fix_one(&board_on(&site, root.to_str().unwrap(), &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "fixed", "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(rec.repos, vec!["calc-lib (1 file)".to_string()]);
+        assert_eq!(rec.notes, vec!["Left web alone: it has uncommitted changes".to_string()]);
+        let lib = root.join("calc-lib");
+        let lib = lib.to_str().unwrap();
+        assert!(git(lib, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# fixed"));
+        assert_eq!(head(lib).await, "main");
+        let web = root.join("web");
+        assert!(git(web.to_str().unwrap(), &["branch", "--list", "devcat/*"]).await.unwrap().trim().is_empty());
+        assert_eq!(std::fs::read_to_string(web.join("index.html")).unwrap(), "<h1>Shop (my edit)</h1>\n");
+        assert!(seen.lock().iter().any(|r| r.contains("in calc-lib (1 file)")), "{:?}", seen.lock());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
