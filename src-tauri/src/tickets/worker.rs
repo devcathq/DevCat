@@ -11,7 +11,7 @@
 //!    branch, pushes if the board says so, comments on the ticket and moves it to "done" (fixed)
 //!    or "failed" (else back where it was).
 use super::trackers::Tracker;
-use super::{Board, RunRecord, Ticket, TrackerKind};
+use super::{Board, Isolation, RunRecord, Ticket, TrackerKind};
 use crate::agent_tools::Scope;
 use crate::error::{AppError, AppResult};
 use devcat_harness::approval::DenyAll;
@@ -832,8 +832,10 @@ async fn commit(repo: &str, msg: &str, hooks: bool, rec: &mut RunRecord) -> AppR
     Ok(())
 }
 
-async fn git_push(repo: &str, branch: &str, hooks: bool) -> AppResult<()> {
-    git_with(repo, &["push", "-q", "-u", "origin", branch], hooks).await.map(drop)
+/// `track`: make origin's branch its upstream (`-u`, written into the repository's config).
+async fn git_push(repo: &str, branch: &str, hooks: bool, track: bool) -> AppResult<()> {
+    let args: &[&str] = if track { &["push", "-q", "-u", "origin", branch] } else { &["push", "-q", "origin", branch] };
+    git_with(repo, args, hooks).await.map(drop)
 }
 
 /// An empty folder for `core.hooksPath`, so git finds no hooks: in DevCat's own data folder,
@@ -907,6 +909,54 @@ pub fn branch_name(prefix: &str, t: &Ticket) -> String {
     format!("{}{}", prefix.trim(), if slug.is_empty() { "ticket" } else { slug })
 }
 
+async fn has_ref(repo: &str, refname: &str) -> bool {
+    git(repo, &["rev-parse", "--verify", "--quiet", refname]).await.is_ok()
+}
+
+/// Where a worktree board's new branches start: `origin/<base>` (else the local `<base>`). The
+/// base is the board's branch setting, else origin's default branch, else the branch the clone
+/// is on.
+async fn base_of(clone: &str, b: &Board, remote: bool) -> AppResult<String> {
+    let mut base = b.target_branch.trim().to_string();
+    if base.is_empty() && remote {
+        base = match git(clone, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]).await {
+            Ok(r) => r.trim().trim_start_matches("origin/").to_string(),
+            // a clone made with `git remote add` doesn't know it: ask origin
+            Err(_) => git(clone, &["ls-remote", "--symref", "origin", "HEAD"]).await.unwrap_or_default().lines().find_map(|l| l.strip_prefix("ref: refs/heads/")?.split('\t').next().map(str::to_string)).unwrap_or_default(),
+        };
+    }
+    if base.is_empty() {
+        base = git(clone, &["rev-parse", "--abbrev-ref", "HEAD"]).await?.trim().to_string();
+        if base == "HEAD" {
+            return Err(AppError::msg("Choose the base branch for the tickets' branches (board settings)"));
+        }
+    }
+    if remote && has_ref(clone, &format!("refs/remotes/origin/{base}")).await {
+        Ok(format!("origin/{base}"))
+    } else if has_ref(clone, &format!("refs/heads/{base}")).await {
+        Ok(base)
+    } else {
+        Err(AppError::msg(format!("{clone} has no branch {base}, here or on origin: choose another base branch in the board settings")))
+    }
+}
+
+/// Hides `.worktrees/` in the clone's own exclude file (`<common git dir>/info/exclude`, never
+/// committed), so the worktrees never show as untracked files there.
+async fn exclude_worktrees(clone: &str) -> AppResult<()> {
+    let common = git(clone, &["rev-parse", "--git-common-dir"]).await?;
+    let file = Path::new(clone).join(common.trim()).join("info").join("exclude");
+    let now = std::fs::read_to_string(&file).unwrap_or_default();
+    if now.lines().any(|l| matches!(l.trim(), ".worktrees" | ".worktrees/" | "/.worktrees" | "/.worktrees/")) {
+        return Ok(());
+    }
+    if let Some(d) = file.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let sep = if now.is_empty() || now.ends_with('\n') { "" } else { "\n" };
+    std::fs::write(&file, format!("{now}{sep}.worktrees/\n"))?;
+    Ok(())
+}
+
 /// A branch name no repository has yet.
 async fn free_branch(repos: &[Repo], base: &str) -> String {
     let taken = |b: String| async move {
@@ -931,20 +981,22 @@ async fn free_branch(repos: &[Repo], base: &str) -> String {
 
 // ---------------------------------------------------------------- the working copy
 
-/// How a run gets its working copy. In place: the board's own repositories, switched to the
-/// ticket's branch for the run and back to the branch they were on after it.
-enum Isolation {
-    InPlace,
-}
-
 /// Where one run's agent works, from getting it ready to giving it back: `open` checks the
 /// repositories and checks out the ticket's branch, `save` commits what the agent changed and
 /// gives the user's checkout back, `push` sends the branch to origin, and `close` removes what
 /// only the run used. Each `Isolation` does these its own way; `work` doesn't need to know which.
+/// In place: the board's own repositories, switched to the ticket's branch for the run and back
+/// to the branch they were on after it. Worktree: a git worktree of the board's clone, made for
+/// the run and removed after it (the branch stays).
 struct WorkingCopy {
     isolation: Isolation,
-    /// The folder the agent works in.
+    /// The folder the agent works in (a worktree: its folder).
     cwd: String,
+    /// Worktree: the clone it belongs to, where it's made and removed.
+    clone: String,
+    /// Worktree: the agent's work isn't all committed (or git's settings changed), so the
+    /// worktree is left for the user instead of removed.
+    keep: bool,
     repos: Vec<Repo>,
     /// The repositories it must leave alone: (name, why, fingerprint).
     skipped: Vec<(String, String, String)>,
@@ -977,13 +1029,20 @@ struct Saved {
 impl WorkingCopy {
     /// The working copy for a run on `t`, ready for the agent.
     async fn open(b: &Board, t: &Ticket, reply: Option<&Reply>, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
-        WorkingCopy::in_place(b, t, reply, rec).await
+        match b.isolation {
+            Isolation::InPlace => WorkingCopy::in_place(b, t, reply, rec).await,
+            Isolation::Worktree => WorkingCopy::worktree(b, t, reply, rec).await,
+        }
     }
 
     /// Whether a run could get its working copy now: the watch loop queues nothing otherwise (and
-    /// tries again next time). In place: not while the user has changes in every repository.
+    /// tries again next time). In place: not while the user has changes in every repository. A
+    /// worktree doesn't mind them.
     async fn ready(b: &Board) -> bool {
-        prepare(&b.repo).await.is_ok()
+        match b.isolation {
+            Isolation::InPlace => prepare(&b.repo).await.is_ok(),
+            Isolation::Worktree => true,
+        }
     }
 
     /// The board's repositories: on a branch, without the user's changes (those are left alone).
@@ -1039,12 +1098,60 @@ impl WorkingCopy {
         }
         let setups = repos.iter().map(|r| git_setup(&r.path)).collect();
         let skipped_setups = skipped.iter().map(|(name, _, _)| repos_dir(&b.repo, name).map(|p| git_setup(&p))).collect();
-        Ok(WorkingCopy { isolation: Isolation::InPlace, cwd: b.repo.clone(), repos, skipped, own, cont: cont.is_some(), branch, new_branch, existed, setups, skipped_setups, changed: vec![] })
+        Ok(WorkingCopy { isolation: Isolation::InPlace, cwd: b.repo.clone(), clone: String::new(), keep: false, repos, skipped, own, cont: cont.is_some(), branch, new_branch, existed, setups, skipped_setups, changed: vec![] })
+    }
+
+    /// A git worktree of the board's clone at `<clone>/.worktrees/<number>-<slug>`, on the
+    /// ticket's branch: the one it has already (the last run's work, here or on origin), else a
+    /// new one from origin's base branch (`base_of`), fetched first. The clone itself isn't
+    /// touched: the user may have changes and any branch checked out there.
+    async fn worktree(b: &Board, t: &Ticket, reply: Option<&Reply>, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+        let clone = match git(&b.repo, &["rev-parse", "--show-toplevel"]).await {
+            Ok(top) => top.trim().to_string(),
+            Err(_) => return Err(AppError::msg(format!("{} is not a git repository: a worktree for each ticket needs one (or run the board in place)", b.repo))),
+        };
+        let remote = git(&clone, &["remote", "get-url", "origin"]).await.is_ok();
+        if remote {
+            stage(&b.id, "Fetching from origin");
+            if let Err(e) = git(&clone, &["fetch", "-q", "origin"]).await {
+                rec.notes.push(format!("Couldn't fetch from origin, so the work started from what the clone had: {e}"));
+            }
+        }
+        let branch = reply.and_then(|r| r.branch.clone()).filter(|br| br.as_str() != b.target_branch.trim()).unwrap_or_else(|| branch_name(&b.branch_prefix, t));
+        let local = has_ref(&clone, &format!("refs/heads/{branch}")).await;
+        let on_origin = remote && has_ref(&clone, &format!("refs/remotes/origin/{branch}")).await;
+        let path = Path::new(&clone).join(".worktrees").join(branch_name("", t));
+        let at = path.to_string_lossy().into_owned();
+        if path.exists() {
+            return Err(AppError::msg(format!("{at} is there already (left by an earlier run?): remove it with git worktree remove, then try again")));
+        }
+        let from = if local { branch.clone() } else if on_origin { format!("origin/{branch}") } else { base_of(&clone, b, remote).await? };
+        exclude_worktrees(&clone).await?;
+        // `--no-track`: no upstream written into the clone's config (shared by every worktree,
+        // and watched by `git_setup`).
+        let made = if local { git(&clone, &["worktree", "add", "-q", &at, &branch]).await } else { git(&clone, &["worktree", "add", "-q", "--no-track", "-b", &branch, &at, &from]).await };
+        if let Err(e) = made {
+            if !local && !on_origin {
+                let _ = git(&clone, &["branch", "-q", "-D", &branch]).await;
+            }
+            return Err(AppError::msg(format!("Couldn't make a worktree for {branch}: {e}")));
+        }
+        let cont = local || on_origin;
+        stage(&b.id, &format!("{} {branch} in .worktrees/{}{}", if cont { "On" } else { "Branch" }, branch_name("", t), if cont { String::new() } else { format!(" (from {from})") }));
+        let repos = vec![Repo { path: at.clone(), name: String::new(), original: from }];
+        let setups = vec![git_setup(&at)];
+        Ok(WorkingCopy { isolation: Isolation::Worktree, cwd: at, clone, keep: false, repos, skipped: vec![], own: true, cont, new_branch: branch.clone(), branch, existed: vec![cont], setups, skipped_setups: vec![], changed: vec![] })
     }
 
     /// What the agent is told about where it works.
     fn where_text(&self) -> String {
-        where_text(&self.branch, self.own && !self.cont, &self.repos, &self.skipped)
+        match self.isolation {
+            Isolation::InPlace => where_text(&self.branch, self.own && !self.cont, &self.repos, &self.skipped),
+            Isolation::Worktree => format!(
+                "You work in a git worktree DevCat made for this ticket, on the branch `{}`: stay on it, and don't commit, push or switch branches (DevCat commits your changes when you finish).",
+                self.branch
+            ),
+        }
     }
 
     /// Commits what the agent changed on the branch (unfinished work too, marked WIP, and on the
@@ -1064,6 +1171,7 @@ impl WorkingCopy {
                     "The agent changed git's own settings in {} (its .git config, attributes or hooks), so DevCat ran no git there: nothing was committed or pushed, and it's still on {branch}. Check .git before you run git in it.",
                     r.label()
                 ));
+                self.keep = true;
                 continue;
             }
             let files = changed_files(&r.path).await.unwrap_or(0);
@@ -1073,6 +1181,7 @@ impl WorkingCopy {
                 {
                     ok = false;
                     rec.notes.push(format!("Couldn't make the branch {saved_on} for the unfinished work in {} (left uncommitted on {branch}): {e}", r.label()));
+                    self.keep = true;
                     continue;
                 }
                 let head = if said_fixed { format!("{}: {}", t.key, t.title) } else { format!("WIP {}: {} (unfinished)", t.key, t.title) };
@@ -1080,6 +1189,7 @@ impl WorkingCopy {
                 if let Err(e) = commit(&r.path, &msg, b.allow_commands, rec).await {
                     ok = false;
                     rec.notes.push(format!("Couldn't commit the agent's work in {} (left uncommitted on {saved_on}): {e}", r.label()));
+                    self.keep = true;
                     continue;
                 }
                 rec.files_changed += files;
@@ -1092,6 +1202,8 @@ impl WorkingCopy {
                 self.changed.push(n);
             }
             match self.isolation {
+                // a worktree is removed in `close`, after the push
+                Isolation::Worktree => {}
                 Isolation::InPlace => {
                     if let Err(e) = git(&r.path, &["checkout", "-q", &r.original]).await {
                         ok = false;
@@ -1130,7 +1242,7 @@ impl WorkingCopy {
     async fn push(&self, b: &Board, rec: &mut RunRecord) -> bool {
         let mut pushed = true;
         for r in self.changed.iter().map(|n| &self.repos[*n]) {
-            if let Err(e) = git_push(&r.path, &self.branch, b.allow_commands).await {
+            if let Err(e) = git_push(&r.path, &self.branch, b.allow_commands, self.isolation == Isolation::InPlace).await {
                 pushed = false;
                 rec.notes.push(format!("Push failed in {}: {e}", r.label()));
             }
@@ -1139,10 +1251,23 @@ impl WorkingCopy {
     }
 
     /// Removes what only the run used, after `save` and `push`. In place: nothing, the
-    /// repositories are the user's.
-    async fn close(self, _rec: &mut RunRecord) {
+    /// repositories are the user's. Worktree: the worktree (unless it holds work that isn't
+    /// committed), and the branch when the run left nothing on it.
+    async fn close(self, rec: &mut RunRecord) {
         match self.isolation {
             Isolation::InPlace => {}
+            Isolation::Worktree => {
+                if self.keep {
+                    rec.notes.push(format!("The worktree {} was left as it is: look at it, then remove it (git worktree remove --force)", self.cwd));
+                    return;
+                }
+                // `--force`: what's left is only files git ignores (builds, dependencies)
+                if let Err(e) = git(&self.clone, &["worktree", "remove", "--force", &self.cwd]).await {
+                    rec.notes.push(format!("Couldn't remove the worktree {}: {e}", self.cwd));
+                } else if self.changed.is_empty() {
+                    let _ = git(&self.clone, &["branch", "-q", "-D", &self.branch]).await;
+                }
+            }
         }
     }
 }
@@ -1747,6 +1872,16 @@ mod tests {
         assert!(b.comment && b.interval_min == 10 && b.branch_prefix == "devcat/" && b.target_branch.is_empty(), "defaults");
     }
 
+    /// Boards saved before the setting stay in place; "worktree" picks a worktree for each ticket.
+    #[test]
+    fn isolation_setting() {
+        let old: Board = serde_json::from_value(json!({ "name": "b", "kind": "jira" })).unwrap();
+        assert_eq!(old.isolation, super::super::Isolation::InPlace);
+        let wt: Board = serde_json::from_value(json!({ "name": "b", "kind": "jira", "isolation": "worktree" })).unwrap();
+        assert_eq!(wt.isolation, super::super::Isolation::Worktree);
+        assert_eq!(serde_json::to_value(&old).unwrap()["isolation"], "inPlace");
+    }
+
     // ------------------------------------------------------------ runs with a stand-in agent
 
     /// Saving AI connections one at a time (the store has no lock).
@@ -1754,8 +1889,9 @@ mod tests {
 
     /// A stand-in for Claude Code: an AI connection whose program is a script. It runs the shell
     /// line `act` in the folder it's started in (where the agent works), then answers `status`.
-    /// Returns the connection's id and the script's folder, where it writes the prompt it got
-    /// (`prompt.jsonl`).
+    /// Returns the connection's id and the script's folder `$OUT` (outside the repository; `act`
+    /// may write there), where it writes its arguments (`args.txt`), the folder it ran in
+    /// (`cwd.txt`) and the prompt it got (`prompt.jsonl`).
     #[cfg(unix)]
     async fn stand_in(status: &str, act: &str) -> (String, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -1767,7 +1903,7 @@ mod tests {
         let result = json!({ "type": "result", "subtype": "success", "is_error": false, "session_id": "standin-1", "result": "Done.", "total_cost_usd": 0,
             "structured_output": { "status": status, "summary": "Stand-in summary.", "testing": "Run it." } });
         std::fs::write(&script, format!(
-            "#!/bin/sh\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *'\"type\":\"user\"'*) printf '%s\\n' \"$line\" >> '{}/prompt.jsonl'; break ;;\n  esac\ndone\n{act}\nprintf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"standin-1\"}}'\nprintf '%s\\n' '{result}'\ncat > /dev/null\nexit 0\n",
+            "#!/bin/sh\nexport OUT='{0}'\nprintf '%s\\n' \"$@\" > \"$OUT/args.txt\"\npwd -P > \"$OUT/cwd.txt\"\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *'\"type\":\"user\"'*) printf '%s\\n' \"$line\" >> \"$OUT/prompt.jsonl\"; break ;;\n  esac\ndone\n{act}\nprintf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"standin-1\"}}'\nprintf '%s\\n' '{result}'\ncat > /dev/null\nexit 0\n",
             out.display()
         )).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1790,10 +1926,43 @@ mod tests {
     /// A bare repository next to `dir` as its `origin`, with `main` pushed.
     async fn with_origin(dir: &Path) -> std::path::PathBuf {
         let remote = dir.with_extension("git");
-        git(dir.to_str().unwrap(), &["init", "-q", "--bare", remote.to_str().unwrap()]).await.unwrap();
+        git(dir.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]).await.unwrap();
         git(dir.to_str().unwrap(), &["remote", "add", "origin", remote.to_str().unwrap()]).await.unwrap();
         git(dir.to_str().unwrap(), &["push", "-q", "origin", "main"]).await.unwrap();
         remote
+    }
+
+    /// A clone (`calc.py` on `main`) with a bare `origin` that has `main`: (clone, origin).
+    async fn clone_with_origin(what: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = temp_dir(what);
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let remote = with_origin(&dir).await;
+        (dir, remote)
+    }
+
+    /// A commit on origin's `main` that the clone doesn't have yet (pushed from another clone).
+    /// Returns its sha.
+    async fn origin_ahead(remote: &Path, file: &str, body: &str) -> String {
+        let other = remote.with_extension("other");
+        git(remote.parent().unwrap().to_str().unwrap(), &["clone", "-q", remote.to_str().unwrap(), other.to_str().unwrap()]).await.unwrap();
+        let o = other.to_str().unwrap();
+        std::fs::write(other.join(file), body).unwrap();
+        git(o, &["add", "."]).await.unwrap();
+        git(o, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "newer"]).await.unwrap();
+        git(o, &["push", "-q", "origin", "main"]).await.unwrap();
+        let sha = git(o, &["rev-parse", "HEAD"]).await.unwrap().trim().to_string();
+        let _ = std::fs::remove_dir_all(&other);
+        sha
+    }
+
+    /// `board_on` with a worktree for each ticket, pushing fixed tickets.
+    fn worktree_board(site: &str, repo: &str, provider: &str) -> Board {
+        Board { isolation: super::super::Isolation::Worktree, push: true, ..board_on(site, repo, provider) }
+    }
+
+    /// The clone's linked worktrees (their paths), as git lists them.
+    async fn worktrees(clone: &str) -> Vec<String> {
+        git(clone, &["worktree", "list", "--porcelain"]).await.unwrap().lines().filter_map(|l| l.strip_prefix("worktree ")).skip(1).map(str::to_string).collect()
     }
 
     async fn head(cwd: &str) -> String {
@@ -1802,6 +1971,8 @@ mod tests {
 
     const CALC: &str = "def average(xs):\n    return sum(xs)\n";
     const BRANCH: &str = "devcat/abc-1-average-gives-the-wrong-result";
+    /// Where a worktree board works on ABC-1, in the clone.
+    const WORKTREE: &str = ".worktrees/abc-1-average-gives-the-wrong-result";
 
     /// A ticket is worked on in its own branch, committed there, and the repository is given back
     /// on the branch it was on; a run that changed nothing leaves no branch behind.
@@ -1935,5 +2106,72 @@ mod tests {
         assert_eq!(std::fs::read_to_string(web.join("index.html")).unwrap(), "<h1>Shop (my edit)</h1>\n");
         assert!(seen.lock().iter().any(|r| r.contains("in calc-lib (1 file)")), "{:?}", seen.lock());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A worktree board: the run starts from origin's latest main in `.worktrees/`, while the
+    /// clone has the user's changes on another branch; the fix is committed and pushed, the
+    /// worktree removed, the branch kept, and the clone left as it was (`.worktrees/` hidden by
+    /// its exclude file).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_run() {
+        let (site, seen) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("wt-run").await;
+        let cwd = dir.to_str().unwrap();
+        let newer = origin_ahead(&remote, "README.md", "newer\n").await;
+        git(cwd, &["checkout", "-q", "-b", "mine"]).await.unwrap();
+        std::fs::write(dir.join("calc.py"), "# my edit\n").unwrap();
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py; git -C ../.. status --porcelain --untracked-files=all > \"$OUT/status.txt\"").await;
+        let rec = fix_one(&worktree_board(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "fixed", "{} {:?}", rec.summary, rec.notes);
+        let wt = dir.join(WORKTREE);
+        assert_eq!((rec.branch.as_deref(), rec.files_changed, rec.cwd.as_deref()), (Some(BRANCH), 1, wt.to_str()));
+        assert_eq!(std::fs::read_to_string(out.join("cwd.txt")).unwrap().trim(), wt.to_str().unwrap(), "the agent ran in the worktree");
+        assert_eq!(std::fs::read_to_string(out.join("status.txt")).unwrap().trim(), "M calc.py", "the clone shows only the user's change");
+        assert!(git(cwd, &["merge-base", "--is-ancestor", &newer, BRANCH]).await.is_ok(), "made from origin's latest main");
+        assert!(git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# fixed"));
+        let origin = remote.to_str().unwrap();
+        assert_eq!(git(origin, &["rev-parse", BRANCH]).await.unwrap(), git(cwd, &["rev-parse", BRANCH]).await.unwrap(), "pushed");
+        assert!(git(cwd, &["config", "--get", &format!("branch.{BRANCH}.remote")]).await.is_err(), "no upstream in the shared config");
+        assert!(worktrees(cwd).await.is_empty() && !wt.exists(), "the worktree is removed");
+        assert_eq!(head(cwd).await, "mine");
+        assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), "# my edit\n");
+        assert!(std::fs::read_to_string(dir.join(".git/info/exclude")).unwrap().lines().any(|l| l == ".worktrees/"));
+        assert!(seen.lock().iter().any(|r| r.contains(&format!("Branch: {BRANCH} (pushed to origin)"))), "{:?}", seen.lock());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A worktree run that changes nothing leaves no branch; unfinished work stays on the ticket's
+    /// branch (not pushed); the next run starts from that branch and pushes it with its fix.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_from_the_tickets_branch() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("wt-again").await;
+        let (cwd, origin) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+
+        let (asker, _) = stand_in("needs_info", "true").await;
+        let rec = fix_one(&worktree_board(&site, cwd, &asker), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("needs_info", None), "{} {:?}", rec.summary, rec.notes);
+        assert!(git(cwd, &["branch", "--list", "devcat/*"]).await.unwrap().trim().is_empty(), "no empty branch left");
+        assert!(worktrees(cwd).await.is_empty());
+
+        let (half, _) = stand_in("needs_info", "echo '    # half' >> calc.py").await;
+        let rec = fix_one(&worktree_board(&site, cwd, &half), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("needs_info", Some(BRANCH)), "{} {:?}", rec.summary, rec.notes);
+        assert!(git(origin, &["branch", "--list", "devcat/*"]).await.unwrap().trim().is_empty(), "unfinished work isn't pushed");
+        assert!(worktrees(cwd).await.is_empty());
+
+        let (fixer, _) = stand_in("fixed", "echo '    # done' >> calc.py").await;
+        let rec = fix_one(&worktree_board(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("fixed", Some(BRANCH)), "{} {:?}", rec.summary, rec.notes);
+        let calc = git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap();
+        assert!(calc.contains("# half") && calc.contains("# done"), "{calc}");
+        assert_eq!(git(origin, &["rev-parse", BRANCH]).await.unwrap(), git(cwd, &["rev-parse", BRANCH]).await.unwrap(), "pushed");
+        assert!(worktrees(cwd).await.is_empty());
+        assert_eq!(head(cwd).await, "main");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
     }
 }
