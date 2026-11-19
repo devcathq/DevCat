@@ -316,57 +316,7 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         v.url = Some(t.url.clone());
     });
 
-    // The repositories: on a branch, without the user's changes (those are left alone). `own`: a
-    // new branch per ticket, else the board's existing branch. An answer to the agent goes on
-    // where its last run left the work (`cont`, the branch it committed on).
-    let (mut repos, mut skipped) = prepare(&b.repo).await?;
-    let target = b.target_branch.trim();
-    let cont = reply.and_then(|r| r.branch.clone()).filter(|br| br.as_str() != target);
-    let own = target.is_empty() || cont.is_some();
-    if !own {
-        with_branch(&mut repos, &mut skipped, target).await?;
-    }
-    let new_branch = match &cont {
-        Some(br) => br.clone(),
-        None => free_branch(&repos, &branch_name(&b.branch_prefix, &t)).await,
-    };
-    let branch = if own { new_branch.clone() } else { target.to_string() };
-    // Repositories where the branch was there already (the last run's work): never deleted.
-    let mut existed = vec![false; repos.len()];
-    for (n, r) in repos.iter().enumerate() {
-        if cont.is_some() {
-            existed[n] = git(&r.path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.is_ok();
-        }
-        let res = if own && !existed[n] { git(&r.path, &["checkout", "-q", "-b", &branch]).await } else { git(&r.path, &["checkout", "-q", &branch]).await };
-        if let Err(e) = res {
-            for (i, done) in repos[..n].iter().enumerate() {
-                let _ = git(&done.path, &["checkout", "-q", &done.original]).await;
-                if own && !existed[i] {
-                    let _ = git(&done.path, &["branch", "-q", "-D", &branch]).await;
-                }
-            }
-            return Err(AppError::msg(format!("Couldn't {} the branch {branch} in {}: {e}", if own { "make" } else { "check out" }, r.label())));
-        }
-    }
-    if cont.is_some() && !target.is_empty() {
-        rec.notes.push(format!("Went on with the earlier work on {branch}: merge it into {target} when it's done"));
-    }
-    let what = if own && cont.is_none() { "Branch" } else { "On" };
-    stage(&b.id, &match repos.as_slice() {
-        [r] if skipped.is_empty() && r.name.is_empty() => format!("{what} {branch} (from {})", r.original),
-        _ => format!("{what} {branch} in {}", repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")),
-    });
-    if !own && b.push {
-        // It's pushed when fixed: start from what origin has.
-        for r in &repos {
-            if let Err(e) = git(&r.path, &["pull", "-q", "--ff-only", "origin", &branch]).await {
-                rec.notes.push(format!("Couldn't update {branch} in {} from origin: {e}", r.label()));
-            }
-        }
-    }
-    for (name, why, _) in &skipped {
-        rec.notes.push(format!("Left {name} alone: {why}"));
-    }
+    let mut wc = WorkingCopy::open(b, &t, reply, rec).await?;
 
     let from = t.column.clone();
     if let Some(w) = &b.working {
@@ -386,97 +336,24 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         log(&b.id, "With your prompt for this ticket (instead of the board's default)".into());
     }
     let session = Arc::new(Mutex::new(None));
-    // git's settings in each repository as the user left them: an agent that changes them gets no
-    // git run there afterwards (`git_setup`)
-    let setups: Vec<Vec<u8>> = repos.iter().map(|r| git_setup(&r.path)).collect();
-    let skipped_setups: Vec<Option<Vec<u8>>> = skipped.iter().map(|(name, _, _)| repos_dir(&b.repo, name).map(|p| git_setup(&p))).collect();
-    let answer = run_agent(b, &t, &where_text(&branch, own && cont.is_none(), &repos, &skipped), &images, custom, reply, cancel, &session).await;
+    let answer = run_agent(b, &t, &wc, &images, custom, reply, cancel, &session).await;
     rec.session_id = session.lock().clone();
     rec.provider_id = Some(provider_of(b).to_string());
-    rec.cwd = Some(b.repo.clone());
+    rec.cwd = Some(wc.cwd.clone());
 
-    // Whatever happened: keep the work on the branch and give each repository back as it was.
+    // Whatever happened: keep the work on the branch and give the working copy back.
     stage(&b.id, "Saving the work");
     let summary = answer.as_ref().map(|a| a.summary.clone()).unwrap_or_default();
     let said_fixed = matches!(&answer, Ok(a) if a.status == "fixed");
-    // Unfinished work doesn't go onto the board's existing branch: on a new one instead.
-    let wip = !own && !said_fixed;
-    let saved_on = if wip { new_branch.as_str() } else { branch.as_str() };
-    let mut changed: Vec<&Repo> = vec![];
-    let mut saved = true;
-    for (n, r) in repos.iter().enumerate() {
-        if git_setup(&r.path) != setups[n] {
-            saved = false;
-            rec.notes.push(format!(
-                "The agent changed git's own settings in {} (its .git config, attributes or hooks), so DevCat ran no git there: nothing was committed or pushed, and it's still on {branch}. Check .git before you run git in it.",
-                r.label()
-            ));
-            continue;
-        }
-        let files = changed_files(&r.path).await.unwrap_or(0);
-        if files > 0 {
-            if wip
-                && let Err(e) = git(&r.path, &["checkout", "-q", "-b", saved_on]).await
-            {
-                saved = false;
-                rec.notes.push(format!("Couldn't make the branch {saved_on} for the unfinished work in {} (left uncommitted on {branch}): {e}", r.label()));
-                continue;
-            }
-            let head = if said_fixed { format!("{}: {}", t.key, t.title) } else { format!("WIP {}: {} (unfinished)", t.key, t.title) };
-            let msg = format!("{head}\n\n{summary}\n\n{}\nWorked on by the DevCat agent.", t.url).trim().to_string();
-            if let Err(e) = commit(&r.path, &msg, b.allow_commands, rec).await {
-                saved = false;
-                rec.notes.push(format!("Couldn't commit the agent's work in {} (left uncommitted on {saved_on}): {e}", r.label()));
-                continue;
-            }
-            rec.files_changed += files;
-            if !r.name.is_empty() {
-                rec.repos.push(format!("{} ({files} file{})", r.name, if files == 1 { "" } else { "s" }));
-            }
-            changed.push(r);
-        } else if existed[n] {
-            // The last run's work is on the branch: pushed with the rest when fixed.
-            changed.push(r);
-        }
-        if let Err(e) = git(&r.path, &["checkout", "-q", &r.original]).await {
-            saved = false;
-            rec.notes.push(format!("Couldn't go back to {} in {}: {e}", r.original, r.label()));
-            continue;
-        }
-        if files == 0 && own && !existed[n] {
-            let _ = git(&r.path, &["branch", "-q", "-D", &branch]).await;
-        }
-    }
-    for ((name, _, before), setup) in skipped.iter().zip(&skipped_setups) {
-        if let Some(p) = repos_dir(&b.repo, name) {
-            if setup.as_ref() != Some(&git_setup(&p)) {
-                rec.notes.push(format!("The agent changed git's own settings in {name} (its .git config, attributes or hooks): check .git before you run git in it"));
-            } else if fingerprint(&p).await != *before {
-                rec.notes.push(format!("{name} has your uncommitted changes and was changed while the agent worked: check it"));
-            }
-        }
-    }
+    let Saved { ok: saved, earlier } = wc.save(b, &t, said_fixed, &summary, rec).await;
     let files = rec.files_changed;
-    // Going on from the last run: its committed work counts too.
-    let earlier = existed.iter().any(|e| *e);
     let fixed = said_fixed && (files > 0 || earlier) && saved;
-    if files > 0 {
-        rec.branch = Some(saved_on.to_string());
-        log(&b.id, format!("{files} file{} changed, committed on {saved_on}", if files == 1 { "" } else { "s" }));
-    } else if earlier {
-        rec.branch = Some(branch.clone());
-    }
     let mut pushed = false;
     if fixed && b.push {
         stage(&b.id, "Pushing");
-        pushed = true;
-        for r in &changed {
-            if let Err(e) = git_push(&r.path, &branch, b.allow_commands).await {
-                pushed = false;
-                rec.notes.push(format!("Push failed in {}: {e}", r.label()));
-            }
-        }
+        pushed = wc.push(b, rec).await;
     }
+    wc.close(rec).await;
 
     let a = match answer {
         Ok(a) => a,
@@ -699,12 +576,12 @@ fn provider_of(b: &Board) -> &str {
     if b.provider_id.is_empty() { crate::ai::BUILTIN_ID } else { b.provider_id.as_str() }
 }
 
-/// `session`: set to the chat's session id (Claude's, or the DevCat Agent's), to open it later in
-/// the AI workspace.
+/// `wc`: where the agent works. `session`: set to the chat's session id (Claude's, or the DevCat
+/// Agent's), to open it later in the AI workspace.
 /// `reply`: the person's answer to the agent's last run, which it goes on from (in that chat, when
 /// it was with the same AI connection).
 #[allow(clippy::too_many_arguments)]
-async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom: Option<&str>, reply: Option<&Reply>, cancel: &Cancel, session: &Arc<Mutex<Option<String>>>) -> AppResult<Answer> {
+async fn run_agent(b: &Board, t: &Ticket, wc: &WorkingCopy, images: &[Image], custom: Option<&str>, reply: Option<&Reply>, cancel: &Cancel, session: &Arc<Mutex<Option<String>>>) -> AppResult<Answer> {
     let providers = crate::ai::providers().await?;
     let id = provider_of(b);
     let p = providers.into_iter().find(|p| p.id == id).ok_or_else(|| AppError::msg("The board's AI connection is gone: choose another one"))?;
@@ -714,6 +591,7 @@ async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom
         _ => true,
     });
     // The message, and the ticket's images (only when the agent starts over).
+    let where_ = &wc.where_text();
     let message = |json_tail: bool| -> (String, bool) {
         let full = || prompt(b, t, where_, images, custom, json_tail);
         match reply {
@@ -744,7 +622,7 @@ async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom
             };
             let (text, with_images) = message(false);
             let job = crate::claude::headless::Job {
-                cwd: b.repo.clone(),
+                cwd: wc.cwd.clone(),
                 prompt: text,
                 model,
                 allow_commands: b.allow_commands,
@@ -769,7 +647,7 @@ async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom
             let (text, with_images) = message(true);
             let blocks = if with_images { images.iter().map(|i| Block::Image { media_type: i.media_type.clone(), data: i.data.clone() }).collect() } else { vec![] };
             let title = format!("{}: {}", t.key, t.title);
-            run_devcat_agent(b, &p.id, model, &text, blocks, cancel, activity, session, &title, resume).await
+            run_devcat_agent(b, &p.id, &wc.cwd, model, &text, blocks, cancel, activity, session, &title, resume).await
         }
         k => Err(AppError::msg(format!("Tickets are worked on by Claude Code or DevCat Agent; \"{}\" is {}", p.name, k.label()))),
     }
@@ -787,6 +665,7 @@ fn agent_session(id: &str) -> Option<std::path::PathBuf> {
 async fn run_devcat_agent(
     b: &Board,
     provider: &str,
+    cwd: &str,
     model: Option<String>,
     prompt: &str,
     images: Vec<Block>,
@@ -800,10 +679,9 @@ async fn run_devcat_agent(
     if let Some(m) = model {
         cfg.model = m;
     }
-    let cwd = Path::new(&b.repo);
     let shell = if cfg!(windows) { "PowerShell" } else { "bash" };
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let mut system = system_prompt(&Environment { cwd, os: std::env::consts::OS, shell, date: &today });
+    let mut system = system_prompt(&Environment { cwd: Path::new(cwd), os: std::env::consts::OS, shell, date: &today });
     // The memory and connections a chat in this project gets (see agent.rs).
     let scope = scope_of(b);
     system.push_str("\n\n");
@@ -822,7 +700,7 @@ async fn run_devcat_agent(
     let mut session = match resume.as_deref().and_then(agent_session) {
         Some(p) => Session::open(&p).await.map_err(|e| AppError::msg(e.to_string()))?,
         None => {
-            let mut s = Session::create(crate::agent::sessions_dir()?, &b.repo).await.map_err(|e| AppError::msg(e.to_string()))?;
+            let mut s = Session::create(crate::agent::sessions_dir()?, cwd).await.map_err(|e| AppError::msg(e.to_string()))?;
             let _ = s.append(SessionEvent::Title { title: format!("Ticket {title}") }).await;
             s
         }
@@ -1051,6 +929,224 @@ async fn free_branch(repos: &[Repo], base: &str) -> String {
     format!("{base}-{}", now_ms())
 }
 
+// ---------------------------------------------------------------- the working copy
+
+/// How a run gets its working copy. In place: the board's own repositories, switched to the
+/// ticket's branch for the run and back to the branch they were on after it.
+enum Isolation {
+    InPlace,
+}
+
+/// Where one run's agent works, from getting it ready to giving it back: `open` checks the
+/// repositories and checks out the ticket's branch, `save` commits what the agent changed and
+/// gives the user's checkout back, `push` sends the branch to origin, and `close` removes what
+/// only the run used. Each `Isolation` does these its own way; `work` doesn't need to know which.
+struct WorkingCopy {
+    isolation: Isolation,
+    /// The folder the agent works in.
+    cwd: String,
+    repos: Vec<Repo>,
+    /// The repositories it must leave alone: (name, why, fingerprint).
+    skipped: Vec<(String, String, String)>,
+    /// A new branch per ticket (else the board's existing branch).
+    own: bool,
+    /// Going on where the last run left the work (an answer to the agent).
+    cont: bool,
+    /// The branch the agent works on.
+    branch: String,
+    /// The ticket's own branch: where unfinished work goes on a board that commits to an existing one.
+    new_branch: String,
+    /// Repositories where the branch was there already (the last run's work): never deleted.
+    existed: Vec<bool>,
+    /// git's settings in each repository as the user left them: an agent that changes them gets
+    /// no git run there afterwards (`git_setup`).
+    setups: Vec<Vec<u8>>,
+    skipped_setups: Vec<Option<Vec<u8>>>,
+    /// The repositories (indexes in `repos`) with work to push, once saved.
+    changed: Vec<usize>,
+}
+
+/// What `save` did.
+struct Saved {
+    /// What the agent changed is committed everywhere (nothing left uncommitted).
+    ok: bool,
+    /// The branch has the last run's work on it (going on from it).
+    earlier: bool,
+}
+
+impl WorkingCopy {
+    /// The working copy for a run on `t`, ready for the agent.
+    async fn open(b: &Board, t: &Ticket, reply: Option<&Reply>, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+        WorkingCopy::in_place(b, t, reply, rec).await
+    }
+
+    /// Whether a run could get its working copy now: the watch loop queues nothing otherwise (and
+    /// tries again next time). In place: not while the user has changes in every repository.
+    async fn ready(b: &Board) -> bool {
+        prepare(&b.repo).await.is_ok()
+    }
+
+    /// The board's repositories: on a branch, without the user's changes (those are left alone).
+    /// `own`: a new branch per ticket, else the board's existing branch. An answer to the agent
+    /// goes on where its last run left the work (`cont`, the branch it committed on).
+    async fn in_place(b: &Board, t: &Ticket, reply: Option<&Reply>, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+        let (mut repos, mut skipped) = prepare(&b.repo).await?;
+        let target = b.target_branch.trim();
+        let cont = reply.and_then(|r| r.branch.clone()).filter(|br| br.as_str() != target);
+        let own = target.is_empty() || cont.is_some();
+        if !own {
+            with_branch(&mut repos, &mut skipped, target).await?;
+        }
+        let new_branch = match &cont {
+            Some(br) => br.clone(),
+            None => free_branch(&repos, &branch_name(&b.branch_prefix, t)).await,
+        };
+        let branch = if own { new_branch.clone() } else { target.to_string() };
+        let mut existed = vec![false; repos.len()];
+        for (n, r) in repos.iter().enumerate() {
+            if cont.is_some() {
+                existed[n] = git(&r.path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.is_ok();
+            }
+            let res = if own && !existed[n] { git(&r.path, &["checkout", "-q", "-b", &branch]).await } else { git(&r.path, &["checkout", "-q", &branch]).await };
+            if let Err(e) = res {
+                for (i, done) in repos[..n].iter().enumerate() {
+                    let _ = git(&done.path, &["checkout", "-q", &done.original]).await;
+                    if own && !existed[i] {
+                        let _ = git(&done.path, &["branch", "-q", "-D", &branch]).await;
+                    }
+                }
+                return Err(AppError::msg(format!("Couldn't {} the branch {branch} in {}: {e}", if own { "make" } else { "check out" }, r.label())));
+            }
+        }
+        if cont.is_some() && !target.is_empty() {
+            rec.notes.push(format!("Went on with the earlier work on {branch}: merge it into {target} when it's done"));
+        }
+        let what = if own && cont.is_none() { "Branch" } else { "On" };
+        stage(&b.id, &match repos.as_slice() {
+            [r] if skipped.is_empty() && r.name.is_empty() => format!("{what} {branch} (from {})", r.original),
+            _ => format!("{what} {branch} in {}", repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")),
+        });
+        if !own && b.push {
+            // It's pushed when fixed: start from what origin has.
+            for r in &repos {
+                if let Err(e) = git(&r.path, &["pull", "-q", "--ff-only", "origin", &branch]).await {
+                    rec.notes.push(format!("Couldn't update {branch} in {} from origin: {e}", r.label()));
+                }
+            }
+        }
+        for (name, why, _) in &skipped {
+            rec.notes.push(format!("Left {name} alone: {why}"));
+        }
+        let setups = repos.iter().map(|r| git_setup(&r.path)).collect();
+        let skipped_setups = skipped.iter().map(|(name, _, _)| repos_dir(&b.repo, name).map(|p| git_setup(&p))).collect();
+        Ok(WorkingCopy { isolation: Isolation::InPlace, cwd: b.repo.clone(), repos, skipped, own, cont: cont.is_some(), branch, new_branch, existed, setups, skipped_setups, changed: vec![] })
+    }
+
+    /// What the agent is told about where it works.
+    fn where_text(&self) -> String {
+        where_text(&self.branch, self.own && !self.cont, &self.repos, &self.skipped)
+    }
+
+    /// Commits what the agent changed on the branch (unfinished work too, marked WIP, and on the
+    /// ticket's own branch when the board commits to an existing one), and gives each repository
+    /// back as the user left it. No git at all in a repository whose git settings the agent
+    /// changed. Sets the record's files, repositories and branch.
+    async fn save(&mut self, b: &Board, t: &Ticket, said_fixed: bool, summary: &str, rec: &mut RunRecord) -> Saved {
+        let branch = &self.branch;
+        // Unfinished work doesn't go onto the board's existing branch: on a new one instead.
+        let wip = !self.own && !said_fixed;
+        let saved_on = if wip { self.new_branch.as_str() } else { branch.as_str() };
+        let mut ok = true;
+        for (n, r) in self.repos.iter().enumerate() {
+            if git_setup(&r.path) != self.setups[n] {
+                ok = false;
+                rec.notes.push(format!(
+                    "The agent changed git's own settings in {} (its .git config, attributes or hooks), so DevCat ran no git there: nothing was committed or pushed, and it's still on {branch}. Check .git before you run git in it.",
+                    r.label()
+                ));
+                continue;
+            }
+            let files = changed_files(&r.path).await.unwrap_or(0);
+            if files > 0 {
+                if wip
+                    && let Err(e) = git(&r.path, &["checkout", "-q", "-b", saved_on]).await
+                {
+                    ok = false;
+                    rec.notes.push(format!("Couldn't make the branch {saved_on} for the unfinished work in {} (left uncommitted on {branch}): {e}", r.label()));
+                    continue;
+                }
+                let head = if said_fixed { format!("{}: {}", t.key, t.title) } else { format!("WIP {}: {} (unfinished)", t.key, t.title) };
+                let msg = format!("{head}\n\n{summary}\n\n{}\nWorked on by the DevCat agent.", t.url).trim().to_string();
+                if let Err(e) = commit(&r.path, &msg, b.allow_commands, rec).await {
+                    ok = false;
+                    rec.notes.push(format!("Couldn't commit the agent's work in {} (left uncommitted on {saved_on}): {e}", r.label()));
+                    continue;
+                }
+                rec.files_changed += files;
+                if !r.name.is_empty() {
+                    rec.repos.push(format!("{} ({files} file{})", r.name, if files == 1 { "" } else { "s" }));
+                }
+                self.changed.push(n);
+            } else if self.existed[n] {
+                // The last run's work is on the branch: pushed with the rest when fixed.
+                self.changed.push(n);
+            }
+            match self.isolation {
+                Isolation::InPlace => {
+                    if let Err(e) = git(&r.path, &["checkout", "-q", &r.original]).await {
+                        ok = false;
+                        rec.notes.push(format!("Couldn't go back to {} in {}: {e}", r.original, r.label()));
+                        continue;
+                    }
+                    if files == 0 && self.own && !self.existed[n] {
+                        let _ = git(&r.path, &["branch", "-q", "-D", branch]).await;
+                    }
+                }
+            }
+        }
+        for ((name, _, before), setup) in self.skipped.iter().zip(&self.skipped_setups) {
+            if let Some(p) = repos_dir(&b.repo, name) {
+                if setup.as_ref() != Some(&git_setup(&p)) {
+                    rec.notes.push(format!("The agent changed git's own settings in {name} (its .git config, attributes or hooks): check .git before you run git in it"));
+                } else if fingerprint(&p).await != *before {
+                    rec.notes.push(format!("{name} has your uncommitted changes and was changed while the agent worked: check it"));
+                }
+            }
+        }
+        let files = rec.files_changed;
+        // Going on from the last run: its committed work counts too.
+        let earlier = self.existed.iter().any(|e| *e);
+        if files > 0 {
+            rec.branch = Some(saved_on.to_string());
+            log(&b.id, format!("{files} file{} changed, committed on {saved_on}", if files == 1 { "" } else { "s" }));
+        } else if earlier {
+            rec.branch = Some(branch.clone());
+        }
+        Saved { ok, earlier }
+    }
+
+    /// Pushes the branch to origin from each repository with work on it (after `save`). Whether
+    /// every push went through; the ones that didn't go to the notes.
+    async fn push(&self, b: &Board, rec: &mut RunRecord) -> bool {
+        let mut pushed = true;
+        for r in self.changed.iter().map(|n| &self.repos[*n]) {
+            if let Err(e) = git_push(&r.path, &self.branch, b.allow_commands).await {
+                pushed = false;
+                rec.notes.push(format!("Push failed in {}: {e}", r.label()));
+            }
+        }
+        pushed
+    }
+
+    /// Removes what only the run used, after `save` and `push`. In place: nothing, the
+    /// repositories are the user's.
+    async fn close(self, _rec: &mut RunRecord) {
+        match self.isolation {
+            Isolation::InPlace => {}
+        }
+    }
+}
+
 /// A repository the agent works in for a ticket.
 #[derive(Debug)]
 pub struct Repo {
@@ -1228,8 +1324,7 @@ pub fn start_watch() {
 
 async fn check_column(b: &Board) -> AppResult<()> {
     let Some(col) = &b.pick_from else { return Ok(()) };
-    // Not while the user has changes in every repository (try again next time).
-    if prepare(&b.repo).await.is_err() {
+    if !WorkingCopy::ready(b).await {
         return Ok(());
     }
     let tried: std::collections::HashSet<String> = super::history(&b.id).into_iter().filter(|r| r.outcome != "stopped").map(|r| r.ticket_id).collect();
@@ -1650,5 +1745,195 @@ mod tests {
         assert!(c.starts_with("DevCat agent fixed this. Moved to Testing."));
         assert!(c.contains("Changed x.") && c.contains("How to test:\nLog in") && c.contains("2 files changed"));
         assert!(b.comment && b.interval_min == 10 && b.branch_prefix == "devcat/" && b.target_branch.is_empty(), "defaults");
+    }
+
+    // ------------------------------------------------------------ runs with a stand-in agent
+
+    /// Saving AI connections one at a time (the store has no lock).
+    static AI_SAVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// A stand-in for Claude Code: an AI connection whose program is a script. It runs the shell
+    /// line `act` in the folder it's started in (where the agent works), then answers `status`.
+    /// Returns the connection's id and the script's folder, where it writes the prompt it got
+    /// (`prompt.jsonl`).
+    #[cfg(unix)]
+    async fn stand_in(status: &str, act: &str) -> (String, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        crate::ai::init(std::env::temp_dir().join(format!("devcat-tickets-ai-{}", std::process::id())));
+        let id = format!("standin-{}", uuid::Uuid::new_v4());
+        let out = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("devcat-tickets-{id}"));
+        std::fs::create_dir_all(&out).unwrap();
+        let script = out.join("claude");
+        let result = json!({ "type": "result", "subtype": "success", "is_error": false, "session_id": "standin-1", "result": "Done.", "total_cost_usd": 0,
+            "structured_output": { "status": status, "summary": "Stand-in summary.", "testing": "Run it." } });
+        std::fs::write(&script, format!(
+            "#!/bin/sh\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *'\"type\":\"user\"'*) printf '%s\\n' \"$line\" >> '{}/prompt.jsonl'; break ;;\n  esac\ndone\n{act}\nprintf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"standin-1\"}}'\nprintf '%s\\n' '{result}'\ncat > /dev/null\nexit 0\n",
+            out.display()
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _lock = AI_SAVE.lock().await;
+        crate::ai::ai_provider_save(crate::ai::AiProvider { id: id.clone(), name: "Stand-in".into(), command: Some(script.to_string_lossy().into_owned()), builtin: false, ..crate::ai::store::builtin_claude() }).await.unwrap();
+        (id, out)
+    }
+
+    /// A Jira board on `mock_jira` whose agent is `provider`, working in `repo`.
+    fn board_on(site: &str, repo: &str, provider: &str) -> Board {
+        let col = |id: &str, name: &str| Some(super::super::Column { id: id.into(), name: name.into() });
+        let b: Board = serde_json::from_value(json!({ "id": "test", "name": "Test", "kind": "jira", "site": site, "project": "ABC", "token": "t", "repo": repo, "providerId": provider })).unwrap();
+        Board { pick_from: col("1", "To Do"), working: col("2", "In Progress"), done_to: col("3", "Testing"), ..b }
+    }
+
+    fn temp_dir(what: &str) -> std::path::PathBuf {
+        std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("devcat-tickets-{what}-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// A bare repository next to `dir` as its `origin`, with `main` pushed.
+    async fn with_origin(dir: &Path) -> std::path::PathBuf {
+        let remote = dir.with_extension("git");
+        git(dir.to_str().unwrap(), &["init", "-q", "--bare", remote.to_str().unwrap()]).await.unwrap();
+        git(dir.to_str().unwrap(), &["remote", "add", "origin", remote.to_str().unwrap()]).await.unwrap();
+        git(dir.to_str().unwrap(), &["push", "-q", "origin", "main"]).await.unwrap();
+        remote
+    }
+
+    async fn head(cwd: &str) -> String {
+        git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await.unwrap().trim().to_string()
+    }
+
+    const CALC: &str = "def average(xs):\n    return sum(xs)\n";
+    const BRANCH: &str = "devcat/abc-1-average-gives-the-wrong-result";
+
+    /// A ticket is worked on in its own branch, committed there, and the repository is given back
+    /// on the branch it was on; a run that changed nothing leaves no branch behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_on_its_own_branch() {
+        let (site, seen) = mock_jira().await;
+        let dir = temp_dir("run");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let rec = fix_one(&board_on(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "fixed", "{} {:?}", rec.summary, rec.notes);
+        assert_eq!((rec.branch.as_deref(), rec.files_changed, rec.cwd.as_deref()), (Some(BRANCH), 1, Some(cwd)));
+        assert_eq!(head(cwd).await, "main");
+        assert_eq!(changed_files(cwd).await.unwrap(), 0);
+        assert!(git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# fixed"));
+        assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), CALC);
+        assert!(seen.lock().iter().any(|r| r.starts_with("POST /rest/api/2/issue/ABC-1/comment") && r.contains(&format!("Branch: {BRANCH} (not pushed"))), "{:?}", seen.lock());
+
+        let (asker, _) = stand_in("needs_info", "true").await;
+        let rec = fix_one(&board_on(&site, cwd, &asker), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("needs_info", None), "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(head(cwd).await, "main");
+        assert_eq!(git(cwd, &["branch", "--list", "devcat/*"]).await.unwrap().trim(), BRANCH, "the empty branch is gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The user's own changes or a detached HEAD: no run, the agent doesn't start.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn refuses_a_clone_that_is_not_ready() {
+        let (site, _) = mock_jira().await;
+        let dir = temp_dir("refuse");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        std::fs::write(dir.join("mine.txt"), "mine\n").unwrap();
+        let rec = fix_one(&board_on(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "error");
+        assert!(rec.summary.contains("has uncommitted changes"), "{}", rec.summary);
+        std::fs::remove_file(dir.join("mine.txt")).unwrap();
+        git(cwd, &["checkout", "-q", "--detach"]).await.unwrap();
+        let rec = fix_one(&board_on(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert!(rec.outcome == "error" && rec.summary.contains("not on a branch"), "{}", rec.summary);
+        assert!(!out.join("prompt.jsonl").exists(), "the agent never ran");
+        assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), CALC);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A board that commits to its existing branch and pushes: a fix goes onto it and to origin;
+    /// unfinished work goes onto a new branch, not pushed; an answer goes on from that branch.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn existing_branch_pushed() {
+        let (site, seen) = mock_jira().await;
+        let dir = temp_dir("push");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let remote = with_origin(&dir).await;
+        let origin = remote.to_str().unwrap();
+        let board = |p: &str| Board { target_branch: "main".into(), push: true, ..board_on(&site, cwd, p) };
+
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let rec = fix_one(&board(&fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("fixed", Some("main")), "{} {:?}", rec.summary, rec.notes);
+        let main = git(cwd, &["rev-parse", "main"]).await.unwrap();
+        assert_eq!(git(origin, &["rev-parse", "main"]).await.unwrap(), main, "pushed");
+        assert!(git(cwd, &["show", "main:calc.py"]).await.unwrap().contains("# fixed"));
+        assert!(seen.lock().iter().any(|r| r.contains("Branch: main (pushed to origin)")), "{:?}", seen.lock());
+
+        let (half, _) = stand_in("needs_info", "echo '    # half' >> calc.py").await;
+        let rec = fix_one(&board(&half), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("needs_info", Some(BRANCH)), "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(git(cwd, &["rev-parse", "main"]).await.unwrap(), main, "main is untouched");
+        assert!(git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# half"));
+        assert!(git(origin, &["branch", "--list", "devcat/*"]).await.unwrap().trim().is_empty(), "unfinished work isn't pushed");
+        assert_eq!(head(cwd).await, "main");
+
+        let (done, _) = stand_in("fixed", "true").await;
+        let r = Reply { text: "Go on.".into(), asked: "Stand-in summary.".into(), branch: Some(BRANCH.into()), ..Default::default() };
+        let rec = fix_one(&board(&done), "ABC-1", None, Some(&r), &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref(), rec.files_changed), ("fixed", Some(BRANCH), 0), "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.notes.iter().any(|n| n.contains("merge it into main")), "{:?}", rec.notes);
+        assert_eq!(git(origin, &["rev-parse", BRANCH]).await.unwrap(), git(cwd, &["rev-parse", BRANCH]).await.unwrap(), "the earlier work is pushed");
+        assert_eq!(head(cwd).await, "main");
+        assert_eq!(git(cwd, &["branch", "--list", "devcat/*"]).await.unwrap().trim(), BRANCH, "the earlier branch stays");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// An agent that changes git's own settings: DevCat runs no git there afterwards, so the work
+    /// stays uncommitted on the ticket's branch.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_git_after_settings_changed() {
+        let (site, _) = mock_jira().await;
+        let dir = temp_dir("guard");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py; git config core.sshCommand 'ssh -v'").await;
+        let rec = fix_one(&board_on(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("failed", None), "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.notes.iter().any(|n| n.contains("changed git's own settings")), "{:?}", rec.notes);
+        assert_eq!(head(cwd).await, BRANCH);
+        assert_eq!(changed_files(cwd).await.unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder of repositories: the work is committed in the repository the agent changed; the
+    /// one with the user's changes is left alone.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_in_a_folder() {
+        let (site, seen) = mock_jira().await;
+        let root = temp_dir("folder");
+        repo_at(&root.join("calc-lib"), &[("calc.py", CALC)]).await;
+        repo_at(&root.join("web"), &[("index.html", "<h1>Shop</h1>\n")]).await;
+        std::fs::write(root.join("web/index.html"), "<h1>Shop (my edit)</h1>\n").unwrap();
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc-lib/calc.py").await;
+        let rec = fix_one(&board_on(&site, root.to_str().unwrap(), &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "fixed", "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(rec.repos, vec!["calc-lib (1 file)".to_string()]);
+        assert_eq!(rec.notes, vec!["Left web alone: it has uncommitted changes".to_string()]);
+        let lib = root.join("calc-lib");
+        let lib = lib.to_str().unwrap();
+        assert!(git(lib, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# fixed"));
+        assert_eq!(head(lib).await, "main");
+        let web = root.join("web");
+        assert!(git(web.to_str().unwrap(), &["branch", "--list", "devcat/*"]).await.unwrap().trim().is_empty());
+        assert_eq!(std::fs::read_to_string(web.join("index.html")).unwrap(), "<h1>Shop (my edit)</h1>\n");
+        assert!(seen.lock().iter().any(|r| r.contains("in calc-lib (1 file)")), "{:?}", seen.lock());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
