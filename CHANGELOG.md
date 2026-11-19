@@ -53,7 +53,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   `Base: <branch>` line in the issue, else in its parent issue, else the board's **Base branch**, else the default
   branch, and its worktree starts from that branch. A pull request into the default branch says `Closes #<number>`,
   into another branch `Part of #<number>`. The agent writes the description in the format of the repository's pull
-  request template, and DevCat adds a line that says the DevCat agent opened it.
+  request template, and DevCat adds a line that says the DevCat agent opened it. When the description doesn't say how
+  the agent checked its work, DevCat adds a **How it was checked** section with the agent's testing steps.
 - **Tickets: run a GitHub issue again** (#199): add the trigger label to an issue again (after you answer the
   agent's questions, or to send a `ready-for-human` issue back) and a watched GitHub board runs it again at the next
   check, in a new conversation that reads the new comments, on the issue's branch with the earlier commits. Without

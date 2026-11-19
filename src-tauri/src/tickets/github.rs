@@ -293,16 +293,17 @@ pub fn pr_body_text(template: Option<&str>) -> String {
 }
 
 /// What a fixed issue's draft pull request says: the agent's body (`agent`: in the format of the
-/// repository's template; else the summary and how to test it), the issue's link (`Closes #n`
-/// into the default branch, where a merge closes it; `Part of #n` into another branch), and who
-/// made it.
+/// repository's template; else the summary), how the agent checked its work (its testing text,
+/// when the body doesn't have it already), the issue's link (`Closes #n` into the default branch,
+/// where a merge closes it; `Part of #n` into another branch), and who made it.
 pub fn pr_body(t: &Ticket, rec: &RunRecord, base: &Base, agent: &str) -> String {
     let mut body = agent.trim().to_string();
     if body.is_empty() {
         body = rec.summary.trim().to_string();
-        if !rec.testing.trim().is_empty() {
-            body.push_str(&format!("\n\n## How to test\n\n{}", rec.testing.trim()));
-        }
+    }
+    let testing = rec.testing.trim();
+    if !testing.is_empty() && !body.contains(testing) {
+        body.push_str(&format!("\n\n## How it was checked\n\n{testing}"));
     }
     body.push_str(&format!("\n\n{} {}\n\nOpened by the DevCat agent.", if base.default { "Closes" } else { "Part of" }, t.key));
     body
@@ -735,6 +736,24 @@ pub(crate) mod tests {
         assert_eq!(tr.download(&t.attachments[0]).await.unwrap(), b"\x89PNG data", "{:?}", gh.requests());
     }
 
+    /// A pull request's body always says how the agent checked its work: its testing text is added
+    /// when the agent's body (or the summary, without one) doesn't have it.
+    #[test]
+    fn pr_bodies() {
+        let t = issue_ticket(&json!({ "number": 7, "title": "Fix it" }), &[]);
+        let rec = RunRecord { summary: "Divides by the count.".into(), testing: "Ran pytest: 12 passed.".into(), ..serde_json::from_value(json!({ "ticketId": "7", "key": "#7", "title": "", "url": "", "outcome": "fixed", "summary": "", "testing": "", "branch": null, "filesChanged": 1, "movedTo": null, "notes": [], "started": 0, "finished": 0, "costUsd": null })).unwrap() };
+        let main = Base { branch: "main".into(), default: true, from: "the default branch" };
+        let with = pr_body(&t, &rec, &main, "## What changed\n\nThe average.\n\n## Tests\n\nRan pytest: 12 passed.");
+        assert_eq!(with.matches("Ran pytest").count(), 1, "{with}");
+        assert!(!with.contains("How it was checked") && with.contains("Closes #7"), "{with}");
+        let without = pr_body(&t, &rec, &main, "## What changed\n\nThe average.");
+        assert!(without.starts_with("## What changed\n\nThe average.\n\n## How it was checked\n\nRan pytest: 12 passed.\n\nCloses #7"), "{without}");
+        let summary = pr_body(&t, &rec, &Base { branch: "feat/x".into(), default: false, from: "" }, "");
+        assert!(summary.starts_with("Divides by the count.\n\n## How it was checked\n\nRan pytest") && summary.contains("Part of #7"), "{summary}");
+        let untested = pr_body(&t, &RunRecord { testing: " ".into(), ..rec }, &main, "Body.");
+        assert!(untested.starts_with("Body.\n\nCloses #7"), "{untested}");
+    }
+
     /// An issue's `Base: <branch>` line, in any case, also in bold or with the branch in
     /// backticks; a value that can't be a branch name is no base.
     #[test]
@@ -977,7 +996,7 @@ pub(crate) mod tests {
         let pr = &pulls[0];
         assert_eq!((pr["draft"].clone(), pr["base"]["ref"].as_str(), pr["head"]["ref"].as_str(), pr["title"].as_str()), (json!(true), Some("main"), Some(BRANCH), Some(ISSUE)));
         let body = pr["body"].as_str().unwrap();
-        assert!(body.contains("Stand-in summary.") && body.contains("Closes #7") && body.contains("DevCat"), "{body}");
+        assert!(body.contains("Stand-in summary.") && body.contains("## How it was checked\n\nRun it.") && body.contains("Closes #7") && body.contains("DevCat"), "{body}");
         assert_eq!((rec.pr_number, rec.pr_url.as_deref()), (pr["number"].as_u64(), pr["html_url"].as_str()));
 
         let comments = gh.comments_on(7);
@@ -1067,6 +1086,7 @@ pub(crate) mod tests {
         let pr = gh.gh.lock().pulls.values().next().cloned().unwrap_or_else(|| panic!("no pull request: {:?}", gh.requests()));
         let got = pr["body"].as_str().unwrap();
         assert!(got.starts_with(body) && got.contains("Closes #7") && got.contains("DevCat"), "{got}");
+        assert!(got.contains("## How it was checked\n\nRun it."), "the agent's testing text, which its body lacks: {got}");
         assert!(!got.contains("Stand-in summary."), "the agent's body, not the summary: {got}");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);

@@ -153,7 +153,9 @@ token and the repository, reads the token owner's login, and creates the labels 
   it says `Part of #<number>`.
 - The agent writes the pull request's description. When the repository has a pull request template
   (`pull_request_template.md` in `.github/`, the top folder or `docs/`), the description follows its sections.
-  DevCat adds the issue's link and a line that says the DevCat agent opened it.
+  DevCat adds the issue's link and a line that says the DevCat agent opened it. The description always says how the
+  agent checked its work: when it doesn't have the agent's testing steps, DevCat adds them in a **How it was
+  checked** section.
 - The agent reads the issue's comments from people with write access to the repository (all of them, oldest
   first), never comments from anyone else: anyone can comment on a public issue. The images uploaded to the issue
   and to those comments are shown to it, also in a private repository; images from other sites stay links.
