@@ -221,6 +221,11 @@ struct Run {
 
 static RUNS: Lazy<Mutex<HashMap<String, Arc<Run>>>> = Lazy::new(Default::default);
 
+/// The process id of a run's program, while it runs.
+pub(super) fn run_pid(run_id: &str) -> Option<u32> {
+    RUNS.lock().get(run_id).and_then(|r| r.pid)
+}
+
 fn get_run(run_id: &str) -> AppResult<Arc<Run>> {
     RUNS.lock().get(run_id).cloned().ok_or_else(|| AppError::msg(format!("Claude run {run_id} is not running")))
 }
