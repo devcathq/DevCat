@@ -190,6 +190,7 @@ mod tests {
             mcp: None,
             session: Default::default(),
             resume: None,
+            spawned: None,
         };
         let first: Arc<parking_lot::Mutex<Option<Instant>>> = Default::default();
         let f = first.clone();
