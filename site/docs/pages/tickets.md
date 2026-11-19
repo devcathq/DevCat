@@ -147,6 +147,11 @@ token and the repository, reads the token owner's login, and creates the labels 
   branch, and the issue gets `needs-info`. When it fails (or the **Setup command** fails), its unfinished work is
   committed (marked WIP) and pushed, the comment has the reason and the branch, and the issue gets
   `ready-for-human`, so a person can go on from there. Neither opens a pull request.
+- To run an issue again, add the trigger label again, e.g. after you answer the agent's questions in a comment
+  (swap `needs-info` for `ready-for-agent`), or to send a `ready-for-human` issue back to the agent. The next check
+  starts a new run: a new conversation that reads all the comments, the new ones too, and goes on from the issue's
+  branch with the earlier commits. Without a new label, an issue the agent already worked on doesn't run again.
+  You can still answer the agent in DevCat instead, which goes on in its last conversation.
 - Labels, comments and pull requests appear as the token's owner.
 - With **Watch** on, each check also looks at the pull requests DevCat opened that are still open. When one is
   merged, the issue loses `agent-review` and is closed if it's still open (GitHub closes it only for a pull request
@@ -164,7 +169,8 @@ When the board watches the repository, an issue with the trigger label waits unt
 - **Blockers.** The issue must have no open blocker: none in GitHub's issue dependencies ("Blocked by") and none
   in a `Blocked by: #12, #13` line in its body. It starts at the first check after its last blocker closes.
 - **The backlog.** The label must have been added after the board was created, so a new board doesn't start on
-  every issue that was labelled before it. To send one of those to the agent, fix it from the list.
+  every issue that was labelled before it. To send one of those to the agent, fix it from the list. For an issue
+  the agent already worked on, the label must have been added after its last run ended.
 
 Fixing issues from the list skips these checks: you choose them yourself.
 
@@ -175,7 +181,7 @@ workspace, where you can read what it did and carry on from there.
 
 Turn on **Watch** (in the board's toolbar or its settings): every few minutes DevCat checks the column and
 works on new tickets, a few at a time. A ticket the agent has already tried isn't picked up again by itself; fix
-it again from the list when it's ready. Watching only runs while DevCat is open, and (in place) skips a round
+it again from the list when it's ready (on a GitHub board, add the trigger label again). Watching only runs while DevCat is open, and (in place) skips a round
 while the repository has uncommitted changes.
 
 ## Slack
