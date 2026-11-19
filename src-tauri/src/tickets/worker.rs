@@ -9,7 +9,8 @@
 //! 4. DevCat commits what changed (unfinished work too, marked WIP, and on a new branch when the
 //!    board commits to an existing one), goes back to the original
 //!    branch, pushes if the board says so, comments on the ticket and moves it to "done" (fixed)
-//!    or "failed" (else back where it was).
+//!    or "failed" (else back where it was). On GitHub a fixed ticket's branch is always pushed and
+//!    gets a draft pull request (`github::pull_request`), linked in the comment.
 use super::trackers::Tracker;
 use super::{Board, Isolation, RunRecord, Ticket, TrackerKind};
 use crate::agent_tools::Scope;
@@ -274,12 +275,14 @@ fn error_record(ticket_id: &str, why: String) -> RunRecord {
         provider_id: None,
         cwd: None,
         reply: None,
+        pr_number: None,
+        pr_url: None,
     }
 }
 
 /// `prompt`: the user's prompt for this ticket, instead of the board's default one. `reply`: the
 /// person's answer to the agent's questions from its last run.
-async fn fix_one(b: &Board, ticket_id: &str, prompt: Option<&str>, reply: Option<&Reply>, cancel: &Cancel) -> RunRecord {
+pub(crate) async fn fix_one(b: &Board, ticket_id: &str, prompt: Option<&str>, reply: Option<&Reply>, cancel: &Cancel) -> RunRecord {
     let mut rec = error_record(ticket_id, String::new());
     rec.prompt = prompt.map(str::to_string);
     rec.reply = reply.map(|r| r.text.clone());
@@ -349,7 +352,8 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
     let files = rec.files_changed;
     let fixed = said_fixed && (files > 0 || earlier) && saved;
     let mut pushed = false;
-    if fixed && b.push {
+    // a pull request needs the branch on GitHub
+    if fixed && (b.push || b.kind == TrackerKind::Github) {
         stage(&b.id, "Pushing");
         pushed = wc.push(b, rec).await;
     }
@@ -373,6 +377,11 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
     rec.outcome = if fixed { "fixed".into() } else if a.status == "fixed" && saved { "needs_info".into() } else if a.status == "fixed" { "failed".into() } else { a.status.clone() };
     if a.status == "fixed" && files == 0 && !earlier {
         rec.summary = format!("The agent changed no files. {}", a.summary);
+    }
+
+    if pushed && b.kind == TrackerKind::Github {
+        stage(&b.id, "Opening a pull request");
+        super::github::pull_request(tr, &t, rec).await;
     }
 
     let target = if fixed { b.done_to.clone() } else { b.failed_to.clone().or_else(|| (t.column != from).then(|| super::Column { id: from.clone(), name: "where it was".into() })) };
@@ -758,6 +767,9 @@ pub fn comment_text(b: &Board, r: &RunRecord, pushed: bool) -> String {
     if !r.testing.trim().is_empty() {
         c.push_str(&format!("\n\nHow to test:\n{}", r.testing.trim()));
     }
+    if let Some(pr) = &r.pr_url {
+        c.push_str(&format!("\n\nPull request: {pr}"));
+    }
     if let Some(br) = &r.branch {
         let where_ = if pushed { "pushed to origin" } else { "not pushed, on the developer's computer" };
         if r.repos.is_empty() {
@@ -789,7 +801,7 @@ fn chat_text(b: &Board, r: &RunRecord) -> String {
 // ---------------------------------------------------------------- git
 
 /// Git without the repository's hooks (see `git_with`).
-async fn git(cwd: &str, args: &[&str]) -> AppResult<String> {
+pub(crate) async fn git(cwd: &str, args: &[&str]) -> AppResult<String> {
     git_with(cwd, args, false).await
 }
 
@@ -1462,7 +1474,7 @@ async fn check_column(b: &Board) -> AppResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn ticket() -> Ticket {
@@ -1893,7 +1905,7 @@ mod tests {
     /// may write there), where it writes its arguments (`args.txt`), the folder it ran in
     /// (`cwd.txt`) and the prompt it got (`prompt.jsonl`).
     #[cfg(unix)]
-    async fn stand_in(status: &str, act: &str) -> (String, std::path::PathBuf) {
+    pub(crate) async fn stand_in(status: &str, act: &str) -> (String, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         crate::ai::init(std::env::temp_dir().join(format!("devcat-tickets-ai-{}", std::process::id())));
         let id = format!("standin-{}", uuid::Uuid::new_v4());
@@ -1933,7 +1945,7 @@ mod tests {
     }
 
     /// A clone (`calc.py` on `main`) with a bare `origin` that has `main`: (clone, origin).
-    async fn clone_with_origin(what: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    pub(crate) async fn clone_with_origin(what: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = temp_dir(what);
         repo_at(&dir, &[("calc.py", CALC)]).await;
         let remote = with_origin(&dir).await;
@@ -1961,11 +1973,11 @@ mod tests {
     }
 
     /// The clone's linked worktrees (their paths), as git lists them.
-    async fn worktrees(clone: &str) -> Vec<String> {
+    pub(crate) async fn worktrees(clone: &str) -> Vec<String> {
         git(clone, &["worktree", "list", "--porcelain"]).await.unwrap().lines().filter_map(|l| l.strip_prefix("worktree ")).skip(1).map(str::to_string).collect()
     }
 
-    async fn head(cwd: &str) -> String {
+    pub(crate) async fn head(cwd: &str) -> String {
         git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await.unwrap().trim().to_string()
     }
 

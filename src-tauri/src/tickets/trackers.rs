@@ -7,6 +7,7 @@
 //!   comments, and it exists on both Cloud and Data Center.
 //! - Trello (API key + token). Columns are the board's lists.
 //! - Linear (personal API key). Columns are the team's workflow states.
+//! - GitHub (personal access token). Columns are the repository's labels: see `github.rs`.
 use super::{Assigned, Attachment, Board, Column, Comment, Ticket, TrackerKind};
 use crate::error::{AppError, AppResult};
 use reqwest::{Client, RequestBuilder, Response};
@@ -24,9 +25,9 @@ const LINEAR_API: &str = "https://api.linear.app/graphql";
 const TRELLO_API: &str = "https://api.trello.com/1";
 
 pub struct Tracker {
-    http: Client,
-    board: Board,
-    token: String,
+    pub(super) http: Client,
+    pub(super) board: Board,
+    pub(super) token: String,
 }
 
 fn http() -> AppResult<Client> {
@@ -34,7 +35,7 @@ fn http() -> AppResult<Client> {
 }
 
 /// The response's JSON, or an error with the status and the start of the body.
-async fn json_of(r: Response, what: &str) -> AppResult<Value> {
+pub(super) async fn json_of(r: Response, what: &str) -> AppResult<Value> {
     let status = r.status();
     let text = r.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -53,7 +54,7 @@ async fn json_of(r: Response, what: &str) -> AppResult<Value> {
     serde_json::from_str(&text).map_err(|e| AppError::msg(format!("{what}: unexpected answer ({e})")))
 }
 
-fn s(v: &Value, k: &str) -> String {
+pub(super) fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
@@ -109,7 +110,11 @@ impl Tracker {
                 TrackerKind::Jira => "Enter the Jira project key",
                 TrackerKind::Trello => "Enter the Trello board (its link or id)",
                 TrackerKind::Linear => "Enter the Linear team key",
+                TrackerKind::Github => "Enter the repository as owner/name",
             }));
+        }
+        if board.kind == TrackerKind::Github && !super::github::is_repo(&board.project) {
+            return Err(AppError::msg(format!("\"{}\" isn't a repository: enter it as owner/name", board.project.trim())));
         }
         if board.kind == TrackerKind::Jira && !board.site.trim().starts_with("http") {
             return Err(AppError::msg("Enter the Jira site, e.g. https://acme.atlassian.net"));
@@ -175,6 +180,7 @@ impl Tracker {
                 states.sort_by(|a, b| a["position"].as_f64().unwrap_or(0.0).total_cmp(&b["position"].as_f64().unwrap_or(0.0)));
                 Ok(states.into_iter().map(|st| Column { id: s(st, "id"), name: s(st, "name") }).collect())
             }
+            TrackerKind::Github => self.gh_columns().await,
         }
     }
 
@@ -226,6 +232,7 @@ impl Tracker {
                 out.reverse(); // newest first from the API
                 Ok(out)
             }
+            TrackerKind::Github => self.gh_list(column).await,
         }
     }
 
@@ -280,6 +287,7 @@ impl Tracker {
                 t.attachments = linear_images(&t.description);
                 Ok(t)
             }
+            TrackerKind::Github => self.gh_get(id).await,
         }
     }
 
@@ -371,6 +379,7 @@ impl Tracker {
                 }
                 Ok(())
             }
+            TrackerKind::Github => self.gh_move(t, column).await,
         }
     }
 
@@ -391,6 +400,7 @@ impl Tracker {
                 }
                 Ok(())
             }
+            TrackerKind::Github => self.gh_comment(t, text).await,
         }
     }
 }

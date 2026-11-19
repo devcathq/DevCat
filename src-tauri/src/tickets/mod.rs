@@ -1,5 +1,5 @@
-//! Tickets: connect a Jira project, Trello board or Linear team, and let an agent work through the
-//! tickets in one column. For each ticket DevCat makes a branch in the board's repository, runs
+//! Tickets: connect a Jira project, Trello board, Linear team or GitHub repository, and let an
+//! agent work through the tickets in one column. For each ticket DevCat makes a branch in the board's repository, runs
 //! the agent (Claude Code or DevCat Agent) on it, commits what it changed, comments on the ticket
 //! and moves it on (e.g. To Do → In Progress → Testing). A board can also watch its column and
 //! pick up new tickets by itself, and post what happened to a Slack webhook.
@@ -13,6 +13,9 @@
 //!
 //! Events: `tickets-job` ({ board, job | null }) while a board works, `tickets-changed`
 //! ({ board }) when its history changes.
+pub mod github;
+#[cfg(test)]
+pub(crate) mod mock_github;
 pub mod trackers;
 pub mod worker;
 
@@ -34,6 +37,7 @@ pub enum TrackerKind {
     Jira,
     Trello,
     Linear,
+    Github,
 }
 
 impl TrackerKind {
@@ -42,6 +46,7 @@ impl TrackerKind {
             TrackerKind::Jira => "Jira",
             TrackerKind::Trello => "Trello",
             TrackerKind::Linear => "Linear",
+            TrackerKind::Github => "GitHub",
         }
     }
 }
@@ -133,14 +138,15 @@ pub struct Board {
     pub id: String,
     pub name: String,
     pub kind: TrackerKind,
-    /// Jira: the site (https://acme.atlassian.net, or a Data Center URL).
+    /// Jira: the site (https://acme.atlassian.net, or a Data Center URL). GitHub: the API address
+    /// (https://api.github.com, or https://<host>/api/v3 for GitHub Enterprise Server).
     #[serde(default)]
     pub site: String,
     /// Jira Cloud: the account's email (empty: the token is a Data Center personal access token).
     /// Trello: the API key.
     #[serde(default)]
     pub user: String,
-    /// Jira: project key. Trello: board link or id. Linear: team key.
+    /// Jira: project key. Trello: board link or id. Linear: team key. GitHub: the repository, `owner/name`.
     #[serde(default)]
     pub project: String,
     /// Write-only: Some(token) stores it in the keychain, None keeps the saved one.
@@ -153,6 +159,9 @@ pub struct Board {
     pub webhook: Option<String>,
     #[serde(default)]
     pub has_webhook: bool,
+    /// GitHub: the token owner's login, read when the board is saved (its branches are `<login>/…`).
+    #[serde(default)]
+    pub login: String,
 
     /// The git repository the agent works in, or a folder of repositories (the agent may change any
     /// of them; each gets the ticket's branch).
@@ -256,6 +265,11 @@ pub struct RunRecord {
     /// The person's answer to the agent's questions (from the Tickets chat) that started this run.
     #[serde(default)]
     pub reply: Option<String>,
+    /// GitHub: the pull request DevCat opened for the run (its number and link).
+    #[serde(default)]
+    pub pr_number: Option<u64>,
+    #[serde(default)]
+    pub pr_url: Option<String>,
 }
 
 /// Whether boards can be read here (the app and `devcat serve` also work them; `devcat mcp` only
@@ -392,6 +406,10 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     }
     b.interval_min = b.interval_min.clamp(1, 24 * 60);
     b.max_per_run = b.max_per_run.clamp(1, 20);
+    if b.kind == TrackerKind::Github {
+        let t = token(&b);
+        github::on_save(&mut b, t).await?;
+    }
     if let Some(t) = b.token.take().filter(|t| !t.trim().is_empty()) {
         crate::secrets::set(&token_key(&b.id), t.trim())?;
     }
