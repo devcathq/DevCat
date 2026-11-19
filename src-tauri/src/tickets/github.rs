@@ -307,15 +307,21 @@ pub fn pr_body_text(template: Option<&str>) -> String {
 
 /// What a fixed issue's draft pull request says: the agent's body (`agent`: in the format of the
 /// repository's template; else the summary), how the agent checked its work (its testing text,
-/// when the body doesn't have it already), the issue's link (`Closes #n` into the default branch,
-/// where a merge closes it; `Part of #n` into another branch), and who made it.
+/// when the body has neither it nor a "How it was checked" section, e.g. from the template), the
+/// issue's link (`Closes #n` into the default branch, where a merge closes it; `Part of #n` into
+/// another branch), and who made it.
 pub fn pr_body(t: &Ticket, rec: &RunRecord, base: &Base, agent: &str) -> String {
     let mut body = agent.trim().to_string();
     if body.is_empty() {
         body = rec.summary.trim().to_string();
     }
+    // a Markdown heading of any level, in any case: "### How it was checked"
+    let checked = body.lines().any(|l| {
+        let l = l.trim();
+        l.starts_with('#') && l.trim_start_matches('#').starts_with(' ') && l.trim_matches(|c: char| c == '#' || c == ':' || c.is_whitespace()).eq_ignore_ascii_case("how it was checked")
+    });
     let testing = rec.testing.trim();
-    if !testing.is_empty() && !body.contains(testing) {
+    if !testing.is_empty() && !body.contains(testing) && !checked {
         body.push_str(&format!("\n\n## How it was checked\n\n{testing}"));
     }
     body.push_str(&format!("\n\n{} {}\n\nOpened by the DevCat agent.", if base.default { "Closes" } else { "Part of" }, t.key));
@@ -775,6 +781,10 @@ pub(crate) mod tests {
         assert!(without.starts_with("## What changed\n\nThe average.\n\n## How it was checked\n\nRan pytest: 12 passed.\n\nCloses #7"), "{without}");
         let summary = pr_body(&t, &rec, &Base { branch: "feat/x".into(), default: false, from: "" }, "");
         assert!(summary.starts_with("Divides by the count.\n\n## How it was checked\n\nRan pytest") && summary.contains("Part of #7"), "{summary}");
+        let templated = pr_body(&t, &rec, &main, "## What changed\n\nThe average.\n\n### how it was checked\n\nRan the tests.");
+        assert_eq!(templated.to_lowercase().matches("how it was checked").count(), 1, "the template's section is there, in its own words: {templated}");
+        let mentioned = pr_body(&t, &rec, &main, "The average. See How it was checked below.");
+        assert!(mentioned.contains("\n\n## How it was checked\n\nRan pytest: 12 passed."), "words in a sentence aren't a heading: {mentioned}");
         let untested = pr_body(&t, &RunRecord { testing: " ".into(), ..rec }, &main, "Body.");
         assert!(untested.starts_with("Body.\n\nCloses #7"), "{untested}");
     }
