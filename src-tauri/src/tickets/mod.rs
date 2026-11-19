@@ -197,6 +197,10 @@ pub struct Board {
     /// Where a fixed ticket goes (e.g. Testing).
     #[serde(default)]
     pub done_to: Option<Column>,
+    /// Where a ticket goes when the agent needs answers from a person, e.g. GitHub's `needs-info`
+    /// label (None: as when it couldn't finish it).
+    #[serde(default)]
+    pub needs_info_to: Option<Column>,
     /// Where a ticket goes when the agent couldn't finish it (None: back where it was).
     #[serde(default)]
     pub failed_to: Option<Column>,
