@@ -12,11 +12,21 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-- **Cursor in the AI workspace**: add a **Cursor** AI connection to run Cursor's CLI agent (`cursor-agent`) in a
+## 0.30.0 - 2026-11-19
+
+- **Several Claude Code accounts** (#181): in AI connections, **Add connection → Claude Code (another account)** adds a
+  Claude Code connection with a login of its own: start a chat with it and Claude Code asks you to log in. The list
+  shows which email each one uses. Chats, settings, `CLAUDE.md`, skills and plugins stay shared, so switching a tab to
+  another account goes on with the same chat (handy when one account hits its limit). Folders on SSH hosts use the
+  host's own login.
+- **Cursor in the AI workspace** (#175): add a **Cursor** AI connection to run Cursor's CLI agent (`cursor-agent`) in a
   workspace tab, like Claude Code: pick its model and mode (Agent, Plan, Ask or Force) in the header, and each tab
   keeps its own Cursor chat, resumed every time the agent restarts (its id shows next to the options). DevCat finds
   the CLI as `cursor-agent` or `agent`; log in with `cursor-agent login` or give the connection an API key
   (`CURSOR_API_KEY`).
+- **Ctrl+drag in a terminal no longer leaves boxes over the text** (#174): Ctrl+press, drag and release (say over a
+  file link while Claude Code runs) used to leave empty or stale rectangles painted over the terminal until those
+  lines redrew.
 
 ## 0.29.0 - 2026-11-18
 
