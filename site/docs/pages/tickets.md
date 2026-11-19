@@ -45,6 +45,8 @@ to the column you chose, the move is skipped and the reason shows in the history
   agent's work never mixes with yours. In a folder, each repository gets the ticket's branch and the agent
   changes the ones the ticket needs; a repository with uncommitted changes (or not on a branch) is left alone,
   and the ticket's history says so.
+- **Working copy**: **In place** (the agent works in the repository itself, as above) or **A worktree for each
+  ticket** (below). Boards made before this setting stay in place.
 - **AI connection**: Claude Code (your login, or a Claude Code connection with an API key) or a DevCat Agent
   connection (any model API). Optionally a **Model** (`sonnet`, `haiku`…).
 - **Default prompt**: what the agent is told with every ticket: conventions, where things are, how to test. A
@@ -83,6 +85,23 @@ For each ticket:
 If the agent is stopped or crashes, the ticket goes back where it was, without a comment. A ticket the agent
 changed nothing for has its branch removed.
 
+### A worktree for each ticket
+
+With **Working copy** set to **A worktree for each ticket**, the agent never touches your checkout: keep your
+uncommitted work and any branch in the repository while it works. The repository must be one git repository
+(not a folder of them). For each ticket:
+
+1. DevCat fetches from `origin` and makes a git worktree at `.worktrees/<key>-<title>` inside the repository. Its
+   branch is the ticket's own branch when it has one already (an earlier run's work, here or on `origin`), else a
+   new `devcat/<key>-<title>` from the **Base branch** on `origin` (empty: `origin`'s default branch).
+2. DevCat adds `.worktrees/` to the repository's local exclude file (`.git/info/exclude`), so the folder never
+   shows as untracked and nothing needs committing.
+3. The agent works in the worktree. DevCat commits there and, with **Push** on, pushes a fixed ticket's branch.
+4. DevCat removes the worktree. The branch keeps the commits (a run that changed nothing leaves no branch).
+
+The guard against changes to git's settings works the same: if the agent changed the repository's git config,
+attributes or hooks, DevCat runs no git, and the worktree stays as it is for you to look at.
+
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
 workspace, where you can read what it did and carry on from there.
 
@@ -90,8 +109,8 @@ workspace, where you can read what it did and carry on from there.
 
 Turn on **Watch** (in the board's toolbar or its settings): every few minutes DevCat checks the column and
 works on new tickets, a few at a time. A ticket the agent has already tried isn't picked up again by itself; fix
-it again from the list when it's ready. Watching only runs while DevCat is open, and skips a round while the
-repository has uncommitted changes.
+it again from the list when it's ready. Watching only runs while DevCat is open, and (in place) skips a round
+while the repository has uncommitted changes.
 
 ## Slack
 

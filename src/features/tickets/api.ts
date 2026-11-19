@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core";
 export type TrackerKind = "jira" | "trello" | "linear";
 /** Whose tickets the agent takes (the token owner = "me"). */
 export type Assigned = "anyone" | "me" | "meOrNobody";
+/** How a run gets its working copy: the repository itself, or a git worktree for each ticket. */
+export type Isolation = "inPlace" | "worktree";
 
 export interface Column { id: string; name: string }
 export interface Ticket {
@@ -32,6 +34,8 @@ export interface Board {
   hasWebhook?: boolean;
   /** A git repository, or a folder of them. */
   repo: string;
+  /** "worktree": each ticket in `<repo>/.worktrees`, made from origin; `targetBranch` is then the base branch. */
+  isolation: Isolation;
   /** DevCat project whose memory and connections the agent gets (null: the one `repo` is in). */
   projectId?: string | null;
   providerId: string;
@@ -83,6 +87,7 @@ export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
   pickFrom: null, working: null, doneTo: null, failedTo: null, label: "", assigned: "anyone",
   comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
+  isolation: "inPlace",
 });
 
 export const tickets = {
