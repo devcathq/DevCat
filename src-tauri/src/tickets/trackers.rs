@@ -314,7 +314,8 @@ impl Tracker {
     // ------------------------------------------------------------ attachments
 
     /// An attachment's bytes, at most `MAX_ATTACHMENT`. The token only goes to the tracker's own
-    /// hosts: Jira's site, trello.com, uploads.linear.app. A failed request is tried once more.
+    /// hosts: Jira's site, trello.com, uploads.linear.app, GitHub's (`github::upload_token`). A
+    /// failed request is tried once more.
     pub async fn download(&self, a: &Attachment) -> AppResult<Vec<u8>> {
         let mut url = reqwest::Url::parse(&a.url).map_err(|_| AppError::msg(format!("{}: not a link DevCat can download", a.name)))?;
         let host = url.host_str().unwrap_or_default().to_string();
@@ -332,6 +333,7 @@ impl Tracker {
                     .header("Authorization", format!("OAuth oauth_consumer_key=\"{}\", oauth_token=\"{}\"", self.board.user.trim(), self.token)),
             ),
             TrackerKind::Linear if host == "uploads.linear.app" => Some(self.http.get(url.clone()).header("Authorization", &self.token)),
+            TrackerKind::Github => super::github::upload_token(&url, &self.board).map(|token| if token { self.http.get(url.clone()).bearer_auth(&self.token) } else { self.http.get(url.clone()) }),
             _ => None,
         };
         let Some(rb) = request() else { return Err(AppError::msg(format!("{}: not stored on the tracker", a.name))) };

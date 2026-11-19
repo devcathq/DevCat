@@ -5,6 +5,13 @@
 //! issues, new comments, pull requests, closed issues), so later reads and the test see them.
 //! Every request is recorded as `METHOD /path?query body`.
 //!
+//! Images uploaded to issues (`Gh::images`) are at `<url>/user-attachments/assets/<id>`, as on
+//! github.com. Asked with `Accept: application/vnd.github.full+json`, issues and comments also
+//! have `body_html`, where a private repository's (`Gh::public` false) uploads are signed links
+//! (`<url>/private-user-images/<id>?jwt=…`) that download without the token, while the upload
+//! link itself answers 404 (what DevCat assumes for a private repository: see `github::images`).
+//! A public repository's uploads download with the token.
+//!
 //! A case the routes don't cover yet: add it to `Gh::canned` (answers that win over the routes,
 //! e.g. a 401 for `GET /user`), or add a route in `answer`.
 use parking_lot::Mutex;
@@ -40,6 +47,12 @@ pub struct Gh {
     /// Pull requests by number (`{number, html_url, state, draft, merged, title, body, head: {ref,
     /// sha}, base: {ref}}`); the ones DevCat opens land here too.
     pub pulls: BTreeMap<u64, Value>,
+    /// The mock's own address (`MockGithub::url`), set when it starts.
+    pub base: String,
+    /// The repository is public (else private, as `GET /repos/{o}/{r}` says).
+    pub public: bool,
+    /// Uploaded images by id (`<url>/user-attachments/assets/<id>`).
+    pub images: HashMap<String, Vec<u8>>,
     /// Answers that win over the routes: (`"METHOD /path"` without the query, status, body).
     pub canned: Vec<(String, u16, Value)>,
     /// Every request, `METHOD /path?query body`.
@@ -100,7 +113,7 @@ impl MockGithub {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", l.local_addr().unwrap());
-        let state = Arc::new(Mutex::new(gh));
+        let state = Arc::new(Mutex::new(Gh { base: url.clone(), ..gh }));
         let data = state.clone();
         tokio::spawn(async move {
             loop {
@@ -126,15 +139,24 @@ impl MockGithub {
                     let line = head.lines().next().unwrap_or("").to_string();
                     let method = line.split(' ').next().unwrap_or("").to_string();
                     let target = line.split(' ').nth(1).unwrap_or("").to_string();
-                    let (status, out) = {
+                    let header = |name: &str| head.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_string())).unwrap_or_default();
+                    let (status, kind, out) = {
                         let mut gh = data.lock();
                         gh.requests.push(format!("{method} {target} {body}").trim_end().to_string());
-                        answer(&mut gh, &method, &target, &body)
+                        match image(&gh, &method, &target, &header("authorization")) {
+                            Some((status, bytes)) => (status, "image/png", bytes),
+                            None => {
+                                let (status, mut out) = answer(&mut gh, &method, &target, &body);
+                                if header("accept").contains("full+json") {
+                                    with_html(&gh, &mut out);
+                                }
+                                (status, "application/json", if status == 204 { vec![] } else { out.to_string().into_bytes() })
+                            }
+                        }
                     };
-                    let out = if status == 204 { String::new() } else { out.to_string() };
-                    let head = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", out.len());
+                    let head = format!("HTTP/1.1 {status} X\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", out.len());
                     let _ = s.write_all(head.as_bytes()).await;
-                    let _ = s.write_all(out.as_bytes()).await;
+                    let _ = s.write_all(&out).await;
                 });
             }
         });
@@ -179,6 +201,38 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// An uploaded image: the upload link (public repository, with a token) or a signed link.
+fn image(gh: &Gh, method: &str, target: &str, auth: &str) -> Option<(u16, Vec<u8>)> {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let found = |id: &str| gh.images.get(id).map(|b| (200, b.clone())).unwrap_or((404, b"Not Found".to_vec()));
+    if let Some(id) = path.strip_prefix("/user-attachments/assets/").filter(|_| method == "GET") {
+        return Some(if gh.public && auth.starts_with("Bearer ") { found(id) } else { (404, b"Not Found".to_vec()) });
+    }
+    let id = path.strip_prefix("/private-user-images/").filter(|_| method == "GET")?;
+    Some(if query == format!("jwt=signed-{id}") { found(id) } else { (404, b"Not Found".to_vec()) })
+}
+
+/// Adds `body_html` to an issue, a comment or a list of them, as GitHub renders it: each image
+/// (markdown or `<img>`) becomes a linked `<img>`, a private repository's uploads as signed links.
+fn with_html(gh: &Gh, v: &mut Value) {
+    static MD: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"!\[([^\]]*)\]\(([^)\s]+)\)").unwrap());
+    static IMG: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r#"<img[^>]*?alt="([^"]*)"[^>]*?src="([^"]+)"[^>]*>"#).unwrap());
+    let link = |src: &str| match src.strip_prefix(&format!("{}/user-attachments/assets/", gh.base)) {
+        Some(id) if !gh.public => format!("{}/private-user-images/{id}?jwt=signed-{id}", gh.base),
+        _ => src.to_string(),
+    };
+    let render = |c: &regex::Captures| format!(r#"<a href="{0}"><img src="{0}" alt="{1}" style="max-width: 100%;"></a>"#, link(&c[2]), &c[1]);
+    match v {
+        Value::Array(list) => list.iter_mut().for_each(|x| with_html(gh, x)),
+        Value::Object(o) if o.contains_key("body") => {
+            let md = o["body"].as_str().unwrap_or_default().to_string();
+            let html = MD.replace_all(&IMG.replace_all(&md, render), render).to_string();
+            o.insert("body_html".into(), json!(format!("<p>{html}</p>")));
+        }
+        _ => {}
+    }
+}
+
 fn not_found() -> (u16, Value) {
     (404, json!({ "message": "Not Found" }))
 }
@@ -200,7 +254,7 @@ fn answer(gh: &mut Gh, method: &str, target: &str, body: &str) -> (u16, Value) {
     let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
     let num = |s: &str| s.parse::<u64>().ok();
     match (method, parts.as_slice()) {
-        ("GET", []) => (200, json!({ "full_name": gh.repo, "default_branch": gh.default_branch, "private": true, "has_issues": true,
+        ("GET", []) => (200, json!({ "full_name": gh.repo, "default_branch": gh.default_branch, "private": !gh.public, "has_issues": true,
             "permissions": { "admin": false, "maintain": false, "push": gh.push, "triage": gh.push, "pull": true } })),
         ("GET", ["labels"]) => (200, if page > 1 { json!([]) } else { json!(gh.labels.iter().map(|l| json!({ "name": l, "color": "ededed" })).collect::<Vec<_>>()) }),
         ("POST", ["labels"]) => {

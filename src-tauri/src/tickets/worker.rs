@@ -422,7 +422,10 @@ async fn ticket_images(b: &Board, tr: &Tracker, t: &Ticket, rec: &mut RunRecord)
     use base64::Engine;
     let mut out: Vec<Image> = vec![];
     let mut total = 0usize;
-    for a in &t.attachments {
+    // GitHub's signed links to a private repository's images last a few minutes, and making the
+    // worktree may have taken longer: fresh ones
+    let fresh = if b.kind == TrackerKind::Github && t.attachments.iter().any(|a| a.url.contains("jwt=")) { tr.get(&t.id).await.ok().map(|f| f.attachments) } else { None };
+    for a in fresh.as_ref().unwrap_or(&t.attachments) {
         let looks_image = a.mime.starts_with("image/") || (a.mime.is_empty() && looks_like_image(&a.name));
         if !looks_image || out.len() >= MAX_IMAGES || a.size.is_some_and(|s| s > super::trackers::MAX_ATTACHMENT) {
             continue;
@@ -1899,7 +1902,7 @@ pub(crate) mod tests {
     }
 
     /// A `w`×`h` PNG of one color.
-    fn solid_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+    pub(crate) fn solid_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
         use std::io::Write;
         fn crc(bytes: &[u8]) -> u32 {
             let mut c = 0xFFFF_FFFFu32;
