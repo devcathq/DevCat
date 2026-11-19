@@ -29,6 +29,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
   draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review`. Saving
   the board checks the token and creates the labels the repository lacks.
+- **Tickets: pull request base and template** (#200): a GitHub issue's pull request goes into the branch of a
+  `Base: <branch>` line in the issue, else in its parent issue, else the board's **Base branch**, else the default
+  branch, and its worktree starts from that branch. A pull request into the default branch says `Closes #<number>`,
+  into another branch `Part of #<number>`. The agent writes the description in the format of the repository's pull
+  request template, and DevCat adds a line that says the DevCat agent opened it.
 
 ## 0.31.0 - 2026-11-19
 

@@ -132,8 +132,17 @@ token and the repository, reads the token owner's login, and creates the labels 
 - Moving an issue removes its current state label and adds the new one, so it always has exactly one.
 - Branches are named `<your login>/<number>-<title>`, e.g. `octo/12-fix-the-login`.
 - New GitHub boards start with **A worktree for each ticket**, and the branch is always pushed: a fixed issue's
-  branch gets a draft pull request into the default branch (or the **Base branch**) that says `Closes #<number>`.
-  The issue's comment has the summary, how to test and the pull request's link, and the history links it too.
+  branch gets a draft pull request. The issue's comment has the summary, how to test and the pull request's link,
+  and the history links it too.
+- The pull request goes into the issue's base branch, and a worktree's new branch starts from it. The base branch
+  is the branch in a `Base: <branch>` line in the issue, else in its parent issue, else the board's **Base branch**,
+  else the repository's default branch. So the slices of a feature can go into its feature branch: put
+  `Base: feat/login` in the parent issue.
+- A pull request into the default branch says `Closes #<number>` (merging it closes the issue); into another branch
+  it says `Part of #<number>`.
+- The agent writes the pull request's description. When the repository has a pull request template
+  (`pull_request_template.md` in `.github/`, the top folder or `docs/`), the description follows its sections.
+  DevCat adds the issue's link and a line that says the DevCat agent opened it.
 - Labels, comments and pull requests appear as the token's owner.
 
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
