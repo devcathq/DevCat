@@ -58,7 +58,8 @@ to the column you chose, the move is skipped and the reason shows in the history
 ## Fix tickets
 
 Pick tickets in the list and click **Fix with the agent**, or use the robot icon on a single ticket. Tickets
-are done one at a time; the panel on the right shows what the agent is doing, and **Stop** stops it.
+are done one at a time (a board with a worktree for each ticket can do a few at once, see below); the panel on
+the right shows what the agent is doing, and **Stop** stops it.
 
 To tell the agent something for particular tickets, click **With a prompt…** (or the speech bubble on a single
 ticket). The prompt starts as the board's default prompt; what you write replaces it for those tickets, that
@@ -120,6 +121,11 @@ If DevCat stops in the middle of a run (a crash), the next start removes what th
 A ticket's branch can be checked out in one place only. If it's checked out in another worktree, or in the
 repository itself, the run fails and names that folder: switch it to another branch (or remove the worktree), then
 run the ticket again.
+
+**Parallel runs** (1 to 4, default 1) sets how many tickets the agent works on at the same time. Each runs in its
+own worktree on its own branch, and the panel on the right shows each one with its log. The other tickets wait
+until a run ends. A ticket you fix again while the agent works on it waits for that run. Boards that run in place
+always do one ticket at a time.
 
 ### GitHub boards
 
