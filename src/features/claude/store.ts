@@ -7,6 +7,7 @@ import { create } from "zustand";
 import { api, errMsg } from "../../lib/api";
 import type { ClaudeInfo, ClaudeMsg, ClaudePermissionMode, GitStatus } from "../../lib/types";
 import { useTabs } from "../../store/tabs";
+import { isRemote } from "../../lib/remotePath";
 
 export interface Finding {
   severity: string;
@@ -33,13 +34,18 @@ export interface ReviewState {
   durationMs?: number;
 }
 
-export interface LaunchOptions { model: string; permissionMode: ClaudePermissionMode | "" }
+/** Cursor's launch mode: "" = agent (asks before commands), plan / ask = read-only modes, force = run everything. */
+export type CursorMode = "" | "plan" | "ask" | "force";
+
+export interface LaunchOptions { model: string; permissionMode: ClaudePermissionMode | ""; cursorMode: CursorMode }
 
 export interface TabState {
   cwd: string;
   /** The tab runs Claude Code (sessions, launch options and reviews apply); false = another AI CLI. */
   isClaude: boolean;
-  /** Session the next `claude` launch resumes (null = fresh session). */
+  /** The tab runs Cursor's CLI (its chat id, model and mode apply). */
+  isCursor: boolean;
+  /** Session the next `claude` launch resumes, or the Cursor chat the next `cursor-agent` launch resumes (null = fresh). */
   sessionId: string | null;
   /** `sessionId` is the id a new chat was launched with (`--session-id`): no transcript until its first message. */
   sessionFresh: boolean;
@@ -67,7 +73,7 @@ export interface TabState {
 const newReview = (): ReviewState => ({ runId: null, status: "idle", scope: "uncommitted", base: "main", model: "", progress: [] });
 
 const newTab = (cwd: string, sessionId: string | null): TabState => ({
-  cwd, isClaude: true, sessionId, sessionFresh: false, options: { model: "", permissionMode: "" }, launched: null, launchedAt: null, ptyId: null, startSeq: 0,
+  cwd, isClaude: true, isCursor: false, sessionId, sessionFresh: false, options: { model: "", permissionMode: "", cursorMode: "" }, launched: null, launchedAt: null, ptyId: null, startSeq: 0,
 
   repo: null, git: null, gitError: null, gitLoading: false, gitTick: 0, diffFocus: null, review: newReview(),
 });
@@ -116,9 +122,12 @@ export async function loadInfo(force = false) {
 
 // ---------- claude terminal ----------
 
-/** Whether the tab runs Claude Code (set by the tab from its AI connection). */
-export function setTabIsClaude(tabId: string, isClaude: boolean) {
-  if (get(tabId)?.isClaude !== isClaude) patch(tabId, { isClaude, ...(isClaude ? {} : { sessionId: null, sessionFresh: false }) });
+/** Whether the tab runs Claude Code or Cursor (set by the tab from its AI connection). Other agents
+ *  have no session the tab can resume. */
+export function setTabAgent(tabId: string, isClaude: boolean, isCursor: boolean) {
+  const s = get(tabId);
+  if (!s || (s.isClaude === isClaude && s.isCursor === isCursor)) return;
+  patch(tabId, { isClaude, isCursor, ...(isClaude || isCursor ? {} : { sessionId: null, sessionFresh: false }) });
 }
 
 /** CLI args for the next launch (Claude: session / model / permission mode; others: none); records what was launched. */
@@ -148,6 +157,29 @@ export function claudeLaunchArgs(tabId: string): string[] {
   return args;
 }
 
+/**
+ * CLI args for the next launch of the tab's agent: Cursor's chat / model / mode, else as
+ * claudeLaunchArgs. A new Cursor chat is created first (`create-chat`) so the tab knows its chat
+ * id and every restart resumes it, like Claude's `--session-id`; not on SSH hosts (the chat would
+ * be created on this computer).
+ */
+export async function agentLaunchArgs(tabId: string, providerId: string): Promise<string[]> {
+  const s = get(tabId);
+  if (!s?.isCursor) return claudeLaunchArgs(tabId);
+  let sessionId = s.sessionId;
+  if (!sessionId && !isRemote(s.cwd)) {
+    try {
+      sessionId = await api.aiCursorCreateChat(providerId, s.cwd);
+    } catch { /* older CLI or not logged in: start a fresh chat without an id */ }
+  }
+  const args: string[] = sessionId ? ["--resume", sessionId] : [];
+  if (s.options.model) args.push("--model", s.options.model);
+  if (s.options.cursorMode === "plan" || s.options.cursorMode === "ask") args.push("--mode", s.options.cursorMode);
+  else if (s.options.cursorMode === "force") args.push("--force");
+  patch(tabId, { sessionId, sessionFresh: false, launched: { ...s.options }, launchedAt: Date.now() });
+  return args;
+}
+
 export const setPty = (tabId: string, ptyId: string | null) => patch(tabId, { ptyId });
 
 export const setLaunchOptions = (tabId: string, p: Partial<LaunchOptions>) => patch(tabId, (s) => ({ options: { ...s.options, ...p } }));
@@ -160,6 +192,8 @@ export const setLaunchOptions = (tabId: string, p: Partial<LaunchOptions>) => pa
 export async function detectSession(tabId: string): Promise<string | null> {
   const s = get(tabId);
   if (!s) return null;
+  // Cursor: the tab's chat id is fixed at launch (`--resume <id>`).
+  if (s.isCursor) return s.sessionId;
   if (!s.isClaude) return null;
   try {
     const list = await api.claudeSessions(s.cwd);

@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Button, Dialog, Empty, IconButton, Select, Spinner, Spin } from "../../components/ui";
+import { Button, Dialog, Empty, IconButton, Input, Select, Spinner, Spin } from "../../components/ui";
 import type { AiProvider, ClaudePermissionMode } from "../../lib/types";
 import { useContextMenu } from "../connections/ContextMenu";
 import { providerMenu } from "./AiProviders";
@@ -27,8 +27,8 @@ import {
 } from "./providers";
 import { ReviewView, reviewBadge } from "./ReviewView";
 import {
-  claudeLaunchArgs, detectSession, ensureTab, loadInfo, newSession, pasteToClaude, refreshGit, restartClaude, sendToAgent, setLaunchOptions, setPty,
-  setTabIsClaude, startReview, useClaude, type Finding,
+  agentLaunchArgs, detectSession, ensureTab, loadInfo, newSession, pasteToClaude, refreshGit, restartClaude, sendToAgent, setLaunchOptions, setPty,
+  setTabAgent, startReview, useClaude, type CursorMode, type Finding,
 } from "./store";
 import { setTabVisible, useTabActivity } from "./activity";
 import { TerminalPane } from "./TerminalPane";
@@ -190,6 +190,48 @@ function LaunchOptions({ tabId, onBypass }: { tabId: string; onBypass: () => voi
   );
 }
 
+const CURSOR_MODES: Array<{ value: CursorMode; label: string }> = [
+  { value: "", label: "Agent" },
+  { value: "plan", label: "Plan" },
+  { value: "ask", label: "Ask" },
+  { value: "force", label: "Force (no asking)" },
+];
+
+/** Model / mode cursor-agent is launched with; offers a restart (resuming the chat) when changed. */
+function CursorLaunchOptions({ tabId, onForce }: { tabId: string; onForce: () => void }) {
+  const options = useClaude((s) => s.tabs[tabId]?.options);
+  const launched = useClaude((s) => s.tabs[tabId]?.launched);
+  const [model, setModel] = useState(options?.model ?? "");
+  useEffect(() => setModel(options?.model ?? ""), [options?.model]);
+  if (!options) return null;
+  const changed = !!launched && (launched.model !== options.model || launched.cursorMode !== options.cursorMode);
+  const commitModel = () => { if (model.trim() !== options.model) setLaunchOptions(tabId, { model: model.trim() }); };
+  return (
+    <>
+      <Input className="h-6 w-28 shrink-0 text-xs" value={model} placeholder="Default model" spellCheck={false}
+        title="Model cursor-agent starts with (cursor-agent models lists them; /model switches mid-chat)"
+        onChange={(e) => setModel(e.target.value)} onBlur={commitModel} onKeyDown={(e) => { if (e.key === "Enter") commitModel(); }} />
+      <Select
+        className={clsx("h-6 w-32 shrink-0 text-xs", options.cursorMode === "force" && "border-danger/60 text-danger")}
+        value={options.cursorMode}
+        title="Mode cursor-agent starts with"
+        onChange={(e) => {
+          const m = e.target.value as CursorMode;
+          if (m === "force") onForce();
+          else setLaunchOptions(tabId, { cursorMode: m });
+        }}
+      >
+        {CURSOR_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+      </Select>
+      {changed && (
+        <Button size="sm" variant="primary" className="shrink-0" onClick={() => void restartClaude(tabId)} title="Restart cursor-agent with these options, resuming the chat">
+          <RotateCcw className="size-3" /><span className="@max-6xl:hidden">Restart cursor-agent</span>
+        </Button>
+      )}
+    </>
+  );
+}
+
 function SessionChip({ tabId }: { tabId: string }) {
   const sid = useClaude((s) => s.tabs[tabId]?.sessionId);
   if (!sid) return null;
@@ -217,7 +259,7 @@ function ChatPane({ tabId, cwd, visible, focus, provider }: { tabId: string; cwd
           focus={visible && focus}
           shiftEnterNewline={isClaude}
           activityId={tabId}
-          getArgs={() => claudeLaunchArgs(tabId)}
+          getArgs={() => agentLaunchArgs(tabId, provider.id)}
           beforeRestart={async () => { await detectSession(tabId); }}
           onPty={(id) => setPty(tabId, id)}
         />
@@ -234,11 +276,12 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
   useLayoutEffect(() => ensureTab(tabId, tab.cwd, tab.sessionId), [tabId, tab.cwd, tab.sessionId]);
   const provider = useProvider(tab.providerId);
   const isClaude = provider?.kind === "claude";
+  const isCursor = provider?.kind === "cursor";
   // DevCat Agent: a chat view instead of a terminal
   const isAgent = provider?.kind === "agent";
   const agentBusy = useAgent((s) => !!s.chats[tabId]?.busy);
   const agent = isClaude ? "Claude" : provider?.name ?? "the agent";
-  useLayoutEffect(() => { if (ready && provider) setTabIsClaude(tabId, isClaude); }, [ready, provider, isClaude, tabId]);
+  useLayoutEffect(() => { if (ready && provider) setTabAgent(tabId, isClaude, isCursor); }, [ready, provider, isClaude, isCursor, tabId]);
   // on screen (several are, with split panes) vs where the user is (keyboard focus, shortcuts)
   const active = useTabVisible(tabId);
   const focused = useTabs((s) => s.activeId === tabId) && active;
@@ -259,6 +302,7 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
   const missing = useProviders((s) => (provider ? installState(provider, s.detect) === "missing" : false));
   const running = useClaude((s) => !!s.tabs[tabId]?.ptyId);
   const [confirmBypass, setConfirmBypass] = useState(false);
+  const [confirmForce, setConfirmForce] = useState(false);
 
   useEffect(() => {
     void loadProviders();
@@ -366,8 +410,9 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
         <div className="flex-1" />
         {(isAgent ? agentBusy : activity.working) && <span className="working-text shrink-0 text-[11px] font-medium whitespace-nowrap" title={`${agent} is working`}>working</span>}
         {!isAgent && <span className={clsx("size-1.5 shrink-0 rounded-full", activity.working ? "bg-accent" : running ? "bg-ok" : "bg-faint")} title={activity.working ? `${agent} is working` : running ? `${agent} is running` : `${agent} is not running`} />}
-        {isClaude && <SessionChip tabId={tabId} />}
+        {(isClaude || isCursor) && <SessionChip tabId={tabId} />}
         {isClaude && <LaunchOptions tabId={tabId} onBypass={() => setConfirmBypass(true)} />}
+        {isCursor && <CursorLaunchOptions tabId={tabId} onForce={() => setConfirmForce(true)} />}
         {provider && !isClaude && (
           <Button size="sm" variant="ghost" className="shrink-0" title={isAgent ? `Ask ${agent} to review the uncommitted changes` : `Ask ${agent} to review the uncommitted changes (typed into its terminal)`} onClick={reviewNow}>
             <ScanSearch className="size-3.5" /><span className="@max-7xl:hidden">Review</span>
@@ -432,6 +477,23 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
       >
         <div className="flex flex-col gap-2 text-[13px] text-fg/90">
           <p>Claude will run <b>every</b> tool — shell commands, file edits and deletions, network access — without asking.</p>
+          <p className="text-danger">Only use this in a sandbox or a throwaway checkout of {basename(tab.cwd)}.</p>
+        </div>
+      </Dialog>
+      <Dialog
+        open={confirmForce}
+        onClose={() => setConfirmForce(false)}
+        title={<span className="flex items-center gap-2 text-danger"><AlertTriangle className="size-4" />Run cursor-agent with --force?</span>}
+        width={460}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmForce(false)}>Cancel</Button>
+            <Button variant="danger" onClick={() => { setConfirmForce(false); setLaunchOptions(tabId, { cursorMode: "force" }); }}>Use --force</Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-2 text-[13px] text-fg/90">
+          <p>Cursor will run <b>every</b> command and edit without asking.</p>
           <p className="text-danger">Only use this in a sandbox or a throwaway checkout of {basename(tab.cwd)}.</p>
         </div>
       </Dialog>

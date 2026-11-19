@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Cursor in the AI workspace**: add a **Cursor** AI connection to run Cursor's CLI agent (`cursor-agent`) in a
+  workspace tab, like Claude Code: pick its model and mode (Agent, Plan, Ask or Force) in the header, and each tab
+  keeps its own Cursor chat, resumed every time the agent restarts (its id shows next to the options). DevCat finds
+  the CLI as `cursor-agent` or `agent`; log in with `cursor-agent login` or give the connection an API key
+  (`CURSOR_API_KEY`).
+
 ## 0.29.0 - 2026-11-18
 
 - **Run .sql files in the query editor** (#176): a `.sql` file's tab has a **Query editor** button that opens the script

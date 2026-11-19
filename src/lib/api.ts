@@ -317,6 +317,8 @@ export const api = {
   aiProviderDelete: (id: string) => invoke<void>("ai_provider_delete", { id }),
   /** No provider: install status of every built-in CLI; with one: test that profile. */
   aiProviderDetect: (provider?: AiProvider | null) => invoke<AiDetect[]>("ai_provider_detect", { provider: provider ?? null }),
+  /** New Cursor chat (`cursor-agent create-chat`) for a Cursor connection; returns its chat id. */
+  aiCursorCreateChat: (providerId: string, cwd: string) => invoke<string>("ai_cursor_create_chat", { providerId, cwd }),
 
   // Terminal (PTY). Events: "pty-output" ({ id, data: base64 }), "pty-exit" ({ id, code })
   /** program: "claude" = the resolved Claude Code binary, null = the user's login shell, else a path/name.

@@ -68,5 +68,5 @@ Use it for test runs, servers or anything you don't want the agent to touch.
 
 ## Other agents
 
-Pick another agent (Codex, Gemini CLI, Copilot, Aider, opencode or your own command) in the menu at the top of the
+Pick another agent (Cursor, Codex, Gemini CLI, Copilot, Aider, opencode or your own command) in the menu at the top of the
 sidebar. See [AI connections](ai-connections.md).

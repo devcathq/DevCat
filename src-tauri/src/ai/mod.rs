@@ -1,6 +1,6 @@
 //! AI connections for the AI workspace: saved profiles for the coding-agent CLI that runs in
-//! the workspace terminal (Claude Code, Codex, Gemini, Copilot, Aider, opencode or a custom
-//! command). `pty_open(provider_id)` resolves program / args / env here, so API keys go
+//! the workspace terminal (Claude Code, Cursor, Codex, Gemini, Copilot, Aider, opencode or a
+//! custom command). `pty_open(provider_id)` resolves program / args / env here, so API keys go
 //! from the keychain straight into the child's environment and never reach the frontend.
 pub mod claude_account;
 pub mod store;
@@ -22,6 +22,8 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(8);
 #[serde(rename_all = "lowercase")]
 pub enum AiKind {
     Claude,
+    /// Cursor's CLI agent (`cursor-agent`, also installed as `agent`).
+    Cursor,
     Codex,
     Gemini,
     Copilot,
@@ -33,11 +35,12 @@ pub enum AiKind {
 }
 
 impl AiKind {
-    pub const BUILT_IN: [AiKind; 6] = [AiKind::Claude, AiKind::Codex, AiKind::Gemini, AiKind::Copilot, AiKind::Aider, AiKind::Opencode];
+    pub const BUILT_IN: [AiKind; 7] = [AiKind::Claude, AiKind::Cursor, AiKind::Codex, AiKind::Gemini, AiKind::Copilot, AiKind::Aider, AiKind::Opencode];
 
     pub fn label(self) -> &'static str {
         match self {
             AiKind::Claude => "Claude Code",
+            AiKind::Cursor => "Cursor",
             AiKind::Codex => "OpenAI Codex",
             AiKind::Gemini => "Gemini CLI",
             AiKind::Copilot => "GitHub Copilot",
@@ -52,6 +55,7 @@ impl AiKind {
     pub fn program(self) -> Option<&'static str> {
         match self {
             AiKind::Claude => Some("claude"),
+            AiKind::Cursor => Some("cursor-agent"),
             AiKind::Codex => Some("codex"),
             AiKind::Gemini => Some("gemini"),
             AiKind::Copilot => Some("copilot"),
@@ -65,6 +69,7 @@ impl AiKind {
     pub fn default_key_env(self) -> Option<&'static str> {
         match self {
             AiKind::Claude => Some("ANTHROPIC_API_KEY"),
+            AiKind::Cursor => Some("CURSOR_API_KEY"),
             AiKind::Codex | AiKind::Aider | AiKind::Opencode => Some("OPENAI_API_KEY"),
             AiKind::Gemini => Some("GEMINI_API_KEY"),
             AiKind::Copilot => Some("GH_TOKEN"),
@@ -77,6 +82,7 @@ impl AiKind {
     pub fn install_hint(self) -> Option<&'static str> {
         match self {
             AiKind::Claude => Some("curl -fsSL https://claude.ai/install.sh | bash"),
+            AiKind::Cursor => Some("curl https://cursor.com/install -fsS | bash"),
             AiKind::Codex => Some("npm i -g @openai/codex"),
             AiKind::Gemini => Some("npm i -g @google/gemini-cli"),
             AiKind::Copilot => Some("npm i -g @github/copilot"),
@@ -190,6 +196,13 @@ pub fn plan(p: &AiProvider, api_key: Option<String>, extra_args: Vec<String>) ->
 async fn resolve_program(p: &AiProvider, program: &str) -> Option<PathBuf> {
     if p.kind == AiKind::Claude && p.command.is_none() {
         return locate::claude_path();
+    }
+    // Cursor's installer puts the CLI on PATH as `cursor-agent` and, in newer versions, also as `agent`.
+    if p.kind == AiKind::Cursor && p.command.is_none() {
+        return match locate::find_program(program).await {
+            Some(path) => Some(path),
+            None => locate::find_program("agent").await,
+        };
     }
     locate::find_program(program).await
 }
@@ -413,6 +426,49 @@ pub async fn ai_provider_delete(id: String) -> AppResult<()> {
 
 /// Without `provider`: whether each built-in CLI is installed (+ version).
 /// With one (possibly unsaved edits): test that profile's program.
+const CREATE_CHAT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A new Cursor chat for a Cursor connection (`cursor-agent create-chat`), so the workspace tab
+/// knows its chat id before the first message and resumes it (`--resume <id>`) on every restart,
+/// as Claude Code tabs do with `--session-id`. Runs with the connection's env and API key; the
+/// profile's own args are interactive-session flags, so they're left out.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn ai_cursor_create_chat(provider_id: String, cwd: String) -> AppResult<String> {
+    let st = store()?;
+    let p = st.get(&provider_id)?;
+    if p.kind != AiKind::Cursor {
+        return Err(AppError::msg(format!("{} is not a Cursor connection", p.name)));
+    }
+    let l = plan(&p, st.api_key(&p.id), Vec::new())?;
+    let bin = resolve_program(&p, &l.program).await.ok_or_else(|| not_found(&p, &l.program))?;
+    let mut cmd = locate::tool_command(&bin.to_string_lossy()).await;
+    cmd.arg("create-chat").envs(l.env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    if std::path::Path::new(&cwd).is_dir() {
+        cmd.current_dir(&cwd);
+    }
+    let out = match tokio::time::timeout(CREATE_CHAT_TIMEOUT, cmd.output()).await {
+        Err(_) => return Err(AppError::msg("cursor-agent create-chat timed out")),
+        Ok(r) => r?,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    match chat_id_of(&stdout) {
+        Some(id) if out.status.success() => Ok(id),
+        _ => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let why = err.lines().chain(stdout.lines()).map(str::trim).find(|l| !l.is_empty()).unwrap_or("no chat id printed");
+            Err(AppError::msg(format!("cursor-agent create-chat failed: {}", why.chars().take(200).collect::<String>())))
+        }
+    }
+}
+
+/// The chat id `create-chat` prints: the last non-empty line, if it looks like an id (it's passed
+/// back as an argument, so nothing but letters, digits, `-` and `_`).
+fn chat_id_of(stdout: &str) -> Option<String> {
+    let line = stdout.lines().map(str::trim).filter(|l| !l.is_empty()).last()?;
+    let ok = (8..=128).contains(&line.len()) && line.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    ok.then(|| line.to_string())
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn ai_provider_detect(provider: Option<AiProvider>) -> AppResult<Vec<AiDetect>> {
     Ok(match provider {
@@ -430,6 +486,24 @@ pub async fn ai_provider_detect(provider: Option<AiProvider>) -> AppResult<Vec<A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_chat_id() {
+        assert_eq!(chat_id_of("c6b62c6f-7ead-4fd6-9922-e952131177ff\n").as_deref(), Some("c6b62c6f-7ead-4fd6-9922-e952131177ff"));
+        assert_eq!(chat_id_of("Created chat\n\n  abc123def456  \n").as_deref(), Some("abc123def456"));
+        assert_eq!(chat_id_of(""), None);
+        assert_eq!(chat_id_of("Error: not logged in"), None);
+        assert_eq!(chat_id_of("--model=x; rm -rf /"), None);
+        assert_eq!(chat_id_of("short"), None);
+    }
+
+    #[test]
+    fn cursor_kind() {
+        assert!(AiKind::BUILT_IN.contains(&AiKind::Cursor));
+        assert_eq!(AiKind::Cursor.program(), Some("cursor-agent"));
+        assert_eq!(AiKind::Cursor.default_key_env(), Some("CURSOR_API_KEY"));
+        assert_eq!(serde_json::to_value(AiKind::Cursor).unwrap(), "cursor");
+    }
 
     fn provider(kind: AiKind) -> AiProvider {
         AiProvider { kind, name: kind.label().into(), ..store::builtin_claude() }
