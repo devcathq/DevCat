@@ -124,9 +124,12 @@ Then:
   section, right under **Working copy**. Turn it on (or click **Turn it on** under the **Setup command**), or
   clear the setup command.
 - **An issue stuck in `agent-working` after DevCat crashed or quit during a run**: at the next start, DevCat
-  moves it to the failed label (`ready-for-human`) with a comment that says DevCat stopped during the run and
-  names the branch, which keeps any committed work. It also stops the agent that run left behind. Add
-  `ready-for-agent` again to try again.
+  stops a leftover agent from the run that was cut short, moves the issue to the failed label (`ready-for-human`
+  by default) with a comment that names the branch, and the run shows in **History** with the outcome "error".
+  The comment says to add the trigger label again to try again: the next run continues on the same branch. (On
+  other trackers, fix the ticket with the agent from the Tickets tab.) An issue that someone moved after the
+  crash is left alone. On macOS and Linux, the agent of an unattended run also stops when DevCat quits or
+  crashes.
 - **Stop**: **Stop** in the board's **Working** panel ends its runs and empties its queue. A stopped issue goes
   back to the label it had (`ready-for-agent`) without a comment; its work stays committed on the branch in your clone, not pushed.
   With **Watch** on, the next check takes it again, so turn **Watch** off first if it should wait.
