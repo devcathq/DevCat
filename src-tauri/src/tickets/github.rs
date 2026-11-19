@@ -20,6 +20,8 @@ use serde_json::{Value, json};
 const MAX_ISSUES: usize = 50;
 /// Label pages read for the columns, at most (100 labels each).
 const LABEL_PAGES: usize = 10;
+/// The label of an issue whose pull request closed without a merge (as the triage skills name it).
+const WONTFIX: &str = "wontfix";
 
 /// The API address without a trailing slash: the board's site, else https://api.github.com.
 pub fn api(b: &Board) -> String {
@@ -159,7 +161,11 @@ pub async fn follow_pull_requests(b: &Board, tr: &Tracker) {
 
 /// Pull request `n` of the run `rec`: `merged` or `closed` once it's dealt with, None while
 /// it's open. Merged: the issue loses the done label and is closed (GitHub closes it itself only
-/// for a `Closes` line into the default branch).
+/// for a `Closes` line into the default branch). Closed without a merge: the issue is closed as
+/// not planned with `wontfix` as its state label, its branch is deleted on GitHub and in the
+/// clone where it still points at the pull request's last commit (newer commits are someone's
+/// work), and a comment says so. The comment comes last: a step that failed is done again at the
+/// next check, and the others don't mind being done twice.
 async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -> AppResult<Option<String>> {
     let p = json_of(tr.gh_repo(Method::GET, &format!("/pulls/{n}")).send().await?, "GitHub pull request").await?;
     if s(&p, "state") != "closed" {
@@ -173,7 +179,26 @@ async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -
         tr.gh_close(id, "completed").await?;
         return Ok(Some("merged".into()));
     }
-    Ok(None)
+    let t = tr.gh_get(id).await?;
+    tr.gh_move(&t, WONTFIX).await?;
+    tr.gh_close(id, "not_planned").await?;
+    let (branch, last) = (s(&p["head"], "ref"), s(&p["head"], "sha"));
+    let mut kept = vec![];
+    if last.is_empty() {
+        kept.push("(GitHub didn't say the pull request's last commit)".to_string());
+    } else {
+        if let Some(why) = tr.gh_delete_branch(&branch, &last).await? {
+            kept.push(format!("on GitHub ({why})"));
+        }
+        if let Some(why) = super::worker::delete_branch(&b.repo, &branch, &last).await {
+            kept.push(format!("in the clone ({why})"));
+        }
+    }
+    let url = Some(s(&p, "html_url")).filter(|u| !u.is_empty()).or_else(|| rec.pr_url.clone()).unwrap_or_else(|| format!("#{n}"));
+    let fate = if kept.is_empty() { format!("Its branch `{branch}` is deleted.") } else { format!("Its branch `{branch}` is kept {}.", kept.join(" and ")) };
+    let again = b.pick_from.as_ref().map(|c| format!(" To try again, reopen the issue and add the label `{}`.", c.id)).unwrap_or_default();
+    tr.gh_comment(&t, &format!("The pull request {url} was closed without a merge, so DevCat closed this issue as not planned. {fate}{again}")).await?;
+    Ok(Some("closed".into()))
 }
 
 impl Tracker {
@@ -310,6 +335,25 @@ impl Tracker {
             return Ok(());
         }
         json_of(self.gh_repo(Method::PATCH, &format!("/issues/{id}")).json(&json!({ "state": "closed", "state_reason": reason })).send().await?, "GitHub issue").await.map(drop)
+    }
+
+    /// Deletes `branch` on GitHub if it still points at `sha`. Why it stays, when it does (None:
+    /// deleted, or gone already).
+    async fn gh_delete_branch(&self, branch: &str, sha: &str) -> AppResult<Option<String>> {
+        let r = self.gh_repo(Method::GET, &format!("/git/ref/heads/{branch}")).send().await?;
+        if r.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let v = json_of(r, &format!("GitHub branch {branch}")).await?;
+        if s(&v["object"], "sha") != sha {
+            return Ok(Some("it has commits after the pull request's last one".into()));
+        }
+        let r = self.gh_repo(Method::DELETE, &format!("/git/refs/heads/{branch}")).send().await?;
+        // 422: gone meanwhile
+        if r.status().as_u16() != 422 {
+            json_of(r, &format!("GitHub branch {branch}")).await?;
+        }
+        Ok(None)
     }
 
     pub(super) async fn gh_comment(&self, t: &Ticket, text: &str) -> AppResult<()> {
@@ -545,6 +589,36 @@ pub(crate) mod tests {
 
         check_column(&b).await.unwrap();
         assert_eq!(gh.sent(&format!("GET /repos/acme/calc/pulls/{n}")).len(), 2, "followed once: {:?}", gh.requests());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A pull request closed without a merge: the issue is closed as not planned with `wontfix`
+    /// as its only state label and a comment that links the pull request, and its branch (still at
+    /// the pull request's last commit) is deleted on GitHub and in the clone.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closed_pull_request() {
+        use super::super::worker::{check_column, git};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (b, rec, dir, remote) = fixed_and_recorded(&gh, "gh-closed").await;
+        let cwd = dir.to_str().unwrap();
+        let sha = git(cwd, &["rev-parse", BRANCH]).await.unwrap().trim().to_string();
+        gh.gh.lock().refs.insert(BRANCH.into(), sha);
+        close_pull(&gh, rec.pr_number.unwrap(), false);
+        check_column(&b).await.unwrap();
+
+        let issue = gh.gh.lock().issues[&7].clone();
+        assert_eq!((issue["state"].as_str(), issue["state_reason"].as_str()), (Some("closed"), Some("not_planned")), "{:?}", gh.requests());
+        assert_eq!(gh.labels_of(7), vec!["bug", "wontfix"]);
+        let comments = gh.comments_on(7);
+        assert_eq!(comments.len(), 2, "{comments:?}");
+        assert!(comments[1].contains(rec.pr_url.as_deref().unwrap()) && comments[1].contains("deleted"), "{}", comments[1]);
+        assert!(gh.gh.lock().refs.is_empty(), "deleted on GitHub: {:?}", gh.requests());
+        assert!(git(cwd, &["rev-parse", "--verify", BRANCH]).await.is_err(), "deleted in the clone");
+        assert!(git(cwd, &["rev-parse", "--verify", &format!("origin/{BRANCH}")]).await.is_err(), "and origin's copy there (a new attempt starts afresh)");
+        assert_eq!(super::super::history(&b.id)[0].pr_state.as_deref(), Some("closed"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }

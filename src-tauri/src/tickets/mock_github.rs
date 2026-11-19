@@ -1,6 +1,6 @@
 //! Tests: a GitHub REST API on 127.0.0.1 for one repository, made from data. The test fills a
 //! `Gh` (the token owner, the repository's labels, issues, comments, label events, collaborator
-//! permissions, blockers, parents, pull requests), starts it with `MockGithub::start`, and points
+//! permissions, blockers, parents, pull requests, branches), starts it with `MockGithub::start`, and points
 //! a board's site at `MockGithub::url`. Writes change the data the way GitHub would (labels on
 //! issues, new comments, pull requests, closed issues), so later reads and the test see them.
 //! Every request is recorded as `METHOD /path?query body`.
@@ -40,6 +40,9 @@ pub struct Gh {
     /// Pull requests by number (`{number, html_url, state, draft, merged, title, body, head: {ref,
     /// sha}, base: {ref}}`); the ones DevCat opens land here too.
     pub pulls: BTreeMap<u64, Value>,
+    /// The repository's branches on GitHub and the commit each points at (`git/ref/heads/{b}`).
+    /// The tests' git remote is a bare repository, so a branch DevCat pushes isn't here by itself.
+    pub refs: HashMap<String, String>,
     /// Answers that win over the routes: (`"METHOD /path"` without the query, status, body).
     pub canned: Vec<(String, u16, Value)>,
     /// Every request, `METHOD /path?query body`.
@@ -325,7 +328,14 @@ fn answer(gh: &mut Gh, method: &str, target: &str, body: &str) -> (u16, Value) {
             }
             (200, p.clone())
         }
-        ("DELETE", ["git", "refs", "heads", ..]) => (204, Value::Null),
+        ("GET", ["git", "ref", "heads", branch @ ..]) => match gh.refs.get(&branch.join("/")) {
+            Some(sha) => (200, json!({ "ref": format!("refs/heads/{}", branch.join("/")), "object": { "type": "commit", "sha": sha } })),
+            None => not_found(),
+        },
+        ("DELETE", ["git", "refs", "heads", branch @ ..]) => match gh.refs.remove(&branch.join("/")) {
+            Some(_) => (204, Value::Null),
+            None => (422, json!({ "message": "Reference does not exist" })),
+        },
         _ => not_found(),
     }
 }

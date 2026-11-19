@@ -966,6 +966,35 @@ async fn checked_out_at(clone: &str, branch: &str) -> Option<String> {
     list.split("\n\n").find(|w| w.lines().any(|l| l == want)).and_then(|w| w.lines().find_map(|l| l.strip_prefix("worktree ")).map(str::to_string))
 }
 
+/// Deletes `branch` from the clone of `repo` if it still points at `sha` (the last commit of its
+/// pull request, closed without a merge), and origin's copy of it there, so a new attempt on the
+/// issue starts afresh instead of going on from it. Why it stays, when it does (None: deleted, or
+/// not there): commits of someone's after `sha`, or a worktree (or the clone) has it checked out.
+pub(crate) async fn delete_branch(repo: &str, branch: &str, sha: &str) -> Option<String> {
+    let clone = match git(repo, &["rev-parse", "--show-toplevel"]).await {
+        Ok(top) => top.trim().to_string(),
+        Err(e) => return Some(format!("{repo} isn't a git repository: {e}")),
+    };
+    let clone = clone.as_str();
+    let at = |r: String| async move { git(clone, &["rev-parse", "--verify", "--quiet", &r]).await.map(|s| s.trim().to_string()).ok() };
+    // `update-ref` with the old value: only while it's still there, and unlike `branch -D` it
+    // doesn't touch the clone's config (shared by the worktrees, watched by `git_setup`)
+    let theirs = format!("refs/remotes/origin/{branch}");
+    if at(theirs.clone()).await.as_deref() == Some(sha) {
+        let _ = git(clone, &["update-ref", "-d", &theirs, sha]).await;
+    }
+    let mine = format!("refs/heads/{branch}");
+    match at(mine.clone()).await {
+        None => return None,
+        Some(now) if now != sha => return Some("it has commits after the pull request's last one".into()),
+        Some(_) => {}
+    }
+    if let Some(wt) = checked_out_at(clone, branch).await {
+        return Some(format!("it's checked out in {wt}"));
+    }
+    git(clone, &["update-ref", "-d", &mine, sha]).await.err().map(|e| format!("couldn't delete it: {e}"))
+}
+
 /// Hides `.worktrees/` in the clone's own exclude file (`<common git dir>/info/exclude`, never
 /// committed), so the worktrees never show as untracked files there.
 async fn exclude_worktrees(clone: &str) -> AppResult<()> {
