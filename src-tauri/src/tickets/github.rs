@@ -623,6 +623,70 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// A pull request closed without a merge whose branch got more commits after its last one, on
+    /// GitHub and in the clone: the issue is closed as not planned, and the branch stays in both
+    /// places (the comment says why).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closed_pull_request_branch_with_newer_commits() {
+        use super::super::worker::{check_column, git};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (b, rec, dir, remote) = fixed_and_recorded(&gh, "gh-newer").await;
+        let cwd = dir.to_str().unwrap();
+        // someone's commit on GitHub, and one in the clone (made in a worktree, removed again)
+        gh.gh.lock().refs.insert(BRANCH.into(), "0123456789abcdef0123456789abcdef01234567".into());
+        let wt = dir.with_extension("wt");
+        let at = wt.to_str().unwrap();
+        git(cwd, &["worktree", "add", "-q", at, BRANCH]).await.unwrap();
+        git(at, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "more"]).await.unwrap();
+        git(cwd, &["worktree", "remove", at]).await.unwrap();
+        let mine = git(cwd, &["rev-parse", BRANCH]).await.unwrap();
+        close_pull(&gh, rec.pr_number.unwrap(), false);
+        check_column(&b).await.unwrap();
+
+        let issue = gh.gh.lock().issues[&7].clone();
+        assert_eq!((issue["state"].as_str(), issue["state_reason"].as_str()), (Some("closed"), Some("not_planned")), "{:?}", gh.requests());
+        assert_eq!(gh.labels_of(7), vec!["bug", "wontfix"]);
+        assert!(gh.sent("DELETE /repos/acme/calc/git/refs").is_empty() && gh.gh.lock().refs.contains_key(BRANCH), "kept on GitHub: {:?}", gh.requests());
+        assert_eq!(git(cwd, &["rev-parse", BRANCH]).await.unwrap(), mine, "kept in the clone");
+        let comment = gh.comments_on(7).pop().unwrap();
+        assert!(comment.contains("kept on GitHub") && comment.contains("in the clone") && comment.contains("commits after"), "{comment}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A pull request closed without a merge whose branch a worktree has checked out (left by a
+    /// run for the user to look at, or the user's own): the follow-up still goes through, the
+    /// branch is deleted on GitHub, and the clone keeps it and the worktree.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closed_pull_request_branch_checked_out() {
+        use super::super::worker::{check_column, git};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (b, rec, dir, remote) = fixed_and_recorded(&gh, "gh-busy").await;
+        let cwd = dir.to_str().unwrap();
+        let sha = git(cwd, &["rev-parse", BRANCH]).await.unwrap().trim().to_string();
+        gh.gh.lock().refs.insert(BRANCH.into(), sha.clone());
+        let wt = dir.with_extension("wt");
+        let at = wt.to_str().unwrap();
+        git(cwd, &["worktree", "add", "-q", at, BRANCH]).await.unwrap();
+        close_pull(&gh, rec.pr_number.unwrap(), false);
+        check_column(&b).await.unwrap();
+
+        assert_eq!(gh.gh.lock().issues[&7]["state_reason"].as_str(), Some("not_planned"), "{:?}", gh.requests());
+        assert!(gh.gh.lock().refs.is_empty(), "deleted on GitHub");
+        assert_eq!(git(cwd, &["rev-parse", BRANCH]).await.unwrap().trim(), sha, "kept in the clone");
+        assert_eq!(super::super::worker::tests::head(at).await, BRANCH, "the worktree is as it was");
+        let comment = gh.comments_on(7).pop().unwrap();
+        assert!(comment.contains("in the clone (it's checked out in") && !comment.contains("on GitHub"), "{comment}");
+        assert_eq!(super::super::history(&b.id)[0].pr_state.as_deref(), Some("closed"));
+        let _ = std::fs::remove_dir_all(&wt);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// The whole GitHub flow with real Claude Code (haiku; costs a few cents): the issue is fixed
     /// in its worktree, pushed, and gets a draft pull request.
     #[tokio::test]
