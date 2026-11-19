@@ -101,6 +101,12 @@ tokio::task_local! {
 }
 static RUN_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// `f` in the run this is called in, for a task it spawns (`RUN` doesn't follow `spawn`). Outside
+/// a run: run 0, which is never one, so its `stage` and `log` go nowhere, as before.
+fn in_this_run<F: std::future::Future>(f: F) -> impl std::future::Future<Output = F::Output> {
+    RUN.scope(RUN.try_with(|r| *r).unwrap_or(0), f)
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -1528,14 +1534,15 @@ async fn setup(b: &Board, at: &str, cancel: &Cancel) -> Result<(), String> {
     let lines: Arc<Mutex<Vec<String>>> = Arc::default();
     let read = |r: Option<Box<dyn tokio::io::AsyncRead + Send + Unpin>>| {
         let (lines, board) = (lines.clone(), b.id.clone());
-        tokio::spawn(async move {
+        // in this run: its output goes to this ticket's activity, not a parallel run's (or none)
+        tokio::spawn(in_this_run(async move {
             let Some(r) = r else { return };
             let mut r = BufReader::new(r).lines();
             while let Ok(Some(l)) = r.next_line().await {
                 log(&board, l.clone());
                 lines.lock().push(l);
             }
-        })
+        }))
     };
     let readers = [read(child.stdout.take().map(|r| Box::new(r) as _)), read(child.stderr.take().map(|r| Box::new(r) as _))];
     let deadline = tokio::time::Instant::now() + TICKET_TIMEOUT;
@@ -2845,5 +2852,23 @@ pub(crate) mod tests {
         assert_eq!(git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap(), format!("{CALC}    # fixed\n    # fixed\n"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The setup command's output goes to the activity of the run it belongs to, with parallel
+    /// runs on the board (it's read in tasks of its own, which `RUN` doesn't follow by itself).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn setup_output_in_its_run() {
+        let dir = temp_dir("setup-output");
+        std::fs::create_dir_all(&dir).unwrap();
+        let b = Board { id: uuid::Uuid::new_v4().to_string(), setup_command: "echo ready-$((40 + 2))".into(), allow_commands: true, ..worktree_board("http://127.0.0.1:9", dir.to_str().unwrap(), "none") };
+        let run = |id: u64, t: &str| (id, RunView { ticket_id: t.into(), ..Default::default() });
+        let mine = RUN_IDS.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+        JOBS.lock().insert(b.id.clone(), Job { cancel: Cancel::default(), queue: Default::default(), runs: vec![run(mine, "ABC-1"), run(mine + 1, "ABC-2")], wake: Default::default(), prompts: Default::default(), replies: Default::default(), repo: dir.clone(), started: now_ms() });
+        RUN.scope(mine, setup(&b, dir.to_str().unwrap(), &Cancel::default())).await.unwrap();
+        let logs: Vec<Vec<String>> = JOBS.lock().remove(&b.id).unwrap().runs.into_iter().map(|(_, r)| r.log).collect();
+        assert!(logs[0].iter().any(|l| l == "ready-42"), "in its run: {logs:?}");
+        assert!(!logs[1].iter().any(|l| l == "ready-42"), "not in the other: {logs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
