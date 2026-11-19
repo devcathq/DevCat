@@ -159,12 +159,17 @@ pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord) {
 }
 
 /// Whether the watch may queue the issue: the last one to add the trigger label (the board's
-/// pick-from label) may write to the repository or is on the board's allowlist, so a stranger's
-/// label can't make the agent run; and no open issue blocks it, so it starts at the first check
-/// after its last blocker closes. Sending an issue to the agent by hand skips this.
+/// pick-from label) did so after the board was made, and may write to the repository or is on
+/// the board's allowlist, so a stranger's label can't make the agent run; and no open issue
+/// blocks it, so it starts at the first check after its last blocker closes. Sending an issue to
+/// the agent by hand skips this.
 pub async fn ready(tr: &Tracker, t: &Ticket) -> AppResult<bool> {
     let label = tr.board.pick_from.as_ref().map(|c| c.id.clone()).unwrap_or_default();
     let Some(ev) = tr.gh_labeled(&t.id, &label).await? else { return Ok(false) };
+    // the backlog from before the board: by hand only
+    if chrono::DateTime::parse_from_rfc3339(&s(&ev, "created_at")).map(|d| d.timestamp_millis()).unwrap_or(0) <= tr.board.created {
+        return Ok(false);
+    }
     let who = s(&ev["actor"], "login");
     if !tr.board.allowlist.iter().any(|l| l.eq_ignore_ascii_case(&who)) && !can_write(tr, &who).await? {
         return Ok(false);
@@ -553,6 +558,40 @@ pub(crate) mod tests {
         assert_eq!(queued(&b).await, vec!["7", "9"], "#7's last blocker closed");
         gh.gh.lock().issues.get_mut(&22).unwrap()["state"] = json!("closed");
         assert_eq!(queued(&b).await, vec!["7", "8", "9"], "#8's last blocker closed");
+    }
+
+    /// A new board leaves the backlog alone: the watch skips an issue whose trigger label was
+    /// added before the board was first saved (a later save keeps that time), but sending it to
+    /// the agent by hand works.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backlog_by_hand_only() {
+        use super::super::worker::tests::*;
+        tickets_data();
+        let mut data = one_issue().with_issue(8, "Labelled again", "", &["ready-for-agent"], &["octo"]);
+        data.events.insert(7, vec![labeled("ready-for-agent", "ana", "2026-01-05T10:00:00Z")]);
+        data.events.insert(8, vec![labeled("ready-for-agent", "ana", "2026-01-05T10:00:00Z"), labeled("ready-for-agent", "ana", &soon())]);
+        data.permissions.insert("ana".into(), "admin".into());
+        let gh = MockGithub::start(data).await;
+        let (dir, _remote) = clone_with_origin("gh-backlog").await;
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, dir.to_str().unwrap(), &fixer)).await.unwrap();
+        let made = b.created;
+        assert!(made > chrono::Utc::now().timestamp_millis() - 60_000, "{made}");
+        let b = super::super::tickets_board_save(Board { created: 0, ..b }).await.unwrap();
+        assert_eq!(b.created, made, "kept");
+        assert_eq!(queued(&b).await, vec!["8"]);
+
+        super::super::tickets_fix(b.id.clone(), vec!["7".into()], None).await.unwrap();
+        let t0 = std::time::Instant::now();
+        while super::super::history(&b.id).is_empty() && t0.elapsed().as_secs() < 60 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let rec = super::super::history(&b.id).into_iter().next().expect("ran");
+        assert_eq!((rec.ticket_id.as_str(), rec.outcome.as_str()), ("7", "fixed"), "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(gh.labels_of(7), vec!["bug", "agent-review"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&_remote);
     }
 
     /// The issue the run tests work on, and its branch.

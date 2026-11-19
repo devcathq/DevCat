@@ -138,6 +138,10 @@ pub struct Board {
     pub id: String,
     pub name: String,
     pub kind: TrackerKind,
+    /// When the board was first saved (ms since 1970; 0: before boards kept it). A GitHub
+    /// board's watch leaves issues alone that got their trigger label before this.
+    #[serde(default)]
+    pub created: i64,
     /// Jira: the site (https://acme.atlassian.net, or a Data Center URL). GitHub: the API address
     /// (https://api.github.com, or https://<host>/api/v3 for GitHub Enterprise Server).
     #[serde(default)]
@@ -453,9 +457,16 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     {
         let _g = WRITE.lock();
         let mut list = load_boards()?;
+        let now = chrono::Utc::now().timestamp_millis();
         match list.iter_mut().find(|x| x.id == b.id) {
-            Some(x) => *x = b.clone(),
-            None => list.push(b.clone()),
+            Some(x) => {
+                b.created = if x.created > 0 { x.created } else { now };
+                *x = b.clone()
+            }
+            None => {
+                b.created = now;
+                list.push(b.clone())
+            }
         }
         let clean: Vec<Board> = list.into_iter().map(|x| Board { token: None, webhook: None, has_token: false, has_webhook: false, ..x }).collect();
         write_json(&boards_path()?, &clean)?;
