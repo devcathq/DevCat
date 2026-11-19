@@ -1,9 +1,9 @@
-// Tickets (src-tauri/src/tickets): Jira, Trello and Linear boards whose tickets the agent works on.
+// Tickets (src-tauri/src/tickets): Jira, Trello, Linear and GitHub boards whose tickets the agent works on.
 // Events: "tickets-job" ({ board, job | null }) while a board works, "tickets-changed" ({ board })
 // when its history changes.
 import { invoke } from "@tauri-apps/api/core";
 
-export type TrackerKind = "jira" | "trello" | "linear";
+export type TrackerKind = "jira" | "trello" | "linear" | "github";
 /** Whose tickets the agent takes (the token owner = "me"). */
 export type Assigned = "anyone" | "me" | "meOrNobody";
 /** How a run gets its working copy: the repository itself, or a git worktree for each ticket. */
@@ -20,11 +20,11 @@ export interface Board {
   id: string;
   name: string;
   kind: TrackerKind;
-  /** Jira: the site URL. */
+  /** Jira: the site URL. GitHub: the API address (https://api.github.com, GitHub Enterprise: https://<host>/api/v3). */
   site: string;
   /** Jira Cloud: email (empty = Data Center token). Trello: API key. */
   user: string;
-  /** Jira: project key. Trello: board link or id. Linear: team key. */
+  /** Jira: project key. Trello: board link or id. Linear: team key. GitHub: the repository, `owner/name`. */
   project: string;
   /** Write-only: a token to store, undefined = keep the saved one. */
   token?: string;
@@ -32,6 +32,8 @@ export interface Board {
   /** Write-only: a webhook to store, "" = remove it, undefined = keep. */
   webhook?: string;
   hasWebhook?: boolean;
+  /** GitHub: the token owner's login, read when the board is saved (branches are `<login>/<number>-<title>`). */
+  login?: string;
   /** A git repository, or a folder of them. */
   repo: string;
   /** "worktree": each ticket in `<repo>/.worktrees`, made from origin; `targetBranch` is then the base branch. */
@@ -77,17 +79,32 @@ export interface RunRecord {
   sessionId?: string | null; providerId?: string | null; cwd?: string | null;
   /** The person's answer to the agent's questions (from the Tickets chat) that started this run. */
   reply?: string | null;
+  /** GitHub: the draft pull request DevCat opened for the run. */
+  prNumber?: number | null; prUrl?: string | null;
 }
 
 export const ASSIGNED: Record<Assigned, string> = { anyone: "Anyone", me: "Me", meOrNobody: "Me, or nobody yet" };
 
-export const TRACKERS: Record<TrackerKind, string> = { jira: "Jira", trello: "Trello", linear: "Linear" };
+export const TRACKERS: Record<TrackerKind, string> = { jira: "Jira", trello: "Trello", linear: "Linear", github: "GitHub" };
+
+/** A GitHub board's state labels (its columns: a label's id is its name), as the triage skills name them. */
+const label = (name: string): Column => ({ id: name, name });
+
+/** What a new board of each kind starts with. GitHub: the default state labels, a worktree for each issue, push on. */
+const KIND_DEFAULTS: Record<TrackerKind, Partial<Board>> = {
+  jira: {}, trello: {}, linear: {},
+  github: {
+    site: "https://api.github.com", isolation: "worktree", push: true, branchPrefix: "",
+    pickFrom: label("ready-for-agent"), working: label("agent-working"), doneTo: label("agent-review"), failedTo: label("ready-for-human"),
+  },
+};
 
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
   pickFrom: null, working: null, doneTo: null, failedTo: null, label: "", assigned: "anyone",
   comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
   isolation: "inPlace",
+  ...KIND_DEFAULTS[kind],
 });
 
 export const tickets = {

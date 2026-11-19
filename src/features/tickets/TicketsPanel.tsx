@@ -1,4 +1,4 @@
-// Sidebar: the connected boards (Jira, Trello, Linear), with what the agent is doing on each.
+// Sidebar: the connected boards (Jira, Trello, Linear, GitHub), with what the agent is doing on each.
 // Clicking one shows it in the Tickets tab. In focus mode only the focused project's boards and
 // the ones in no project are listed.
 import clsx from "clsx";
@@ -49,7 +49,7 @@ export default function TicketsPanel() {
   if (boards.length === 0) {
     return (
       <div className="space-y-3 p-4 text-[12px] text-muted">
-        <p>Connect a Jira project, Trello board or Linear team, and the agent works through its tickets in your repository, with the project's shared memory.</p>
+        <p>Connect a Jira project, Trello board, Linear team or GitHub repository, and the agent works through its tickets in your repository, with the project's shared memory.</p>
         <Button variant="primary" onClick={() => useTickets.getState().edit("new")}><Plus className="size-3.5" />Connect a board</Button>
       </div>
     );
