@@ -145,6 +145,12 @@ token and the repository, reads the token owner's login, and creates the labels 
   committed (marked WIP) and pushed, the comment has the reason and the branch, and the issue gets
   `ready-for-human`, so a person can go on from there. Neither opens a pull request.
 - Labels, comments and pull requests appear as the token's owner.
+- With **Watch** on, each check also looks at the pull requests DevCat opened that are still open. When one is
+  merged, the issue loses `agent-review` and is closed if it's still open (GitHub closes it only for a pull request
+  into the default branch). When one is closed without a merge, the issue is closed as not planned, gets `wontfix`
+  as its only state label and a comment that links the pull request, and its branch is deleted on GitHub and in your
+  repository. A branch with commits after the pull request's last one stays (someone's work), and so does a branch
+  that a worktree has checked out; the comment says so. To try again, reopen the issue and add the trigger label.
 
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
 workspace, where you can read what it did and carry on from there.

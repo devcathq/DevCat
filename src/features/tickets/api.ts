@@ -91,6 +91,8 @@ export interface RunRecord {
   reply?: string | null;
   /** GitHub: the draft pull request DevCat opened for the run. */
   prNumber?: number | null; prUrl?: string | null;
+  /** What became of the pull request once the watch loop saw it closed (null: open). */
+  prState?: "merged" | "closed" | null;
 }
 
 export const ASSIGNED: Record<Assigned, string> = { anyone: "Anyone", me: "Me", meOrNobody: "Me, or nobody yet" };
