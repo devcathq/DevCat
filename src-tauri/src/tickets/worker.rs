@@ -705,7 +705,7 @@ fn provider_of(b: &Board) -> &str {
 /// it was with the same AI connection).
 #[allow(clippy::too_many_arguments)]
 async fn run_agent(b: &Board, t: &Ticket, where_: &str, images: &[Image], custom: Option<&str>, reply: Option<&Reply>, cancel: &Cancel, session: &Arc<Mutex<Option<String>>>) -> AppResult<Answer> {
-    let providers = crate::ai::ai_providers_list().await?;
+    let providers = crate::ai::providers().await?;
     let id = provider_of(b);
     let p = providers.into_iter().find(|p| p.id == id).ok_or_else(|| AppError::msg("The board's AI connection is gone: choose another one"))?;
     let resume = reply.filter(|r| r.provider_id.as_deref() == Some(id)).and_then(|r| r.session_id.clone()).filter(|s| !s.is_empty()).filter(|s| match p.kind {

@@ -176,6 +176,8 @@ fn context_of(m: &serde_json::Value) -> Option<u64> {
         .iter()
         .find_map(|k| m.get(k).and_then(|c| c.as_u64()))
         .or_else(|| m.pointer("/top_provider/context_length").and_then(|c| c.as_u64()))
+        // llama.cpp's server (and servers built on it) put the loaded context under `meta`
+        .or_else(|| m.pointer("/meta/n_ctx").and_then(|c| c.as_u64()))
         .filter(|&c| c > 0)
 }
 
@@ -251,6 +253,7 @@ mod tests {
             { "id": "anthropic", "max_input_tokens": 200000 },
             { "id": "lmstudio", "max_context_length": 32768 },
             { "id": "nested", "top_provider": { "context_length": 64000 } },
+            { "id": "llamacpp", "object": "model", "meta": { "n_ctx": 196608 } },
             { "id": "unknown" },
         ] });
         let got: Vec<_> = models(&v).into_iter().map(|m| (m.id, m.context)).collect();
@@ -258,6 +261,7 @@ mod tests {
         assert!(got.contains(&("anthropic".into(), Some(200000))));
         assert!(got.contains(&("lmstudio".into(), Some(32768))));
         assert!(got.contains(&("nested".into(), Some(64000))));
+        assert!(got.contains(&("llamacpp".into(), Some(196608))));
         assert!(got.contains(&("unknown".into(), None)));
     }
 

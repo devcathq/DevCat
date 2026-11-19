@@ -9,7 +9,9 @@
 //! - Ticket boards follow the folder rule of connections; DevCat, not the agent, talks to the
 //!   tracker, and `tickets_fix` hands tickets to the board's own agent run.
 //! - `devcat_open_file` shows the user a file in DevCat's window (`opened::show`), as if they'd
-//!   opened it with DevCat; its content doesn't go back to the agent.
+//!   opened it with DevCat; its content doesn't go back to the agent. `db_open_query` opens SQL
+//!   (text, a .sql file or a saved query) in a query tab and may run it there: a read on a
+//!   read-only session, a write only where the agent may change data (`may_change`).
 use super::*;
 use crate::agent_jobs::{self, Job, Schedule};
 use crate::history::SavedQuery;
@@ -31,10 +33,17 @@ pub(super) fn add(out: &mut Vec<Arc<dyn Tool>>, s: &Arc<Scope>, v: &View) {
     }
     // nobody watches an unattended run, so there's no one to show a file to
     out.push(Arc::new(OpenFile));
+    if v.connections.iter().any(|c| is_db(c.kind)) {
+        out.push(Arc::new(OpenQuery(s.clone())));
+    }
     out.push(Arc::new(ConnAdd(s.clone())));
     out.push(Arc::new(Jobs(s.clone())));
     out.push(Arc::new(JobSave(s.clone())));
     out.push(Arc::new(JobRun(s.clone())));
+    // only where the user let coding agents hand work to a DevCat Agent connection
+    if !crate::ai::delegates().is_empty() {
+        out.push(Arc::new(Delegate(s.clone())));
+    }
     if !boards(s).is_empty() {
         out.push(Arc::new(Tickets(s.clone())));
         out.push(Arc::new(TicketsFix(s.clone())));
@@ -363,6 +372,156 @@ impl Tool for SaveQuery {
     }
 }
 
+// ---------- agent_delegate
+
+/// Longest answer `agent_delegate` hands back: the point is to spend the caller's tokens on the
+/// outcome, not the work.
+const MAX_DELEGATE_ANSWER: usize = 4000;
+/// Part of the model's window a task may take up on its own: the rest is for the DevCat Agent's
+/// instructions, the files it reads and its work.
+const TASK_SHARE: f64 = 0.25;
+
+/// Hands a task to a DevCat Agent connection the user allowed (`AgentSettings::delegate`: a
+/// cheaper or local model), in the caller's folder, and waits for it: the caller gets a short
+/// answer and the files it changed. The chat stays in DevCat for the user to read; it gets no
+/// DevCat tools (`connections: false`), so it can't hand work on in turn. Nobody watches it, so
+/// it never waits for the user: what would ask (commands, web pages, edits outside the folder) is
+/// refused at once (`agent_jobs::is_delegated`), and questions get "decide yourself".
+struct Delegate(Arc<Scope>);
+
+/// The allowed connection the model means, or the one there is.
+fn delegate_named(want: Option<&str>) -> Result<crate::ai::AiProvider, ToolOutput> {
+    let all = crate::ai::delegates();
+    let names = || all.iter().map(|p| format!("\"{}\"", p.name)).collect::<Vec<_>>().join(", ");
+    if all.is_empty() {
+        return Err(ToolOutput::err("No DevCat Agent connection takes delegated work: the user turns on \"Coding agents may hand it work\" for one in DevCat (AI connections)."));
+    }
+    match want {
+        Some(w) => all.iter().find(|p| p.id == w).or_else(|| all.iter().find(|p| p.name.eq_ignore_ascii_case(w))).cloned().ok_or_else(|| ToolOutput::err(format!("\"{w}\" doesn't take delegated work. These do: {}.", names()))),
+        None if all.len() == 1 => Ok(all[0].clone()),
+        None => Err(ToolOutput::err(format!("Say which `agent`: {}.", names()))),
+    }
+}
+
+/// Whether the task alone fits in its share of the window (about 4 characters a token).
+fn task_fits(task: &str, window: u64) -> Result<(), String> {
+    let tokens = task.chars().count() as u64 / 4;
+    let room = (window as f64 * TASK_SHARE) as u64;
+    if tokens > room {
+        return Err(format!("The task is about {tokens} tokens, and this model's window is {window}: keep it under {room}. Split it, or name the files for it to read instead of pasting them."));
+    }
+    Ok(())
+}
+
+/// At most `max` characters of `text`, saying when there was more.
+fn clip(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((i, _)) => format!("{}\n[… cut: the full answer is in the chat in DevCat]", &text[..i]),
+        None => text.to_string(),
+    }
+}
+
+#[async_trait]
+impl Tool for Delegate {
+    fn spec(&self) -> ToolSpec {
+        let names: Vec<String> = crate::ai::delegates().into_iter().map(|p| p.name).collect();
+        ToolSpec {
+            name: "agent_delegate".into(),
+            description: format!(
+                "Hand a self-contained task to another model through DevCat (a cheaper or local one the user allowed: {}), to save your own tokens: it works in your folder with file tools (read, glob, grep, edit; no commands, web pages or edits outside the folder, since nobody approves them) and you get back a short summary and the files it changed, never its whole work. Good for mechanical edits, drafting, renames, boilerplate, summarizing files. Its context is smaller than yours: give one focused task, name the files and what done means, don't paste big files (it reads them). Check what it changed before you rely on it. Takes minutes; needs DevCat open.",
+                if names.is_empty() { "none yet".into() } else { names.join(", ") }
+            ),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "What to do, with the files and what done means" },
+                    "agent": { "type": "string", "description": "Which allowed DevCat Agent connection (name or id); needed when there are several" },
+                    "folder": { "type": "string", "description": "Where it works: your folder (default) or a folder in it" },
+                    "mode": { "type": "string", "enum": ["auto-edit", "plan"], "description": "auto-edit (default): it edits files in the folder; plan: it only reads and answers" }
+                },
+                "required": ["task"]
+            }),
+        }
+    }
+    fn kind(&self, input: &Value, _: &ToolCtx) -> Kind {
+        if arg(input, "mode").as_deref() == Some("plan") { Kind::Query } else { Kind::EditOutside }
+    }
+    fn summary(&self, input: &Value) -> String {
+        let task = arg(input, "task").unwrap_or_default();
+        format!("{}: {}", arg(input, "agent").unwrap_or_else(|| "delegate".into()), task.chars().take(80).collect::<String>())
+    }
+    fn timeout(&self, _: &Value) -> Duration {
+        Duration::from_secs(60 * 60)
+    }
+    async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
+        // chats run in the app: not in `devcat mcp` with DevCat closed, nor `devcat serve` without the scheduler
+        if let Err(e) = jobs_here() {
+            return ToolOutput::err(e.content.replace("Scheduled jobs live", "Delegated work runs"));
+        }
+        let Some(task) = arg(&input, "task") else { return ToolOutput::err("Missing `task`: what it should do.") };
+        let p = match delegate_named(arg(&input, "agent").as_deref()) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let root = job_folder(&self.0, ctx);
+        let folder = match arg(&input, "folder") {
+            Some(f) => local_path(ctx, &f),
+            None => root.clone(),
+        };
+        if !within(&folder, &root) {
+            return ToolOutput::err(format!("It works in your folder ({root}) or a folder in it, not {folder}."));
+        }
+        if !Path::new(&folder).is_dir() {
+            return ToolOutput::err(format!("There's no folder {folder}."));
+        }
+        let policy = match arg(&input, "mode").as_deref().unwrap_or("auto-edit") {
+            "auto-edit" => Policy::AutoEdit,
+            "plan" => Policy::Plan,
+            m => return ToolOutput::err(format!("Unknown mode {m}: auto-edit or plan.")),
+        };
+        let window = crate::ai::provider_context_window(&p.id).await.unwrap_or(128_000);
+        if let Err(why) = task_fits(&task, window) {
+            return ToolOutput::err(why);
+        }
+        let opened = match crate::agent::open(folder.clone(), p.id.clone(), None, "delegate", crate::agent::SCHEDULE, None, None, false).await {
+            Ok(o) => o,
+            Err(e) => return ToolOutput::err(format!("Couldn't start {}: {e}", p.name)),
+        };
+        let sid = opened.session_id;
+        let title = format!("Delegated · {}", task.split_whitespace().take(8).collect::<Vec<_>>().join(" "));
+        let _ = crate::agent::agent_rename(sid.clone(), title.clone()).await;
+        agent_jobs::delegated(&sid, Some(title));
+        let prompt = format!(
+            "{task}\n\n(Another coding agent handed you this task and reads only your final message. Work in this folder. When done, end with a short summary, at most 150 words: what you changed (file paths), what you checked, and anything left undone or uncertain. Don't paste file contents or diffs.)"
+        );
+        let started = std::time::Instant::now();
+        let result = crate::agent::run_turn(&sid, &prompt, policy, Some(window), false).await;
+        let took = started.elapsed().as_secs();
+        agent_jobs::delegated(&sid, None);
+        let answer = crate::agent::last_answer(&sid).unwrap_or_default();
+        let changed: Vec<String> = crate::agent::changed_files(&sid)
+            .into_iter()
+            .map(|f| Path::new(&f).strip_prefix(&folder).map(|r| r.to_string_lossy().into_owned()).unwrap_or(f))
+            .collect();
+        crate::agent::close_if_idle(&sid);
+        let (end, error) = match result {
+            Ok(r) => r,
+            Err(e) => ("error".into(), Some(e.to_string())),
+        };
+        let head = match (end.as_str(), &error) {
+            ("answered", _) => format!("{} finished in {took} s.", p.name),
+            ("stepLimit", _) => format!("{} stopped at its step limit after {took} s without finishing.", p.name),
+            ("stopped", _) => format!("{} was stopped.", p.name),
+            (_, Some(e)) => format!("{} failed: {e}", p.name),
+            _ => format!("{} didn't finish ({end}).", p.name),
+        };
+        let files = if changed.is_empty() { "Files changed: none.".to_string() } else { format!("Files changed: {}.", changed.join(", ")) };
+        let body = if answer.is_empty() { "(No answer.)".to_string() } else { clip(&answer, MAX_DELEGATE_ANSWER) };
+        let out = format!("{head} {files}\n\n{body}");
+        if end == "answered" { ToolOutput::ok(out) } else { ToolOutput::err(out) }
+    }
+}
+
 // ---------- scheduled jobs
 
 /// Jobs are managed in the app; elsewhere (`devcat serve`, `devcat mcp` with DevCat closed) the
@@ -509,7 +668,7 @@ async fn save_job(scope: &Scope, input: &Value, ctx: &ToolCtx) -> Result<String,
             let provider = match arg(input, "provider") {
                 Some(p) => p,
                 None => {
-                    let all = crate::ai::ai_providers_list().await.unwrap_or_default();
+                    let all = crate::ai::providers().await.unwrap_or_default();
                     all.into_iter().find(|p| crate::ai::agent_config(&p.id).is_ok()).map(|p| p.id).ok_or_else(|| fail("There's no DevCat Agent connection to run the job with: the user adds one in DevCat (AI connections).".into()))?
                 }
             };
@@ -536,7 +695,7 @@ async fn save_job(scope: &Scope, input: &Value, ctx: &ToolCtx) -> Result<String,
     }
     if let Some(p) = arg(input, "provider") {
         // by name or id
-        let all = crate::ai::ai_providers_list().await.unwrap_or_default();
+        let all = crate::ai::providers().await.unwrap_or_default();
         job.provider_id = all.into_iter().find(|x| x.id == p || x.name.eq_ignore_ascii_case(&p)).map(|x| x.id).unwrap_or(p);
     }
     if let Some(m) = input.get("every_minutes").and_then(Value::as_u64) {
@@ -807,6 +966,189 @@ impl Tool for OpenFile {
     }
 }
 
+// ---------- db_open_query
+
+/// How a query an agent opens runs in the window, once, when its tab opens.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutoRun {
+    /// On the connection's own session (the connection is read-only, or the agent may change data).
+    Full,
+    /// On a read-only session (`St::read_only_driver`): DevCat judged it a read by its words.
+    ReadOnly,
+}
+
+/// A query an agent opens in a query tab (`db_open_query`); the window takes it from `opened::take_opened_queries`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedQuery {
+    pub conn_id: String,
+    pub database: Option<String>,
+    pub sql: String,
+    pub title: Option<String>,
+    /// The saved query it is (its tab saves back to it).
+    pub saved_query_id: Option<String>,
+    pub run: Option<AutoRun>,
+}
+
+
+/// Biggest .sql file `db_open_query` opens (the query editor holds all of it).
+const MAX_SQL_FILE: u64 = 2 * 1024 * 1024;
+
+/// Opens SQL in a query tab of DevCat's window, on a connection, and runs it there if asked: the
+/// user sees the editor and the results grid, the agent only where it opened. What runs follows
+/// the agent's rights, not the window's: a read runs on a read-only session
+/// (`St::read_only_driver`), a write only where `may_change` allows (the DevCat Agent asks first:
+/// `Kind::Exec`); otherwise the tab opens and the user presses Run.
+struct OpenQuery(Arc<Scope>);
+
+/// The SQL the model means: `query`, else the `file`'s text, else the `saved` query's; with the
+/// tab's title and the saved query it came from.
+async fn sql_to_open(scope: &Scope, input: &Value, ctx: &ToolCtx) -> Result<(String, Option<String>, Option<SavedQuery>), ToolOutput> {
+    if let Some(q) = input.get("query").and_then(Value::as_str).filter(|q| !q.trim().is_empty()) {
+        return Ok((q.to_string(), None, None));
+    }
+    if let Some(f) = arg(input, "file") {
+        let path = file_to_open(ctx, &f);
+        let meta = std::fs::metadata(&path).map_err(|_| ToolOutput::err(format!("There's no file at {}.", path.display())))?;
+        if !meta.is_file() {
+            return Err(ToolOutput::err(format!("{} is a folder: give a .sql file in it.", path.display())));
+        }
+        if meta.len() > MAX_SQL_FILE {
+            return Err(ToolOutput::err(format!("{} is over {} MB; the query editor opens smaller scripts.", path.display(), MAX_SQL_FILE / 1024 / 1024)));
+        }
+        let text = std::fs::read_to_string(&path).map_err(|e| ToolOutput::err(format!("Couldn't read {} as text: {e}", path.display())))?;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        return Ok((text, name, None));
+    }
+    if let Some(want) = arg(input, "saved") {
+        let v = view(scope);
+        let all = crate::commands::history::saved_queries_list(St::get()).await.unwrap_or_default();
+        // saved queries of connections the agent doesn't see stay hidden (as in `db_history`)
+        let mine: Vec<SavedQuery> = all.into_iter().filter(|q| q.connection_id.as_deref().is_none_or(|c| v.connections.iter().any(|x| x.id == c))).collect();
+        let hit = mine.iter().find(|q| q.id == want).or_else(|| mine.iter().find(|q| q.name.eq_ignore_ascii_case(&want))).cloned();
+        return match hit {
+            Some(q) => Ok((q.query.clone(), Some(q.name.clone()), Some(q))),
+            None => Err(ToolOutput::err(format!("There's no saved query \"{want}\" here (`db_history` with saved: true lists them)."))),
+        };
+    }
+    Err(ToolOutput::err("Give the SQL: `query` (the text), `file` (a .sql file) or `saved` (a saved query's name or id)."))
+}
+
+/// The connection: `connection`, else the saved query's own.
+fn open_query_conn(scope: &Scope, input: &Value, saved: Option<&SavedQuery>) -> Result<ConnectionConfig, ToolOutput> {
+    let mut input = input.clone();
+    if arg(&input, "connection").is_none()
+        && let Some(c) = saved.and_then(|q| q.connection_id.clone())
+    {
+        input["connection"] = json!(c);
+    }
+    let c = find(scope, &input)?;
+    if !is_db(c.kind) {
+        return Err(ToolOutput::err(format!("{} is a {} connection; the query editor is for databases, Redis and MongoDB.", c.name, kind_name(c.kind))));
+    }
+    Ok(c)
+}
+
+/// How the opened query runs, and what to tell the agent when it doesn't: a read-only
+/// connection's own session refuses writes; a read by its words runs on a read-only session;
+/// anything else needs `may_change`.
+fn run_mode(scope: &Scope, c: &ConnectionConfig, sql: &str, want: bool) -> (Option<AutoRun>, String) {
+    if !want {
+        return (None, String::new());
+    }
+    if c.read_only {
+        return (Some(AutoRun::Full), String::new());
+    }
+    if reads_only(c, sql) {
+        return (Some(AutoRun::ReadOnly), String::new());
+    }
+    match may_change(scope, c) {
+        Ok(()) => (Some(AutoRun::Full), String::new()),
+        Err(why) => (None, format!(" It wasn't run, since it may change data: {} The user presses Run in the tab.", why.content)),
+    }
+}
+
+#[async_trait]
+impl Tool for OpenQuery {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "db_open_query".into(),
+            description: "Open SQL in DevCat's query editor (a query tab in the DevCat window) on a connection, for the user to see, edit and run, with the results in DevCat's grid. Give the SQL as `query`, a .sql `file`, or a `saved` query (name or id; it opens on its own connection unless `connection` says otherwise). With `run: true` DevCat also runs the whole script in that tab: a read runs on a read-only session; a script that changes data runs only where agents may change that connection's data, else the tab opens and the user presses Run. You don't get the rows back (use `db_query` for that). Use it when the user wants a query or .sql file opened or run in DevCat. Needs the DevCat app open.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "connection": { "type": "string", "description": "Connection name or id (a saved query's own when left out)" },
+                    "query": { "type": "string", "description": "The SQL (MongoDB shell / Redis commands on those connections)" },
+                    "file": { "type": "string", "description": "A .sql file instead: absolute, or relative to your folder" },
+                    "saved": { "type": "string", "description": "A saved query instead: its name or id" },
+                    "database": { "type": "string", "description": "Database to run it in (the connection's default when left out)" },
+                    "title": { "type": "string", "description": "The tab's title" },
+                    "run": { "type": "boolean", "description": "Also run it in the tab (default false)" }
+                }
+            }),
+        }
+    }
+    fn kind(&self, input: &Value, _: &ToolCtx) -> Kind {
+        if !arg_bool(input, "run").unwrap_or(false) {
+            return Kind::Read;
+        }
+        // a file's or saved query's text isn't known here: judged a write, so the DevCat Agent asks
+        let query = input.get("query").and_then(Value::as_str).unwrap_or("");
+        match find(&self.0, input) {
+            Ok(c) if !query.trim().is_empty() && reads_only(&c, query) => Kind::Query,
+            _ => Kind::Exec,
+        }
+    }
+    fn summary(&self, input: &Value) -> String {
+        let what = arg(input, "file").or_else(|| arg(input, "saved")).unwrap_or_else(|| input.get("query").and_then(Value::as_str).unwrap_or("").trim().to_string());
+        let verb = if arg_bool(input, "run").unwrap_or(false) { "run" } else { "open" };
+        format!("{verb} on {}: {what}", input.get("connection").and_then(Value::as_str).unwrap_or("its connection"))
+    }
+    async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
+        // `devcat mcp` with DevCat closed: no window in this process
+        if crate::network::passive() {
+            return ToolOutput::err("DevCat isn't open, and the query editor is in its window: the user opens DevCat and asks again.");
+        }
+        let (sql, name, saved) = match sql_to_open(&self.0, &input, ctx).await {
+            Ok(x) => x,
+            Err(e) => return e,
+        };
+        let c = match open_query_conn(&self.0, &input, saved.as_ref()) {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
+        if let Err(e) = network::usable(&self.0, &c) {
+            return e;
+        }
+        let (run, note) = run_mode(&self.0, &c, &sql, arg_bool(&input, "run").unwrap_or(false));
+        let q = OpenedQuery {
+            conn_id: c.id.clone(),
+            database: arg(&input, "database").or_else(|| saved.as_ref().and_then(|q| q.database.clone())),
+            sql,
+            title: arg(&input, "title").or(name),
+            saved_query_id: saved.map(|q| q.id),
+            run,
+        };
+        #[cfg(feature = "gui")]
+        if let Some(app) = crate::events::app() {
+            return match crate::opened::show_query(app, q) {
+                Ok(()) => {
+                    let did = if run.is_some() {
+                        "Opened it in DevCat's query editor and it's running there; the user sees the results (they don't come back to you)."
+                    } else {
+                        "Opened it in DevCat's query editor."
+                    };
+                    ToolOutput::ok(format!("{did} Connection {}.{note}", c.name))
+                }
+                Err(e) => ToolOutput::err(e),
+            };
+        }
+        let _ = (q, note);
+        ToolOutput::err("DevCat runs without windows here (`devcat serve`), so there's no query editor to open.")
+    }
+}
+
 /// The file the model means: relative to its folder, `~` the home folder.
 fn file_to_open(ctx: &ToolCtx, p: &str) -> PathBuf {
     let p = local_path(ctx, p);
@@ -821,6 +1163,50 @@ fn file_to_open(ctx: &ToolCtx, p: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opened_queries_run_only_as_far_as_the_agent_may() {
+            let conn = |v: Value| -> ConnectionConfig { serde_json::from_value(v).unwrap() };
+        let rw = conn(json!({ "id": "1", "name": "pmb", "kind": "postgres", "mcpAccess": "full" }));
+        let ro = conn(json!({ "id": "2", "name": "cbt", "kind": "postgres", "readOnly": true }));
+        let read = conn(json!({ "id": "3", "name": "dev", "kind": "postgres", "mcpAccess": "read" }));
+        let (agent, mcp) = (Scope::default(), Scope { mcp: true, ..Scope::default() });
+        let (sel, upd) = ("select * from peserta where tahun = '2026'", "update peserta set paid = true");
+        // asked not to run: never runs
+        assert_eq!(run_mode(&mcp, &rw, sel, false).0, None);
+        // a read by its words: on a read-only session, whatever the access
+        assert_eq!(run_mode(&mcp, &read, sel, true).0, Some(AutoRun::ReadOnly));
+        assert_eq!(run_mode(&mcp, &rw, sel, true).0, Some(AutoRun::ReadOnly));
+        // a read-only connection's own session refuses writes already
+        assert_eq!(run_mode(&mcp, &ro, upd, true).0, Some(AutoRun::Full));
+        // a write: only where the agent may change data
+        assert_eq!(run_mode(&mcp, &rw, upd, true).0, Some(AutoRun::Full));
+        assert_eq!(run_mode(&agent, &read, upd, true).0, Some(AutoRun::Full), "the DevCat Agent asked the user first (Kind::Exec)");
+        let (run, note) = run_mode(&mcp, &read, upd, true);
+        assert_eq!(run, None);
+        assert!(note.contains("wasn't run") && note.contains("Full"), "{note}");
+    }
+
+    #[test]
+    fn opened_queries_reach_the_window_as_it_reads_them() {
+        let q = OpenedQuery { conn_id: "c1".into(), database: None, sql: "select 1".into(), title: Some("a.sql".into()), saved_query_id: None, run: Some(AutoRun::ReadOnly) };
+        let v = serde_json::to_value(&q).unwrap();
+        assert_eq!(v["connId"], "c1");
+        assert_eq!(v["savedQueryId"], Value::Null);
+        assert_eq!(v["run"], "read-only", "openedFiles.ts reads full / read-only");
+        assert_eq!(serde_json::to_value(AutoRun::Full).unwrap(), "full");
+    }
+
+    #[test]
+    fn delegated_tasks_fit_the_models_window_and_answers_stay_short() {
+        assert!(task_fits(&"x".repeat(4 * 8_000), 32_768).is_ok(), "8k tokens fit a quarter of 32k");
+        let why = task_fits(&"x".repeat(4 * 9_000), 32_768).unwrap_err();
+        assert!(why.contains("9000 tokens") && why.contains("under 8192"), "{why}");
+        assert!(task_fits(&"x".repeat(4 * 40_000), 196_608).is_ok());
+        assert_eq!(clip("short", 10), "short");
+        let long = clip(&"é".repeat(20), 10);
+        assert!(long.starts_with(&"é".repeat(10)) && long.contains("[… cut"), "{long}");
+    }
 
     #[test]
     fn files_to_open_start_in_the_agents_folder() {

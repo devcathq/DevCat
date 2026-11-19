@@ -114,7 +114,7 @@ export default function QueryTab({ tab }: { tab: QueryTabT }) {
     window.setTimeout(() => { decorations.current = ed.deltaDecorations(decorations.current, []); }, 700);
   };
 
-  const execute = useCallback(async (script: string) => {
+  const execute = useCallback(async (script: string, readOnly = false) => {
     if (!kind || !conn) return;
     const trimmed = script.trim();
     if (!trimmed) return;
@@ -140,7 +140,9 @@ export default function QueryTab({ tab }: { tab: QueryTabT }) {
     setStartedAt(t0);
     try {
       await ensureOpen(conn.id);
-      const results = await api.execute(conn.id, trimmed, { database, schema, maxRows });
+      const results = readOnly
+        ? await api.executeReadOnly(conn.id, trimmed, { database, schema, maxRows })
+        : await api.execute(conn.id, trimmed, { database, schema, maxRows });
       const messages: RunMessage[] = results.map((r) => ({
         statement: r.statement || trimmed,
         ok: true,
@@ -161,6 +163,16 @@ export default function QueryTab({ tab }: { tab: QueryTabT }) {
       notifyHistoryChanged();
     }
   }, [kind, conn, database, schema, maxRows]);
+
+  // A query an agent opened to run (`db_open_query`): the whole script, once, as the agent may
+  // (`read-only`: on a read-only session). Cleared first so a remount doesn't run it again.
+  const [editorReady, setEditorReady] = useState(false);
+  useEffect(() => {
+    if (!tab.autoRun || !editorReady || !conn || !kind) return;
+    const readOnly = tab.autoRun === "read-only";
+    update(tab.id, { autoRun: undefined });
+    void execute(getText(), readOnly);
+  }, [tab.autoRun, editorReady, conn, kind]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const runCurrent = (all: boolean) => {
     if (running) return;
@@ -233,6 +245,7 @@ export default function QueryTab({ tab }: { tab: QueryTabT }) {
   const onMount: OnMount = (ed, m) => {
     editorRef.current = ed;
     setModelUri(ed.getModel()?.uri.toString() ?? null);
+    setEditorReady(true);
     const K = m.KeyMod, C = m.KeyCode;
     ed.addAction({ id: "devcat.run", label: "Run statement", keybindings: [K.CtrlCmd | C.Enter], run: () => handlers.current.runCurrent(false) });
     ed.addAction({ id: "devcat.runAll", label: "Run all", keybindings: [K.CtrlCmd | K.Shift | C.Enter], run: () => handlers.current.runCurrent(true) });

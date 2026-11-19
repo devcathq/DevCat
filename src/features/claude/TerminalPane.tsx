@@ -214,6 +214,11 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       menu.show(e, terminalMenu(term));
     };
     hostEl.addEventListener("contextmenu", onMenu, true);
+    // Ctrl+drag (a link, or a full-screen program that has the mouse) can start the webview's own drag. Its drag
+    // image is painted over the GPU canvas, which only repaints rows whose text changes, so the boxes stay behind.
+    // Nothing in a terminal is meant to be dragged out: xterm selects with its own mouse handling.
+    const onDragStart = (e: DragEvent) => e.preventDefault();
+    hostEl.addEventListener("dragstart", onDragStart, true);
 
     // File paths (src/foo.ts:12) → file preview tab (.html renders there); ⌘/Ctrl+click → the default app.
     const open = async (ev: MouseEvent, path: string) => {
@@ -298,6 +303,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       offCopy();
       offOsc52();
       hostEl.removeEventListener("contextmenu", onMenu, true);
+      hostEl.removeEventListener("dragstart", onDragStart, true);
       hostEl.removeEventListener("mousedown", onPress, true);
       links.dispose();
       input.dispose();

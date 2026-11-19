@@ -41,7 +41,12 @@ export const builtinClaude = (): AiProvider => ({ id: CLAUDE_PROVIDER_ID, name: 
 export const blankProvider = (kind: AiKind): AiProvider => ({
   id: "", name: KINDS[kind].label, kind, command: null, args: [], env: [],
   ...(kind === "agent" ? { agent: { ...AGENT_PRESETS[0].settings } } : {}),
+  // another Claude Code connection is nearly always for another account
+  ...(kind === "claude" ? { name: "Claude Code (another account)", ownLogin: true } : {}),
 });
+
+/** A provider's label in pickers: its name, and for Claude Code the account it's logged in with. */
+export const providerLabel = (p: AiProvider): string => (p.kind === "claude" && p.login ? `${p.name} · ${p.login}` : p.name);
 
 /** Model APIs offered when setting up DevCat Agent (all editable afterwards). */
 export const AGENT_PRESETS: { label: string; settings: AgentSettings; keyHint: string }[] = [

@@ -145,6 +145,7 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "db_children" => out(crate::commands::db::db_children(crate::state::St::get(), arg(args, "connId")?, arg(args, "path")?).await),
         "db_list_databases" => out(crate::commands::db::db_list_databases(crate::state::St::get(), arg(args, "connId")?).await),
         "db_execute" => out(crate::commands::db::db_execute(crate::state::St::get(), arg(args, "connId")?, arg(args, "script")?, arg(args, "opts")?, arg(args, "skipHistory")?).await),
+        "db_execute_read_only" => out(crate::commands::db::db_execute_read_only(crate::state::St::get(), arg(args, "connId")?, arg(args, "script")?, arg(args, "opts")?).await),
         "db_cancel" => out(crate::commands::db::db_cancel(crate::state::St::get(), arg(args, "connId")?).await),
         "db_table_data" => out(crate::commands::db::db_table_data(crate::state::St::get(), arg(args, "connId")?, arg(args, "req")?).await),
         "db_table_structure" => out(crate::commands::db::db_table_structure(crate::state::St::get(), arg(args, "connId")?, arg(args, "table")?).await),

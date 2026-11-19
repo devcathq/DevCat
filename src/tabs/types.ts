@@ -3,7 +3,7 @@ import type { NodeKind, TableRef } from "../lib/types";
 /** Every tab kind the workspace can show. Add new kinds here + in registry.tsx. */
 export type TabSpec =
   | { type: "welcome" }
-  | { type: "query"; connId: string; database?: string | null; schema?: string | null; initialSql?: string; savedQueryId?: string }
+  | { type: "query"; connId: string; database?: string | null; schema?: string | null; initialSql?: string; savedQueryId?: string; autoRun?: "full" | "read-only" }
   | { type: "table-data"; connId: string; table: TableRef }
   | { type: "table-design"; connId: string; table?: TableRef | null; database?: string | null; schema?: string | null }
   | { type: "ddl"; connId: string; table: TableRef; kind: NodeKind }

@@ -91,6 +91,9 @@ export const api = {
   listDatabases: (connId: string) => invoke<string[]>("db_list_databases", { connId }),
   execute: (connId: string, script: string, { skipHistory, ...opts }: ExecOptions = {}) =>
     invoke<QueryResult[]>("db_execute", { connId, script, opts, skipHistory: skipHistory ?? false }),
+  /** `execute` on a read-only session: the driver and server refuse writes (an agent's query DevCat runs as a read). */
+  executeReadOnly: (connId: string, script: string, { skipHistory: _, ...opts }: ExecOptions = {}) =>
+    invoke<QueryResult[]>("db_execute_read_only", { connId, script, opts }),
   cancel: (connId: string) => invoke<void>("db_cancel", { connId }),
   tableData: (connId: string, req: TableDataRequest) => invoke<TableDataPage>("db_table_data", { connId, req }),
   tableStructure: (connId: string, table: TableRef) => invoke<TableStructure>("db_table_structure", { connId, table }),

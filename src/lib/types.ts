@@ -480,7 +480,7 @@ export type AiKind = "claude" | "cursor" | "codex" | "gemini" | "copilot" | "aid
 /** A model an agent connection offers; `price` is its list price in US dollars per million tokens. */
 export interface AgentModel { id: string; context: number | null; price?: { input: number; output: number; cacheRead: number | null } | null }
 
-export interface AgentSettings { protocol: "openai-chat" | "openai-responses" | "anthropic"; baseUrl: string; model: string; /** Steps per turn before it pauses; 0 = no limit, absent = 60. */ maxSteps?: number | null }
+export interface AgentSettings { protocol: "openai-chat" | "openai-responses" | "anthropic"; baseUrl: string; model: string; /** Steps per turn before it pauses; 0 = no limit, absent = 60. */ maxSteps?: number | null; /** Coding agents may hand it work (`agent_delegate`). */ delegate?: boolean }
 export interface AiEnvVar { key: string; value: string }
 /** Saved AI connection: the coding-agent CLI the AI workspace terminal runs. */
 export interface AiProvider {
@@ -501,6 +501,10 @@ export interface AiProvider {
   builtin?: boolean;
   /** DevCat Agent only. */
   agent?: AgentSettings | null;
+  /** Claude Code only (not the built-in one): a login of its own, for another Claude account. */
+  ownLogin?: boolean;
+  /** Read-only: the email a Claude Code connection is logged in with. */
+  login?: string | null;
 }
 export interface AiDetect {
   kind: AiKind;

@@ -40,6 +40,8 @@ pub fn builtin_claude() -> AiProvider {
         has_api_key: false,
         builtin: true,
         agent: None,
+        own_login: false,
+        login: None,
     }
 }
 
@@ -58,7 +60,7 @@ impl AiStore {
 
     fn write_all(&self, list: &[AiProvider]) -> AppResult<()> {
         let clean: Vec<AiProvider> =
-            list.iter().cloned().map(|p| AiProvider { api_key: None, has_api_key: false, builtin: false, ..p }).collect();
+            list.iter().cloned().map(|p| AiProvider { api_key: None, has_api_key: false, builtin: false, login: None, ..p }).collect();
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_string_pretty(&clean)?)?;
         std::fs::rename(tmp, &self.path)?;
@@ -80,6 +82,22 @@ impl AiStore {
             p.has_api_key = self.secrets.get(&key_name(&p.id)).is_some();
         }
         Ok(all)
+    }
+
+    /// Where a Claude Code connection with its own login keeps it (None: it uses the main login).
+    pub fn account_dir(&self, p: &AiProvider) -> Option<PathBuf> {
+        let own = p.kind == AiKind::Claude && p.own_login && p.id != BUILTIN_ID && valid_id(&p.id);
+        own.then(|| self.path.with_file_name("claude-accounts").join(&p.id))
+    }
+
+    /// The email a Claude Code connection is logged in with (reads its `.claude.json`, which can
+    /// be large: only for what the window shows).
+    pub fn login_of(&self, p: &AiProvider) -> Option<String> {
+        if p.kind != AiKind::Claude {
+            return None;
+        }
+        let dir = self.account_dir(p).unwrap_or_else(super::claude_account::main_dir);
+        super::claude_account::email(&dir)
     }
 
     pub fn get(&self, id: &str) -> AppResult<AiProvider> {
@@ -122,6 +140,9 @@ impl AiStore {
         } else {
             p.agent = None;
         }
+        // the built-in profile is the main login; other types log in their own way
+        p.own_login &= p.kind == AiKind::Claude && p.id != BUILTIN_ID;
+        p.login = None;
         p.args.retain(|a| !a.is_empty());
         p.env.retain(|e| !e.key.trim().is_empty());
         for e in &mut p.env {
@@ -150,12 +171,17 @@ impl AiStore {
         self.write_all(&all)?;
         p.has_api_key = self.api_key(&p.id).is_some();
         p.builtin = p.id == BUILTIN_ID;
+        p.login = self.login_of(&p);
         Ok(p)
     }
 
     /// Delete a profile and its key. The built-in Claude Code profile is reset instead.
+    /// A Claude Code connection with its own login: that login (its config folder) goes too.
     pub fn delete(&self, id: &str) -> AppResult<()> {
         let mut all = self.load_saved()?;
+        if let Some(dir) = all.iter().find(|p| p.id == id).and_then(|p| self.account_dir(&AiProvider { own_login: true, ..p.clone() })) {
+            super::claude_account::remove(&dir)?;
+        }
         all.retain(|p| p.id != id);
         self.write_all(&all)?;
         self.secrets.delete(&key_name(id));
@@ -235,6 +261,38 @@ mod tests {
     }
 
     #[test]
+    fn claude_accounts_get_a_folder_of_their_own() {
+        let dir = tmp();
+        let store = AiStore::new(dir.clone(), Box::new(MemSecrets::default()));
+        // the built-in profile is the main login, and only Claude Code has accounts
+        let mut builtin = store.list().unwrap().remove(0);
+        builtin.own_login = true;
+        assert!(!store.save(builtin).unwrap().own_login);
+        let mut codex = provider(AiKind::Codex);
+        codex.own_login = true;
+        assert!(!store.save(codex).unwrap().own_login);
+
+        let mut work = provider(AiKind::Claude);
+        work.own_login = true;
+        work.login = Some("forged@x.y".into());
+        let work = store.save(work).unwrap();
+        assert!(work.own_login && work.login.is_none());
+        let folder = store.account_dir(&work).unwrap();
+        assert_eq!(folder, dir.join("claude-accounts").join(&work.id));
+        assert!(!std::fs::read_to_string(dir.join("ai_providers.json")).unwrap().contains("forged"));
+
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"me@work.co"}}"#).unwrap();
+        assert_eq!(store.login_of(&store.get(&work.id).unwrap()).as_deref(), Some("me@work.co"));
+        // turned off and deleted: its login goes too
+        store.save(AiProvider { own_login: false, ..work.clone() }).unwrap();
+        assert!(folder.exists());
+        store.delete(&work.id).unwrap();
+        assert!(!folder.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn validation() {
         let dir = tmp();
         let store = AiStore::new(dir.clone(), Box::new(MemSecrets::default()));
@@ -260,7 +318,7 @@ mod tests {
         let dir = tmp();
         let store = AiStore::new(dir.clone(), Box::new(MemSecrets::default()));
         let mut p = provider(AiKind::Agent);
-        p.agent = Some(crate::ai::AgentSettings { protocol: devcat_harness::Protocol::Anthropic, base_url: "https://api.anthropic.com/".into(), model: "claude-opus-5-5".into(), max_steps: None });
+        p.agent = Some(crate::ai::AgentSettings { protocol: devcat_harness::Protocol::Anthropic, base_url: "https://api.anthropic.com/".into(), model: "claude-opus-5-5".into(), max_steps: None, delegate: false });
         p.api_key_env = Some("API Key".into());
         p.env = vec![AiEnvVar { key: "BAD-NAME".into(), value: "1".into() }];
         p.api_key = Some("sk-ant".into());

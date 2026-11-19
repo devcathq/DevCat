@@ -53,7 +53,16 @@ bridge (`Call::unattended`: a call can narrow its scope, never widen it). `devca
 `mcp_audit.rs` (the UI's MCP activity). `devcat_open_file` (`workspace.rs`) shows the user a file in the window
 through `opened::show`, the same queue as a file opened with DevCat: it returns only where the file opened, never its
 content, opens a `.ovpn` as text rather than in the VPN import form (`OpenedFile::agent`), and an unattended run
-doesn't get it.
+doesn't get it. `db_open_query` (`workspace.rs`, `opened::show_query`, "opened-queries") opens SQL in a query tab
+the same way and may run it there once (`autoRun`): a read by its words runs on a read-only session
+(`db_execute_read_only`), anything else only where `may_change` allows (`run_mode`), since the window's own session
+would otherwise run what the agent may not.
+`agent_delegate` (`workspace.rs`) hands a task to a DevCat Agent connection only if the user turned
+on `AgentSettings::delegate` for it (`ai::delegates`; off by default, and no tool at all without one): a chat in the
+caller's folder (or below, like jobs), never Bypass, where whatever would ask the user is refused at once
+(`agent_jobs::is_delegated`: nobody watches it, and the caller would wait forever), with no DevCat tools (`connections: false`, so it can't
+delegate on), a task capped to a share of the model's window (`task_fits`), and only a short answer and the changed
+files back. It needs the open DevCat and isn't offered to unattended runs.
 
 Judging a query by its words can be fooled, so a query DevCat lets through only because it looks like a read (an
 agent's `Kind::Query`, read access over MCP, `db_export`, a read-only phone) runs on a read-only session
@@ -76,6 +85,19 @@ agent starts. So with DevCat open (app or `devcat serve`), `devcat mcp` hands ea
 tool with the same scope (`tools_for(…, in_app)`); with DevCat closed it runs the call itself, passive
 (`network::set_passive`: it never starts networks), and tools that need DevCat say so. Sync MCP and the bridge are
 about this computer, so they stay out of the phone dispatcher, like the SSH workbench above.
+
+## Several Claude Code accounts
+
+A Claude Code AI connection with "its own login" (`AiProvider::own_login`, never the built-in one) runs with
+`CLAUDE_CONFIG_DIR=<data>/claude-accounts/<id>` (`ai::launch`, `ai/claude_account.rs`), where Claude Code keeps that
+account's login. The folder links back to the main config (`~/.claude`) for `projects`, settings, `CLAUDE.md`,
+skills, agents, commands and plugins, so the Sessions list, resume, memory sync and settings stay one; only the login
+and `.claude.json` are the account's own, and Sync MCP writes DevCat's server into each account's `.claude.json` too.
+Deleting the connection deletes its folder: `claude_account::remove` unlinks the shared entries first and refuses a
+shared one that isn't a link, so nothing in `~/.claude` can go with it. Anything new that reads Claude Code's config
+must still find the transcripts under the main `projects`. The account's email (`AiProvider::login`) is read only for
+the window and the phone (`ai_providers_list`); DevCat's own lookups use `ai::providers()`. On SSH hosts the host's
+own login is used (only `DEVCAT_` variables go there).
 
 ## JDBC connections
 

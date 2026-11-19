@@ -72,6 +72,7 @@ export async function getVersion() { return DEMO ? "0.3.6" : "0.0.0-bridge"; }
 
 // path
 export async function homeDir() { return "/Users"; }
+export async function downloadDir() { return "/Users/Downloads"; }
 export async function join(...p: string[]) { return p.join("/").replace(/\/+/g, "/"); }
 
 // dialog: folder pick answers come from localStorage "devbridge.pick"
