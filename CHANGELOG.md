@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Tickets: Stop stops the agent** (#203): **Stop** on a board's run ends the agent within a few seconds, and the
+  run is recorded as stopped, with nothing pushed and the ticket back where it was. Before, the agent worked on to
+  the end and its work was pushed. **Stop** and the board's **Time limit** also act while Claude Code sends output
+  all the time.
 - **Tickets: a worktree for each ticket** (#191): set a board's **Working copy** to **A worktree for each ticket**
   and the agent works in a git worktree in the repository's `.worktrees` folder, made from the latest **Base branch**
   on origin (or from the ticket's own branch when it has one, with any newer commits someone pushed to it on origin;
