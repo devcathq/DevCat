@@ -14,6 +14,7 @@ import {
 } from "../../../src/features/agent/model";
 import type { AgentDecision, AgentLiveEvent, AgentModel, AgentOpened, AgentPolicy } from "../../../src/lib/types";
 import { errMsg, onEvent } from "../lib/rpc";
+import { asAgentImage } from "../lib/transfer";
 import { host, nav, toastErr, useApp } from "../lib/store";
 import { Btn, Confirm, Empty, ErrorBox, Item as Row, Loading, Screen, Sheet, Spinner, folderName } from "../ui";
 import { Markdown } from "./files";
@@ -123,7 +124,7 @@ function useChat(cwd: string, providerId: string, initial: string | null, ghost:
   return { chat, setChat, error, setError };
 }
 
-export function AgentChat({ cwd, providerId, sessionId, first, ghost = false }: { cwd: string; providerId: string; sessionId: string | null; first?: string; ghost?: boolean }) {
+export function AgentChat({ cwd, providerId, sessionId, first, firstFiles, ghost = false }: { cwd: string; providerId: string; sessionId: string | null; first?: string; firstFiles?: File[]; ghost?: boolean }) {
   const { chat, setChat, error, setError } = useChat(cwd, providerId, sessionId, ghost);
   const readonly = useApp((s) => s.machines.find((m) => m.id === s.current)?.access === "readonly");
   const info = useApp((s) => s.chats.find((c) => c.sessionId === chat?.sessionId));
@@ -131,7 +132,7 @@ export function AgentChat({ cwd, providerId, sessionId, first, ghost = false }: 
   const [models, setModels] = useState<AgentModel[]>([]);
   const [menu, setMenu] = useState(false);
   const [end, setEnd] = useState(false);
-  const [attachments, setAttachments] = useState<string[]>([]);
+  const [composed, setAttachments] = useState<string[]>([]);
   const sent = useRef(false);
 
   useEffect(() => { void host<AgentModel[]>("agent_models", { providerId: info?.providerId || providerId }).then(setModels).catch(() => {}); }, [providerId, info?.providerId]);
@@ -141,7 +142,9 @@ export function AgentChat({ cwd, providerId, sessionId, first, ghost = false }: 
     setPolicyState(p);
   };
 
-  const send = async (text: string): Promise<boolean> => {
+  /** `files`: paths to attach instead of the composer's (the first message's images). */
+  const send = async (text: string, files?: string[]): Promise<boolean> => {
+    const attachments = files ?? composed;
     if (!chat || (!text.trim() && !attachments.length)) return false;
     // shown right away; while it works, the computer queues it (`queued`)
     const echo = `${ECHO}${Date.now()}`;
@@ -149,7 +152,7 @@ export function AgentChat({ cwd, providerId, sessionId, first, ghost = false }: 
     try {
       // the window decides when the conversation gets summarized
       await host("agent_send", { sessionId: chat.sessionId, text: text.trim(), policy, model: chat.model || null, attachments, contextWindow: contextWindow(chat.model, models).tokens });
-      setAttachments([]);
+      if (!files) setAttachments([]);
       return true;
     } catch (e) {
       setChat((c) => c && { ...c, busy: c.items.some((i) => i.kind === "user" && i.key === echo) ? chat.busy : c.busy, items: c.items.filter((i) => i.key !== echo) });
@@ -157,12 +160,24 @@ export function AgentChat({ cwd, providerId, sessionId, first, ghost = false }: 
       return false;
     }
   };
-  // A first message from New chat: sent once the chat is open.
+  // A first message from New chat: sent once the chat is open, its images saved on the
+  // computer first (agent_attach), like files attached below.
   useEffect(() => {
-    if (chat && first && !sent.current) {
-      sent.current = true;
-      void send(first);
-    }
+    if (!chat || sent.current || (!first && !firstFiles?.length)) return;
+    sent.current = true;
+    void (async () => {
+      const paths: string[] = [];
+      for (const f of firstFiles ?? []) {
+        try {
+          const { blob, ext } = await asAgentImage(f);
+          const name = `${(f.name || "image").replace(/\.[^.]*$/, "")}.${ext}`;
+          paths.push(await host<string>("agent_attach", { sessionId: chat.sessionId, name, data: await toBase64(blob) }));
+        } catch (e) {
+          setError(`${f.name || "Image"}: ${errMsg(e)}`);
+        }
+      }
+      await send(first ?? "", paths);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat?.sessionId]);
 
@@ -223,7 +238,7 @@ export function AgentChat({ cwd, providerId, sessionId, first, ghost = false }: 
             <div className="mx-3 mb-2 rounded-lg bg-hover px-3 py-2 text-center text-[12px] text-muted" style={{ marginBottom: "max(8px, env(safe-area-inset-bottom))" }}>Read-only access: you can watch but not reply.</div>
           ) : (
             <Composer chat={chat} models={models} policy={policy} onPolicy={setPolicy} onModel={(m) => setChat((c) => c && { ...c, model: m })}
-              attachments={attachments} setAttachments={setAttachments} onSend={send} onStop={stop} onError={setError} />
+              attachments={composed} setAttachments={setAttachments} onSend={send} onStop={stop} onError={setError} />
           )}
         </>
       )}

@@ -5,13 +5,12 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import clsx from "clsx";
 import { Bot, ChevronDown, ChevronUp, ChevronsDown, FolderOpen, History, ImagePlus, Keyboard, MoreVertical, Send, Square } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { onEvent } from "../lib/rpc";
 import { host, nav, toast, toastErr, useApp } from "../lib/store";
 import { uploadPasteImage } from "../lib/transfer";
 import type { AgentStatus, AiProvider, ClaudeProject, PtyInfo, SessionMeta } from "../lib/types";
 import { Btn, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Screen, Section, Seg, Sheet, Spinner, TextArea, ago, folderName, useLoad } from "../ui";
-import { Markdown } from "./files";
 import { useFocus, useInFocus } from "../lib/focus";
 
 const THEME = {
@@ -117,16 +116,8 @@ export function Terminal({ id }: { id: string }) {
   const [choices, setChoices] = useState<Choice[]>([]);
   /** Typing straight into the terminal; off, tapping it only scrolls (no keyboard popping up). */
   const [keyboard, setKeyboard] = useState(false);
-  /** Claude Code: Chat (the live terminal, first), or its History: the session transcript as a readable
-   *  chat that scrolls normally (Claude Code draws full-screen, so the terminal has no scrollback). */
-  const [view, setView] = useState<"chat" | "terminal">("terminal");
   /** The terminal is scrolled up from its newest line. */
   const [scrolledUp, setScrolledUp] = useState(false);
-  // Chat first every time (History is a tap away)
-  const pickView = (v: "chat" | "terminal") => setView(v);
-  /** Messages sent in the Chat view, shown until the transcript has them. */
-  const [sent, setSent] = useState<string[]>([]);
-  const seen = useMemo(() => (text: string) => setSent((x) => x.filter((y) => y !== text)), []);
 
   const write = (data: string) => {
     if (readonly) return;
@@ -243,8 +234,7 @@ export function Terminal({ id }: { id: string }) {
     if (!keyboard) (document.activeElement as HTMLElement | null)?.blur();
   };
 
-  // text size, and the phone's width: again when the terminal shows (not while History hides it:
-  // it has no size then), when the text size changes and when the phone turns
+  // text size, and the phone's width: again when the text size changes and when the phone turns
   useEffect(() => {
     const t = xt.current;
     const el = box.current;
@@ -270,11 +260,10 @@ export function Terminal({ id }: { id: string }) {
     window.addEventListener("resize", apply);
     return () => window.removeEventListener("resize", apply);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fontSize, fitWidth, info, view]);
+  }, [fontSize, fitWidth, info]);
 
   const send = () => {
     if (!text) { write("\r"); return; }
-    if (canChat && view === "chat") setSent((x) => [...x, text]);
     write(text);
     // A separate Enter, so the program doesn't treat it as part of a paste.
     setTimeout(() => write("\r"), 60);
@@ -318,28 +307,20 @@ export function Terminal({ id }: { id: string }) {
   };
 
   const st = agent?.status;
-  const canChat = !!(term?.agent && agent?.sessionId && agent.cwd);
-  // back to the terminal: xterm measures again now that it's visible
-  useEffect(() => { if (view === "terminal") xt.current?.refresh(0, (xt.current?.rows ?? 1) - 1); }, [view]);
   const sub = exited ? "exited" : st === "waiting" ? <span className="text-warn">⚠ {agent?.message ?? "waiting for you"}</span> : st === "working" ? <span className="text-warn">◐ working</span> : st === "idle" ? <span className="text-ok">✓ done</span> : (term?.program ?? info?.program ?? "");
 
   return (
     <Screen title={folderName(cwdOf(term ?? info ?? undefined, agent)) || "Terminal"} sub={sub} scroll={false} className="flex flex-col gap-2 p-2"
       right={<button aria-label="Terminal menu" className="flex size-9 items-center justify-center text-muted" onClick={() => setMenu(true)}><MoreVertical className="size-5" /></button>}>
       {error && <ErrorBox error={error} />}
-      {canChat && <Seg value={view} onChange={pickView} options={[{ value: "terminal", label: "Chat" }, { value: "chat", label: "History" }]} />}
-      {canChat && view === "chat" && <LiveTranscript cwd={agent!.cwd!} sessionId={agent!.sessionId!} working={agent?.status === "working"} pending={sent} onSeen={seen} />}
-      <div className={clsx("relative min-h-0 flex-1", canChat && view === "chat" && "hidden")}>
+      {/* one layout for every terminal and agent: the live terminal, keys, and the message box
+          (a Claude Code session's history is in the menu: "Open session transcript") */}
+      <div className="relative min-h-0 flex-1">
         <div className="h-full overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1" onPasteCapture={readonly ? undefined : pastedImages}>
           <div ref={box} className="h-full min-w-full" />
         </div>
-        {/* scrolling without a wheel: a page up, back to the newest, and the whole session in History */}
+        {/* scrolling without a wheel: a page up, and back to the newest */}
         <div className="absolute right-2 bottom-2 flex flex-col items-end gap-1.5">
-          {canChat && (
-            <button onClick={() => pickView("chat")} className="flex h-8 items-center gap-1 rounded-full border border-line bg-raised/95 px-3 text-[12px] font-semibold shadow-lg active:bg-hover">
-              <History className="size-3.5" />History
-            </button>
-          )}
           <button aria-label="Scroll up a page" onClick={() => scrollPage(-1)} className="flex size-9 items-center justify-center rounded-full border border-line bg-raised/95 shadow-lg active:bg-hover"><ChevronUp className="size-5" /></button>
           <button aria-label={scrolledUp ? "Back to the newest" : "Scroll down a page"} onClick={() => scrollPage(1)}
             className={clsx("flex size-9 items-center justify-center rounded-full border shadow-lg active:bg-hover", scrolledUp ? "border-accent bg-accent text-accent-fg" : "border-line bg-raised/95")}>
@@ -394,7 +375,7 @@ export function Terminal({ id }: { id: string }) {
         </div>
         <Item onClick={() => { setMenu(false); const dir = cwdOf(term ?? info ?? undefined, agent); nav.push({ s: "files", dir, root: dir }); }} icon={<FolderOpen className="size-4" />} title="Browse files" chevron />
         {agent?.sessionId && agent.cwd && (
-          <Item onClick={() => { setMenu(false); nav.push({ s: "transcript", cwd: agent.cwd!, sessionId: agent.sessionId!, title: folderName(agent.cwd) }); }} title="Open session transcript" chevron />
+          <Item onClick={() => { setMenu(false); nav.push({ s: "transcript", cwd: agent.cwd!, sessionId: agent.sessionId!, title: folderName(agent.cwd) }); }} icon={<History className="size-4" />} title="History" meta="The whole session, as a chat you can scroll" chevron />
         )}
         {!readonly && <Item onClick={() => { setMenu(false); setStop(true); }} icon={<Square className="size-4 text-danger" />} title={<span className="text-danger">{term?.agent ? "Stop agent" : "Close terminal"}</span>} />}
       </Sheet>
@@ -518,96 +499,6 @@ export function Sessions({ cwd: initial }: { cwd?: string }) {
 }
 
 type AgentSession = { id: string; title: string; updatedMs: number; messages: number };
-
-/** A Claude Code session as a chat, kept up to date while it's on screen (from its transcript
- *  file on the computer): scrolls like any list, whatever the terminal is drawing. */
-function LiveTranscript({ cwd, sessionId, working, pending, onSeen }: { cwd: string; sessionId: string; working: boolean; pending: string[]; onSeen: (text: string) => void }) {
-  const [entries, setEntries] = useState<unknown[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const scroller = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-  const touching = useRef(false);
-  /** Entries already here: the computer sends only what's after them (and no tool output). */
-  const have = useRef<{ key: string; n: number }>({ key: "", n: 0 });
-  useEffect(() => {
-    let alive = true;
-    let busy = false;
-    const key = `${cwd}\u0000${sessionId}`;
-    if (have.current.key !== key) have.current = { key, n: 0 };
-    const load = () => {
-      // one at a time: a slow answer mustn't pile up requests behind it on the connection
-      if (document.hidden || busy) return;
-      busy = true;
-      const from = have.current.n;
-      host<unknown[] | { total: number; entries: unknown[] }>("claude_transcript", { cwd, sessionId, from })
-        .then((r) => {
-          if (!alive) return;
-          setError(null);
-          if (Array.isArray(r)) {
-            // a computer from before `from`: the whole transcript each time
-            have.current.n = r.length;
-            setEntries(r);
-          } else if (r.total < from) {
-            // the file got shorter (rewritten): start over
-            have.current.n = 0;
-            setEntries(null);
-          } else if (r.entries.length || from === 0) {
-            have.current.n = r.total;
-            setEntries((e) => (from === 0 ? r.entries : [...(e ?? []), ...r.entries]));
-          }
-        }, (e) => { if (alive) setError(String(e)); })
-        .finally(() => { busy = false; });
-    };
-    load();
-    // just sent something: look again soon, it's in the transcript within a moment
-    const soon = pending.length ? setTimeout(load, 900) : undefined;
-    const t = setInterval(load, working || pending.length ? 2000 : 6000);
-    return () => { alive = false; clearInterval(t); if (soon) clearTimeout(soon); };
-  }, [cwd, sessionId, working, pending.length]);
-  const list = useMemo(() => blocks(entries ?? []), [entries]);
-  // what was sent from here shows until the transcript has it
-  useEffect(() => {
-    const said = new Set(list.filter((b) => b.kind === "me").slice(-8).map((b) => b.text.trim()));
-    for (const p of pending) if (said.has(p.trim())) onSeen(p);
-  }, [list, pending, onSeen]);
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (el && stick.current && !touching.current) el.scrollTop = el.scrollHeight;
-  }, [list.length, list[list.length - 1]?.text]);
-  // formatted text and code get their height after layout: stay at the end while it grows
-  useEffect(() => {
-    const el = scroller.current;
-    const body = el?.firstElementChild;
-    if (!el || !body) return;
-    const ro = new ResizeObserver(() => { if (stick.current && !touching.current) el.scrollTop = el.scrollHeight; });
-    ro.observe(body);
-    return () => ro.disconnect();
-  }, [entries !== null]);
-  const onScroll = () => {
-    const el = scroller.current;
-    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
-  return (
-    <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border border-line bg-panel p-2.5"
-      onTouchStart={() => { touching.current = true; stick.current = false; }} onTouchEnd={() => { touching.current = false; onScroll(); }}>
-      {error ? <ErrorBox error={error} /> : !entries ? <Loading /> : list.length === 0 ? <Empty title="Nothing said yet" /> : (
-        <div className="flex flex-col gap-2">
-          {list.map((b, i) => b.kind === "tool" ? (
-            <div key={i} className="border-l-2 border-line py-0.5 pl-2.5 font-mono text-[11px] break-all text-muted">▸ {b.text}</div>
-          ) : b.kind === "me" ? (
-            <div key={i} className="selectable max-w-[92%] self-end rounded-xl bg-accent/15 px-3 py-2 text-[13.5px] break-words whitespace-pre-wrap">{b.text.length > 2500 ? `${b.text.slice(0, 2500)}…` : b.text}</div>
-          ) : (
-            <div key={i} className="selectable text-[13.5px]"><Markdown text={b.text.length > 6000 ? `${b.text.slice(0, 6000)}…` : b.text} /></div>
-          ))}
-          {pending.map((p, i) => (
-            <div key={`p${i}`} className="max-w-[92%] self-end rounded-xl bg-accent/10 px-3 py-2 text-[13.5px] break-words whitespace-pre-wrap opacity-70">{p}</div>
-          ))}
-          {(working || pending.length > 0) && <div className="flex items-center gap-2 text-[12px] text-muted"><Spinner className="size-3.5" />Working…</div>}
-        </div>
-      )}
-    </div>
-  );
-}
 
 type Block = { kind: "me" | "ai" | "tool"; text: string };
 

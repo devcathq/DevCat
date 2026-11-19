@@ -266,6 +266,9 @@ export const api = {
   /** `lid`: also with the lid closed (macOS; asks for the admin password); null keeps what's on. */
   keepAwakeSet: (on: boolean, minutes?: number | null, lid?: boolean | null) => invoke<KeepAwakeState>("keep_awake_set", { on, minutes: minutes ?? null, lid: lid ?? null }),
 
+  /** Whether keep awake turns on when DevCat starts (on unless turned off here). */
+  keepAwakeSetStart: (on: boolean) => invoke<KeepAwakeState>("keep_awake_set_start", { on }),
+
   // App updates. Event: "update-progress" ({ downloaded, total? })
   /** null = up to date. */
   updateCheck: () => invoke<UpdateInfo | null>("update_check"),

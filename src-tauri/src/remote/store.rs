@@ -30,6 +30,10 @@ pub struct RemoteSettings {
     pub relay: RelayChoice,
     #[serde(default)]
     pub relay_url: Option<String>,
+    /// While phones are paired, keep the computer from sleeping so they reach it with the screen
+    /// off or locked (`keep_awake::hold_for_phones`).
+    #[serde(default = "yes")]
+    pub stay_awake: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -62,7 +66,7 @@ impl RemoteSettings {
 
 impl Default for RemoteSettings {
     fn default() -> Self {
-        Self { enabled: false, host_name: None, port: default_port(), public_addr: None, web: true, relay: RelayChoice::Public, relay_url: None }
+        Self { enabled: false, host_name: None, port: default_port(), public_addr: None, web: true, relay: RelayChoice::Public, relay_url: None, stay_awake: true }
     }
 }
 
