@@ -17,6 +17,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   on origin (or from the ticket's own branch when it has one). You can keep working in the repository meanwhile,
   with your own changes and branch. DevCat commits there, pushes when the board says so and removes the worktree;
   the branch stays. Existing boards stay **In place**.
+- **Tickets: worktrees after a crash** (#194): when DevCat starts, it removes the worktrees and folders that runs
+  left in a worktree board's `.worktrees` folder when DevCat stopped in the middle (a worktree a run kept for you to
+  look at stays). A run whose branch is checked out in another worktree fails with a message that names it.
 - **Tickets: GitHub boards** (#195): connect a GitHub repository (`owner/name`, an API address for GitHub Enterprise
   and a personal access token). Labels are the columns: the agent takes open issues labelled `ready-for-agent`,
   labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
