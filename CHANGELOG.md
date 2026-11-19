@@ -67,6 +67,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Tickets: a time limit for each board** (#189): **Time limit** in a board's settings (minutes, default 60) is
   the longest the agent works on one ticket, and a worktree's **Setup command** runs. When it's up, DevCat stops it
   and the run ends with an error that names the limit.
+- **Tickets: connecting a GitHub board** (#203): **Let the agent run commands** is now right under **Working copy**,
+  above the **Setup command**, and the dialog says before you click **Connect** when a setup command needs it (with
+  **Turn it on**). When the token can't see the repository (a private repository answers 404 to such a token), the
+  error says so and how to give the token access. **Create a token** opens GitHub's fine-grained token form with the
+  name, owner and permissions filled in; the hint says to choose **Only select repositories** and the repository.
 
 ## 0.31.0 - 2026-11-19
 

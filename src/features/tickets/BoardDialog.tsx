@@ -21,6 +21,28 @@ const TOKEN_HELP: Record<TrackerKind, { url: string; text: string }> = {
   github: { url: "https://github.com/settings/personal-access-tokens/new", text: "Create a token" },
 };
 
+// GitHub's form for a new fine-grained token, filled in from its URL (name, description, owner,
+// permissions: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+// The URL can't choose the repository, so the description says which. GitHub Enterprise Server: its own form, empty.
+function githubTokenUrl(b: Board): string {
+  let host = "github.com";
+  try {
+    if (b.site.trim()) host = new URL(b.site.trim()).host;
+  } catch { /* not an address yet */ }
+  if (host !== "api.github.com" && host !== "github.com") return `https://${host}/settings/personal-access-tokens/new`;
+  const repo = b.project.trim();
+  const owner = repo.includes("/") ? repo.split("/")[0] : "";
+  const q = new URLSearchParams({
+    name: `DevCat ${repo}`.trim().slice(0, 40),
+    description: `DevCat ticket board${repo ? ` for ${repo}. Repository access: Only select repositories, then ${repo}` : ""}.`,
+    ...(owner ? { target_name: owner } : {}),
+    contents: "write",
+    issues: "write",
+    pull_requests: "write",
+  });
+  return `${TOKEN_HELP.github.url}?${q}`;
+}
+
 export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; onClose: () => void; onSaved: (b: Board) => void }) {
   const [b, setB] = useState<Board>(board ?? newBoard());
   const [token, setToken] = useState("");
@@ -106,7 +128,9 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
     </Select>
   );
 
-  const help = TOKEN_HELP[b.kind];
+  const help = gh ? { ...TOKEN_HELP.github, url: githubTokenUrl(b) } : TOKEN_HELP[b.kind];
+  // The save refuses a setup command without commands; say so at the field, before Connect.
+  const setupNeedsCommands = wt && !!b.setupCommand.trim() && !b.allowCommands;
   const canSave = b.project.trim() && (token.trim() || b.hasToken);
   return (
     <Dialog
@@ -163,7 +187,7 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
           )}
           <Field
             label={b.kind === "linear" ? "API key" : b.kind === "trello" ? "Token" : gh ? "Personal access token" : "API token"}
-            hint={gh ? "Fine-grained (Issues, Pull requests and Contents: read and write) or classic (repo scope). Labels, comments and pull requests appear as its owner. Kept in the system keychain." : "Kept in the system keychain."}
+            hint={gh ? "Fine-grained: Repository access “Only select repositories” with this repository, and the repository permissions Issues, Pull requests and Contents: Read and write (“Create a token” fills in all but the repository). Or classic, with the repo scope. Labels, comments and pull requests appear as its owner. Kept in the system keychain." : "Kept in the system keychain."}
           >
             <div className="flex gap-2">
               <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={b.hasToken ? "Saved (type to replace)" : ""} />
@@ -222,13 +246,21 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
               <option value="worktree">A worktree for each ticket</option>
             </Select>
           </Field>
+          <Checkbox label="Let the agent run commands (builds, tests) without asking" checked={b.allowCommands} onChange={(v) => set({ allowCommands: v })} />
+          {b.allowCommands && <p className="text-[11px] text-warn">The agent will run any command it decides to, in the repository, as you. Only allow this for code and tickets you trust.</p>}
           {wt && (
             <div className="grid grid-cols-2 gap-3">
               <Field label="Files to copy" hint="One path a line, from the repository into each worktree: files git ignores, e.g. .env (a worktree has only the committed files).">
                 <Textarea rows={2} value={b.copyFiles.join("\n")} onChange={(e) => set({ copyFiles: e.target.value.split("\n") })} placeholder={".env\nconfig/local.yml"} />
               </Field>
-              <Field label="Setup command" hint="Runs in each new worktree before the agent starts. Needs “Let the agent run commands”. If it fails, the run fails with its output.">
+              <Field label="Setup command" hint="Runs in each new worktree before the agent starts. Needs “Let the agent run commands” (above). If it fails, the run fails with its output.">
                 <Textarea rows={2} value={b.setupCommand} onChange={(e) => set({ setupCommand: e.target.value })} placeholder="pnpm install" />
+                {setupNeedsCommands && (
+                  <span className="text-[11px] text-danger">
+                    A setup command runs programs: turn on “Let the agent run commands” above, or clear it.{" "}
+                    <button type="button" className="underline hover:text-fg" onClick={() => set({ allowCommands: true })}>Turn it on</button>
+                  </span>
+                )}
               </Field>
             </div>
           )}
@@ -281,7 +313,6 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
             <Textarea rows={4} value={b.instructions} onChange={(e) => set({ instructions: e.target.value })} placeholder="Run `pnpm test` before finishing. Keep the API backwards compatible." />
           </Field>
           <div className="flex flex-col gap-2">
-            <Checkbox label="Let the agent run commands (builds, tests) without asking" checked={b.allowCommands} onChange={(v) => set({ allowCommands: v })} />
             <Checkbox label="Comment on the ticket with what was done and how to test it" checked={b.comment} onChange={(v) => set({ comment: v })} />
             {gh
               ? <p className="text-[13px] text-muted">A fixed issue's branch is pushed and gets a draft pull request into its base branch ({wt && b.targetBranch.trim() ? b.targetBranch.trim() : "the default branch"}, unless the issue says another), written in the format of the repository's pull request template.</p>
@@ -294,7 +325,6 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
               <span className="text-[13px]">at a time</span>
             </div>
           </div>
-          {b.allowCommands && <p className="text-[11px] text-warn">The agent will run any command it decides to, in the repository, as you. Only allow this for code and tickets you trust.</p>}
         </section>
 
         <section className="space-y-3 border-t border-line pt-4">
