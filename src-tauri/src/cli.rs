@@ -62,6 +62,13 @@ Only for this run:
                            Who answers pairing requests: you in this terminal (ask, the
                            default) or nobody (every phone with a valid pairing code is
                            allowed with that access). Without a terminal it must be set.
+  By default this computer doesn't sleep while it runs, also with the lid closed or the screen
+  locked (the screen itself still sleeps and locks). macOS: system sleep is turned off, which
+  asks for your password, and back on when it stops; Linux: a systemd inhibitor. Keep the
+  computer plugged in and out of a bag.
+  --no-lid                 Stay awake, but let closing the lid sleep the computer
+  --no-keep-awake          Let the computer sleep as usual (phones paired still keep it awake,
+                           unless that's off in the app)
   --background             Run without a terminal, answering pairing requests from
                            `devcat attach` (what `devcat service install` runs)
   --replace                Another DevCat is using the port: stop it without asking (and
@@ -168,6 +175,12 @@ struct Opts {
     replace: bool,
     force: bool,
     background: bool,
+    /// On unless `--no-keep-awake`.
+    keep_awake: bool,
+    /// On unless `--no-lid` / `--no-keep-awake`.
+    lid: bool,
+    /// One of the keep-awake options was given.
+    awake_given: bool,
 }
 
 /// `--data-dir <dir>` among `args`, or the app's.
@@ -190,7 +203,8 @@ pub(crate) fn check_serve_args(args: &[String]) -> Result<(), String> {
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts::default();
+    // `devcat serve` keeps the computer awake, also with the lid closed, unless told not to
+    let mut o = Opts { keep_awake: true, lid: true, ..Opts::default() };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let (flag, inline) = match a.split_once('=') {
@@ -209,6 +223,24 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--replace" => o.replace = true,
             "--force" => o.force = true,
             "--background" => o.background = true,
+            "--keep-awake" => {
+                o.keep_awake = true;
+                o.awake_given = true;
+            }
+            "--lid" => {
+                o.keep_awake = true;
+                o.lid = true;
+                o.awake_given = true;
+            }
+            "--no-lid" => {
+                o.lid = false;
+                o.awake_given = true;
+            }
+            "--no-keep-awake" => {
+                o.keep_awake = false;
+                o.lid = false;
+                o.awake_given = true;
+            }
             "--approve" => {
                 let v = value()?;
                 if !["ask", "full", "readonly"].contains(&v.as_str()) {
@@ -281,7 +313,7 @@ fn serve_main(args: &[String]) -> i32 {
     // One is running already (the background service, or `devcat serve` in another terminal):
     // show it here rather than stopping it to start a second (`--replace` does that).
     if interactive && !o.replace {
-        let changes = o.port.is_some() || o.name.is_some() || o.relay.is_some() || o.public_addr.is_some() || o.web.is_some() || o.tailscale || o.approve.is_some();
+        let changes = o.port.is_some() || o.name.is_some() || o.relay.is_some() || o.public_addr.is_some() || o.web.is_some() || o.tailscale || o.approve.is_some() || o.awake_given;
         if let Some(code) = crate::serve_bg::try_attach_noting(&dir, changes) {
             return code;
         }
@@ -291,6 +323,9 @@ fn serve_main(args: &[String]) -> i32 {
         return 1;
     }
     crate::init_process();
+    if o.lid {
+        crate::keep_awake::keep_lid_on_start();
+    }
     crate::init_backend(dir.clone());
     let code = crate::rt::block_on(serve(o, approve, interactive, dir.clone()));
     println!("Stopping…");
@@ -422,6 +457,14 @@ async fn serve(o: Opts, approve: String, interactive: bool, dir: PathBuf) -> i32
     }
     println!("DevCat {} is sharing this computer (data: {})", env!("DEVCAT_VERSION"), dir.display());
     print_status();
+    if o.keep_awake {
+        let lid = o.lid;
+        match tokio::task::spawn_blocking(move || crate::keep_awake::hold_for_serve(lid)).await.unwrap_or_else(|e| Err(e.to_string())) {
+            Ok(()) if lid => println!("  Awake: this computer doesn't sleep while this runs, also with the lid closed (the screen still locks)"),
+            Ok(()) => println!("  Awake: this computer doesn't sleep while this runs (the screen still sleeps and locks; with --no-lid, closing the lid sleeps it)"),
+            Err(e) => println!("  Awake, but not with the lid closed: {e}"),
+        }
+    }
     match crate::memory::sync::start_headless().await {
         Ok(0) => {}
         Ok(n) => println!("  Memory: shared with {n} other computer{}", if n == 1 { "" } else { "s" }),

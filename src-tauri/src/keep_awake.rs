@@ -15,6 +15,10 @@
 //! user turned that off ([`keep_awake_set_start`], `<data>/keep-awake.json`), and while phones are
 //! paired the computer itself is kept from sleeping, so they can reach it with the screen off or
 //! locked ([`hold_for_phones`], the remote settings' `stay_awake`): that one lets the screen sleep.
+//!
+//! `devcat serve` holds the computer awake for its whole run, also with the lid closed, unless
+//! started with `--no-lid` / `--no-keep-awake` ([`hold_for_serve`]): system sleep off on macOS (as above, back on when it stops),
+//! a systemd inhibitor that blocks the lid switch on Linux.
 use crate::error::{AppError, AppResult};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -58,7 +62,8 @@ pub fn init(data_dir: std::path::PathBuf) {
         ON_START.store(on, Ordering::Relaxed);
     }
     let _ = PREFS.set(prefs);
-    if MARKER.get().is_some_and(|m| m.exists()) {
+    // `devcat serve --lid` restarted after a crash keeps sleep off rather than asking twice
+    if MARKER.get().is_some_and(|m| m.exists()) && !SERVE_LID.load(Ordering::Relaxed) {
         std::thread::spawn(|| {
             if let Err(e) = lid::restore("DevCat quit while keeping your Mac awake with the lid closed. Enter your password to let it sleep again.") {
                 eprintln!("keep awake: couldn't turn system sleep back on: {e}");
@@ -136,6 +141,8 @@ enum Cmd {
     Off,
     /// Keep the computer (not the screen) from sleeping, for paired phones.
     Phones(bool),
+    /// Keep the computer (not the screen) from sleeping while `devcat serve` runs.
+    Serve(bool),
 }
 
 struct Holder {
@@ -152,6 +159,7 @@ static HOLDER: Lazy<Mutex<Holder>> = Lazy::new(|| {
         .spawn(move || {
             let mut guard: Option<keepawake::KeepAwake> = None;
             let mut phones: Option<keepawake::KeepAwake> = None;
+            let mut serve: Option<keepawake::KeepAwake> = None;
             while let Ok(cmd) = rx.recv() {
                 match cmd {
                     Cmd::On(reply) => {
@@ -175,6 +183,22 @@ static HOLDER: Lazy<Mutex<Holder>> = Lazy::new(|| {
                     }
                     Cmd::Off => guard = None,
                     Cmd::Phones(false) => phones = None,
+                    Cmd::Serve(false) => serve = None,
+                    Cmd::Serve(true) => {
+                        if serve.is_none() {
+                            match keepawake::Builder::default()
+                                .display(false)
+                                .idle(true)
+                                .reason("devcat serve: phones reach this computer")
+                                .app_name("DevCat")
+                                .app_reverse_domain(crate::APP_ID)
+                                .create()
+                            {
+                                Ok(g) => serve = Some(g),
+                                Err(e) => eprintln!("keep awake: couldn't keep the computer awake: {e}"),
+                            }
+                        }
+                    }
                     Cmd::Phones(true) => {
                         if phones.is_none() {
                             // the system only: the screen may turn off and lock
@@ -251,6 +275,51 @@ pub fn held_for_phones() -> bool {
     FOR_PHONES.load(Ordering::Relaxed)
 }
 
+/// `devcat serve` keeping awake with the lid closed: set before [`init`], so a sleep-off left by a crashed run stays off.
+static SERVE_LID: AtomicBool = AtomicBool::new(false);
+
+/// Linux: the `systemd-inhibit` holding the lid switch for `devcat serve --lid`.
+static INHIBIT: Mutex<Option<std::process::Child>> = parking_lot::const_mutex(None);
+
+pub fn keep_lid_on_start() {
+    SERVE_LID.store(true, Ordering::Relaxed);
+}
+
+/// `devcat serve` (unless `--no-keep-awake`): keep the computer from sleeping until it stops (the screen still
+/// sleeps and locks). `lid`: also with the lid closed. Blocking (on macOS it waits for the admin
+/// password); what's said on the error is for the terminal.
+pub fn hold_for_serve(lid: bool) -> Result<(), String> {
+    let _ = HOLDER.lock().tx.send(Cmd::Serve(true));
+    if !lid {
+        return Ok(());
+    }
+    SERVE_LID.store(true, Ordering::Relaxed);
+    if cfg!(target_os = "macos") {
+        return lid::disable_sleep().map(|_| ()).map_err(|e| if e == "Cancelled" { "the admin password was refused: closing the lid still sleeps the Mac".into() } else { e });
+    }
+    if cfg!(target_os = "linux") {
+        let mut child = std::process::Command::new("systemd-inhibit")
+            .args(["--what=sleep:idle:handle-lid-switch", "--who=DevCat", "--why=devcat serve: phones reach this computer", "--mode=block", "sleep", "infinity"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("systemd-inhibit: {e}"))?;
+        std::thread::sleep(Duration::from_millis(500));
+        if let Ok(Some(status)) = child.try_wait() {
+            let mut err = String::new();
+            if let Some(mut s) = child.stderr.take() {
+                use std::io::Read;
+                let _ = s.read_to_string(&mut err);
+            }
+            return Err(format!("systemd-inhibit stopped ({status}): {}", err.trim()));
+        }
+        *INHIBIT.lock() = Some(child);
+        return Ok(());
+    }
+    Err("set \"When I close the lid\" to \"Do nothing\" in Windows' power options (Control Panel → Power Options → Choose what closing the lid does): DevCat doesn't change it".into())
+}
+
 /// Turn keep-awake on (for `minutes`, or until turned off) or off. `lid`: also with the lid closed
 /// (macOS; asks for the admin password); None keeps what's on now. Off, or on without the lid,
 /// turns system sleep back on if keep awake had turned it off.
@@ -325,9 +394,14 @@ pub fn shutdown() {
         let h = HOLDER.lock();
         let _ = h.tx.send(Cmd::Off);
         let _ = h.tx.send(Cmd::Phones(false));
+        let _ = h.tx.send(Cmd::Serve(false));
         h.state.lid
     };
-    if lid {
+    if let Some(mut c) = INHIBIT.lock().take() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    if lid || SERVE_LID.load(Ordering::Relaxed) {
         // (if this is refused, the next start asks again)
         let _ = lid::restore("DevCat is quitting: enter your password to let your Mac sleep with the lid closed again.");
     }

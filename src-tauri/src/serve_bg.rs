@@ -360,6 +360,8 @@ mod sys {
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>ProcessType</key>
+  <string>Interactive</string>
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>
