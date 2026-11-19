@@ -1,5 +1,6 @@
 //! The agent working through tickets. One job per board (and per repository): tickets are done one
-//! at a time, each on its own branch made from the branch the repository was on:
+//! at a time (a board with a worktree for each ticket: up to its parallel runs at once, see
+//! `run_job`), each on its own branch made from the branch the repository was on:
 //!
 //! 1. the repository must be clean (the agent's work never mixes with the user's);
 //! 2. `devcat/<key>-<title>` is created (the prefix is the board's; or the board's existing
@@ -9,8 +10,9 @@
 //! 4. DevCat commits what changed (unfinished work too, marked WIP, and on a new branch when the
 //!    board commits to an existing one), goes back to the original
 //!    branch, pushes if the board says so, comments on the ticket and moves it to "done" (fixed)
-//!    or "failed" (else back where it was). On GitHub a fixed ticket's branch is always pushed and
-//!    gets a draft pull request (`github::pull_request`), linked in the comment.
+//!    or "failed" (else back where it was; "needs info" when the agent asked questions and the
+//!    board has that column). On GitHub every run's branch is pushed (unfinished work too), and a
+//!    fixed ticket's gets a draft pull request (`github::pull_request`), linked in the comment.
 use super::trackers::Tracker;
 use super::{Board, Isolation, RunRecord, Ticket, TrackerKind};
 use crate::agent_tools::Scope;
@@ -39,29 +41,44 @@ const LOG_LINES: usize = 300;
 const MAX_IMAGES: usize = 6;
 const MAX_IMAGES_TOTAL: usize = 15 * 1024 * 1024;
 
+/// A board's job for the window: the tickets worked on now, and the ones waiting.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct JobView {
-    pub key: Option<String>,
-    pub title: Option<String>,
-    pub url: Option<String>,
-    pub stage: String,
-    pub log: Vec<String>,
-    /// Tickets waiting after this one (ids).
+    /// One at a time, or up to the board's parallel runs (worktree boards).
+    pub runs: Vec<RunView>,
+    /// Tickets waiting (ids).
     pub queue: Vec<String>,
     pub started: i64,
     pub stopping: bool,
 }
 
+/// One ticket being worked on: what it's doing now, and its activity.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RunView {
+    pub ticket_id: String,
+    pub key: Option<String>,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub stage: String,
+    pub log: Vec<String>,
+    pub started: i64,
+}
+
 struct Job {
     cancel: Cancel,
     queue: VecDeque<String>,
+    /// The tickets worked on now, by run id (see `RUN`).
+    runs: Vec<(u64, RunView)>,
+    /// Tickets were queued: `run_job` may start one in a free run.
+    wake: Arc<tokio::sync::Notify>,
     /// Queued tickets fixed with a prompt of their own (instead of the board's default prompt).
     prompts: HashMap<String, String>,
     /// Queued tickets the person answered the agent's questions about.
     replies: HashMap<String, Reply>,
     repo: std::path::PathBuf,
-    view: JobView,
+    started: i64,
 }
 
 /// The person's answer to the agent's questions, and where the last run left the ticket: the agent
@@ -78,6 +95,19 @@ pub struct Reply {
 
 static JOBS: Lazy<Mutex<HashMap<String, Job>>> = Lazy::new(Default::default);
 
+tokio::task_local! {
+    /// The run a ticket's work belongs to: `stage` and `log` (called with the board's id) go to
+    /// its view, so parallel runs on one board keep their own.
+    static RUN: u64;
+}
+static RUN_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// `f` in the run this is called in, for a task it spawns (`RUN` doesn't follow `spawn`). Outside
+/// a run: run 0, which is never one, so its `stage` and `log` go nowhere, as before.
+fn in_this_run<F: std::future::Future>(f: F) -> impl std::future::Future<Output = F::Output> {
+    RUN.scope(RUN.try_with(|r| *r).unwrap_or(0), f)
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -87,17 +117,25 @@ pub fn jobs() -> HashMap<String, JobView> {
 }
 
 fn view_of(j: &Job) -> JobView {
-    JobView { queue: j.queue.iter().cloned().collect(), stopping: j.cancel.is_cancelled(), ..j.view.clone() }
+    JobView { runs: j.runs.iter().map(|(_, r)| r.clone()).collect(), queue: j.queue.iter().cloned().collect(), started: j.started, stopping: j.cancel.is_cancelled() }
 }
 
-fn update(board: &str, f: impl FnOnce(&mut JobView)) {
+fn emit(board: &str) {
+    let v = JOBS.lock().get(board).map(view_of);
+    crate::events::emit("tickets-job", json!({ "board": board, "job": v }));
+}
+
+/// Changes the view of the run this is called in (nothing outside a run).
+fn update(board: &str, f: impl FnOnce(&mut RunView)) {
+    let Ok(run) = RUN.try_with(|r| *r) else { return };
     let v = {
         let mut jobs = JOBS.lock();
         let Some(j) = jobs.get_mut(board) else { return };
-        f(&mut j.view);
-        if j.view.log.len() > LOG_LINES {
-            let extra = j.view.log.len() - LOG_LINES;
-            j.view.log.drain(..extra);
+        let Some((_, r)) = j.runs.iter_mut().find(|(id, _)| *id == run) else { return };
+        f(r);
+        if r.log.len() > LOG_LINES {
+            let extra = r.log.len() - LOG_LINES;
+            r.log.drain(..extra);
         }
         view_of(j)
     };
@@ -193,6 +231,7 @@ fn queue(b: Board, ids: Vec<String>, prompt: Option<String>, reply: Option<Reply
                     j.queue.push_back(id);
                 }
             }
+            j.wake.notify_one();
             false
         } else {
             if let Some((other, _)) = jobs.iter().find(|(_, j)| j.repo == repo) {
@@ -207,50 +246,85 @@ fn queue(b: Board, ids: Vec<String>, prompt: Option<String>, reply: Option<Reply
                 }
                 q
             });
-            jobs.insert(b.id.clone(), Job { cancel: Cancel::default(), queue, prompts, replies, repo, view: JobView { stage: "Starting".into(), started: now_ms(), ..Default::default() } });
+            jobs.insert(b.id.clone(), Job { cancel: Cancel::default(), queue, runs: vec![], wake: Default::default(), prompts, replies, repo, started: now_ms() });
             true
         }
     };
-    update(&b.id, |_| {});
+    emit(&b.id);
     if start {
         crate::rt::spawn(run_job(b.id));
     }
     Ok(())
 }
 
+/// How many tickets the board works on at once: in place always one (the repository is shared).
+fn parallel_runs(b: &Board) -> usize {
+    match b.isolation {
+        Isolation::InPlace => 1,
+        Isolation::Worktree => b.parallel_runs.clamp(1, 4) as usize,
+    }
+}
+
+/// Works through the board's queue, up to `parallel_runs` tickets at once. A ticket queued again
+/// while it's worked on waits for that run (its worktree and branch are the same).
 async fn run_job(board_id: String) {
+    let mut running = tokio::task::JoinSet::new();
     loop {
-        let (next, prompt, reply, cancel) = {
+        let most = super::board(&board_id).map(|b| parallel_runs(&b)).unwrap_or(1);
+        let (next, wake) = {
             let mut jobs = JOBS.lock();
             let Some(j) = jobs.get_mut(&board_id) else { break };
-            if j.cancel.is_cancelled() {
-                break;
-            }
-            let next = j.queue.pop_front();
-            let prompt = next.as_ref().and_then(|id| j.prompts.remove(id));
-            let reply = next.as_ref().and_then(|id| j.replies.remove(id));
-            (next, prompt, reply, j.cancel.clone())
-        };
-        let Some(ticket_id) = next else { break };
-        update(&board_id, |v| {
-            *v = JobView { stage: "Reading the ticket".into(), started: now_ms(), key: Some(ticket_id.clone()), ..Default::default() };
-        });
-        let rec = match super::board(&board_id) {
-            Ok(b) => {
-                let rec = fix_one(&b, &ticket_id, prompt.as_deref(), reply.as_ref(), &cancel).await;
-                if let Some(url) = super::webhook(&b) {
-                    if let Err(e) = super::trackers::post_webhook(&url, &chat_text(&b, &rec)).await {
-                        log(&board_id, format!("Webhook: {e}"));
-                    }
+            let free = j.queue.iter().position(|id| !j.runs.iter().any(|(_, r)| &r.ticket_id == id));
+            match free.filter(|_| !j.cancel.is_cancelled() && j.runs.len() < most).and_then(|n| j.queue.remove(n)) {
+                Some(id) => {
+                    let run = RUN_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    j.runs.push((run, RunView { ticket_id: id.clone(), key: Some(id.clone()), stage: "Reading the ticket".into(), started: now_ms(), ..Default::default() }));
+                    let prompt = j.prompts.remove(&id);
+                    let reply = j.replies.remove(&id);
+                    (Some((run, id, prompt, reply, j.cancel.clone())), j.wake.clone())
                 }
-                rec
+                None => (None, j.wake.clone()),
             }
-            Err(e) => error_record(&ticket_id, e.to_string()),
         };
-        super::record(&board_id, rec);
+        match next {
+            Some((run, ticket_id, prompt, reply, cancel)) => {
+                emit(&board_id);
+                running.spawn(RUN.scope(run, run_one(board_id.clone(), run, ticket_id, prompt, reply, cancel)));
+            }
+            // Full, stopping or nothing to start: wait for a run to finish (none left: done), or
+            // for more tickets.
+            None => tokio::select! {
+                done = running.join_next() => if done.is_none() {
+                    break;
+                },
+                _ = wake.notified() => {}
+            },
+        }
     }
+    while running.join_next().await.is_some() {}
     JOBS.lock().remove(&board_id);
     crate::events::emit("tickets-job", json!({ "board": board_id, "job": Value::Null }));
+}
+
+/// One ticket of a job, from reading it to its record in the history.
+async fn run_one(board_id: String, run: u64, ticket_id: String, prompt: Option<String>, reply: Option<Reply>, cancel: Cancel) {
+    let rec = match super::board(&board_id) {
+        Ok(b) => {
+            let rec = fix_one(&b, &ticket_id, prompt.as_deref(), reply.as_ref(), &cancel).await;
+            if let Some(url) = super::webhook(&b) {
+                if let Err(e) = super::trackers::post_webhook(&url, &chat_text(&b, &rec)).await {
+                    log(&board_id, format!("Webhook: {e}"));
+                }
+            }
+            rec
+        }
+        Err(e) => error_record(&ticket_id, e.to_string()),
+    };
+    super::record(&board_id, rec);
+    if let Some(j) = JOBS.lock().get_mut(&board_id) {
+        j.runs.retain(|(id, _)| *id != run);
+    }
+    emit(&board_id);
 }
 
 fn error_record(ticket_id: &str, why: String) -> RunRecord {
@@ -357,8 +431,9 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
     let files = rec.files_changed;
     let fixed = said_fixed && (files > 0 || earlier) && saved;
     let mut pushed = false;
-    // a pull request needs the branch on GitHub
-    if fixed && (b.push || b.kind == TrackerKind::Github) {
+    // GitHub: a pull request needs the branch there, and unfinished work goes there too, for
+    // whoever takes it on (a person, or the next run once the questions are answered).
+    if (fixed && b.push) || (b.kind == TrackerKind::Github && answer.is_ok()) {
         stage(&b.id, "Pushing");
         pushed = wc.push(b, rec).await;
     }
@@ -384,12 +459,19 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         rec.summary = format!("The agent changed no files. {}", a.summary);
     }
 
-    if pushed && b.kind == TrackerKind::Github {
+    // only fixed work gets one: the rest isn't for review
+    if fixed && pushed && b.kind == TrackerKind::Github {
         stage(&b.id, "Opening a pull request");
         super::github::pull_request(tr, &t, rec).await;
     }
 
-    let target = if fixed { b.done_to.clone() } else { b.failed_to.clone().or_else(|| (t.column != from).then(|| super::Column { id: from.clone(), name: "where it was".into() })) };
+    let target = if fixed {
+        b.done_to.clone()
+    } else if rec.outcome == "needs_info" && b.needs_info_to.is_some() {
+        b.needs_info_to.clone()
+    } else {
+        b.failed_to.clone().or_else(|| (t.column != from).then(|| super::Column { id: from.clone(), name: "where it was".into() }))
+    };
     if let Some(c) = &target {
         stage(&b.id, &format!("Moving to {}", c.name));
         match tr.move_to(&t, &c.id).await {
@@ -982,6 +1064,12 @@ async fn exclude_worktrees(clone: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// One at a time in a clone: making a worktree (a run's fetch would fight another's for the refs).
+fn clone_lock(clone: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static CLONES: Lazy<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = Lazy::new(Default::default);
+    CLONES.lock().entry(clone.to_string()).or_default().clone()
+}
+
 /// `<worktree>.kept`, next to a worktree a run left for the user: the next start leaves it alone.
 fn kept_mark(worktree: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{worktree}.kept"))
@@ -1184,6 +1272,9 @@ impl WorkingCopy {
             Ok(top) => top.trim().to_string(),
             Err(_) => return Err(AppError::msg(format!("{} is not a git repository: a worktree for each ticket needs one (or run the board in place)", b.repo))),
         };
+        // Parallel runs make their worktrees one after another (fetch, exclude file, branch).
+        let turn = clone_lock(&clone);
+        let turn = turn.lock().await;
         let remote = git(&clone, &["remote", "get-url", "origin"]).await.is_ok();
         if remote {
             stage(&b.id, "Fetching from origin");
@@ -1206,6 +1297,7 @@ impl WorkingCopy {
         // `--no-track`: no upstream written into the clone's config (shared by every worktree,
         // and watched by `git_setup`).
         let made = if local { git(&clone, &["worktree", "add", "-q", &at, &branch]).await } else { git(&clone, &["worktree", "add", "-q", "--no-track", "-b", &branch, &at, &from]).await };
+        drop(turn);
         if let Err(e) = made {
             if !local && !on_origin {
                 let _ = git(&clone, &["branch", "-q", "-D", &branch]).await;
@@ -1451,14 +1543,15 @@ async fn setup(b: &Board, at: &str, cancel: &Cancel) -> Result<(), String> {
     let lines: Arc<Mutex<Vec<String>>> = Arc::default();
     let read = |r: Option<Box<dyn tokio::io::AsyncRead + Send + Unpin>>| {
         let (lines, board) = (lines.clone(), b.id.clone());
-        tokio::spawn(async move {
+        // in this run: its output goes to this ticket's activity, not a parallel run's (or none)
+        tokio::spawn(in_this_run(async move {
             let Some(r) = r else { return };
             let mut r = BufReader::new(r).lines();
             while let Ok(Some(l)) = r.next_line().await {
                 log(&board, l.clone());
                 lines.lock().push(l);
             }
-        })
+        }))
     };
     let readers = [read(child.stdout.take().map(|r| Box::new(r) as _)), read(child.stderr.take().map(|r| Box::new(r) as _))];
     let deadline = tokio::time::Instant::now() + TICKET_TIMEOUT;
@@ -1906,6 +1999,10 @@ pub(crate) mod tests {
                             "description": "average([2, 4]) returns 6 instead of 3. Fix average in calc.py.",
                             "labels": ["bug"], "status": { "id": "1" },
                             "comment": { "comments": [{ "author": { "displayName": "Tess" }, "body": "Seen on prod too." }] } } }).to_string().into_bytes(),
+                        ("GET", "/rest/api/2/issue/ABC-3") => json!({ "key": "ABC-3", "fields": {
+                            "summary": "average() of no numbers fails",
+                            "description": "average([]) raises ZeroDivisionError. Return 0 instead, in calc.py.",
+                            "labels": [], "status": { "id": "1" }, "comment": { "comments": [] } } }).to_string().into_bytes(),
                         ("GET", p) if p.ends_with("/transitions") => json!({ "transitions": [
                             { "id": "11", "to": { "id": "2" } }, { "id": "21", "to": { "id": "3" } }, { "id": "31", "to": { "id": "1" } }] }).to_string().into_bytes(),
                         ("GET", "/files/spec.pdf") => b"%PDF-1.7".to_vec(),
@@ -2665,5 +2762,145 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
         let _ = std::fs::remove_dir_all(&mine);
+    }
+
+    // ------------------------------------------------------------ the job queue
+
+    /// Saves `b` under a new id (a job reads its board from the saved ones) and returns it.
+    async fn saved(b: Board) -> Board {
+        crate::tickets::init_reading(std::env::temp_dir().join(format!("devcat-tickets-data-{}", std::process::id())));
+        crate::tickets::tickets_board_save(Board { id: uuid::Uuid::new_v4().to_string(), ..b }).await.unwrap()
+    }
+
+    /// The board's runs (newest first), once its job has finished.
+    async fn when_done(board: &str) -> Vec<RunRecord> {
+        for _ in 0..1200 {
+            if !jobs().contains_key(board) {
+                return crate::tickets::history(board);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the job didn't finish: {:?}", jobs().get(board));
+    }
+
+    /// The stand-in's `act` for the queue: counts the agents working at its start and two seconds
+    /// later (into `$OUT/live.txt`), then fixes calc.py.
+    const COUNTED: &str = "mkdir -p \"$OUT/live\"; touch \"$OUT/live/$$\"; ls \"$OUT/live\" | wc -l >> \"$OUT/live.txt\"; sleep 2; ls \"$OUT/live\" | wc -l >> \"$OUT/live.txt\"; rm \"$OUT/live/$$\"; echo '    # fixed' >> calc.py";
+
+    /// The most agents `COUNTED` saw working at once.
+    fn most_at_once(out: &Path) -> usize {
+        std::fs::read_to_string(out.join("live.txt")).unwrap_or_default().lines().filter_map(|l| l.trim().parse().ok()).max().unwrap_or(0)
+    }
+
+    /// A worktree board works on as many tickets at once as its parallel runs, each in its own
+    /// worktree and on its own branch, and the others wait; no run trips another's git guard.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn parallel_runs() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("parallel").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", COUNTED).await;
+        let b = saved(Board { parallel_runs: 2, ..worktree_board(&site, cwd, &fixer) }).await;
+        enqueue(b.clone(), vec!["ABC-1".into(), "ABC-2".into(), "ABC-3".into()], None).unwrap();
+        let runs = when_done(&b.id).await;
+        assert_eq!(most_at_once(&out), 2, "two at a time, never three");
+        assert_eq!(runs.len(), 3);
+        for r in &runs {
+            assert_eq!((r.outcome.as_str(), r.files_changed), ("fixed", 1), "{} {} {:?}", r.key, r.summary, r.notes);
+        }
+        let mut cwds: Vec<_> = runs.iter().map(|r| r.cwd.clone().unwrap_or_default()).collect();
+        let mut branches: Vec<_> = runs.iter().map(|r| r.branch.clone().unwrap_or_default()).collect();
+        cwds.sort();
+        cwds.dedup();
+        branches.sort();
+        branches.dedup();
+        assert_eq!((cwds.len(), branches.len()), (3, 3), "a worktree and a branch each: {cwds:?} {branches:?}");
+        let origin = remote.to_str().unwrap();
+        for br in &branches {
+            assert_eq!(git(origin, &["rev-parse", br]).await.unwrap(), git(cwd, &["rev-parse", br]).await.unwrap(), "{br} pushed");
+        }
+        assert!(worktrees(cwd).await.is_empty(), "the worktrees are removed");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A board that runs in place works on one ticket at a time, whatever its parallel runs say
+    /// (saved as 1 to 4; boards saved before the setting have 1).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn in_place_one_at_a_time() {
+        let (site, _) = mock_jira().await;
+        let dir = temp_dir("one-at-a-time");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", COUNTED).await;
+        let old: Board = serde_json::from_value(json!({ "name": "b", "kind": "jira" })).unwrap();
+        assert_eq!(old.parallel_runs, 1);
+        assert_eq!(saved(Board { parallel_runs: 0, ..board_on(&site, cwd, &fixer) }).await.parallel_runs, 1);
+        let b = saved(Board { parallel_runs: 9, ..board_on(&site, cwd, &fixer) }).await;
+        assert_eq!(b.parallel_runs, 4);
+        enqueue(b.clone(), vec!["ABC-1".into(), "ABC-3".into()], None).unwrap();
+        let runs = when_done(&b.id).await;
+        assert_eq!(most_at_once(&out), 1, "one at a time");
+        assert_eq!(runs.iter().map(|r| r.outcome.as_str()).collect::<Vec<_>>(), ["fixed", "fixed"], "{runs:?}");
+        assert_eq!(head(cwd).await, "main");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A ticket queued while another is worked on starts at once in a free parallel run; the same
+    /// ticket queued again waits for its run (both would need its worktree and branch), and then
+    /// goes on from that run's branch.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_while_running() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("queued-later").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", COUNTED).await;
+        let b = saved(Board { parallel_runs: 2, ..worktree_board(&site, cwd, &fixer) }).await;
+        let running = |id: &str| jobs().get(&b.id).is_some_and(|j| j.runs.iter().any(|r| r.ticket_id == id));
+        enqueue(b.clone(), vec!["ABC-1".into()], None).unwrap();
+        for _ in 0..200 {
+            if running("ABC-1") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        enqueue(b.clone(), vec!["ABC-1".into(), "ABC-3".into()], None).unwrap();
+        for _ in 0..100 {
+            if running("ABC-3") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(jobs().get(&b.id).map(|j| (j.runs.len(), j.queue.clone())), Some((2, vec!["ABC-1".to_string()])), "ABC-3 runs beside it, ABC-1 waits");
+        let runs = when_done(&b.id).await;
+        assert_eq!(most_at_once(&out), 2);
+        assert!(runs.iter().all(|r| r.outcome == "fixed"), "{runs:?}");
+        let again: Vec<_> = runs.iter().filter(|r| r.ticket_id == "ABC-1").collect();
+        assert_eq!(again.len(), 2);
+        assert!(again[0].started >= again[1].finished, "the second run started after the first");
+        assert_eq!(git(cwd, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap(), format!("{CALC}    # fixed\n    # fixed\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The setup command's output goes to the activity of the run it belongs to, with parallel
+    /// runs on the board (it's read in tasks of its own, which `RUN` doesn't follow by itself).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn setup_output_in_its_run() {
+        let dir = temp_dir("setup-output");
+        std::fs::create_dir_all(&dir).unwrap();
+        let b = Board { id: uuid::Uuid::new_v4().to_string(), setup_command: "echo ready-$((40 + 2))".into(), allow_commands: true, ..worktree_board("http://127.0.0.1:9", dir.to_str().unwrap(), "none") };
+        let run = |id: u64, t: &str| (id, RunView { ticket_id: t.into(), ..Default::default() });
+        let mine = RUN_IDS.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+        JOBS.lock().insert(b.id.clone(), Job { cancel: Cancel::default(), queue: Default::default(), runs: vec![run(mine, "ABC-1"), run(mine + 1, "ABC-2")], wake: Default::default(), prompts: Default::default(), replies: Default::default(), repo: dir.clone(), started: now_ms() });
+        RUN.scope(mine, setup(&b, dir.to_str().unwrap(), &Cancel::default())).await.unwrap();
+        let logs: Vec<Vec<String>> = JOBS.lock().remove(&b.id).unwrap().runs.into_iter().map(|(_, r)| r.log).collect();
+        assert!(logs[0].iter().any(|l| l == "ready-42"), "in its run: {logs:?}");
+        assert!(!logs[1].iter().any(|l| l == "ready-42"), "not in the other: {logs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

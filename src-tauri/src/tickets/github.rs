@@ -3,10 +3,11 @@
 //! `https://<host>/api/v3`), with a personal access token (fine-grained or classic).
 //!
 //! Labels are the columns: an issue is "in" the board's state label it has (`ready-for-agent`,
-//! `agent-working`, `agent-review`, `ready-for-human`), and moving it swaps that label for the
-//! new one, so it keeps exactly one. Saving the board reads the token owner's login (the
-//! branches are `<login>/<number>-<slug>`) and creates the state labels the repository lacks. A
-//! fixed issue gets a draft pull request into the default branch that closes it.
+//! `agent-working`, `agent-review`, `needs-info`, `ready-for-human`), and moving it swaps that
+//! label for the new one, so it keeps exactly one. Saving the board reads the token owner's login
+//! (the branches are `<login>/<number>-<slug>`) and creates the state labels the repository
+//! lacks. Every run's branch is pushed: a fixed issue gets a draft pull request into the default
+//! branch that closes it; one that needs information or failed gets none, only the comment.
 //!
 //! The `Tracker` methods here are what `trackers.rs` calls for a GitHub board; the rest of the
 //! pipeline (`worker.rs`) only adds the pull request after the push.
@@ -53,6 +54,7 @@ fn color(label: &str) -> &'static str {
         "agent-working" => "FBCA04",
         "agent-review" => "1D76DB",
         "ready-for-human" => "D93F0B",
+        "needs-info" => "D876E3",
         _ => "C5DEF5",
     }
 }
@@ -60,7 +62,7 @@ fn color(label: &str) -> &'static str {
 /// The board's state labels (its columns), each once.
 pub fn states(b: &Board) -> Vec<String> {
     let mut out: Vec<String> = vec![];
-    for c in [&b.pick_from, &b.working, &b.done_to, &b.failed_to].into_iter().flatten() {
+    for c in [&b.pick_from, &b.working, &b.done_to, &b.needs_info_to, &b.failed_to].into_iter().flatten() {
         if !c.id.is_empty() && !out.contains(&c.id) {
             out.push(c.id.clone());
         }
@@ -412,7 +414,7 @@ pub(crate) mod tests {
         let col = |n: &str| json!({ "id": n, "name": n });
         serde_json::from_value(json!({ "id": format!("gh-{}", uuid::Uuid::new_v4()), "name": "", "kind": "github", "site": site, "project": "acme/calc", "token": "t",
             "repo": repo, "providerId": provider, "isolation": "worktree", "assigned": "me",
-            "pickFrom": col("ready-for-agent"), "working": col("agent-working"), "doneTo": col("agent-review"), "failedTo": col("ready-for-human") }))
+            "pickFrom": col("ready-for-agent"), "working": col("agent-working"), "doneTo": col("agent-review"), "needsInfoTo": col("needs-info"), "failedTo": col("ready-for-human") }))
         .unwrap()
     }
 
@@ -431,11 +433,11 @@ pub(crate) mod tests {
         let saved = super::super::tickets_board_save(Board { push: false, ..board(&gh.url, "", "") }).await.unwrap();
         assert_eq!((saved.login.as_str(), saved.branch_prefix.as_str(), saved.push, saved.name.as_str()), ("octo", "octo/", true, "GitHub acme/calc"));
         assert!(saved.has_token);
-        assert_eq!(gh.gh.lock().labels, vec!["bug", "ready-for-agent", "agent-working", "agent-review", "ready-for-human"]);
-        assert_eq!(gh.sent("POST /repos/acme/calc/labels").len(), 3, "only the missing ones: {:?}", gh.requests());
+        assert_eq!(gh.gh.lock().labels, vec!["bug", "ready-for-agent", "agent-working", "agent-review", "needs-info", "ready-for-human"]);
+        assert_eq!(gh.sent("POST /repos/acme/calc/labels").len(), 4, "only the missing ones: {:?}", gh.requests());
         assert!(gh.requests().iter().any(|r| r == "GET /user") && gh.requests().iter().any(|r| r == "GET /repos/acme/calc"), "{:?}", gh.requests());
         let cols = super::super::tickets_columns(saved.clone()).await.unwrap();
-        assert_eq!(cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["bug", "ready-for-agent", "agent-working", "agent-review", "ready-for-human"], "the columns are the labels");
+        assert_eq!(cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["bug", "ready-for-agent", "agent-working", "agent-review", "needs-info", "ready-for-human"], "the columns are the labels");
 
         let refused = |b: Board| async move { super::super::tickets_board_save(b).await.unwrap_err().to_string() };
         let e = refused(Board { project: "acme/nope".into(), ..board(&gh.url, "", "") }).await;
@@ -647,6 +649,91 @@ pub(crate) mod tests {
         assert_eq!((rec.outcome.as_str(), rec.pr_number), ("fixed", pr["number"].as_u64()), "{} {:?}", rec.summary, rec.notes);
         assert_eq!(gh.gh.lock().pulls.len(), 1);
         assert!(git(origin, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# again"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The agent needs information: its branch is pushed (the next run goes on from it), the
+    /// comment has its questions and the branch, the issue's one state label is needs-info, and
+    /// no pull request is opened.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn needs_info_issue_gets_the_questions() {
+        use super::super::worker::{fix_one, git, tests::*};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (dir, remote) = clone_with_origin("gh-needs-info").await;
+        let (cwd, origin) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        let (asker, _) = stand_in("needs_info", "echo '    # started' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, cwd, &asker)).await.unwrap();
+        assert!(gh.gh.lock().labels.iter().any(|l| l == "needs-info"), "made when the board was saved");
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!(rec.outcome, "needs_info", "{} {:?}", rec.summary, rec.notes);
+        assert_eq!((rec.branch.as_deref(), rec.moved_to.as_deref(), rec.pr_number), (Some(BRANCH), Some("needs-info"), None));
+        assert_eq!(git(origin, &["rev-parse", BRANCH]).await.unwrap(), git(cwd, &["rev-parse", BRANCH]).await.unwrap(), "pushed");
+        assert!(git(origin, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# started"));
+
+        assert_eq!(gh.labels_of(7), vec!["bug", "needs-info"], "one state label: {:?}", gh.requests());
+        assert!(gh.gh.lock().pulls.is_empty() && gh.sent("POST /repos/acme/calc/pulls").is_empty(), "{:?}", gh.requests());
+        let comments = gh.comments_on(7);
+        assert_eq!(comments.len(), 1, "{comments:?}");
+        assert!(comments[0].contains("needs your input") && comments[0].contains("Stand-in summary.") && comments[0].contains(BRANCH), "{}", comments[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The agent couldn't do it: its work in progress is committed (WIP) and pushed, the comment
+    /// has the reason and the branch, the issue's one state label is ready-for-human, and no pull
+    /// request is opened.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_issue_is_for_a_person() {
+        use super::super::worker::{fix_one, git, tests::*};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (dir, remote) = clone_with_origin("gh-failed").await;
+        let (cwd, origin) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        let (failer, _) = stand_in("failed", "echo '    # half done' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, cwd, &failer)).await.unwrap();
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!(rec.outcome, "failed", "{} {:?}", rec.summary, rec.notes);
+        assert_eq!((rec.branch.as_deref(), rec.moved_to.as_deref(), rec.pr_number), (Some(BRANCH), Some("ready-for-human"), None));
+        assert!(git(origin, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# half done"), "the work in progress is pushed");
+        assert!(git(origin, &["log", "-1", "--format=%s", BRANCH]).await.unwrap().starts_with("WIP #7"));
+        assert!(worktrees(cwd).await.is_empty());
+
+        assert_eq!(gh.labels_of(7), vec!["bug", "ready-for-human"], "one state label: {:?}", gh.requests());
+        assert!(gh.gh.lock().pulls.is_empty() && gh.sent("POST /repos/acme/calc/pulls").is_empty(), "{:?}", gh.requests());
+        let comments = gh.comments_on(7);
+        assert_eq!(comments.len(), 1, "{comments:?}");
+        assert!(comments[0].contains("couldn't finish") && comments[0].contains("Stand-in summary.") && comments[0].contains(&format!("Branch: {BRANCH} (pushed")), "{}", comments[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A failed setup command fails the run like a failed agent: the comment has the command's
+    /// output, the issue's one state label is ready-for-human, and nothing is pushed (the setup's
+    /// changes are undone, so there's no work) or opened.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_setup_is_for_a_person() {
+        use super::super::worker::{fix_one, git, tests::*};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (dir, remote) = clone_with_origin("gh-setup-fails").await;
+        let (cwd, origin) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let setup = "echo 'npm ERR! missing script: build' >&2\nexit 1".to_string();
+        let b = super::super::tickets_board_save(Board { setup_command: setup, allow_commands: true, ..board(&gh.url, cwd, &fixer) }).await.unwrap();
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref(), rec.moved_to.as_deref()), ("failed", None, Some("ready-for-human")), "{} {:?}", rec.summary, rec.notes);
+        assert!(!out.join("prompt.jsonl").exists(), "the agent never ran");
+        assert!(git(origin, &["branch", "--list"]).await.unwrap().trim() == "* main", "nothing pushed");
+
+        assert_eq!(gh.labels_of(7), vec!["bug", "ready-for-human"], "one state label: {:?}", gh.requests());
+        assert!(gh.gh.lock().pulls.is_empty() && gh.sent("POST /repos/acme/calc/pulls").is_empty(), "{:?}", gh.requests());
+        let comments = gh.comments_on(7);
+        assert!(comments.len() == 1 && comments[0].contains("npm ERR! missing script: build"), "{comments:?}");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }
