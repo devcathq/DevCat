@@ -30,13 +30,14 @@ export function openClaudeWorkspace(
   opts?: { sessionId?: string | null; view?: ClaudeView; title?: string | null; providerId?: string | null },
 ): string {
   const st = useProviders.getState();
-  // A session belongs to Claude Code unless it's a DevCat Agent chat (those name their connection).
+  // A session belongs to Claude Code (any of its accounts: they share the transcripts) unless it's a
+  // DevCat Agent chat (those name their connection).
   const asked = findProvider(st.providers, opts?.providerId ?? st.selectedId);
-  const provider = opts?.sessionId && asked?.kind !== "agent"
+  const provider = opts?.sessionId && asked?.kind !== "agent" && asked?.kind !== "claude"
     ? findProvider(st.providers, CLAUDE_PROVIDER_ID)!
     : asked ?? findProvider(st.providers, CLAUDE_PROVIDER_ID)!;
   const isClaude = provider.id === CLAUDE_PROVIDER_ID;
-  const sessionId = isClaude || provider.kind === "agent" ? (opts?.sessionId ?? null) : null;
+  const sessionId = provider.kind === "claude" || provider.kind === "agent" ? (opts?.sessionId ?? null) : null;
   const key = claudeTabKey(cwd, sessionId);
   const title = opts?.title?.trim() ? chatTabTitle(cwd, opts.title) : isClaude ? basename(cwd) : `${basename(cwd)} · ${provider.name}`;
   const id = openTab({ type: "claude", cwd, sessionId, view: opts?.view ?? "chat", providerId: isClaude ? null : provider.id }, title, key);

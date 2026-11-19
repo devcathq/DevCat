@@ -2,6 +2,7 @@
 //! the workspace terminal (Claude Code, Codex, Gemini, Copilot, Aider, opencode or a custom
 //! command). `pty_open(provider_id)` resolves program / args / env here, so API keys go
 //! from the keychain straight into the child's environment and never reach the frontend.
+pub mod claude_account;
 pub mod store;
 
 use crate::claude::locate;
@@ -123,6 +124,13 @@ pub struct AiProvider {
     /// DevCat Agent only: which model API to talk to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentSettings>,
+    /// Claude Code only (not the built-in one): a login of its own, kept in its own config folder
+    /// ([`claude_account`]), so several Claude accounts can be used side by side.
+    #[serde(default)]
+    pub own_login: bool,
+    /// Read-only: the account a Claude Code connection is logged in with (its email).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 /// Model API of a DevCat Agent connection.
@@ -299,9 +307,22 @@ pub async fn launch(provider_id: &str, extra_args: Vec<String>) -> AppResult<Lau
     let st = store()?;
     let p = st.get(provider_id)?;
     let mut l = plan(&p, st.api_key(&p.id), extra_args)?;
+    if let Some(dir) = st.account_dir(&p) {
+        let main = claude_account::main_dir();
+        { let dir = dir.clone(); tokio::task::spawn_blocking(move || claude_account::prepare(&dir, &main)).await.map_err(|e| AppError::msg(e.to_string()))??; }
+        // first, so a CLAUDE_CONFIG_DIR row the user added still wins
+        l.env.insert(0, ("CLAUDE_CONFIG_DIR".into(), dir.to_string_lossy().into_owned()));
+    }
     let path = resolve_program(&p, &l.program).await.ok_or_else(|| not_found(&p, &l.program))?;
     l.program = path.to_string_lossy().into_owned();
     Ok(l)
+}
+
+/// The config folders of the Claude Code connections with a login of their own that have been
+/// started (Sync MCP writes DevCat's server into each one's `.claude.json` too).
+pub fn claude_account_dirs() -> Vec<PathBuf> {
+    let Ok(st) = store() else { return vec![] };
+    st.list().unwrap_or_default().iter().filter_map(|p| st.account_dir(p)).filter(|d| d.is_dir()).collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -360,9 +381,24 @@ async fn detect_one(p: &AiProvider, provider_id: Option<String>) -> AiDetect {
 
 // ---------------------------------------------------------------- commands
 
+/// The profiles without their logins (for DevCat itself: picking one by id, name or type).
+pub async fn providers() -> AppResult<Vec<AiProvider>> {
+    store()?.list()
+}
+
+/// The profiles for the window and the phone, with the account each Claude Code one is logged in with.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn ai_providers_list() -> AppResult<Vec<AiProvider>> {
-    store()?.list()
+    tokio::task::spawn_blocking(|| {
+        let st = store()?;
+        let mut list = st.list()?;
+        for p in &mut list {
+            p.login = st.login_of(p);
+        }
+        Ok(list)
+    })
+    .await
+    .map_err(|e| AppError::msg(e.to_string()))?
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

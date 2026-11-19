@@ -668,7 +668,7 @@ async fn save_job(scope: &Scope, input: &Value, ctx: &ToolCtx) -> Result<String,
             let provider = match arg(input, "provider") {
                 Some(p) => p,
                 None => {
-                    let all = crate::ai::ai_providers_list().await.unwrap_or_default();
+                    let all = crate::ai::providers().await.unwrap_or_default();
                     all.into_iter().find(|p| crate::ai::agent_config(&p.id).is_ok()).map(|p| p.id).ok_or_else(|| fail("There's no DevCat Agent connection to run the job with: the user adds one in DevCat (AI connections).".into()))?
                 }
             };
@@ -695,7 +695,7 @@ async fn save_job(scope: &Scope, input: &Value, ctx: &ToolCtx) -> Result<String,
     }
     if let Some(p) = arg(input, "provider") {
         // by name or id
-        let all = crate::ai::ai_providers_list().await.unwrap_or_default();
+        let all = crate::ai::providers().await.unwrap_or_default();
         job.provider_id = all.into_iter().find(|x| x.id == p || x.name.eq_ignore_ascii_case(&p)).map(|x| x.id).unwrap_or(p);
     }
     if let Some(m) = input.get("every_minutes").and_then(Value::as_u64) {

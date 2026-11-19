@@ -86,6 +86,19 @@ tool with the same scope (`tools_for(…, in_app)`); with DevCat closed it runs 
 (`network::set_passive`: it never starts networks), and tools that need DevCat say so. Sync MCP and the bridge are
 about this computer, so they stay out of the phone dispatcher, like the SSH workbench above.
 
+## Several Claude Code accounts
+
+A Claude Code AI connection with "its own login" (`AiProvider::own_login`, never the built-in one) runs with
+`CLAUDE_CONFIG_DIR=<data>/claude-accounts/<id>` (`ai::launch`, `ai/claude_account.rs`), where Claude Code keeps that
+account's login. The folder links back to the main config (`~/.claude`) for `projects`, settings, `CLAUDE.md`,
+skills, agents, commands and plugins, so the Sessions list, resume, memory sync and settings stay one; only the login
+and `.claude.json` are the account's own, and Sync MCP writes DevCat's server into each account's `.claude.json` too.
+Deleting the connection deletes its folder: `claude_account::remove` unlinks the shared entries first and refuses a
+shared one that isn't a link, so nothing in `~/.claude` can go with it. Anything new that reads Claude Code's config
+must still find the transcripts under the main `projects`. The account's email (`AiProvider::login`) is read only for
+the window and the phone (`ai_providers_list`); DevCat's own lookups use `ai::providers()`. On SSH hosts the host's
+own login is used (only `DEVCAT_` variables go there).
+
 ## JDBC connections
 
 A `jdbc` connection (`src-tauri/src/db/jdbc.rs`) reaches a database through a driver jar the user supplies. DevCat has

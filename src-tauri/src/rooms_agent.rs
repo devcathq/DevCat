@@ -135,7 +135,7 @@ async fn provider(r: &Room) -> Result<String, AppError> {
     if let Some(p) = r.prefs().agent_provider {
         return Ok(p);
     }
-    let all = crate::ai::ai_providers_list().await?;
+    let all = crate::ai::providers().await?;
     all.into_iter().find(|p| p.kind == crate::ai::AiKind::Agent).map(|p| p.id).ok_or_else(|| AppError::msg("Add a DevCat Agent connection (AI → Connections) so your agent can answer in rooms."))
 }
 

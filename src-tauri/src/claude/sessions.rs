@@ -17,7 +17,7 @@ use std::time::SystemTime;
 
 const TITLE_MAX: usize = 160;
 
-fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
         Some(d) => PathBuf::from(d),
         None => dirs::home_dir().unwrap_or_default().join(".claude"),
