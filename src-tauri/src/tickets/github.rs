@@ -1277,6 +1277,26 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// An issue reopened after its pull request closed without a merge, and labelled for the agent
+    /// again, still has `wontfix`: moving it takes off every state label of the board, so after
+    /// the run it has exactly one.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reopened_issue_keeps_one_state_label() {
+        use super::super::worker::{fix_one, tests::*};
+        tickets_data();
+        let gh = MockGithub::start(Gh::new("octo", "acme/calc").with_issue(7, ISSUE, "Fix average in calc.py.", &["bug", "wontfix", "ready-for-agent"], &["octo"])).await;
+        let (dir, remote) = clone_with_origin("gh-reopened").await;
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, dir.to_str().unwrap(), &fixer)).await.unwrap();
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!(rec.outcome, "fixed", "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(gh.labels_of(7), vec!["bug", "agent-review"], "one state label: {:?}", gh.requests());
+        assert_eq!(gh.sent("DELETE /repos/acme/calc/issues/7/labels/wontfix").len(), 1, "{:?}", gh.requests());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// The not-planned label is the board's setting: saving the board creates it, and a pull
     /// request closed without a merge gives the issue that label as its only state label.
     #[cfg(unix)]
