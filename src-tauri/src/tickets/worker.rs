@@ -394,7 +394,13 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         v.url = Some(t.url.clone());
     });
 
-    let mut wc = WorkingCopy::open(b, &t, reply, cancel, rec).await?;
+    // The branch to go on from: the one the answered run left, else on GitHub (where adding the
+    // trigger label again runs an issue again) its last run's, even if the issue was renamed since.
+    let earlier = reply.and_then(|r| r.branch.clone()).or_else(|| match b.kind {
+        TrackerKind::Github => super::history(&b.id).into_iter().find(|r| r.ticket_id == t.id && r.branch.is_some()).and_then(|r| r.branch),
+        _ => None,
+    });
+    let mut wc = WorkingCopy::open(b, &t, earlier.as_deref(), cancel, rec).await?;
 
     let from = t.column.clone();
     if let Some(w) = &b.working {
@@ -870,6 +876,15 @@ pub fn comment_text(b: &Board, r: &RunRecord, pushed: bool) -> String {
             c.push_str(&format!("\n\nBranch: {br} ({where_}) in {}.", r.repos.join(", ")));
         }
     }
+    // GitHub: the trigger label added again starts a new run (`github::ready`)
+    if let (TrackerKind::Github, Some(pick)) = (b.kind, &b.pick_from) {
+        let on = if r.branch.is_some() { ", which goes on from this branch" } else { "" };
+        match r.outcome.as_str() {
+            "needs_info" => c.push_str(&format!("\n\nAnswer in a comment, then add the label `{}` again to run the agent again{on}.", pick.id)),
+            "failed" => c.push_str(&format!("\n\nTo let the agent try again, add the label `{}` again{on}.", pick.id)),
+            _ => {}
+        }
+    }
     // Trello and Linear render markdown; Jira's plain text shows it as is.
     if b.kind == TrackerKind::Jira {
         c = c.replace('`', "");
@@ -1222,11 +1237,12 @@ struct Saved {
 }
 
 impl WorkingCopy {
-    /// The working copy for a run on `t`, ready for the agent.
-    async fn open(b: &Board, t: &Ticket, reply: Option<&Reply>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+    /// The working copy for a run on `t`, ready for the agent. `earlier`: the branch of the work
+    /// the run goes on from.
+    async fn open(b: &Board, t: &Ticket, earlier: Option<&str>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
         match b.isolation {
-            Isolation::InPlace => WorkingCopy::in_place(b, t, reply, rec).await,
-            Isolation::Worktree => WorkingCopy::worktree(b, t, reply, cancel, rec).await,
+            Isolation::InPlace => WorkingCopy::in_place(b, t, earlier, rec).await,
+            Isolation::Worktree => WorkingCopy::worktree(b, t, earlier, cancel, rec).await,
         }
     }
 
@@ -1242,11 +1258,11 @@ impl WorkingCopy {
 
     /// The board's repositories: on a branch, without the user's changes (those are left alone).
     /// `own`: a new branch per ticket, else the board's existing branch. An answer to the agent
-    /// goes on where its last run left the work (`cont`, the branch it committed on).
-    async fn in_place(b: &Board, t: &Ticket, reply: Option<&Reply>, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+    /// goes on where its last run left the work (`cont`: `earlier`, the branch it committed on).
+    async fn in_place(b: &Board, t: &Ticket, earlier: Option<&str>, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
         let (mut repos, mut skipped) = prepare(&b.repo).await?;
         let target = b.target_branch.trim();
-        let cont = reply.and_then(|r| r.branch.clone()).filter(|br| br.as_str() != target);
+        let cont = earlier.filter(|br| *br != target).map(str::to_string);
         let own = target.is_empty() || cont.is_some();
         if !own {
             with_branch(&mut repos, &mut skipped, target).await?;
@@ -1297,11 +1313,12 @@ impl WorkingCopy {
     }
 
     /// A git worktree of the board's clone at `<clone>/.worktrees/<number>-<slug>`, on the
-    /// ticket's branch: the one it has already (the last run's work, here or on origin), else a
-    /// new one from origin's base branch (`base_of`), fetched first. The clone itself isn't
+    /// ticket's branch (`earlier`, else its name for the ticket): the one it has already (the
+    /// last run's work, here or on origin), else a new one from origin's base branch (`base_of`),
+    /// fetched first. The clone itself isn't
     /// touched: the user may have changes and any branch checked out there. Then the board's
     /// files are copied in and its setup command runs there.
-    async fn worktree(b: &Board, t: &Ticket, reply: Option<&Reply>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+    async fn worktree(b: &Board, t: &Ticket, earlier: Option<&str>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
         let clone = match git(&b.repo, &["rev-parse", "--show-toplevel"]).await {
             Ok(top) => top.trim().to_string(),
             Err(_) => return Err(AppError::msg(format!("{} is not a git repository: a worktree for each ticket needs one (or run the board in place)", b.repo))),
@@ -1316,7 +1333,7 @@ impl WorkingCopy {
                 rec.notes.push(format!("Couldn't fetch from origin, so the work started from what the clone had: {e}"));
             }
         }
-        let branch = reply.and_then(|r| r.branch.clone()).filter(|br| br.as_str() != b.target_branch.trim()).unwrap_or_else(|| branch_name(&b.branch_prefix, t));
+        let branch = earlier.filter(|br| *br != b.target_branch.trim()).map(str::to_string).unwrap_or_else(|| branch_name(&b.branch_prefix, t));
         let local = has_ref(&clone, &format!("refs/heads/{branch}")).await;
         let on_origin = remote && has_ref(&clone, &format!("refs/remotes/origin/{branch}")).await;
         let path = Path::new(&clone).join(".worktrees").join(branch_name("", t));
@@ -1799,8 +1816,9 @@ pub fn where_text(branch: &str, made: bool, repos: &[Repo], skipped: &[(String, 
 // ---------------------------------------------------------------- watching
 
 /// Boards with `watch` on: every `interval_min`, queue the column's tickets the agent hasn't
-/// tried yet (a ticket it tried is only done again when asked); a GitHub board also follows its
-/// pull requests (`github::follow_pull_requests`). Only with a window open.
+/// tried yet (a ticket it tried is only done again when asked: on GitHub, by adding the trigger
+/// label again); a GitHub board also follows its pull requests (`github::follow_pull_requests`).
+/// Only with a window open.
 pub fn start_watch() {
     crate::rt::spawn(async {
         let mut last: HashMap<String, i64> = HashMap::new();
@@ -1845,18 +1863,24 @@ pub(crate) async fn check_column(b: &Board) -> AppResult<()> {
 }
 
 /// What a check queues: the column's tickets (with the board's label) the agent hasn't tried yet,
-/// at most `max_per_run`. On GitHub only the issues `github::ready` lets through.
+/// at most `max_per_run`. On GitHub only the issues `github::ready` lets through, tried or not:
+/// there the trigger label added again after the last run is what asks for another.
 pub(super) async fn to_queue(b: &Board) -> AppResult<Vec<String>> {
     let Some(col) = &b.pick_from else { return Ok(vec![]) };
-    let tried: std::collections::HashSet<String> = super::history(&b.id).into_iter().filter(|r| r.outcome != "stopped").map(|r| r.ticket_id).collect();
+    // when each ticket's last run ended (a stopped one doesn't count)
+    let mut ended: HashMap<String, i64> = HashMap::new();
+    for r in super::history(&b.id).into_iter().filter(|r| r.outcome != "stopped") {
+        let e = ended.entry(r.ticket_id).or_insert(r.finished);
+        *e = (*e).max(r.finished);
+    }
     let tr = Tracker::new(b, super::token(b))?;
     let mut ids = vec![];
-    for t in with_label(b, tr.list(&col.id).await?).into_iter().filter(|t| !tried.contains(&t.id)) {
+    for t in with_label(b, tr.list(&col.id).await?).into_iter().filter(|t| b.kind == TrackerKind::Github || !ended.contains_key(&t.id)) {
         if ids.len() >= b.max_per_run as usize {
             break;
         }
         if b.kind == TrackerKind::Github {
-            match super::github::ready(&tr, &t).await {
+            match super::github::ready(&tr, &t, ended.get(&t.id).copied()).await {
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(e) => {
@@ -2815,7 +2839,7 @@ pub(crate) mod tests {
     }
 
     /// The board's runs (newest first), once its job has finished.
-    async fn when_done(board: &str) -> Vec<RunRecord> {
+    pub(crate) async fn when_done(board: &str) -> Vec<RunRecord> {
         for _ in 0..1200 {
             if !jobs().contains_key(board) {
                 return crate::tickets::history(board);
