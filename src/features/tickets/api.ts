@@ -56,6 +56,8 @@ export interface Board {
   /** Where a ticket goes when the agent asks questions (null: as when it couldn't finish). */
   needsInfoTo?: Column | null;
   failedTo?: Column | null;
+  /** GitHub: the label of an issue whose pull request closed without a merge (default `wontfix`; null: none). */
+  notPlannedTo?: Column | null;
   label: string;
   assigned: Assigned;
   comment: boolean;
@@ -112,12 +114,13 @@ const KIND_DEFAULTS: Record<TrackerKind, Partial<Board>> = {
   github: {
     site: "https://api.github.com", assigned: "me", isolation: "worktree", push: true, branchPrefix: "",
     pickFrom: label("ready-for-agent"), working: label("agent-working"), doneTo: label("agent-review"), needsInfoTo: label("needs-info"), failedTo: label("ready-for-human"),
+    notPlannedTo: label("wontfix"),
   },
 };
 
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
-  pickFrom: null, working: null, doneTo: null, needsInfoTo: null, failedTo: null, label: "", assigned: "anyone",
+  pickFrom: null, working: null, doneTo: null, needsInfoTo: null, failedTo: null, notPlannedTo: null, label: "", assigned: "anyone",
   comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, parallelRuns: 1, instructions: "",
   isolation: "inPlace", copyFiles: [], setupCommand: "", allowlist: [],
   ...KIND_DEFAULTS[kind],

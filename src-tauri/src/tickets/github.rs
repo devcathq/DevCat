@@ -3,15 +3,16 @@
 //! `https://<host>/api/v3`), with a personal access token (fine-grained or classic).
 //!
 //! Labels are the columns: an issue is "in" the board's state label it has (`ready-for-agent`,
-//! `agent-working`, `agent-review`, `needs-info`, `ready-for-human`), and moving it swaps that
-//! label for the new one, so it keeps exactly one. Saving the board reads the token owner's login
+//! `agent-working`, `agent-review`, `needs-info`, `ready-for-human`, `wontfix`), and moving it
+//! swaps its state labels for the new one, so it keeps exactly one. Saving the board reads the token owner's login
 //! (the branches are `<login>/<number>-<slug>`) and creates the state labels the repository
 //! lacks. Every run's branch is pushed: a fixed issue gets a draft pull request into its base
 //! branch (`Tracker::gh_base`: the issue's `Base:` line, its parent's, the board's base branch or
 //! the default branch), with a body the agent writes in the format of the repository's pull
 //! request template; one that needs information or failed gets none, only the comment. The
 //! watch loop then follows that pull request (`follow_pull_requests`): merged, the issue is
-//! closed; closed without a merge, the issue is closed as not planned and the branch deleted.
+//! closed; closed without a merge, the issue is closed as not planned (with the board's
+//! not-planned label) and the branch deleted.
 //! Adding the trigger label again after a run runs the issue again (`ready`), on its branch.
 //!
 //! The agent gets the issue's body and the comments of people with write access (`can_write`),
@@ -34,8 +35,6 @@ const LABEL_PAGES: usize = 10;
 const EVENT_PAGES: usize = 10;
 /// The part of a pull request template the agent gets, at most (bytes).
 const MAX_TEMPLATE: usize = 8000;
-/// The label of an issue whose pull request closed without a merge (as the triage skills name it).
-const WONTFIX: &str = "wontfix";
 /// Comment pages read for the prompt, at most (100 comments each).
 const COMMENT_PAGES: usize = 3;
 
@@ -70,6 +69,7 @@ fn color(label: &str) -> &'static str {
         "agent-review" => "1D76DB",
         "ready-for-human" => "D93F0B",
         "needs-info" => "D876E3",
+        "wontfix" => "FFFFFF",
         _ => "C5DEF5",
     }
 }
@@ -77,7 +77,7 @@ fn color(label: &str) -> &'static str {
 /// The board's state labels (its columns), each once.
 pub fn states(b: &Board) -> Vec<String> {
     let mut out: Vec<String> = vec![];
-    for c in [&b.pick_from, &b.working, &b.done_to, &b.needs_info_to, &b.failed_to].into_iter().flatten() {
+    for c in [&b.pick_from, &b.working, &b.done_to, &b.needs_info_to, &b.failed_to, &b.not_planned_to].into_iter().flatten() {
         if !c.id.is_empty() && !out.contains(&c.id) {
             out.push(c.id.clone());
         }
@@ -369,9 +369,9 @@ pub async fn follow_pull_requests(b: &Board, tr: &Tracker) {
 /// Pull request `n` of the run `rec`: `merged` or `closed` once it's dealt with, None while
 /// it's open. Merged: the issue loses the done label and is closed (GitHub closes it itself only
 /// for a `Closes` line into the default branch). Closed without a merge: the issue is closed as
-/// not planned with `wontfix` as its state label, its branch is deleted on GitHub and in the
-/// clone where it still points at the pull request's last commit (newer commits are someone's
-/// work), and a comment says so. The comment comes last: a step that failed is done again at the
+/// not planned with the board's not-planned label (`wontfix`) as its state label, its branch is
+/// deleted on GitHub and in the clone where it still points at the pull request's last commit
+/// (newer commits are someone's work), and a comment says so. The comment comes last: a step that failed is done again at the
 /// next check, and the others don't mind being done twice.
 async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -> AppResult<Option<String>> {
     let p = json_of(tr.gh_repo(Method::GET, &format!("/pulls/{n}")).send().await?, "GitHub pull request").await?;
@@ -387,7 +387,7 @@ async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -
         return Ok(Some("merged".into()));
     }
     let t = tr.gh_get(id).await?;
-    tr.gh_move(&t, WONTFIX).await?;
+    tr.gh_move(&t, b.not_planned_to.as_ref().map_or("", |c| c.id.as_str())).await?;
     tr.gh_close(id, "not_planned").await?;
     let (branch, last) = (s(&p["head"], "ref"), s(&p["head"], "sha"));
     let mut kept = vec![];
@@ -774,11 +774,11 @@ pub(crate) mod tests {
         let saved = super::super::tickets_board_save(Board { push: false, ..board(&gh.url, "", "") }).await.unwrap();
         assert_eq!((saved.login.as_str(), saved.branch_prefix.as_str(), saved.push, saved.name.as_str()), ("octo", "octo/", true, "GitHub acme/calc"));
         assert!(saved.has_token);
-        assert_eq!(gh.gh.lock().labels, vec!["bug", "ready-for-agent", "agent-working", "agent-review", "needs-info", "ready-for-human"]);
-        assert_eq!(gh.sent("POST /repos/acme/calc/labels").len(), 4, "only the missing ones: {:?}", gh.requests());
+        assert_eq!(gh.gh.lock().labels, vec!["bug", "ready-for-agent", "agent-working", "agent-review", "needs-info", "ready-for-human", "wontfix"]);
+        assert_eq!(gh.sent("POST /repos/acme/calc/labels").len(), 5, "only the missing ones: {:?}", gh.requests());
         assert!(gh.requests().iter().any(|r| r == "GET /user") && gh.requests().iter().any(|r| r == "GET /repos/acme/calc"), "{:?}", gh.requests());
         let cols = super::super::tickets_columns(saved.clone()).await.unwrap();
-        assert_eq!(cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["bug", "ready-for-agent", "agent-working", "agent-review", "needs-info", "ready-for-human"], "the columns are the labels");
+        assert_eq!(cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["bug", "ready-for-agent", "agent-working", "agent-review", "needs-info", "ready-for-human", "wontfix"], "the columns are the labels");
 
         let refused = |b: Board| async move { super::super::tickets_board_save(b).await.unwrap_err().to_string() };
         let e = refused(Board { project: "acme/nope".into(), ..board(&gh.url, "", "") }).await;
@@ -1273,6 +1273,26 @@ pub(crate) mod tests {
         assert!(git(cwd, &["rev-parse", "--verify", BRANCH]).await.is_err(), "deleted in the clone");
         assert!(git(cwd, &["rev-parse", "--verify", &format!("origin/{BRANCH}")]).await.is_err(), "and origin's copy there (a new attempt starts afresh)");
         assert_eq!(super::super::history(&b.id)[0].pr_state.as_deref(), Some("closed"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The not-planned label is the board's setting: saving the board creates it, and a pull
+    /// request closed without a merge gives the issue that label as its only state label.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn not_planned_label_setting() {
+        use super::super::worker::check_column;
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (b, rec, dir, remote) = fixed_and_recorded(&gh, "gh-declined").await;
+        let declined = Some(Column { id: "declined".into(), name: "declined".into() });
+        let b = super::super::tickets_board_save(Board { not_planned_to: declined, ..b }).await.unwrap();
+        assert!(gh.sent("POST /repos/acme/calc/labels").iter().any(|r| r.contains(r#""name":"declined""#)), "made at save: {:?}", gh.requests());
+        close_pull(&gh, rec.pr_number.unwrap(), false);
+        check_column(&b).await.unwrap();
+        assert_eq!(gh.labels_of(7), vec!["bug", "declined"], "{:?}", gh.requests());
+        assert_eq!(gh.gh.lock().issues[&7]["state_reason"].as_str(), Some("not_planned"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }

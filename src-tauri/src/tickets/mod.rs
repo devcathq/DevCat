@@ -132,6 +132,9 @@ fn three() -> u32 {
 fn devcat_prefix() -> String {
     "devcat/".into()
 }
+fn wontfix() -> Option<Column> {
+    Some(Column { id: "wontfix".into(), name: "wontfix".into() })
+}
 
 /// A connected board and what the agent does with it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +218,10 @@ pub struct Board {
     /// Where a ticket goes when the agent couldn't finish it (None: back where it was).
     #[serde(default)]
     pub failed_to: Option<Column>,
+    /// GitHub: the label of an issue whose pull request was closed without a merge (the issue is
+    /// closed as not planned), `wontfix` unless the board says another (None: no label).
+    #[serde(default = "wontfix")]
+    pub not_planned_to: Option<Column>,
     /// Only tickets with this label (empty: all of the column).
     #[serde(default)]
     pub label: String,

@@ -131,7 +131,8 @@ always do one ticket at a time.
 
 On a GitHub board the repository's labels are the columns. A new board takes issues labelled
 `ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed, `needs-info`
-when the agent has questions and `ready-for-human` when it fails; change any of them in the board's settings. Saving the board checks the
+when the agent has questions, `ready-for-human` when it fails and `wontfix` when its pull request is closed without
+a merge; change any of them in the board's settings. Saving the board checks the
 token and the repository, reads the token owner's login, and creates the labels the repository doesn't have yet.
 
 - The agent takes open issues with the trigger label (never pull requests), filtered by **Assigned to**. A new
@@ -167,7 +168,8 @@ token and the repository, reads the token owner's login, and creates the labels 
 - With **Watch** on, each check also looks at the pull requests DevCat opened that are still open. When one is
   merged, the issue loses `agent-review` and is closed if it's still open (GitHub closes it only for a pull request
   into the default branch). When one is closed without a merge, the issue is closed as not planned, gets `wontfix`
-  as its only state label and a comment that links the pull request, and its branch is deleted on GitHub and in your
+  (**When its pull request closes without a merge, label**) as its only state label and a comment that links the
+  pull request, and its branch is deleted on GitHub and in your
   repository. A branch with commits after the pull request's last one stays (someone's work), and so does a branch
   that a worktree has checked out; the comment says so. To try again, reopen the issue and add the trigger label.
 
