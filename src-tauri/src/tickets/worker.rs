@@ -80,6 +80,9 @@ struct Job {
     /// Queued tickets the person answered the agent's questions about.
     replies: HashMap<String, Reply>,
     repo: std::path::PathBuf,
+    /// A worktree board's clone's shared git settings when the job started (`shared_setup`): a
+    /// run runs no git in the clone once they changed (another run's agent may have done it).
+    settings: Option<Vec<u8>>,
     started: i64,
 }
 
@@ -248,7 +251,8 @@ fn queue(b: Board, ids: Vec<String>, prompt: Option<String>, reply: Option<Reply
                 }
                 q
             });
-            jobs.insert(b.id.clone(), Job { cancel: Cancel::default(), queue, runs: vec![], wake: Default::default(), prompts, replies, repo, started: now_ms() });
+            let settings = (b.isolation == Isolation::Worktree).then(|| shared_setup(&b.repo));
+            jobs.insert(b.id.clone(), Job { cancel: Cancel::default(), queue, runs: vec![], wake: Default::default(), prompts, replies, repo, settings, started: now_ms() });
             true
         }
     };
@@ -993,29 +997,33 @@ fn no_hooks() -> std::path::PathBuf {
 /// git there (not even `status`), since the settings are no longer the user's. Read from the
 /// files, without running git.
 fn git_setup(repo: &str) -> Vec<u8> {
-    fn add(out: &mut Vec<u8>, path: &Path) {
-        out.extend_from_slice(path.to_string_lossy().as_bytes());
-        out.push(0);
-        if let Ok(meta) = std::fs::symlink_metadata(path) {
-            if meta.is_dir() {
-                let mut names: Vec<_> = std::fs::read_dir(path).into_iter().flatten().flatten().map(|e| e.path()).collect();
-                names.sort();
-                for p in names {
-                    add(out, &p);
-                }
-            } else if meta.file_type().is_symlink() {
-                out.extend_from_slice(std::fs::read_link(path).unwrap_or_default().to_string_lossy().as_bytes());
-            } else {
-                out.extend_from_slice(&std::fs::read(path).unwrap_or_default());
-            }
-        }
-        out.push(0);
+    let (dot_git, git_dir, common) = git_dirs(Path::new(repo));
+    let mut out = Vec::new();
+    add_setup(&mut out, &dot_git);
+    for dir in [&git_dir, &common] {
+        setup_of(&mut out, dir);
     }
-    let dot_git = Path::new(repo).join(".git");
-    // a worktree or submodule: `.git` is a file naming the folder
+    out
+}
+
+/// The part of `git_setup` that a clone's worktrees share: the settings in its common git folder.
+/// `repo` is the clone or a folder inside it, found without running git ("" outside a repository).
+/// A worktree board's job notes it when it starts (`Job::settings`), and its runs check it before
+/// they run git in the clone (`WorkingCopy::worktree`): an agent of another run may have changed it.
+fn shared_setup(repo: &str) -> Vec<u8> {
+    let Some(top) = Path::new(repo).ancestors().find(|p| p.join(".git").exists()) else { return vec![] };
+    let mut out = Vec::new();
+    setup_of(&mut out, &git_dirs(top).2);
+    out
+}
+
+/// A repository's `.git` (a folder, or for a worktree or submodule a file naming its folder), the
+/// git folder it names, and the common git folder (a worktree's clone's).
+fn git_dirs(repo: &Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let dot_git = repo.join(".git");
     let git_dir = match std::fs::read_to_string(&dot_git) {
         Ok(s) => match s.trim().strip_prefix("gitdir:") {
-            Some(d) => Path::new(repo).join(d.trim()),
+            Some(d) => repo.join(d.trim()),
             None => dot_git.clone(),
         },
         Err(_) => dot_git.clone(),
@@ -1024,14 +1032,34 @@ fn git_setup(repo: &str) -> Vec<u8> {
         Ok(c) => git_dir.join(c.trim()),
         Err(_) => git_dir.clone(),
     };
-    let mut out = Vec::new();
-    add(&mut out, &dot_git);
-    for dir in [&git_dir, &common] {
-        for part in ["config", "config.worktree", "info/attributes", "hooks", "commondir"] {
-            add(&mut out, &dir.join(part));
+    (dot_git, git_dir, common)
+}
+
+/// The settings in one git folder that can make git run a program (see `git_setup`).
+fn setup_of(out: &mut Vec<u8>, dir: &Path) {
+    for part in ["config", "config.worktree", "info/attributes", "hooks", "commondir"] {
+        add_setup(out, &dir.join(part));
+    }
+}
+
+/// `path` and what it holds (a folder: everything in it), as bytes.
+fn add_setup(out: &mut Vec<u8>, path: &Path) {
+    out.extend_from_slice(path.to_string_lossy().as_bytes());
+    out.push(0);
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.is_dir() {
+            let mut names: Vec<_> = std::fs::read_dir(path).into_iter().flatten().flatten().map(|e| e.path()).collect();
+            names.sort();
+            for p in names {
+                add_setup(out, &p);
+            }
+        } else if meta.file_type().is_symlink() {
+            out.extend_from_slice(std::fs::read_link(path).unwrap_or_default().to_string_lossy().as_bytes());
+        } else {
+            out.extend_from_slice(&std::fs::read(path).unwrap_or_default());
         }
     }
-    out
+    out.push(0);
 }
 
 /// `<prefix>abc-12-fix-the-login-redirect` (prefix e.g. `devcat/`).
@@ -1345,6 +1373,20 @@ impl WorkingCopy {
     /// touched: the user may have changes and any branch checked out there. Then the board's
     /// files are copied in and its setup command runs there.
     async fn worktree(b: &Board, t: &Ticket, earlier: Option<&str>, base: Option<&Base>, cancel: &Cancel, rec: &mut RunRecord) -> AppResult<WorkingCopy> {
+        // The clone's shared git settings as the job found them (else as they are now): another
+        // run's agent that changed them (`git config` in its worktree writes the clone's config)
+        // gets no git run here, not even this run's fetch.
+        let before = JOBS.lock().get(&b.id).and_then(|j| j.settings.clone()).unwrap_or_else(|| shared_setup(&b.repo));
+        let unchanged = || {
+            if shared_setup(&b.repo) == before {
+                return Ok(());
+            }
+            Err(AppError::msg(format!(
+                "Git's own settings in {} (its .git config, attributes or hooks) changed while the board worked, maybe by another ticket's agent, so DevCat runs no git there: check .git before you run git in it, then run the ticket again",
+                b.repo
+            )))
+        };
+        unchanged()?;
         let clone = match git(&b.repo, &["rev-parse", "--show-toplevel"]).await {
             Ok(top) => top.trim().to_string(),
             Err(_) => return Err(AppError::msg(format!("{} is not a git repository: a worktree for each ticket needs one (or run the board in place)", b.repo))),
@@ -1352,6 +1394,8 @@ impl WorkingCopy {
         // Parallel runs make their worktrees one after another (fetch, exclude file, branch).
         let turn = clone_lock(&clone);
         let turn = turn.lock().await;
+        // another run's agent worked while this one waited
+        unchanged()?;
         let remote = git(&clone, &["remote", "get-url", "origin"]).await.is_ok();
         if remote {
             stage(&b.id, "Fetching from origin");
@@ -1371,6 +1415,7 @@ impl WorkingCopy {
         let _ = std::fs::remove_file(kept_mark(&at));
         let from = if local { branch.clone() } else if on_origin { format!("origin/{branch}") } else { base_of(&clone, b, remote, base).await? };
         exclude_worktrees(&clone).await?;
+        unchanged()?;
         // `--no-track`: no upstream written into the clone's config (shared by every worktree,
         // and watched by `git_setup`).
         let made = if local { git(&clone, &["worktree", "add", "-q", &at, &branch]).await } else { git(&clone, &["worktree", "add", "-q", "--no-track", "-b", &branch, &at, &from]).await };
@@ -2984,6 +3029,31 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// An agent that changes the clone's shared git settings (`git config` in its worktree writes
+    /// the clone's config): the board's next run runs no git in the clone, not even its fetch
+    /// (which would run the agent's `uploadpack`), and fails with the guard's message.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shared_settings_guard() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("shared-guard").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py; git config remote.origin.uploadpack \"touch '$OUT/fetched'; git-upload-pack\"").await;
+        let b = saved(worktree_board(&site, cwd, &fixer)).await;
+        enqueue(b.clone(), vec!["ABC-1".into(), "ABC-3".into()], None).unwrap();
+        let runs = when_done(&b.id).await;
+        assert_eq!(runs.iter().map(|r| r.ticket_id.as_str()).collect::<Vec<_>>(), ["ABC-3", "ABC-1"], "{runs:?}");
+        let (second, first) = (&runs[0], &runs[1]);
+        assert!(first.notes.iter().any(|n| n.contains("changed git's own settings")), "its own guard: {:?}", first.notes);
+        assert_eq!(second.outcome, "error", "{} {:?}", second.summary, second.notes);
+        assert!(second.summary.contains("changed while the board worked") && second.summary.contains("runs no git there"), "{}", second.summary);
+        assert!(!out.join("fetched").exists(), "no fetch with the agent's settings");
+        assert_eq!(std::fs::read_to_string(out.join("prompt.jsonl")).unwrap().lines().count(), 1, "the second agent never ran");
+        assert_eq!(worktrees(cwd).await, vec![dir.join(WORKTREE).to_string_lossy().into_owned()], "only the first run's worktree, kept");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// The setup command's output goes to the activity of the run it belongs to, with parallel
     /// runs on the board (it's read in tasks of its own, which `RUN` doesn't follow by itself).
     #[cfg(unix)]
@@ -2994,7 +3064,7 @@ pub(crate) mod tests {
         let b = Board { id: uuid::Uuid::new_v4().to_string(), setup_command: "echo ready-$((40 + 2))".into(), allow_commands: true, ..worktree_board("http://127.0.0.1:9", dir.to_str().unwrap(), "none") };
         let run = |id: u64, t: &str| (id, RunView { ticket_id: t.into(), ..Default::default() });
         let mine = RUN_IDS.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
-        JOBS.lock().insert(b.id.clone(), Job { cancel: Cancel::default(), queue: Default::default(), runs: vec![run(mine, "ABC-1"), run(mine + 1, "ABC-2")], wake: Default::default(), prompts: Default::default(), replies: Default::default(), repo: dir.clone(), started: now_ms() });
+        JOBS.lock().insert(b.id.clone(), Job { cancel: Cancel::default(), queue: Default::default(), runs: vec![run(mine, "ABC-1"), run(mine + 1, "ABC-2")], wake: Default::default(), prompts: Default::default(), replies: Default::default(), repo: dir.clone(), settings: None, started: now_ms() });
         RUN.scope(mine, setup(&b, dir.to_str().unwrap(), &Cancel::default())).await.unwrap();
         let logs: Vec<Vec<String>> = JOBS.lock().remove(&b.id).unwrap().runs.into_iter().map(|(_, r)| r.log).collect();
         assert!(logs[0].iter().any(|l| l == "ready-42"), "in its run: {logs:?}");
