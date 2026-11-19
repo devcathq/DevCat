@@ -131,7 +131,8 @@ function AgentChip({ tabId, cwd, provider }: { tabId: string; cwd: string; provi
     const isClaude = p.id === CLAUDE_PROVIDER_ID;
     useTabs.getState().update(tabId, {
       providerId: isClaude ? null : p.id,
-      sessionId: null,
+      // from one Claude account to another: the chat goes on (they share the transcripts)
+      ...(p.kind === "claude" && provider.kind === "claude" ? {} : { sessionId: null }),
       title: isClaude ? basename(cwd) : `${basename(cwd)} · ${p.name}`,
     } as never);
   };

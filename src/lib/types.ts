@@ -501,6 +501,10 @@ export interface AiProvider {
   builtin?: boolean;
   /** DevCat Agent only. */
   agent?: AgentSettings | null;
+  /** Claude Code only (not the built-in one): a login of its own, for another Claude account. */
+  ownLogin?: boolean;
+  /** Read-only: the email a Claude Code connection is logged in with. */
+  login?: string | null;
 }
 export interface AiDetect {
   kind: AiKind;

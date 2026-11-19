@@ -12,7 +12,7 @@ import { confirmDialog } from "../connections/dialogs";
 import { copyText } from "../files/format";
 import {
   blankProvider, closeManageProviders, deleteProvider, detectProviders, installState, joinArgs, KIND_ORDER, KINDS, loadProviders,
-  openManageProviders, saveProvider, selectProvider, splitArgs, useProviders, useSelectedProvider, type InstallState,
+  openManageProviders, providerLabel, saveProvider, selectProvider, splitArgs, useProviders, useSelectedProvider, type InstallState,
   AGENT_PRESETS,
 } from "./providers";
 
@@ -32,7 +32,7 @@ export function providerMenu(currentId: string, onPick: (p: AiProvider) => void)
     ...providers.map((p): MenuItem => {
       const st = installState(p, detect);
       return {
-        label: `${p.name}${p.kind !== "claude" && p.name !== KINDS[p.kind].label ? ` (${KINDS[p.kind].label})` : ""}${st === "missing" ? " — not installed" : ""}`,
+        label: `${providerLabel(p)}${p.kind !== "claude" && p.name !== KINDS[p.kind].label ? ` (${KINDS[p.kind].label})` : ""}${st === "missing" ? " — not installed" : ""}`,
         icon: p.id === currentId ? <Check className="size-3.5 text-accent" /> : <StatusDot state={st} className="mx-1" />,
         onClick: () => onPick(p),
       };
@@ -41,8 +41,8 @@ export function providerMenu(currentId: string, onPick: (p: AiProvider) => void)
     {
       label: "Add AI connection",
       icon: <Plus className="size-3.5" />,
-      submenu: KIND_ORDER.filter((k) => k !== "claude").map((k): MenuItem => ({
-        label: KINDS[k].label,
+      submenu: KIND_ORDER.map((k): MenuItem => ({
+        label: k === "claude" ? "Claude Code (another account)" : KINDS[k].label,
         icon: <StatusDot state={k === "custom" ? "unknown" : detect[k] ? (detect[k]!.path ? "installed" : "missing") : "unknown"} className="mx-1" />,
         onClick: () => openManageProviders("", k),
       })),
@@ -101,12 +101,17 @@ interface Form {
   builtin: boolean;
   /** DevCat Agent: the model API. */
   agent: AgentSettings;
+  /** Claude Code: a login of its own (another account). */
+  ownLogin: boolean;
+  /** Read-only: the account it's logged in with. */
+  login: string | null;
 }
 
 const toForm = (p: AiProvider): Form => ({
   id: p.id, name: p.name, kind: p.kind, command: p.command ?? "", args: joinArgs(p.args), env: p.env.map((e) => ({ ...e })),
   apiKeyEnv: p.apiKeyEnv ?? "", apiKey: "", hasApiKey: !!p.hasApiKey, replaceKey: false, clearKey: false, builtin: !!p.builtin,
   agent: { ...(p.agent ?? AGENT_PRESETS[0].settings) },
+  ownLogin: !!p.ownLogin, login: p.login ?? null,
 });
 
 const fromForm = (f: Form): AiProvider => ({
@@ -117,6 +122,7 @@ const fromForm = (f: Form): AiProvider => ({
   apiKeyEnv: KINDS[f.kind].keyEnvEditable ? f.apiKeyEnv.trim() || null : null,
   apiKey: f.clearKey ? "" : f.apiKey.trim() ? f.apiKey.trim() : undefined,
   agent: f.kind === "agent" ? { ...f.agent, baseUrl: f.agent.baseUrl.trim(), model: f.agent.model.trim() } : null,
+  ownLogin: f.kind === "claude" && !f.builtin && f.ownLogin,
 });
 
 /** The models an API offers (reloaded when the API, the connection or the typed key changes). */
@@ -237,7 +243,7 @@ export function AiConnectionsDialog() {
       // A newly added connection is what the user wants to chat with next.
       if (!form.id) selectProvider(saved.id);
       setForm(toForm(saved));
-      toast.success(`Saved ${saved.name}`);
+      toast.success(`Saved ${saved.name}`, saved.ownLogin && !saved.login ? { description: "Start a new chat with it: Claude Code asks you to log in with the other account." } : undefined);
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
@@ -251,7 +257,7 @@ export function AiConnectionsDialog() {
       title: form.builtin ? "Reset Claude Code" : "Delete AI connection",
       message: form.builtin
         ? <>Reset <b>{form.name}</b> to its defaults? Its arguments, environment and stored API key are removed.</>
-        : <>Delete <b>{form.name}</b> and its stored API key? Open chats keep running until they're restarted.</>,
+        : <>Delete <b>{form.name}</b> and its stored API key?{form.ownLogin && <> Its Claude login{form.login ? <> (<b>{form.login}</b>)</> : null} is removed from DevCat too; its chats stay in your Sessions.</>} Open chats keep running until they're restarted.</>,
       confirmLabel: form.builtin ? "Reset" : "Delete",
       danger: true,
     });
@@ -308,7 +314,7 @@ export function AiConnectionsDialog() {
               <StatusDot state={installState(p, detect)} />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px]">{p.name}</div>
-                <div className="truncate text-[11px] text-faint">{KINDS[p.kind].label}{p.id === selectedId ? " · default" : ""}</div>
+                <div className="truncate text-[11px] text-faint" title={p.login ?? undefined}>{p.kind === "claude" && p.login ? p.login : KINDS[p.kind].label}{p.id === selectedId ? " · default" : ""}</div>
               </div>
               {p.hasApiKey && <KeyRound className="size-3 shrink-0 text-faint" aria-label="API key stored" />}
             </button>
@@ -322,7 +328,7 @@ export function AiConnectionsDialog() {
             onChange={(e) => { if (e.target.value) pick(blankProvider(e.target.value as AiKind)); }}
           >
             <option value="">+ Add connection…</option>
-            {KIND_ORDER.filter((k) => k !== "claude").map((k) => <option key={k} value={k}>{KINDS[k].label}</option>)}
+            {KIND_ORDER.map((k) => <option key={k} value={k}>{k === "claude" ? "Claude Code (another account)" : KINDS[k].label}</option>)}
           </Select>
         </div>
         {form && kind && (
@@ -347,6 +353,7 @@ export function AiConnectionsDialog() {
               <Input className="font-mono text-xs" value={form.args} placeholder="--flag value" onChange={(e) => set({ args: e.target.value })} />
             </Field>
             </>}
+            {form.kind === "claude" && <ClaudeLogin form={form} onOwnLogin={(ownLogin) => set({ ownLogin })} />}
 
             <div className="flex flex-col gap-1">
               <span className="text-xs text-muted">API key</span>
@@ -424,6 +431,34 @@ export function AiConnectionsDialog() {
         )}
       </div>
     </Dialog>
+  );
+}
+
+/** Which Claude account a Claude Code connection uses, and (not the built-in one) whether it has a
+ *  login of its own. */
+function ClaudeLogin({ form, onOwnLogin }: { form: Form; onOwnLogin: (v: boolean) => void }) {
+  const own = !form.builtin && form.ownLogin;
+  const saved = useProviders((s) => s.providers.find((p) => p.id === form.id));
+  const savedOwn = !!saved?.ownLogin;
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs text-muted">Claude account</span>
+      {!form.builtin && (
+        <Checkbox label="Its own login (another Claude account)" checked={form.ownLogin} onChange={onOwnLogin} />
+      )}
+      <span className="text-[11px] text-faint">
+        {own !== savedOwn || !form.id
+          ? own ? "Save, then start a new chat with this connection: Claude Code asks you to log in with the other account." : "Uses the same login as Claude Code in your terminal."
+          : form.login ? <>Logged in as <b className="text-muted">{form.login}</b>{own ? <>. Type <code>/login</code> in a chat to switch it to another account.</> : null}</>
+          : own ? "Not logged in yet: start a new chat with this connection and Claude Code asks you to log in."
+          : "Uses the same login as Claude Code in your terminal."}
+      </span>
+      {own && (
+        <span className="text-[11px] text-faint">
+          Sessions, settings, CLAUDE.md, skills and plugins are shared with your other Claude Code accounts, so a chat can go on with another account. Folders on SSH hosts use the host's own login.
+        </span>
+      )}
+    </div>
   );
 }
 

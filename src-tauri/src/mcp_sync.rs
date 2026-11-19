@@ -125,6 +125,9 @@ struct Env {
     data_dir: Option<String>,
     projects: Vec<Project>,
     connections: Vec<ConnectionConfig>,
+    /// Config folders of the Claude Code connections with a login of their own (`ai::claude_account`):
+    /// each has its own `.claude.json`.
+    claude_accounts: Vec<PathBuf>,
 }
 
 impl Env {
@@ -132,7 +135,7 @@ impl Env {
         let st = St::try_get().ok_or_else(|| AppError::msg("DevCat isn't ready yet"))?;
         let home = HOME.get().cloned().or_else(dirs::home_dir).ok_or_else(|| AppError::msg("Can't find your home folder"))?;
         let (exe, data_dir) = program()?;
-        Ok(Env { home, exe, data_dir, projects: st.projects.list()?, connections: st.store.load_all()? })
+        Ok(Env { home, exe, data_dir, projects: st.projects.list()?, connections: st.store.load_all()?, claude_accounts: crate::ai::claude_account_dirs() })
     }
 
     fn args(&self, project: Option<&str>, extra: &[&str]) -> Vec<String> {
@@ -251,7 +254,19 @@ pub fn auto() {
 
 fn run(env: &Env, apply: bool, replace: &[String]) -> AppResult<Plan> {
     let mut plan = Plan::default();
-    claude(env, apply, replace, &mut plan)?;
+    let main = env.home.join(".claude.json");
+    if main.exists() {
+        claude(env, &main, apply, replace, &mut plan)?;
+    } else if env.home.join(".claude").is_dir() {
+        plan.notes.push("Claude Code: start it once so it creates ~/.claude.json, then sync again.".into());
+    }
+    // the other Claude accounts, once they've been started (Claude Code makes the file)
+    for dir in &env.claude_accounts {
+        let path = dir.join(".claude.json");
+        if path.exists() {
+            claude(env, &path, apply, replace, &mut plan)?;
+        }
+    }
     servers_json(env, "Cursor", &env.home.join(".cursor"), "mcp.json", &["--folder", "${workspaceFolder}"], apply, replace, &mut plan)?;
     servers_json(env, "Gemini CLI", &env.home.join(".gemini"), "settings.json", &[], apply, replace, &mut plan)?;
     codex(env, apply, replace, &mut plan)?;
@@ -264,18 +279,13 @@ fn run(env: &Env, apply: bool, replace: &[String]) -> AppResult<Plan> {
 
 // ---------- Claude Code
 
-fn claude(env: &Env, apply: bool, replace: &[String], plan: &mut Plan) -> AppResult<()> {
+fn claude(env: &Env, path: &Path, apply: bool, replace: &[String], plan: &mut Plan) -> AppResult<()> {
     let agent = "Claude Code";
-    let path = env.home.join(".claude.json");
-    if !path.exists() {
-        if env.home.join(".claude").is_dir() {
-            plan.notes.push("Claude Code: start it once so it creates ~/.claude.json, then sync again.".into());
-        }
-        return Ok(());
+    if !plan.agents.iter().any(|a| a == agent) {
+        plan.agents.push(agent.into());
     }
-    plan.agents.push(agent.into());
-    let file = env.shown(&path);
-    let mut doc = read_json(&path)?;
+    let file = env.shown(path);
+    let mut doc = read_json(path)?;
     let Some(root) = doc.as_object_mut() else { return Err(AppError::msg(format!("{file} isn't a JSON object"))) };
     let mut changed = false;
 
@@ -313,7 +323,7 @@ fn claude(env: &Env, apply: bool, replace: &[String], plan: &mut Plan) -> AppRes
     }
     changed |= lookalikes(env, servers_mut(root), agent, &file, "", EVERY_FOLDER, replace, plan);
     if apply && changed {
-        write_json(&path, &doc)?;
+        write_json(path, &doc)?;
     }
     Ok(())
 }
@@ -664,6 +674,7 @@ mod tests {
             data_dir: None,
             projects: vec![Project { id: "p1".into(), name: "Shop".into(), folders: vec![folder.to_string_lossy().to_string()], ..Default::default() }],
             connections: vec![conn(json!({ "id": "c1", "name": "shop-db", "kind": "postgres", "host": "localhost", "port": 5432, "projectId": "p1" }))],
+            claude_accounts: vec![],
         }
     }
 
@@ -710,6 +721,28 @@ mod tests {
         let again = run(&env, true, &[]).unwrap();
         assert!(again.changes.iter().all(|c| c.action == Action::Unchanged), "syncing twice changes nothing: {:?}", again.changes);
         let _ = (std::fs::remove_dir_all(home), std::fs::remove_dir_all(folder));
+    }
+
+    #[test]
+    fn every_claude_account_gets_the_entry() {
+        let (home, folder, acct, unstarted) = (tmp(), tmp(), tmp(), tmp());
+        std::fs::write(home.join(".claude.json"), "{}").unwrap();
+        std::fs::write(acct.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"b@x.y"}}"#).unwrap();
+        let mut env = env(&home, &folder);
+        env.claude_accounts = vec![acct.clone(), unstarted.clone()];
+        let plan = run(&env, true, &[]).unwrap();
+        assert_eq!(plan.agents.iter().filter(|a| *a == "Claude Code").count(), 1);
+        for f in [home.join(".claude.json"), acct.join(".claude.json")] {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+            assert_eq!(v["mcpServers"]["devcat"]["args"], json!(["mcp"]), "{}", f.display());
+            assert_eq!(v["projects"][claude_key(&folder.to_string_lossy())]["mcpServers"]["devcat"]["args"], json!(["mcp", "--project", "p1"]));
+        }
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(acct.join(".claude.json")).unwrap()).unwrap();
+        assert_eq!(v["oauthAccount"]["emailAddress"], "b@x.y", "the account's login stays");
+        assert!(!unstarted.join(".claude.json").exists(), "an account never started is left to Claude Code");
+        for d in [home, folder, acct, unstarted] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]
