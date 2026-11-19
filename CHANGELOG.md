@@ -17,6 +17,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   on origin (or from the ticket's own branch when it has one). You can keep working in the repository meanwhile,
   with your own changes and branch. DevCat commits there, pushes when the board says so and removes the worktree;
   the branch stays. Existing boards stay **In place**.
+- **Tickets: GitHub boards** (#195): connect a GitHub repository (`owner/name`, an API address for GitHub Enterprise
+  and a personal access token). Labels are the columns: the agent takes open issues labelled `ready-for-agent`,
+  labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
+  draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review`. Saving
+  the board checks the token and creates the labels the repository lacks.
 
 ## 0.31.0 - 2026-11-19
 

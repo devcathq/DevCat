@@ -38,7 +38,7 @@ memory**, and keep your agents going from **your phone** or a **Telegram / Disco
 | Memory | One memory every agent shares (Claude Code, Codex, Cursor, Gemini, DevCat Agent), synced between your own computers |
 | Rooms | Work with other people, peer to peer and end-to-end encrypted: files, docs, whiteboards, a thread, tasks, and everyone's agents |
 | MCP | Sync MCP: DevCat's MCP server in Claude Code, Codex, Cursor and Gemini CLI: databases, Kubernetes, Docker, RabbitMQ, VPNs and tunnels, adding connections, scheduled jobs and tickets, with off / read-only / full access per connection and per VPN, and an activity log |
-| Tickets | Jira, Trello and Linear: the agent fixes tickets from a column on their own branches, comments on them and moves them on (e.g. to Testing); results to Slack |
+| Tickets | Jira, Trello, Linear and GitHub Issues: the agent fixes tickets from a column on their own branches, comments on them and moves them on (e.g. to Testing), with a draft pull request on GitHub; results to Slack |
 | Git | Nested repo discovery, commit graph, blame, branches, tags, stashes, fetch/pull/push |
 | SQL databases | PostgreSQL, MySQL / MariaDB, SQLite, SQL Server |
 | NoSQL | MongoDB, Redis |
