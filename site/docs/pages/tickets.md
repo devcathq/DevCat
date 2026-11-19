@@ -97,7 +97,10 @@ uncommitted work and any branch in the repository while it works. The repository
 
 1. DevCat fetches from `origin` and makes a git worktree at `.worktrees/<key>-<title>` inside the repository. Its
    branch is the ticket's own branch when it has one already (an earlier run's work, here or on `origin`), else a
-   new `devcat/<key>-<title>` from the **Base branch** on `origin` (empty: `origin`'s default branch).
+   new `devcat/<key>-<title>` from the **Base branch** on `origin` (empty: `origin`'s default branch). When
+   `origin`'s copy of the ticket's branch has newer commits (someone pushed to it), the run starts from them, so they
+   stay and the push goes through. When your copy and `origin`'s both have commits the other doesn't, the run fails
+   before the agent starts: merge or rebase them and push, then run the ticket again. DevCat never forces a push.
 2. DevCat adds `.worktrees/` to the repository's local exclude file (`.git/info/exclude`), so the folder never
    shows as untracked and nothing needs committing.
 3. DevCat copies the **Files to copy** from the repository into the worktree, for example `.env` (one path a line;

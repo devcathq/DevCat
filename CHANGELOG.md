@@ -14,9 +14,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 - **Tickets: a worktree for each ticket** (#191): set a board's **Working copy** to **A worktree for each ticket**
   and the agent works in a git worktree in the repository's `.worktrees` folder, made from the latest **Base branch**
-  on origin (or from the ticket's own branch when it has one). You can keep working in the repository meanwhile,
-  with your own changes and branch. DevCat commits there, pushes when the board says so and removes the worktree;
-  the branch stays. Existing boards stay **In place**.
+  on origin (or from the ticket's own branch when it has one, with any newer commits someone pushed to it on origin;
+  when your copy and origin's both have commits the other lacks, the run fails and asks you to bring them
+  together). You can keep working in the repository meanwhile, with your own changes and branch. DevCat commits
+  there, pushes when the board says so and removes the worktree; the branch stays. Existing boards stay **In
+  place**.
 - **Tickets: worktree setup** (#192): a board with a worktree for each ticket can copy **Files to copy** (files git
   ignores, such as `.env`) from your repository into each new worktree, and run a **Setup command** (such as
   `pnpm install`) there before the agent starts. The command needs **Let the agent run commands**. If it fails, the

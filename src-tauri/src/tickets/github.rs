@@ -1182,6 +1182,68 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// A commit on origin's `branch` from someone else's clone (`file` added): its sha.
+    #[cfg(unix)]
+    async fn pushed_by_someone(remote: &std::path::Path, branch: &str, file: &str) -> String {
+        use super::super::worker::git;
+        let other = remote.with_extension(format!("someone-{}", uuid::Uuid::new_v4()));
+        git(remote.parent().unwrap().to_str().unwrap(), &["clone", "-q", "-b", branch, remote.to_str().unwrap(), other.to_str().unwrap()]).await.unwrap();
+        let o = other.to_str().unwrap();
+        std::fs::write(other.join(file), "someone's\n").unwrap();
+        git(o, &["add", "."]).await.unwrap();
+        git(o, &["-c", "user.name=s", "-c", "user.email=s@example.com", "commit", "-qm", file]).await.unwrap();
+        git(o, &["push", "-q", "origin", branch]).await.unwrap();
+        let sha = git(o, &["rev-parse", "HEAD"]).await.unwrap().trim().to_string();
+        let _ = std::fs::remove_dir_all(&other);
+        sha
+    }
+
+    /// A run that goes on from the issue's branch starts from the newest of the clone's and
+    /// origin's: a commit someone pushed meanwhile is kept and the push goes through. When both
+    /// have commits the other lacks, the run fails saying so, before the agent, and forces nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn continues_from_the_newest_branch() {
+        use super::super::worker::{fix_one, git, tests::*};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (dir, remote) = clone_with_origin("gh-newest").await;
+        let (cwd, origin) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        let (asker, _) = stand_in("needs_info", "echo '    # started' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, cwd, &asker)).await.unwrap();
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.branch.as_deref()), ("needs_info", Some(BRANCH)), "{} {:?}", rec.summary, rec.notes);
+
+        let theirs = pushed_by_someone(&remote, BRANCH, "theirs.txt").await;
+        let (fixer, _) = stand_in("fixed", "echo '    # done' >> calc.py").await;
+        let rec = fix_one(&Board { provider_id: fixer, ..b.clone() }, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!(rec.outcome, "fixed", "{} {:?}", rec.summary, rec.notes);
+        assert!(!rec.notes.iter().any(|n| n.contains("Push failed")), "{:?}", rec.notes);
+        assert_eq!(git(origin, &["rev-parse", BRANCH]).await.unwrap(), git(cwd, &["rev-parse", BRANCH]).await.unwrap(), "pushed");
+        assert!(git(origin, &["merge-base", "--is-ancestor", &theirs, BRANCH]).await.is_ok(), "their commit is kept");
+        assert!(git(origin, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# started\n    # done"));
+        assert!(rec.pr_number.is_some(), "{:?}", gh.requests());
+
+        // a commit only the clone has, and one only origin has
+        let wt = dir.with_extension("wt");
+        let at = wt.to_str().unwrap();
+        git(cwd, &["worktree", "add", "-q", at, BRANCH]).await.unwrap();
+        git(at, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "mine"]).await.unwrap();
+        git(cwd, &["worktree", "remove", at]).await.unwrap();
+        let mine = git(cwd, &["rev-parse", BRANCH]).await.unwrap();
+        let theirs = pushed_by_someone(&remote, BRANCH, "more.txt").await;
+        let (late, out) = stand_in("fixed", "echo '    # late' >> calc.py").await;
+        let rec = fix_one(&Board { provider_id: late, ..b }, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!(rec.outcome, "error", "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.summary.contains("bring them together"), "{}", rec.summary);
+        assert!(!out.join("prompt.jsonl").exists(), "the agent never ran");
+        assert_eq!(git(origin, &["rev-parse", BRANCH]).await.unwrap().trim(), theirs, "origin's is as they pushed it");
+        assert_eq!(git(cwd, &["rev-parse", BRANCH]).await.unwrap(), mine, "the clone's is as it was");
+        assert!(worktrees(cwd).await.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// Issue #7 fixed by the stand-in on a board in a new clone, its run in the board's history
     /// (as the queue keeps it), and the draft pull request's last commit (`head.sha`) set to what
     /// was pushed: (board, the run, clone, origin).

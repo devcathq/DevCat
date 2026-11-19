@@ -1157,6 +1157,32 @@ pub(crate) async fn delete_branch(repo: &str, branch: &str, sha: &str) -> Option
     git(clone, &["update-ref", "-d", &mine, sha]).await.err().map(|e| format!("couldn't delete it: {e}"))
 }
 
+/// A run goes on from `branch`, which the clone has and origin too (fetched): the clone's gets
+/// origin's newer commits (someone pushed to it), so they aren't lost and the run's push isn't
+/// refused. Moved with `update-ref` (no checkout, nothing written into the clone's config), and
+/// not while a worktree has it checked out (making the worktree fails then anyway). Both have
+/// commits the other lacks: a person brings them together, DevCat doesn't force either. Whether
+/// the clone's branch moved.
+async fn newest(clone: &str, branch: &str) -> AppResult<bool> {
+    let (mine, theirs) = (format!("refs/heads/{branch}"), format!("refs/remotes/origin/{branch}"));
+    let has = |a: String, b: String| async move { git(clone, &["merge-base", "--is-ancestor", &a, &b]).await.is_ok() };
+    if has(theirs.clone(), mine.clone()).await {
+        return Ok(false);
+    }
+    if !has(mine.clone(), theirs.clone()).await {
+        return Err(AppError::msg(format!(
+            "{branch} has commits in {clone} that origin doesn't have, and origin's has commits the clone doesn't: bring them together (merge or rebase, then push), then run the ticket again"
+        )));
+    }
+    if checked_out_at(clone, branch).await.is_some() {
+        return Ok(false);
+    }
+    let sha = |r: String| async move { git(clone, &["rev-parse", "--verify", &r]).await.map(|s| s.trim().to_string()) };
+    let (old, new) = (sha(mine.clone()).await?, sha(theirs).await?);
+    git(clone, &["update-ref", &mine, &new, &old]).await?;
+    Ok(true)
+}
+
 /// Hides `.worktrees/` in the clone's own exclude file (`<common git dir>/info/exclude`, never
 /// committed), so the worktrees never show as untracked files there.
 async fn exclude_worktrees(clone: &str) -> AppResult<()> {
@@ -1418,6 +1444,9 @@ impl WorkingCopy {
         let at = path.to_string_lossy().into_owned();
         if path.exists() {
             return Err(AppError::msg(format!("{at} is there already (left by an earlier run?): remove it with git worktree remove, then try again")));
+        }
+        if local && on_origin && newest(&clone, &branch).await? {
+            log(&b.id, format!("{branch} took origin's newer commits"));
         }
         // the user removed the worktree an earlier run left: it's no longer kept
         let _ = std::fs::remove_file(kept_mark(&at));
