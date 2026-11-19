@@ -20,8 +20,8 @@
 //!
 //! The `Tracker` methods here are what `trackers.rs` calls for a GitHub board; the rest of the
 //! pipeline (`worker.rs`) only adds the pull request after the push.
-use super::trackers::{Tracker, json_of, s, trello_wanted};
-use super::{Assigned, Attachment, Board, Column, Comment, Isolation, RunRecord, Ticket};
+use super::trackers::{Tracker, assignee_wanted, json_of, s};
+use super::{Assigned, Attachment, Board, Column, Comment, Isolation, PrState, RunRecord, Ticket};
 use crate::error::{AppError, AppResult};
 use reqwest::{Method, RequestBuilder};
 use serde_json::{Value, json};
@@ -168,21 +168,34 @@ pub(crate) async fn can_write(tr: &Tracker, login: &str) -> AppResult<bool> {
     Ok(w)
 }
 
-/// Whether DevCat reads the image at `url` for a board, and with the token: `None` when GitHub
-/// doesn't store it (an image on another site, also through GitHub's camo proxy, stays a link in
-/// the text), `Some(false)` for a link that works without the token (a signed link, GitHub's
-/// image CDN: a token there could make it refuse), `Some(true)` for an upload link on GitHub
-/// itself (github.com, or a GitHub Enterprise Server's own host).
-pub fn upload_token(url: &reqwest::Url, b: &Board) -> Option<bool> {
+/// How DevCat reads an image an issue links to, if at all (`image_fetch`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFetch {
+    /// GitHub doesn't store it: an image on another site (also through GitHub's camo proxy)
+    /// stays a link in the text.
+    NotStored,
+    /// A link that works without the token (a signed link, GitHub's image CDN: a token there
+    /// could make it refuse).
+    WithoutToken,
+    /// An upload link on GitHub itself (github.com, or a GitHub Enterprise Server's own host).
+    WithToken,
+}
+
+/// Whether DevCat reads the image at `url` for a board, and with the token or without.
+pub fn image_fetch(url: &reqwest::Url, b: &Board) -> ImageFetch {
     let host = url.host_str().unwrap_or_default();
-    let site = reqwest::Url::parse(&api(b)).ok()?.host_str().unwrap_or_default().to_string();
+    let Some(site) = reqwest::Url::parse(&api(b)).ok().map(|u| u.host_str().unwrap_or_default().to_string()) else { return ImageFetch::NotStored };
     let signed = url.query_pairs().any(|(k, _)| k == "jwt");
     let stored = if site == "api.github.com" {
         (host == "github.com" && (url.path().starts_with("/user-attachments/") || url.path().contains("/assets/"))) || (host.ends_with(".githubusercontent.com") && host != "camo.githubusercontent.com")
     } else {
         host == site || host.ends_with(&format!(".{site}"))
     };
-    stored.then_some(!signed && !host.ends_with(".githubusercontent.com"))
+    match (stored, signed || host.ends_with(".githubusercontent.com")) {
+        (false, _) => ImageFetch::NotStored,
+        (true, true) => ImageFetch::WithoutToken,
+        (true, false) => ImageFetch::WithToken,
+    }
 }
 
 /// The images GitHub stores for an issue and its comments (`texts`: issue or comment JSON, read
@@ -215,7 +228,7 @@ pub fn images(b: &Board, texts: &[&Value]) -> Vec<Attachment> {
         found.sort_by_key(|f| f.0);
         for (_, alt, link) in found {
             let Ok(url) = reqwest::Url::parse(&link) else { continue };
-            if upload_token(&url, b).is_none() || out.iter().any(|a| a.url == link) {
+            if image_fetch(&url, b) == ImageFetch::NotStored || out.iter().any(|a| a.url == link) {
                 continue;
             }
             let base = Some(alt.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| url.path().rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("image").to_string());
@@ -351,6 +364,24 @@ pub async fn ready(tr: &Tracker, t: &Ticket, ended: Option<i64>) -> AppResult<bo
 
 // ---------------------------------------------------------------- following pull requests
 
+/// Why DevCat closes an issue (GitHub's `state_reason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseReason {
+    /// Its pull request was merged.
+    Completed,
+    /// Its pull request was closed without a merge.
+    NotPlanned,
+}
+
+impl CloseReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            CloseReason::Completed => "completed",
+            CloseReason::NotPlanned => "not_planned",
+        }
+    }
+}
+
 /// The watch loop's check on a GitHub board: what became of the pull requests DevCat opened that
 /// are still open in the board's history (each once, however many runs share it). A closed one
 /// is marked in its runs (`pr_state`) and not asked about again; one that couldn't be dealt with
@@ -363,7 +394,7 @@ pub async fn follow_pull_requests(b: &Board, tr: &Tracker) {
         match follow_pull_request(b, tr, &rec, n).await {
             Ok(Some(state)) => super::update_history(&b.id, |r| {
                 if r.pr_number == Some(n) && r.pr_state.is_none() {
-                    r.pr_state = Some(state.clone());
+                    r.pr_state = Some(state);
                 }
             }),
             Ok(None) => {}
@@ -372,14 +403,14 @@ pub async fn follow_pull_requests(b: &Board, tr: &Tracker) {
     }
 }
 
-/// Pull request `n` of the run `rec`: `merged` or `closed` once it's dealt with, None while
-/// it's open. Merged: the issue loses the done label and is closed (GitHub closes it itself only
+/// Pull request `n` of the run `rec`: merged or closed once it's dealt with, None while it's
+/// open. Merged: the issue loses the done label and is closed (GitHub closes it itself only
 /// for a `Closes` line into the default branch). Closed without a merge: the issue is closed as
 /// not planned with the board's not-planned label (`wontfix`) as its state label, its branch is
 /// deleted on GitHub and in the clone where it still points at the pull request's last commit
 /// (newer commits are someone's work), and a comment says so. The comment comes last: a step that failed is done again at the
 /// next check, and the others don't mind being done twice.
-async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -> AppResult<Option<String>> {
+async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -> AppResult<Option<PrState>> {
     let p = json_of(tr.gh_repo(Method::GET, &format!("/pulls/{n}")).send().await?, "GitHub pull request").await?;
     if s(&p, "state") != "closed" {
         return Ok(None);
@@ -389,12 +420,12 @@ async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -
         if let Some(done) = &b.done_to {
             tr.gh_unlabel(id, &done.id).await?;
         }
-        tr.gh_close(id, "completed").await?;
-        return Ok(Some("merged".into()));
+        tr.gh_close(id, CloseReason::Completed).await?;
+        return Ok(Some(PrState::Merged));
     }
     let t = tr.gh_get(id).await?;
     tr.gh_move(&t, b.not_planned_to.as_ref().map_or("", |c| c.id.as_str())).await?;
-    tr.gh_close(id, "not_planned").await?;
+    tr.gh_close(id, CloseReason::NotPlanned).await?;
     let (branch, last) = (s(&p["head"], "ref"), s(&p["head"], "sha"));
     let mut kept = vec![];
     if last.is_empty() {
@@ -411,7 +442,7 @@ async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -
     let fate = if kept.is_empty() { format!("Its branch `{branch}` is deleted.") } else { format!("Its branch `{branch}` is kept {}.", kept.join(" and ")) };
     let again = b.pick_from.as_ref().map(|c| format!(" To try again, reopen the issue and add the label `{}`.", c.id)).unwrap_or_default();
     tr.gh_comment(&t, &format!("The pull request {url} was closed without a merge, so DevCat closed this issue as not planned. {fate}{again}")).await?;
-    Ok(Some("closed".into()))
+    Ok(Some(PrState::Closed))
 }
 
 impl Tracker {
@@ -472,19 +503,28 @@ impl Tracker {
 
     // ------------------------------------------------------------ labels
 
-    /// The repository's labels, as columns (id and name are the label's name).
-    pub(super) async fn gh_columns(&self) -> AppResult<Vec<Column>> {
-        let mut out = vec![];
-        for page in 1..=LABEL_PAGES {
-            let r = self.gh_repo(Method::GET, "/labels").query(&[("per_page", "100".to_string()), ("page", page.to_string())]).send().await?;
-            let v = json_of(r, "GitHub labels").await?;
-            let got = v.as_array().map(Vec::len).unwrap_or(0);
-            out.extend(v.as_array().into_iter().flatten().map(|l| Column { id: s(l, "name"), name: s(l, "name") }));
+    /// What a list below the board's repository (`path`) holds, 100 a page, at most `pages` pages
+    /// (it ends at a page that isn't full). `html`: with GitHub's rendering of bodies (`full`).
+    async fn gh_pages(&self, path: &str, html: bool, pages: usize, what: &str) -> AppResult<Vec<Value>> {
+        let mut all = vec![];
+        for page in 1..=pages {
+            let mut rb = self.gh_repo(Method::GET, path).query(&[("per_page", "100".to_string()), ("page", page.to_string())]);
+            if html {
+                rb = rb.headers(full());
+            }
+            let list = json_of(rb.send().await?, what).await?.as_array().cloned().unwrap_or_default();
+            let got = list.len();
+            all.extend(list);
             if got < 100 {
                 break;
             }
         }
-        Ok(out)
+        Ok(all)
+    }
+
+    /// The repository's labels, as columns (id and name are the label's name).
+    pub(super) async fn gh_columns(&self) -> AppResult<Vec<Column>> {
+        Ok(self.gh_pages("/labels", false, LABEL_PAGES, "GitHub labels").await?.iter().map(|l| Column { id: s(l, "name"), name: s(l, "name") }).collect())
     }
 
     /// Creates the labels the repository doesn't have yet.
@@ -517,7 +557,7 @@ impl Tracker {
             .flatten()
             .filter(|i| i["pull_request"].is_null())
             .map(|i| issue_ticket(i, &states))
-            .filter(|t| trello_wanted(&t.assignees, &me, assigned))
+            .filter(|t| assignee_wanted(&t.assignees, &me, assigned))
             .take(MAX_ISSUES)
             .collect())
     }
@@ -538,18 +578,8 @@ impl Tracker {
     /// The issue's comments whose authors may write to the repository, oldest first: anyone can
     /// comment on a public issue, and the agent mustn't take a stranger's text as the task.
     async fn gh_trusted_comments(&self, id: &str) -> AppResult<Vec<Value>> {
-        let mut all = vec![];
-        for page in 1..=COMMENT_PAGES {
-            let r = self.gh_repo(Method::GET, &format!("/issues/{id}/comments")).headers(full()).query(&[("per_page", "100".to_string()), ("page", page.to_string())]).send().await?;
-            let v = json_of(r, "GitHub comments").await?;
-            let got = v.as_array().map(Vec::len).unwrap_or(0);
-            all.extend(v.as_array().cloned().unwrap_or_default());
-            if got < 100 {
-                break;
-            }
-        }
         let mut out = vec![];
-        for c in all {
+        for c in self.gh_pages(&format!("/issues/{id}/comments"), true, COMMENT_PAGES, "GitHub comments").await? {
             if can_write(self, &s(&c["user"], "login")).await? {
                 out.push(c);
             }
@@ -559,19 +589,8 @@ impl Tracker {
 
     /// The issue's latest `labeled` event for `label` (events come oldest first), if any.
     async fn gh_labeled(&self, id: &str, label: &str) -> AppResult<Option<Value>> {
-        let mut last = None;
-        for page in 1..=EVENT_PAGES {
-            let r = self.gh_repo(Method::GET, &format!("/issues/{id}/events")).query(&[("per_page", "100".to_string()), ("page", page.to_string())]).send().await?;
-            let v = json_of(r, "GitHub issue events").await?;
-            let list = v.as_array().cloned().unwrap_or_default();
-            if let Some(e) = list.iter().rev().find(|e| s(e, "event") == "labeled" && s(&e["label"], "name").eq_ignore_ascii_case(label)) {
-                last = Some(e.clone());
-            }
-            if list.len() < 100 {
-                break;
-            }
-        }
-        Ok(last)
+        let events = self.gh_pages(&format!("/issues/{id}/events"), false, EVENT_PAGES, "GitHub issue events").await?;
+        Ok(events.into_iter().rev().find(|e| s(e, "event") == "labeled" && s(&e["label"], "name").eq_ignore_ascii_case(label)))
     }
 
     /// Whether an open issue blocks this one: in GitHub's issue dependencies (blockers may be in
@@ -617,14 +636,14 @@ impl Tracker {
         Ok(())
     }
 
-    /// Closes issue `id` with `reason` (`completed` or `not_planned`). A closed issue stays as
-    /// it is, unless it's to be "not planned" and isn't yet.
-    async fn gh_close(&self, id: &str, reason: &str) -> AppResult<()> {
+    /// Closes issue `id` with `reason`. A closed issue stays as it is, unless it's to be "not
+    /// planned" and isn't yet.
+    async fn gh_close(&self, id: &str, reason: CloseReason) -> AppResult<()> {
         let v = json_of(self.gh_repo(Method::GET, &format!("/issues/{id}")).send().await?, "GitHub issue").await?;
-        if s(&v, "state") == "closed" && (reason == "completed" || s(&v, "state_reason") == reason) {
+        if s(&v, "state") == "closed" && (reason == CloseReason::Completed || s(&v, "state_reason") == reason.as_str()) {
             return Ok(());
         }
-        json_of(self.gh_repo(Method::PATCH, &format!("/issues/{id}")).json(&json!({ "state": "closed", "state_reason": reason })).send().await?, "GitHub issue").await.map(drop)
+        json_of(self.gh_repo(Method::PATCH, &format!("/issues/{id}")).json(&json!({ "state": "closed", "state_reason": reason.as_str() })).send().await?, "GitHub issue").await.map(drop)
     }
 
     /// Deletes `branch` on GitHub if it still points at `sha`. Why it stays, when it does (None:
@@ -720,10 +739,11 @@ pub(crate) mod tests {
             pair("d4", "https://github.com/user-attachments/assets/d4"),
         ], "html, then a comment's markdown");
         let ghe = Board { site: "https://ghe.acme.com/api/v3".into(), ..board("", "", "") };
-        let on = |u: &str| upload_token(&reqwest::Url::parse(u).unwrap(), &ghe);
-        assert_eq!((on("https://ghe.acme.com/user-attachments/assets/a1"), on("https://media.ghe.acme.com/user/1/a.png?jwt=x"), on("https://github.com/user-attachments/assets/a1")), (Some(true), Some(false), None), "GitHub Enterprise Server: its own hosts");
-        let on = |u: &str| upload_token(&reqwest::Url::parse(u).unwrap(), &b);
-        assert_eq!((on("https://github.com/user-attachments/assets/a1"), on("https://private-user-images.githubusercontent.com/9/a.png?jwt=x"), on("https://github.com/acme/calc")), (Some(true), Some(false), None));
+        use ImageFetch::*;
+        let on = |u: &str| image_fetch(&reqwest::Url::parse(u).unwrap(), &ghe);
+        assert_eq!((on("https://ghe.acme.com/user-attachments/assets/a1"), on("https://media.ghe.acme.com/user/1/a.png?jwt=x"), on("https://github.com/user-attachments/assets/a1")), (WithToken, WithoutToken, NotStored), "GitHub Enterprise Server: its own hosts");
+        let on = |u: &str| image_fetch(&reqwest::Url::parse(u).unwrap(), &b);
+        assert_eq!((on("https://github.com/user-attachments/assets/a1"), on("https://private-user-images.githubusercontent.com/9/a.png?jwt=x"), on("https://github.com/acme/calc")), (WithToken, WithoutToken, NotStored));
     }
 
     /// A public repository's uploads are read from their upload links, with the token.
@@ -1350,7 +1370,7 @@ pub(crate) mod tests {
         assert_eq!(gh.labels_of(7), vec!["bug"]);
         assert!(gh.sent("DELETE /repos/acme/calc/git/refs").is_empty(), "a merged branch stays");
         assert!(git(dir.to_str().unwrap(), &["rev-parse", "--verify", BRANCH]).await.is_ok());
-        assert_eq!(super::super::history(&b.id)[0].pr_state.as_deref(), Some("merged"));
+        assert_eq!(super::super::history(&b.id)[0].pr_state, Some(PrState::Merged));
 
         check_column(&b).await.unwrap();
         assert_eq!(gh.sent(&format!("GET /repos/acme/calc/pulls/{n}")).len(), 2, "followed once: {:?}", gh.requests());
@@ -1444,7 +1464,7 @@ pub(crate) mod tests {
         assert!(gh.gh.lock().refs.is_empty(), "deleted on GitHub: {:?}", gh.requests());
         assert!(git(cwd, &["rev-parse", "--verify", BRANCH]).await.is_err(), "deleted in the clone");
         assert!(git(cwd, &["rev-parse", "--verify", &format!("origin/{BRANCH}")]).await.is_err(), "and origin's copy there (a new attempt starts afresh)");
-        assert_eq!(super::super::history(&b.id)[0].pr_state.as_deref(), Some("closed"));
+        assert_eq!(super::super::history(&b.id)[0].pr_state, Some(PrState::Closed));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }
@@ -1574,7 +1594,7 @@ pub(crate) mod tests {
         assert_eq!(super::super::worker::tests::head(at).await, BRANCH, "the worktree is as it was");
         let comment = gh.comments_on(7).pop().unwrap();
         assert!(comment.contains("in the clone (it's checked out in") && !comment.contains("on GitHub"), "{comment}");
-        assert_eq!(super::super::history(&b.id)[0].pr_state.as_deref(), Some("closed"));
+        assert_eq!(super::super::history(&b.id)[0].pr_state, Some(PrState::Closed));
         let _ = std::fs::remove_dir_all(&wt);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);

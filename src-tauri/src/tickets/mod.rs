@@ -269,6 +269,15 @@ pub struct Board {
     pub instructions: String,
 }
 
+/// What became of a run's pull request, once the watch loop saw it closed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PrState {
+    Merged,
+    /// Closed without a merge.
+    Closed,
+}
+
 /// What happened to one ticket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -312,10 +321,9 @@ pub struct RunRecord {
     pub pr_number: Option<u64>,
     #[serde(default)]
     pub pr_url: Option<String>,
-    /// What became of the pull request, once the watch loop saw it closed: `merged`, or `closed`
-    /// without a merge (None: open, still followed at each check).
+    /// What became of the pull request (None: open, still followed at each check).
     #[serde(default)]
-    pub pr_state: Option<String>,
+    pub pr_state: Option<PrState>,
 }
 
 /// Whether boards can be read here (the app and `devcat serve` also work them; `devcat mcp` only
