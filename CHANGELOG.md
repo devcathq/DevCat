@@ -80,6 +80,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   **Turn it on**). When the token can't see the repository (a private repository answers 404 to such a token), the
   error (on **Connect** and on **Load columns**) says so and how to give the token access. **Create a token** opens GitHub's fine-grained token form with the
   name, owner and permissions filled in; the hint says to choose **Only select repositories** and the repository.
+- **`devcat serve` keeps the computer awake, also with the lid closed**: while it runs (in a terminal or as the
+  background service), the computer doesn't sleep, also when the screen locks or the lid closes, so phones reach it.
+  On macOS that turns system sleep off, which asks for your password once, and back on when it stops. Linux uses a
+  systemd inhibitor; on Windows set closing the lid to "Do nothing". Start it with `--no-lid` to let the lid sleep it,
+  or `--no-keep-awake` to sleep as usual. The macOS background service also runs at normal priority now.
 
 ## 0.31.0 - 2026-11-19
 
