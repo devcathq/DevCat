@@ -12,6 +12,25 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.31.0 - 2026-11-19
+
+- **Plan usage for Claude Code and Antigravity** (#187): the title bar shows how much of your plan is used (click it
+  for every limit and when it resets): Claude Code's 5-hour and weekly limits, for each account, and Antigravity's
+  pools. The AI connections list and each connection show it too, and so does the agent picker on your phone.
+- **Antigravity in the AI workspace** (#187): add an **Antigravity** AI connection to run Google's terminal agent
+  (`agy`), signed in with the Google account agy uses (or a Gemini API key).
+- **Tabs on more rows** (#187): in **Appearance → Tabs**, keep one row that scrolls, or let tabs wrap onto new rows
+  when the bar is full.
+- **Each window picks its own agent** (#187): the agent new chats use is chosen per window, so another window or
+  project keeps its own.
+- **Terminals match the work area** (#187): terminals and the Claude Code tab use the same background as the rest of
+  the work area instead of a darker one (with window glass they stay see-through).
+- **DevCat Mobile in light mode** (#187): the app follows your phone's light or dark setting, terminals included;
+  choose in **More → Appearance**.
+- **Keep awake from the start, and for phones** (#183): keep awake turns on when DevCat starts (turn that off in the
+  cup's menu), and while phones are paired the computer stays awake so they can reach it with the screen off.
+  On the phone, images can go with a new chat's first message, and terminals have one layout.
+
 ## 0.30.0 - 2026-11-19
 
 - **Several Claude Code accounts** (#181): in AI connections, **Add connection → Claude Code (another account)** adds a
