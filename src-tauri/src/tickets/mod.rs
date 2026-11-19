@@ -279,6 +279,8 @@ pub fn init_reading(data_dir: PathBuf) {
 
 pub fn init(data_dir: PathBuf) {
     let _ = DIR.set(data_dir.join("tickets"));
+    // what a crash left in the worktree boards' clones
+    worker::tidy_worktrees();
     worker::start_watch();
 }
 
