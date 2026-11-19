@@ -1699,17 +1699,40 @@ pub fn start_watch() {
 }
 
 async fn check_column(b: &Board) -> AppResult<()> {
-    let Some(col) = &b.pick_from else { return Ok(()) };
     if !WorkingCopy::ready(b).await {
         return Ok(());
     }
-    let tried: std::collections::HashSet<String> = super::history(&b.id).into_iter().filter(|r| r.outcome != "stopped").map(|r| r.ticket_id).collect();
-    let list = with_label(b, Tracker::new(b, super::token(b))?.list(&col.id).await?);
-    let ids: Vec<String> = list.into_iter().filter(|t| !tried.contains(&t.id)).take(b.max_per_run as usize).map(|t| t.id).collect();
+    let ids = to_queue(b).await?;
     if ids.is_empty() {
         return Ok(());
     }
     enqueue(b.clone(), ids, None)
+}
+
+/// What a check queues: the column's tickets (with the board's label) the agent hasn't tried yet,
+/// at most `max_per_run`. On GitHub only the issues `github::ready` lets through.
+pub(super) async fn to_queue(b: &Board) -> AppResult<Vec<String>> {
+    let Some(col) = &b.pick_from else { return Ok(vec![]) };
+    let tried: std::collections::HashSet<String> = super::history(&b.id).into_iter().filter(|r| r.outcome != "stopped").map(|r| r.ticket_id).collect();
+    let tr = Tracker::new(b, super::token(b))?;
+    let mut ids = vec![];
+    for t in with_label(b, tr.list(&col.id).await?).into_iter().filter(|t| !tried.contains(&t.id)) {
+        if ids.len() >= b.max_per_run as usize {
+            break;
+        }
+        if b.kind == TrackerKind::Github {
+            match super::github::ready(&tr, &t).await {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(e) => {
+                    eprintln!("tickets: watching {}: {}: {e}", b.name, t.key);
+                    continue;
+                }
+            }
+        }
+        ids.push(t.id);
+    }
+    Ok(ids)
 }
 
 #[cfg(test)]

@@ -162,6 +162,10 @@ pub struct Board {
     /// GitHub: the token owner's login, read when the board is saved (its branches are `<login>/…`).
     #[serde(default)]
     pub login: String,
+    /// GitHub: logins whose trigger label the watch takes although they can't write to the
+    /// repository (e.g. a triage bot). Anyone with write access counts anyway.
+    #[serde(default)]
+    pub allowlist: Vec<String>,
 
     /// The git repository the agent works in, or a folder of repositories (the agent may change any
     /// of them; each gets the ticket's branch).
@@ -423,6 +427,13 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     if b.isolation == Isolation::Worktree && !b.setup_command.is_empty() && !b.allow_commands {
         return Err(AppError::msg("The setup command runs programs, like the agent's commands: let the agent run commands, or clear the setup command"));
     }
+    let mut allow: Vec<String> = vec![];
+    for l in b.allowlist.iter().map(|l| l.trim().trim_start_matches('@').to_lowercase()).filter(|l| !l.is_empty()) {
+        if !allow.contains(&l) {
+            allow.push(l);
+        }
+    }
+    b.allowlist = allow;
     b.interval_min = b.interval_min.clamp(1, 24 * 60);
     b.max_per_run = b.max_per_run.clamp(1, 20);
     if b.kind == TrackerKind::Github {

@@ -28,6 +28,8 @@ pub struct Tracker {
     pub(super) http: Client,
     pub(super) board: Board,
     pub(super) token: String,
+    /// GitHub: whether a login may write to the repository, asked once per tracker (one check or run).
+    pub(super) writers: parking_lot::Mutex<std::collections::HashMap<String, bool>>,
 }
 
 fn http() -> AppResult<Client> {
@@ -119,7 +121,7 @@ impl Tracker {
         if board.kind == TrackerKind::Jira && !board.site.trim().starts_with("http") {
             return Err(AppError::msg("Enter the Jira site, e.g. https://acme.atlassian.net"));
         }
-        Ok(Tracker { http: http()?, board: board.clone(), token: token.trim().to_string() })
+        Ok(Tracker { http: http()?, board: board.clone(), token: token.trim().to_string(), writers: Default::default() })
     }
 
     // ------------------------------------------------------------ requests

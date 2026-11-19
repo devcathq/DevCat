@@ -20,6 +20,8 @@ use serde_json::{Value, json};
 const MAX_ISSUES: usize = 50;
 /// Label pages read for the columns, at most (100 labels each).
 const LABEL_PAGES: usize = 10;
+/// Event pages read for an issue's trigger label, at most (100 events each).
+const EVENT_PAGES: usize = 10;
 
 /// The API address without a trailing slash: the board's site, else https://api.github.com.
 pub fn api(b: &Board) -> String {
@@ -134,6 +136,38 @@ pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord) {
     }
 }
 
+/// Whether the watch may queue the issue: the last one to add the trigger label (the board's
+/// pick-from label) may write to the repository or is on the board's allowlist, so a stranger's
+/// label can't make the agent run. Sending an issue to the agent by hand skips this.
+pub async fn ready(tr: &Tracker, t: &Ticket) -> AppResult<bool> {
+    let label = tr.board.pick_from.as_ref().map(|c| c.id.clone()).unwrap_or_default();
+    let Some(ev) = tr.gh_labeled(&t.id, &label).await? else { return Ok(false) };
+    let who = s(&ev["actor"], "login");
+    Ok(tr.board.allowlist.iter().any(|l| l.eq_ignore_ascii_case(&who)) || can_write(tr, &who).await?)
+}
+
+/// Whether `login` may write to the board's repository (collaborator permission write, maintain
+/// or admin). Asked once per login and tracker, i.e. per check or run.
+pub(crate) async fn can_write(tr: &Tracker, login: &str) -> AppResult<bool> {
+    let key = login.trim().to_lowercase();
+    if key.is_empty() {
+        return Ok(false);
+    }
+    if let Some(w) = tr.writers.lock().get(&key) {
+        return Ok(*w);
+    }
+    let r = tr.gh_repo(Method::GET, &format!("/collaborators/{}/permission", enc(&key))).send().await?;
+    // 404: no such user
+    let w = if r.status().as_u16() == 404 {
+        false
+    } else {
+        let v = json_of(r, "GitHub collaborator permission").await?;
+        ["admin", "maintain", "write"].contains(&s(&v, "permission").as_str()) || v["user"]["permissions"]["push"] == json!(true)
+    };
+    tr.writers.lock().insert(key, w);
+    Ok(w)
+}
+
 impl Tracker {
     // ------------------------------------------------------------ requests
 
@@ -233,6 +267,23 @@ impl Tracker {
             return Err(AppError::msg(format!("#{id} is a pull request, not an issue")));
         }
         Ok(issue_ticket(&v, &states(&self.board)))
+    }
+
+    /// The issue's latest `labeled` event for `label` (events come oldest first), if any.
+    async fn gh_labeled(&self, id: &str, label: &str) -> AppResult<Option<Value>> {
+        let mut last = None;
+        for page in 1..=EVENT_PAGES {
+            let r = self.gh_repo(Method::GET, &format!("/issues/{id}/events")).query(&[("per_page", "100".to_string()), ("page", page.to_string())]).send().await?;
+            let v = json_of(r, "GitHub issue events").await?;
+            let list = v.as_array().cloned().unwrap_or_default();
+            if let Some(e) = list.iter().rev().find(|e| s(e, "event") == "labeled" && s(&e["label"], "name").eq_ignore_ascii_case(label)) {
+                last = Some(e.clone());
+            }
+            if list.len() < 100 {
+                break;
+            }
+        }
+        Ok(last)
     }
 
     /// Swaps the issue's state labels (as it has them now) for `label` ("": none), leaving its
@@ -377,6 +428,50 @@ pub(crate) mod tests {
         assert_eq!(list("anyone").await, vec!["#7", "#8", "#10"]);
         let t = super::super::tickets_list(super::super::tickets_board_save(board(&gh.url, "", "")).await.unwrap().id, "ready-for-agent".into()).await.unwrap().remove(0);
         assert_eq!((t.id.as_str(), t.column.as_str(), t.url.as_str()), ("7", "ready-for-agent", "https://github.com/acme/calc/issues/7"));
+    }
+
+    /// A `labeled` event for `label` by `by` at `when` (RFC 3339), as GitHub lists it.
+    fn labeled(label: &str, by: &str, when: &str) -> Value {
+        json!({ "id": 1, "event": "labeled", "created_at": when, "actor": { "login": by }, "label": { "name": label, "color": "0E8A16" }, "performed_via_github_app": null })
+    }
+
+    /// A minute from now: a label added after the board was saved.
+    fn soon() -> String {
+        (chrono::Utc::now() + chrono::Duration::minutes(1)).to_rfc3339()
+    }
+
+    /// What the watch's next check would queue.
+    async fn queued(b: &Board) -> Vec<String> {
+        super::super::worker::to_queue(b).await.unwrap()
+    }
+
+    /// The watch takes an issue only when the person who last added the trigger label may write
+    /// to the repository (write, maintain or admin) or is on the board's allowlist; asking GitHub
+    /// once per login and check.
+    #[tokio::test]
+    async fn trusted_label_actor() {
+        tickets_data();
+        let mut data = Gh::new("octo", "acme/calc")
+            .with_issue(7, "By an admin", "", &["ready-for-agent"], &["octo"])
+            .with_issue(8, "By a writer", "", &["ready-for-agent"], &["octo"])
+            .with_issue(9, "By a reader", "", &["ready-for-agent"], &["octo"])
+            .with_issue(10, "By a stranger", "", &["ready-for-agent"], &["octo"])
+            .with_issue(11, "Writer's label taken off, stranger's put back", "", &["ready-for-agent"], &["octo"])
+            .with_issue(12, "Admin again", "", &["ready-for-agent"], &["octo"]);
+        for (n, who) in [(7, "ana"), (8, "bo"), (9, "cy"), (10, "eve"), (12, "ana")] {
+            data.events.insert(n, vec![labeled("bug", "eve", &soon()), labeled("ready-for-agent", who, &soon())]);
+        }
+        data.events.insert(11, vec![labeled("ready-for-agent", "bo", &soon()), json!({ "event": "unlabeled", "created_at": soon(), "actor": { "login": "bo" }, "label": { "name": "ready-for-agent" } }), labeled("Ready-For-Agent", "eve", &soon())]);
+        data.permissions = [("ana", "admin"), ("bo", "write"), ("cy", "read")].into_iter().map(|(l, p)| (l.to_string(), p.to_string())).collect();
+        let gh = MockGithub::start(data).await;
+        let b = super::super::tickets_board_save(Board { max_per_run: 20, ..board(&gh.url, "", "") }).await.unwrap();
+        assert_eq!(queued(&b).await, vec!["7", "8", "12"]);
+        assert_eq!(gh.sent("GET /repos/acme/calc/collaborators/ana/permission").len(), 1, "once per login: {:?}", gh.requests());
+
+        let b = super::super::tickets_board_save(Board { allowlist: vec![" @Eve ".into(), "".into()], ..b }).await.unwrap();
+        assert_eq!(b.allowlist, vec!["eve"]);
+        assert_eq!(queued(&b).await, vec!["7", "8", "10", "11", "12"], "eve is on the allowlist");
+        assert_eq!(queued(&Board { max_per_run: 2, ..b }).await, vec!["7", "8"], "at most max_per_run");
     }
 
     /// The issue the run tests work on, and its branch.
