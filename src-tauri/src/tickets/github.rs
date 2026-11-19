@@ -311,15 +311,20 @@ pub fn pr_body(t: &Ticket, rec: &RunRecord, base: &Base, agent: &str) -> String 
 
 /// A fixed issue's pushed branch (`rec.branch`) becomes a draft pull request into `base`, with
 /// `body` (the agent's, see `pr_body`): the run's number and link (`rec.pr_number`,
-/// `rec.pr_url`), or a note when GitHub refused it.
-pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord, base: &Base, body: &str) {
-    let Some(head) = rec.branch.clone() else { return };
+/// `rec.pr_url`). Whether it's a draft (a repository without draft pull requests gets a ready
+/// one); Err when GitHub refused it (also noted).
+pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord, base: &Base, body: &str) -> AppResult<bool> {
+    let head = rec.branch.clone().ok_or_else(|| AppError::msg("the run left no branch"))?;
     match tr.gh_pull_request(&head, &base.branch, &t.title, &pr_body(t, rec, base, body)).await {
-        Ok((n, url)) => {
+        Ok((n, url, draft)) => {
             rec.pr_number = Some(n);
             rec.pr_url = Some(url);
+            Ok(draft)
         }
-        Err(e) => rec.notes.push(format!("Couldn't open the pull request: {e}")),
+        Err(e) => {
+            rec.notes.push(format!("Couldn't open the pull request: {e}"));
+            Err(e)
+        }
     }
 }
 
@@ -648,15 +653,15 @@ impl Tracker {
     // ------------------------------------------------------------ pull requests
 
     /// A draft pull request from `head` into `base` (the open one for `head` when there is one
-    /// already, e.g. an earlier run's): its number and link. A repository without draft pull
-    /// requests (a private one on GitHub Free) gets a ready one.
-    async fn gh_pull_request(&self, head: &str, base: &str, title: &str, body: &str) -> AppResult<(u64, String)> {
+    /// already, e.g. an earlier run's): its number, link and whether it's a draft. A repository
+    /// without draft pull requests (a private one on GitHub Free) gets a ready one.
+    async fn gh_pull_request(&self, head: &str, base: &str, title: &str, body: &str) -> AppResult<(u64, String, bool)> {
         let mut draft = true;
         loop {
             let r = self.gh_repo(Method::POST, "/pulls").json(&json!({ "title": title, "head": head, "base": base, "body": body, "draft": draft })).send().await?;
             if r.status().as_u16() != 422 {
                 let v = json_of(r, "GitHub pull request").await?;
-                return Ok((v["number"].as_u64().unwrap_or(0), s(&v, "html_url")));
+                return Ok((v["number"].as_u64().unwrap_or(0), s(&v, "html_url"), v["draft"] != json!(false)));
             }
             let why = r.text().await.unwrap_or_default();
             if draft && why.contains("Draft pull requests are not supported") {
@@ -666,7 +671,7 @@ impl Tracker {
             let owner = self.board.project.trim().split('/').next().unwrap_or_default().to_string();
             let open = json_of(self.gh_repo(Method::GET, "/pulls").query(&[("head", format!("{owner}:{head}")), ("state", "open".into())]).send().await?, "GitHub pull requests").await?;
             return match open.as_array().and_then(|a| a.first()) {
-                Some(p) => Ok((p["number"].as_u64().unwrap_or(0), s(p, "html_url"))),
+                Some(p) => Ok((p["number"].as_u64().unwrap_or(0), s(p, "html_url"), p["draft"] != json!(false))),
                 None => Err(AppError::msg(format!("GitHub pull request: HTTP 422: {}", why.chars().take(300).collect::<String>()))),
             };
         }
@@ -1009,6 +1014,60 @@ pub(crate) mod tests {
         assert_eq!((rec.outcome.as_str(), rec.pr_number), ("fixed", pr["number"].as_u64()), "{} {:?}", rec.summary, rec.notes);
         assert_eq!(gh.gh.lock().pulls.len(), 1);
         assert!(git(origin, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# again"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A fixed issue whose pull request GitHub refuses, or whose branch couldn't be pushed, is for
+    /// a person: it gets ready-for-human (not agent-review) and a comment that says why and names
+    /// the branch.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_pull_request_is_for_a_person() {
+        use super::super::worker::{fix_one, tests::*};
+        tickets_data();
+        let mut data = one_issue();
+        data.canned.push(("POST /repos/acme/calc/pulls".into(), 422, json!({ "message": "Validation Failed", "errors": [{ "message": "No commits between main and octo/7" }] })));
+        let gh = MockGithub::start(data).await;
+        let (dir, remote) = clone_with_origin("gh-no-pr").await;
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, dir.to_str().unwrap(), &fixer)).await.unwrap();
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.moved_to.as_deref(), rec.pr_number), ("fixed", Some("ready-for-human"), None), "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(gh.labels_of(7), vec!["bug", "ready-for-human"], "{:?}", gh.requests());
+        let comment = gh.comments_on(7).pop().unwrap();
+        assert!(comment.contains("couldn't open the pull request") && comment.contains("No commits between") && comment.contains(&format!("Branch: {BRANCH} (pushed")), "{comment}");
+        assert!(comment.contains("add the label `ready-for-agent` again"), "{comment}");
+
+        // origin is gone: no push, so no pull request either
+        std::fs::remove_dir_all(&remote).unwrap();
+        gh.gh.lock().canned.clear();
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.moved_to.as_deref()), ("fixed", Some("ready-for-human")), "{} {:?}", rec.summary, rec.notes);
+        assert!(gh.gh.lock().pulls.is_empty(), "{:?}", gh.requests());
+        let comment = gh.comments_on(7).pop().unwrap();
+        assert!(comment.contains("couldn't open the pull request: Push failed") && comment.contains(&format!("Branch: {BRANCH} (not pushed")), "{comment}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A repository without draft pull requests gets a ready one, and the issue's comment says so.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ready_pull_request_without_drafts() {
+        use super::super::worker::{fix_one, tests::*};
+        tickets_data();
+        let mut data = one_issue();
+        data.no_drafts = true;
+        let gh = MockGithub::start(data).await;
+        let (dir, remote) = clone_with_origin("gh-no-drafts").await;
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, dir.to_str().unwrap(), &fixer)).await.unwrap();
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!((rec.outcome.as_str(), rec.moved_to.as_deref()), ("fixed", Some("agent-review")), "{} {:?}", rec.summary, rec.notes);
+        let pr = gh.gh.lock().pulls.values().next().cloned().unwrap_or_else(|| panic!("no pull request: {:?}", gh.requests()));
+        assert_eq!(pr["draft"], json!(false));
+        let comment = gh.comments_on(7).pop().unwrap();
+        assert!(comment.contains(&format!("Pull request: {}\n\nDraft pull requests are not available in this repository, so this pull request is ready for review.", pr["html_url"].as_str().unwrap())), "{comment}");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }

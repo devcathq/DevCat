@@ -54,6 +54,9 @@ pub struct Gh {
     pub base: String,
     /// The repository is public (else private, as `GET /repos/{o}/{r}` says).
     pub public: bool,
+    /// The repository can't have draft pull requests (a private one on GitHub Free): opening one
+    /// is refused with 422.
+    pub no_drafts: bool,
     /// Uploaded images by id (`<url>/user-attachments/assets/<id>`).
     pub images: HashMap<String, Vec<u8>>,
     /// Answers that win over the routes: (`"METHOD /path"` without the query, status, body).
@@ -356,6 +359,9 @@ fn answer(gh: &mut Gh, method: &str, target: &str, body: &str) -> (u16, Value) {
             (200, json!({ "permission": p, "role_name": p, "user": { "login": login, "permissions": { "admin": p == "admin", "push": push, "pull": p != "none" } } }))
         }
         ("POST", ["pulls"]) => {
+            if gh.no_drafts && body["draft"] == json!(true) {
+                return (422, json!({ "message": "Validation Failed", "errors": [{ "resource": "PullRequest", "code": "custom", "message": "Draft pull requests are not supported in this repository." }] }));
+            }
             let head = body["head"].as_str().unwrap_or_default().to_string();
             let head = head.split_once(':').map(|(_, b)| b.to_string()).unwrap_or(head);
             if gh.pulls.values().any(|p| p["state"] == "open" && p["head"]["ref"] == head.as_str()) {

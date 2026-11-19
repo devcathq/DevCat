@@ -29,8 +29,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Tickets: GitHub boards** (#195): connect a GitHub repository (`owner/name`, an API address for GitHub Enterprise
   and a personal access token). Labels are the columns: the agent takes open issues labelled `ready-for-agent` and
   assigned to you (**Assigned to** starts at **Me** on a new GitHub board), labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
-  draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review`. Saving
-  the board checks the token and creates the labels the repository lacks.
+  draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review` (a ready
+  one, and the comment says so, where the repository has no draft pull requests). When DevCat can't open the pull
+  request, the issue gets `ready-for-human` with a comment that says why and names the branch. Saving the board
+  checks the token and creates the labels the repository lacks.
 - **Tickets: parallel runs** (#193): a board with a worktree for each ticket can work on up to 4 tickets at the same
   time (**Parallel runs** in the board's settings, default 1), each in its own worktree and branch. The **Working**
   panel shows each ticket with its log, and the other tickets wait. Boards that run in place still do one at a time.

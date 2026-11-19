@@ -147,7 +147,10 @@ token and the repository, reads the token owner's login, and creates the labels 
 - Branches are named `<your login>/<number>-<title>`, e.g. `octo/12-fix-the-login`.
 - New GitHub boards start with **A worktree for each ticket**, and the branch is always pushed: a fixed issue's
   branch gets a draft pull request. The issue's comment has the summary, how to test and the pull request's link,
-  and the history links it too.
+  and the history links it too. A repository without draft pull requests (a private one on GitHub Free) gets a pull
+  request that's ready for review, and the comment says so. If DevCat can't open the pull request (GitHub refuses
+  it, or the push fails), the issue gets `ready-for-human` instead of `agent-review`, and the comment says why and
+  names the branch.
 - The pull request goes into the issue's base branch, and a worktree's new branch starts from it. The base branch
   is the branch in a `Base: <branch>` line in the issue, else in its parent issue, else the board's **Base branch**,
   else the repository's default branch. So the slices of a feature can go into its feature branch: put

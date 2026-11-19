@@ -13,7 +13,7 @@
 //!    or "failed" (else back where it was; "needs info" when the agent asked questions and the
 //!    board has that column). On GitHub every run's branch is pushed (unfinished work too), and a
 //!    fixed ticket's gets a draft pull request into its base branch (`github::pull_request`),
-//!    linked in the comment.
+//!    linked in the comment; when it can't have one, the ticket goes to "failed" with the reason.
 use super::github::Base;
 use super::trackers::Tracker;
 use super::{Board, Isolation, RunRecord, Ticket, TrackerKind};
@@ -483,13 +483,28 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
         rec.summary = format!("The agent changed no files. {}", a.summary);
     }
 
-    // only fixed work gets one: the rest isn't for review
-    if fixed && pushed && let Some(base) = &base {
-        stage(&b.id, &format!("Opening a pull request into {} ({})", base.branch, base.from));
-        super::github::pull_request(tr, &t, rec, base, &a.pr_body).await;
+    // GitHub: only fixed work gets a pull request, the rest isn't for review. Fixed work without
+    // one (not pushed, or GitHub refused it) is for a person too, with the reason in the comment.
+    let (mut for_review, mut pr_note) = (fixed, None);
+    if fixed && let Some(base) = &base {
+        let made = if pushed {
+            stage(&b.id, &format!("Opening a pull request into {} ({})", base.branch, base.from));
+            super::github::pull_request(tr, &t, rec, base, &a.pr_body).await
+        } else {
+            Err(AppError::msg(rec.notes.iter().rev().find(|n| n.starts_with("Push failed")).cloned().unwrap_or_else(|| "the branch wasn't pushed".into())))
+        };
+        pr_note = match made {
+            Ok(true) => None,
+            Ok(false) => Some("Draft pull requests are not available in this repository, so this pull request is ready for review.".to_string()),
+            Err(e) => {
+                for_review = false;
+                let again = b.pick_from.as_ref().map(|c| format!(", or add the label `{}` again to let DevCat try again", c.id)).unwrap_or_default();
+                Some(format!("DevCat couldn't open the pull request: {e}\n\nThe work is on the branch below: open a pull request from it yourself{again}."))
+            }
+        };
     }
 
-    let target = if fixed {
+    let target = if for_review {
         b.done_to.clone()
     } else if rec.outcome == "needs_info" && b.needs_info_to.is_some() {
         b.needs_info_to.clone()
@@ -505,7 +520,7 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
     }
     if b.comment {
         stage(&b.id, "Commenting");
-        if let Err(e) = tr.comment(&t, &comment_text(b, rec, pushed)).await {
+        if let Err(e) = tr.comment(&t, &comment_text(b, rec, pushed, pr_note.as_deref())).await {
             rec.notes.push(format!("Couldn't comment: {e}"));
         }
     }
@@ -889,7 +904,9 @@ fn headline(outcome: &str) -> &'static str {
     }
 }
 
-pub fn comment_text(b: &Board, r: &RunRecord, pushed: bool) -> String {
+/// `pr_note`: GitHub, what to know about the run's pull request (it's not a draft, or why there's
+/// none).
+pub fn comment_text(b: &Board, r: &RunRecord, pushed: bool, pr_note: Option<&str>) -> String {
     let mut c = format!("DevCat agent {}.", headline(&r.outcome));
     if let Some(m) = &r.moved_to {
         c.push_str(&format!(" Moved to {m}."));
@@ -901,6 +918,9 @@ pub fn comment_text(b: &Board, r: &RunRecord, pushed: bool) -> String {
     }
     if let Some(pr) = &r.pr_url {
         c.push_str(&format!("\n\nPull request: {pr}"));
+    }
+    if let Some(n) = pr_note {
+        c.push_str(&format!("\n\n{n}"));
     }
     if let Some(br) = &r.branch {
         let where_ = if pushed { "pushed to origin" } else { "not pushed, on the developer's computer" };
@@ -2411,7 +2431,7 @@ pub(crate) mod tests {
         r.branch = Some("devcat/a".into());
         r.files_changed = 2;
         r.moved_to = Some("Testing".into());
-        let c = comment_text(&b, &r, false);
+        let c = comment_text(&b, &r, false, None);
         assert!(c.starts_with("DevCat agent fixed this. Moved to Testing."));
         assert!(c.contains("Changed x.") && c.contains("How to test:\nLog in") && c.contains("2 files changed"));
         assert!(b.comment && b.interval_min == 10 && b.branch_prefix == "devcat/" && b.target_branch.is_empty(), "defaults");
