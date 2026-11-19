@@ -479,7 +479,7 @@ function Thread({ board, runs, busy, ready, onBack, onSent }: {
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-faint">
                 {x.movedTo && <span>Moved to {x.movedTo}</span>}
                 {x.branch && <span className="flex items-center gap-1 font-mono"><GitBranch className="size-3" />{x.branch}</span>}
-                {x.prUrl && <button className="hover:text-fg" onClick={() => void openUrl(x.prUrl!)}>pull request #{x.prNumber}{x.prState && ` (${x.prState === "merged" ? "merged" : "closed without a merge"})`}</button>}
+                <PullRequestLink r={x} />
                 {x.sessionId && x.cwd && (
                   <button className="flex items-center gap-1 hover:text-fg" title="Open the agent's chat in the AI workspace" onClick={() => openRun(x)}>
                     <MessageSquare className="size-3" />open in AI workspace
@@ -514,6 +514,17 @@ function Thread({ board, runs, busy, ready, onBack, onSent }: {
         </div>
       </div>
     </div>
+  );
+}
+
+/** A run's GitHub pull request, opened in the browser, with what became of it (nothing without one). */
+function PullRequestLink({ r }: { r: RunRecord }) {
+  if (!r.prUrl) return null;
+  const url = r.prUrl;
+  return (
+    <button className="hover:text-fg" onClick={() => void openUrl(url)}>
+      pull request #{r.prNumber}{r.prState && ` (${r.prState === "merged" ? "merged" : "closed without a merge"})`}
+    </button>
   );
 }
 
@@ -553,7 +564,7 @@ function HistoryItem({ r, onAnswer }: { r: RunRecord; onAnswer?: () => void }) {
         {r.repos?.length ? <span>{r.repos.join(", ")}</span> : r.filesChanged > 0 && <span>{r.filesChanged} file{r.filesChanged === 1 ? "" : "s"}</span>}
         {r.costUsd != null && <span>${r.costUsd.toFixed(2)}</span>}
         {r.url && <button className="hover:text-fg" onClick={() => void openUrl(r.url)}>open ticket</button>}
-        {r.prUrl && <button className="hover:text-fg" onClick={() => void openUrl(r.prUrl!)}>pull request #{r.prNumber}{r.prState && ` (${r.prState === "merged" ? "merged" : "closed without a merge"})`}</button>}
+        <PullRequestLink r={r} />
         {canOpen && (
           <button className="flex items-center gap-1 hover:text-fg" title="Open the agent's chat in the AI workspace (you can continue it there)" onClick={() => openRun(r)}>
             <MessageSquare className="size-3" />open chat
