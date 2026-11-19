@@ -277,6 +277,7 @@ fn error_record(ticket_id: &str, why: String) -> RunRecord {
         reply: None,
         pr_number: None,
         pr_url: None,
+        pr_state: None,
     }
 }
 
@@ -1698,8 +1699,12 @@ pub fn start_watch() {
     });
 }
 
-async fn check_column(b: &Board) -> AppResult<()> {
+pub(crate) async fn check_column(b: &Board) -> AppResult<()> {
     let Some(col) = &b.pick_from else { return Ok(()) };
+    // also when there's nothing new to work on, or the clone isn't ready
+    if b.kind == TrackerKind::Github {
+        super::github::follow_pull_requests(b, &Tracker::new(b, super::token(b))?).await;
+    }
     if !WorkingCopy::ready(b).await {
         return Ok(());
     }

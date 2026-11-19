@@ -134,6 +134,48 @@ pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord) {
     }
 }
 
+// ---------------------------------------------------------------- following pull requests
+
+/// The watch loop's check on a GitHub board: what became of the pull requests DevCat opened that
+/// are still open in the board's history (each once, however many runs share it). A closed one
+/// is marked in its runs (`pr_state`) and not asked about again; one that couldn't be dealt with
+/// is tried again at the next check.
+pub async fn follow_pull_requests(b: &Board, tr: &Tracker) {
+    let mut seen = vec![];
+    for rec in super::history(&b.id) {
+        let Some(n) = rec.pr_number.filter(|n| rec.pr_state.is_none() && !seen.contains(n)) else { continue };
+        seen.push(n);
+        match follow_pull_request(b, tr, &rec, n).await {
+            Ok(Some(state)) => super::update_history(&b.id, |r| {
+                if r.pr_number == Some(n) && r.pr_state.is_none() {
+                    r.pr_state = Some(state.clone());
+                }
+            }),
+            Ok(None) => {}
+            Err(e) => eprintln!("tickets: following pull request #{n} of {}: {e}", b.name),
+        }
+    }
+}
+
+/// Pull request `n` of the run `rec`: `merged` or `closed` once it's dealt with, None while
+/// it's open. Merged: the issue loses the done label and is closed (GitHub closes it itself only
+/// for a `Closes` line into the default branch).
+async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -> AppResult<Option<String>> {
+    let p = json_of(tr.gh_repo(Method::GET, &format!("/pulls/{n}")).send().await?, "GitHub pull request").await?;
+    if s(&p, "state") != "closed" {
+        return Ok(None);
+    }
+    let id = rec.ticket_id.as_str();
+    if p["merged"] == json!(true) || !p["merged_at"].is_null() {
+        if let Some(done) = &b.done_to {
+            tr.gh_unlabel(id, &done.id).await?;
+        }
+        tr.gh_close(id, "completed").await?;
+        return Ok(Some("merged".into()));
+    }
+    Ok(None)
+}
+
 impl Tracker {
     // ------------------------------------------------------------ requests
 
@@ -242,16 +284,32 @@ impl Tracker {
         let now: Vec<String> = v["labels"].as_array().into_iter().flatten().map(|l| s(l, "name")).collect();
         let states = states(&self.board);
         for l in now.iter().filter(|l| l.as_str() != label && (states.contains(l) || **l == t.column)) {
-            let r = self.gh_repo(Method::DELETE, &format!("/issues/{}/labels/{}", t.id, enc(l))).send().await?;
-            // 404: gone already
-            if r.status().as_u16() != 404 {
-                json_of(r, &format!("GitHub label {l}")).await?;
-            }
+            self.gh_unlabel(&t.id, l).await?;
         }
         if !label.is_empty() && !now.iter().any(|l| l == label) {
             json_of(self.gh_repo(Method::POST, &format!("/issues/{}/labels", t.id)).json(&json!({ "labels": [label] })).send().await?, &format!("GitHub label {label}")).await?;
         }
         Ok(())
+    }
+
+    /// Takes `label` off issue `id` (when it has it).
+    async fn gh_unlabel(&self, id: &str, label: &str) -> AppResult<()> {
+        let r = self.gh_repo(Method::DELETE, &format!("/issues/{id}/labels/{}", enc(label))).send().await?;
+        // 404: gone already
+        if r.status().as_u16() != 404 {
+            json_of(r, &format!("GitHub label {label}")).await?;
+        }
+        Ok(())
+    }
+
+    /// Closes issue `id` with `reason` (`completed` or `not_planned`). A closed issue stays as
+    /// it is, unless it's to be "not planned" and isn't yet.
+    async fn gh_close(&self, id: &str, reason: &str) -> AppResult<()> {
+        let v = json_of(self.gh_repo(Method::GET, &format!("/issues/{id}")).send().await?, "GitHub issue").await?;
+        if s(&v, "state") == "closed" && (reason == "completed" || s(&v, "state_reason") == reason) {
+            return Ok(());
+        }
+        json_of(self.gh_repo(Method::PATCH, &format!("/issues/{id}")).json(&json!({ "state": "closed", "state_reason": reason })).send().await?, "GitHub issue").await.map(drop)
     }
 
     pub(super) async fn gh_comment(&self, t: &Ticket, text: &str) -> AppResult<()> {
@@ -432,6 +490,61 @@ pub(crate) mod tests {
         assert_eq!((rec.outcome.as_str(), rec.pr_number), ("fixed", pr["number"].as_u64()), "{} {:?}", rec.summary, rec.notes);
         assert_eq!(gh.gh.lock().pulls.len(), 1);
         assert!(git(origin, &["show", &format!("{BRANCH}:calc.py")]).await.unwrap().contains("# again"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// Issue #7 fixed by the stand-in on a board in a new clone, its run in the board's history
+    /// (as the queue keeps it), and the draft pull request's last commit (`head.sha`) set to what
+    /// was pushed: (board, the run, clone, origin).
+    #[cfg(unix)]
+    async fn fixed_and_recorded(gh: &MockGithub, what: &str) -> (Board, RunRecord, std::path::PathBuf, std::path::PathBuf) {
+        use super::super::worker::{fix_one, git, tests::*};
+        let (dir, remote) = clone_with_origin(what).await;
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, dir.to_str().unwrap(), &fixer)).await.unwrap();
+        let rec = fix_one(&b, "7", None, None, &devcat_harness::Cancel::default()).await;
+        assert_eq!(rec.outcome, "fixed", "{} {:?}", rec.summary, rec.notes);
+        let sha = git(dir.to_str().unwrap(), &["rev-parse", BRANCH]).await.unwrap().trim().to_string();
+        gh.gh.lock().pulls.get_mut(&rec.pr_number.unwrap()).unwrap()["head"]["sha"] = json!(sha);
+        super::super::record(&b.id, rec.clone());
+        (b, rec, dir, remote)
+    }
+
+    /// Closes pull request `n` on the mock, merged or not.
+    fn close_pull(gh: &MockGithub, n: u64, merged: bool) {
+        let mut g = gh.gh.lock();
+        let p = g.pulls.get_mut(&n).unwrap();
+        p["state"] = json!("closed");
+        p["merged"] = json!(merged);
+    }
+
+    /// A merged pull request: at the next check DevCat removes the done label and closes the issue
+    /// (GitHub didn't, e.g. a `Part of` pull request into another branch). An open one is left
+    /// alone, and a followed one isn't asked about again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn merged_pull_request() {
+        use super::super::worker::{check_column, git};
+        tickets_data();
+        let gh = MockGithub::start(one_issue()).await;
+        let (b, rec, dir, remote) = fixed_and_recorded(&gh, "gh-merged").await;
+        let n = rec.pr_number.unwrap();
+        check_column(&b).await.unwrap();
+        assert_eq!(gh.sent(&format!("GET /repos/acme/calc/pulls/{n}")).len(), 1, "{:?}", gh.requests());
+        assert_eq!((gh.labels_of(7), gh.gh.lock().issues[&7]["state"].clone()), (vec!["bug".to_string(), "agent-review".to_string()], json!("open")), "still open");
+
+        close_pull(&gh, n, true);
+        check_column(&b).await.unwrap();
+        let issue = gh.gh.lock().issues[&7].clone();
+        assert_eq!((issue["state"].as_str(), issue["state_reason"].as_str()), (Some("closed"), Some("completed")), "{:?}", gh.requests());
+        assert_eq!(gh.labels_of(7), vec!["bug"]);
+        assert!(gh.sent("DELETE /repos/acme/calc/git/refs").is_empty(), "a merged branch stays");
+        assert!(git(dir.to_str().unwrap(), &["rev-parse", "--verify", BRANCH]).await.is_ok());
+        assert_eq!(super::super::history(&b.id)[0].pr_state.as_deref(), Some("merged"));
+
+        check_column(&b).await.unwrap();
+        assert_eq!(gh.sent(&format!("GET /repos/acme/calc/pulls/{n}")).len(), 2, "followed once: {:?}", gh.requests());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }

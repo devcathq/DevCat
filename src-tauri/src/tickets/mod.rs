@@ -279,6 +279,10 @@ pub struct RunRecord {
     pub pr_number: Option<u64>,
     #[serde(default)]
     pub pr_url: Option<String>,
+    /// What became of the pull request, once the watch loop saw it closed: `merged`, or `closed`
+    /// without a merge (None: open, still followed at each check).
+    #[serde(default)]
+    pub pr_state: Option<String>,
 }
 
 /// Whether boards can be read here (the app and `devcat serve` also work them; `devcat mcp` only
@@ -363,6 +367,17 @@ pub fn record(board: &str, r: RunRecord) {
     let mut h = history(board);
     h.insert(0, r);
     h.truncate(HISTORY);
+    if let Ok(d) = dir() {
+        let _ = write_json(&d.join("history").join(format!("{board}.json")), &h);
+    }
+    crate::events::emit("tickets-changed", serde_json::json!({ "board": board }));
+}
+
+/// Changes the board's run records in place (e.g. what became of a run's pull request).
+pub fn update_history(board: &str, f: impl FnMut(&mut RunRecord)) {
+    let _g = WRITE.lock();
+    let mut h = history(board);
+    h.iter_mut().for_each(f);
     if let Ok(d) = dir() {
         let _ = write_json(&d.join("history").join(format!("{board}.json")), &h);
     }
