@@ -72,6 +72,8 @@ export interface Board {
   maxPerRun: number;
   /** Tickets worked on at the same time (1 to 4), each in its own worktree; in place always 1. */
   parallelRuns: number;
+  /** Longest the agent works on one ticket, in minutes (1 to 1440, default 60); a worktree's setup command too. */
+  timeLimitMin: number;
   instructions: string;
 }
 
@@ -121,7 +123,7 @@ const KIND_DEFAULTS: Record<TrackerKind, Partial<Board>> = {
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
   pickFrom: null, working: null, doneTo: null, needsInfoTo: null, failedTo: null, notPlannedTo: null, label: "", assigned: "anyone",
-  comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, parallelRuns: 1, instructions: "",
+  comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, parallelRuns: 1, timeLimitMin: 60, instructions: "",
   isolation: "inPlace", copyFiles: [], setupCommand: "", allowlist: [],
   ...KIND_DEFAULTS[kind],
 });

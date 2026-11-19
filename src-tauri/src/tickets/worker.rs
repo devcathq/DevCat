@@ -32,8 +32,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Longest the agent may work on one ticket.
-const TICKET_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const CLAUDE_MAX_TURNS: u32 = 200;
 /// DevCat Agent: "continue" after a step limit, at most this many times.
 const AGENT_ROUNDS: usize = 4;
@@ -115,6 +113,12 @@ fn in_this_run<F: std::future::Future>(f: F) -> impl std::future::Future<Output 
 
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+/// Longest the agent may work on one ticket, and a worktree's setup command run: the board's time
+/// limit.
+fn time_limit(b: &Board) -> Duration {
+    Duration::from_secs(u64::from(b.time_limit_min.clamp(1, 24 * 60)) * 60)
 }
 
 pub fn jobs() -> HashMap<String, JobView> {
@@ -763,14 +767,18 @@ async fn run_agent(b: &Board, t: &Ticket, wc: &WorkingCopy, images: &[Image], cu
                 max_turns: CLAUDE_MAX_TURNS,
                 program: Some(l.program.into()),
                 env: l.env,
-                timeout: TICKET_TIMEOUT,
+                timeout: time_limit(b),
                 images: if with_images { images.iter().map(|i| (i.media_type.clone(), i.data.clone())).collect() } else { vec![] },
                 mcp,
                 session: session.clone(),
                 resume,
             };
             let c = cancel.clone();
-            let o = crate::claude::headless::run(job, activity, move || c.is_cancelled()).await?;
+            let started = tokio::time::Instant::now();
+            let o = crate::claude::headless::run(job, activity, move || c.is_cancelled()).await.map_err(|e| {
+                // headless's own message doesn't say which limit
+                if started.elapsed() >= time_limit(b) && !cancel.is_cancelled() { AppError::msg(format!("The agent took longer than the board's time limit ({} min) and was stopped", b.time_limit_min)) } else { e }
+            })?;
             let mut a = o.structured.as_ref().map(answer_of).unwrap_or_else(|| parse_answer(&o.text));
             a.cost_usd = o.cost_usd;
             Ok(a)
@@ -850,7 +858,7 @@ async fn run_devcat_agent(
         }
         _ => {}
     };
-    let deadline = tokio::time::Instant::now() + TICKET_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + time_limit(b);
     let mut text = prompt.to_string();
     let mut images = Some(images);
     for _ in 0..AGENT_ROUNDS {
@@ -859,7 +867,7 @@ async fn run_devcat_agent(
         match turn {
             Err(_) => {
                 cancel.cancel();
-                return Err(AppError::msg("The agent took too long and was stopped"));
+                return Err(AppError::msg(format!("The agent took longer than the board's time limit ({} min) and was stopped", b.time_limit_min)));
             }
             Ok(Err(e)) => return Err(AppError::msg(e.to_string())),
             Ok(Ok(TurnEnd::Answered)) => return Ok(parse_answer(&last_text)),
@@ -1676,7 +1684,7 @@ async fn setup(b: &Board, at: &str, cancel: &Cancel) -> Result<(), String> {
         }))
     };
     let readers = [read(child.stdout.take().map(|r| Box::new(r) as _)), read(child.stderr.take().map(|r| Box::new(r) as _))];
-    let deadline = tokio::time::Instant::now() + TICKET_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + time_limit(b);
     let status = loop {
         tokio::select! {
             s = child.wait() => break s.ok(),
@@ -1704,7 +1712,7 @@ async fn setup(b: &Board, at: &str, cancel: &Cancel) -> Result<(), String> {
             None => "The setup command was ended by a signal, so the agent didn't start.".into(),
         },
         None if cancel.is_cancelled() => "Stopped.".into(),
-        None => format!("The setup command took longer than {} minutes and was stopped, so the agent didn't start.", TICKET_TIMEOUT.as_secs() / 60),
+        None => format!("The setup command took longer than the board's time limit ({} min) and was stopped, so the agent didn't start.", time_limit(b).as_secs() / 60),
     };
     Err(with_output(&why, &lines.lock()))
 }
@@ -2534,6 +2542,29 @@ pub(crate) mod tests {
         assert!(rec.outcome == "error" && rec.summary.contains("not on a branch"), "{}", rec.summary);
         assert!(!out.join("prompt.jsonl").exists(), "the agent never ran");
         assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), CALC);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The board's time limit stops the agent (boards saved before the setting: 60 minutes): an
+    /// agent that works longer than one minute is stopped when it's up, and the run ends as an
+    /// error that names the limit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn board_time_limit() {
+        let old: Board = serde_json::from_value(json!({ "name": "b", "kind": "jira" })).unwrap();
+        assert_eq!(old.time_limit_min, 60);
+        let (site, _) = mock_jira().await;
+        let dir = temp_dir("time-limit");
+        repo_at(&dir, &[("calc.py", CALC)]).await;
+        let cwd = dir.to_str().unwrap();
+        let (slow, _) = stand_in("fixed", "sleep 150").await;
+        let t0 = std::time::Instant::now();
+        let rec = fix_one(&Board { time_limit_min: 1, ..board_on(&site, cwd, &slow) }, "ABC-1", None, None, &Cancel::default()).await;
+        let took = t0.elapsed().as_secs();
+        assert_eq!(rec.outcome, "error", "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.summary.contains("the board's time limit (1 min)"), "{}", rec.summary);
+        assert!((60..100).contains(&took), "stopped after {took} s");
+        assert_eq!(head(cwd).await, "main");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

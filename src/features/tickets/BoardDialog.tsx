@@ -271,6 +271,12 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
             </Field>
             <Field label="Model" hint="Empty: the connection's default."><Input value={b.model ?? ""} onChange={(e) => set({ model: e.target.value || null })} placeholder="sonnet" /></Field>
           </div>
+          <Field label="Time limit" hint="The longest the agent works on one ticket (and a worktree's setup command runs). Then it's stopped and the run ends with an error.">
+            <div className="flex items-center gap-2">
+              <Input type="number" min={1} max={1440} className="w-20" value={b.timeLimitMin} onChange={(e) => set({ timeLimitMin: Number(e.target.value) || 60 })} />
+              <span className="text-[13px]">min</span>
+            </div>
+          </Field>
           <Field label="Default prompt" hint="Given to the agent with every ticket: conventions, where things are, how to test. When you fix tickets by hand, “With a prompt…” replaces it for those tickets.">
             <Textarea rows={4} value={b.instructions} onChange={(e) => set({ instructions: e.target.value })} placeholder="Run `pnpm test` before finishing. Keep the API backwards compatible." />
           </Field>

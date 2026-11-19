@@ -54,6 +54,8 @@ to the column you chose, the move is skipped and the reason shows in the history
   ticket you fix with a prompt of its own (below) gets that prompt instead.
 - **Let the agent run commands**: off by default, so the agent can only read and edit files in the
   repository. Turn it on to let it build and run tests. It will then run any command it decides to, as you.
+- **Time limit**: the longest the agent works on one ticket, in minutes (default 60). When it's up, DevCat stops
+  the agent and the run ends with an error; the ticket goes back where it was.
 
 ## Fix tickets
 
@@ -104,7 +106,7 @@ uncommitted work and any branch in the repository while it works. The repository
    tells you about a file it didn't copy.
 4. DevCat runs the **Setup command** in the worktree (for example `pnpm install` or `go mod download`). It runs
    under the same rules as the agent's commands: only on a board that lets the agent run commands, as you, within
-   the run's time limit, and **Stop** ends it. Its output shows in the board's activity.
+   the board's **Time limit**, and **Stop** ends it. Its output shows in the board's activity.
 5. The agent works in the worktree. DevCat commits there and, with **Push** on, pushes a fixed ticket's branch.
 6. DevCat removes the worktree. The branch keeps the commits (a run that changed nothing leaves no branch).
 

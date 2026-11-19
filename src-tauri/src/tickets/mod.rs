@@ -129,6 +129,9 @@ fn one() -> u32 {
 fn three() -> u32 {
     3
 }
+fn sixty() -> u32 {
+    60
+}
 fn devcat_prefix() -> String {
     "devcat/".into()
 }
@@ -256,6 +259,10 @@ pub struct Board {
     /// boards with a worktree for each ticket: in place, one at a time.
     #[serde(default = "one")]
     pub parallel_runs: u32,
+    /// Longest the agent may work on one ticket, in minutes (1 to 1440); then it's stopped. A
+    /// worktree's setup command gets the same.
+    #[serde(default = "sixty")]
+    pub time_limit_min: u32,
     /// The default prompt: added to every ticket's (conventions, how to test…). A ticket fixed with
     /// a prompt of its own gets that one instead.
     #[serde(default)]
@@ -474,6 +481,7 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     b.interval_min = b.interval_min.clamp(1, 24 * 60);
     b.max_per_run = b.max_per_run.clamp(1, 20);
     b.parallel_runs = b.parallel_runs.clamp(1, 4);
+    b.time_limit_min = b.time_limit_min.clamp(1, 24 * 60);
     if b.kind == TrackerKind::Github {
         let t = token(&b);
         github::on_save(&mut b, t).await?;

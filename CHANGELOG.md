@@ -58,6 +58,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   agent's questions, or to send a `ready-for-human` issue back) and a watched GitHub board runs it again at the next
   check, in a new conversation that reads the new comments, on the issue's branch with the earlier commits. Without
   a new label it doesn't run again. The comment for questions or a failure says how.
+- **Tickets: a time limit for each board** (#189): **Time limit** in a board's settings (minutes, default 60) is
+  the longest the agent works on one ticket, and a worktree's **Setup command** runs. When it's up, DevCat stops it
+  and the run ends with an error that names the limit.
 
 ## 0.31.0 - 2026-11-19
 
