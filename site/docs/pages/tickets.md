@@ -76,8 +76,8 @@ For each ticket:
    onto it. Unfinished work still goes on a new `devcat/…` branch, so it never lands on yours. In a folder,
    repositories without that branch are left alone.
 2. The agent reads the ticket (title, description, labels, recent comments) and makes the change. The
-   ticket's images (screenshots attached in Jira or Trello, or pasted into a Linear description) are shown to
-   it: png, jpeg, gif or webp, up to 6 of them and 5 MB each. Other attachments are only named.
+   ticket's images (screenshots attached in Jira or Trello, pasted into a Linear description or uploaded to a GitHub
+   issue) are shown to it: png, jpeg, gif or webp, up to 6 of them and 5 MB each. Other attachments are only named.
 3. It answers **fixed**, **needs a person** (with its questions) or **couldn't fix**.
 4. DevCat commits what changed on the branch (unfinished work too, marked `WIP`) and switches the
    repository back to the branch it was on. In a folder, the repositories the agent didn't change have their
@@ -140,6 +140,9 @@ token and the repository, reads the token owner's login, and creates the labels 
 - New GitHub boards start with **A worktree for each ticket**, and the branch is always pushed: a fixed issue's
   branch gets a draft pull request into the default branch (or the **Base branch**) that says `Closes #<number>`.
   The issue's comment has the summary, how to test and the pull request's link, and the history links it too.
+- The agent reads the issue's comments from people with write access to the repository (all of them, oldest
+  first), never comments from anyone else: anyone can comment on a public issue. The images uploaded to the issue
+  and to those comments are shown to it, also in a private repository; images from other sites stay links.
 - When the agent has questions, its work so far is pushed to the branch, the comment has the questions and the
   branch, and the issue gets `needs-info`. When it fails (or the **Setup command** fails), its unfinished work is
   committed (marked WIP) and pushed, the comment has the reason and the branch, and the issue gets

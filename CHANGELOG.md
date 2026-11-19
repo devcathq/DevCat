@@ -32,6 +32,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 - **Tickets: parallel runs** (#193): a board with a worktree for each ticket can work on up to 4 tickets at the same
   time (**Parallel runs** in the board's settings, default 1), each in its own worktree and branch. The **Working**
   panel shows each ticket with its log, and the other tickets wait. Boards that run in place still do one at a time.
+- **Tickets: what the agent reads on GitHub** (#197): the agent gets the issue's comments from people with write
+  access to the repository (such as an Agent Brief, or answers to its questions), and none from anyone else. The
+  images in the issue and in those comments are shown to it, also in a private repository.
 - **Tickets: GitHub issues the agent can't finish** (#198): when the agent has questions, its branch is pushed, the
   issue's comment has the questions and the issue gets the label `needs-info` (**When the agent has questions,
   label** in the board's settings). When it fails, its unfinished work is committed, pushed, and the comment has the
