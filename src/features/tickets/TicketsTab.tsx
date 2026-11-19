@@ -10,7 +10,7 @@ import { errMsg } from "../../lib/api";
 import { useConnections } from "../../store/connections";
 import { openClaudeWorkspace } from "../claude/open";
 import { confirmDialog } from "../connections/dialogs";
-import { ASSIGNED, TRACKERS, tickets, type Board, type JobView, type Outcome, type RunRecord, type Ticket } from "./api";
+import { ASSIGNED, TRACKERS, tickets, type Board, type JobView, type Outcome, type RunRecord, type RunView, type Ticket } from "./api";
 import { BoardDialog } from "./BoardDialog";
 import { boardProject, openTickets, startTickets, useTickets } from "./store";
 
@@ -135,7 +135,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
   // The chat: a thread per ticket the agent asked about (its last run needs a person), or that it
   // works on after an answer; closed threads stay closed until the agent asks again.
   const [dismissed, setDismissed] = useState(() => readDismissed(board.id));
-  const busyOn = (id: string) => !!job && (job.key === id || job.key === last.get(id)?.key || job.queue.includes(id));
+  const busyOn = (id: string) => !!job && (job.runs.some((r) => r.ticketId === id) || job.queue.includes(id));
   const threads = useMemo(
     () => [...last.values()].filter((r) => (ASKS.includes(r.outcome) && dismissed[r.ticketId] !== r.finished) || (r.reply && busyOn(r.ticketId))),
     [last, dismissed, job], // eslint-disable-line react-hooks/exhaustive-deps
@@ -237,7 +237,8 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
             {list && list.length === 0 && <Empty title="No tickets here">Nothing in this column{board.assigned !== "anyone" ? ` assigned to ${board.assigned === "me" ? "you" : "you or nobody"}` : ""}{board.label ? ` labelled “${board.label}”` : ""}.</Empty>}
             {list?.map((t) => {
               const r = last.get(t.id);
-              const busy = job?.key === t.key || job?.queue.includes(t.id);
+              const running = !!job?.runs.some((x) => x.ticketId === t.id);
+              const busy = running || !!job?.queue.includes(t.id);
               return (
                 <div key={t.id} className={clsx("flex items-start gap-2.5 border-b border-line/60 px-3 py-2 hover:bg-hover/40", picked.has(t.id) && "bg-accent/5")}>
                   <input type="checkbox" className="mt-1 accent-[var(--color-accent)]" checked={picked.has(t.id)} onChange={() => toggle(t.id)} disabled={busy} />
@@ -250,7 +251,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
                     <div className="mt-1 flex flex-wrap items-center gap-1">
                       {t.labels.map((l) => <Badge key={l}>{l}</Badge>)}
                       {t.assignees.length > 0 && <span className="text-[11px] text-muted">{t.assignees.join(", ")}</span>}
-                      {busy && <Badge tone="accent">{job?.key === t.key ? "agent working" : "queued"}</Badge>}
+                      {busy && <Badge tone="accent">{running ? "agent working" : "queued"}</Badge>}
                       {!busy && r && (
                         <button
                           title={ASKS.includes(r.outcome) ? "Answer the agent in the chat" : "See what the agent did"}
@@ -361,25 +362,37 @@ function FixWithPrompt({ board, list, onClose, onFix }: { board: Board; list: Ti
   );
 }
 
+/** What the agent does now: one ticket, or several side by side (a board's parallel runs), each with its log. */
 function JobPanel({ board, job }: { board: Board; job: JobView }) {
-  const logRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [job.log.length]);
+  const one = job.runs.length === 1 ? job.runs[0] : null;
+  const queued = job.queue.length ? `${job.queue.length} more queued` : "";
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-accent/5">
       <div className="flex items-center gap-2 px-3 pt-2">
         <Spinner className="size-3.5 text-accent" />
         <span className="min-w-0 flex-1 truncate text-[13px]">
-          <span className="font-mono text-[11px] text-muted">{job.key}</span> {job.title}
+          {one ? <><span className="font-mono text-[11px] text-muted">{one.key}</span> {one.title}</> : job.runs.length ? `${job.runs.length} tickets at once` : "Starting"}
         </span>
         <Button size="sm" variant="danger" disabled={job.stopping} onClick={() => void tickets.stop(board.id)}>
           <Square className="size-3" />{job.stopping ? "Stopping…" : "Stop"}
         </Button>
       </div>
-      <div className="px-3 pt-0.5 text-[11px] text-muted">
-        {job.stage}{job.queue.length ? ` · ${job.queue.length} more queued` : ""}
+      {!one && queued && <div className="px-3 pt-0.5 text-[11px] text-muted">{queued}</div>}
+      {job.runs.map((r) => <RunLog key={r.ticketId} run={r} named={!one} after={one && queued ? ` · ${queued}` : ""} />)}
+    </div>
+  );
+}
+
+function RunLog({ run, named, after }: { run: RunView; named: boolean; after: string }) {
+  const logRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [run.log.length]);
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="truncate px-3 pt-0.5 text-[11px] text-muted">
+        {named && <><span className="font-mono">{run.key}</span> {run.title} · </>}{run.stage}{after}
       </div>
       <div ref={logRef} className="selectable mx-3 my-2 min-h-0 flex-1 overflow-auto rounded border border-line bg-app p-2 font-mono text-[11px] leading-relaxed text-muted">
-        {job.log.map((l, i) => <div key={i} className={clsx("truncate", l.startsWith("—") && "text-fg")}>{l}</div>)}
+        {run.log.map((l, i) => <div key={i} className={clsx("truncate", l.startsWith("—") && "text-fg")}>{l}</div>)}
       </div>
     </div>
   );
