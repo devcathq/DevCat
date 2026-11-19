@@ -945,6 +945,14 @@ async fn base_of(clone: &str, b: &Board, remote: bool) -> AppResult<String> {
     }
 }
 
+/// The worktree (or the clone itself) that has `branch` checked out, as `git worktree list`
+/// says (its messages differ between git versions).
+async fn checked_out_at(clone: &str, branch: &str) -> Option<String> {
+    let list = git(clone, &["worktree", "list", "--porcelain"]).await.ok()?;
+    let want = format!("branch refs/heads/{branch}");
+    list.split("\n\n").find(|w| w.lines().any(|l| l == want)).and_then(|w| w.lines().find_map(|l| l.strip_prefix("worktree ")).map(str::to_string))
+}
+
 /// Hides `.worktrees/` in the clone's own exclude file (`<common git dir>/info/exclude`, never
 /// committed), so the worktrees never show as untracked files there.
 async fn exclude_worktrees(clone: &str) -> AppResult<()> {
@@ -960,6 +968,51 @@ async fn exclude_worktrees(clone: &str) -> AppResult<()> {
     let sep = if now.is_empty() || now.ends_with('\n') { "" } else { "\n" };
     std::fs::write(&file, format!("{now}{sep}.worktrees/\n"))?;
     Ok(())
+}
+
+/// `<worktree>.kept`, next to a worktree a run left for the user: the next start leaves it alone.
+fn kept_mark(worktree: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{worktree}.kept"))
+}
+
+/// DevCat starting: `prune_worktrees` for each worktree board (not one with a job already).
+pub fn tidy_worktrees() {
+    crate::rt::spawn(async {
+        let Ok(boards) = super::load_boards() else { return };
+        for b in boards.iter().filter(|b| b.isolation == Isolation::Worktree) {
+            if !JOBS.lock().contains_key(&b.id) {
+                prune_worktrees(b).await;
+            }
+        }
+    });
+}
+
+/// What runs left in a worktree board's `.worktrees/` when DevCat stopped in the middle (a
+/// crash): their worktrees and half-made folders are removed (the branches stay), and git
+/// forgets worktrees whose folder is gone. A worktree a run kept for the user (`kept_mark`, its
+/// work isn't committed) stays. Only at startup: a running run's worktree looks the same.
+pub async fn prune_worktrees(b: &Board) {
+    let Ok(top) = git(&b.repo, &["rev-parse", "--show-toplevel"]).await else { return };
+    let clone = top.trim();
+    for e in std::fs::read_dir(Path::new(clone).join(".worktrees")).into_iter().flatten().flatten() {
+        let p = e.path();
+        let at = p.to_string_lossy();
+        if p.is_dir() {
+            if !kept_mark(&at).exists()
+                && let Err(err) = std::fs::remove_dir_all(&p)
+            {
+                eprintln!("tickets: couldn't remove the left-over worktree {at}: {err}");
+            }
+        } else if let Some(wt) = at.strip_suffix(".kept")
+            && !Path::new(wt).is_dir()
+        {
+            // the user removed the kept worktree
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    if let Err(e) = git(clone, &["worktree", "prune"]).await {
+        eprintln!("tickets: git worktree prune in {clone}: {e}");
+    }
 }
 
 /// A branch name no repository has yet.
@@ -1134,6 +1187,8 @@ impl WorkingCopy {
         if path.exists() {
             return Err(AppError::msg(format!("{at} is there already (left by an earlier run?): remove it with git worktree remove, then try again")));
         }
+        // the user removed the worktree an earlier run left: it's no longer kept
+        let _ = std::fs::remove_file(kept_mark(&at));
         let from = if local { branch.clone() } else if on_origin { format!("origin/{branch}") } else { base_of(&clone, b, remote).await? };
         exclude_worktrees(&clone).await?;
         // `--no-track`: no upstream written into the clone's config (shared by every worktree,
@@ -1142,6 +1197,10 @@ impl WorkingCopy {
         if let Err(e) = made {
             if !local && !on_origin {
                 let _ = git(&clone, &["branch", "-q", "-D", &branch]).await;
+            }
+            // git refuses a branch checked out in another worktree (or in the clone itself)
+            if local && let Some(other) = checked_out_at(&clone, &branch).await {
+                return Err(AppError::msg(format!("{branch} is checked out in {other}: switch that worktree to another branch (or remove it), then try again")));
             }
             return Err(AppError::msg(format!("Couldn't make a worktree for {branch}: {e}")));
         }
@@ -1287,6 +1346,8 @@ impl WorkingCopy {
             Isolation::InPlace => {}
             Isolation::Worktree => {
                 if self.keep {
+                    // so the next start doesn't take it for one a crash left (`prune_worktrees`)
+                    let _ = std::fs::write(kept_mark(&self.cwd), "Left by a DevCat run for you to look at.\n");
                     rec.notes.push(format!("The worktree {} was left as it is: look at it, then remove it (git worktree remove --force)", self.cwd));
                     return;
                 }
@@ -2479,6 +2540,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// The ticket's branch is checked out somewhere else (another worktree, or the clone itself):
+    /// the run fails naming that place, the agent doesn't start, and no branch or worktree is left.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_branch_busy() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("wt-busy").await;
+        let cwd = dir.to_str().unwrap();
+        let other = dir.with_extension("other");
+        git(cwd, &["worktree", "add", "-q", "-b", BRANCH, other.to_str().unwrap()]).await.unwrap();
+        let branches = git(cwd, &["branch", "--list"]).await.unwrap();
+        let (fixer, out) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let rec = fix_one(&worktree_board(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert_eq!(rec.outcome, "error", "{} {:?}", rec.summary, rec.notes);
+        assert!(rec.summary.contains(&format!("{BRANCH} is checked out in {}", other.display())) && rec.summary.contains("switch"), "{}", rec.summary);
+        assert!(!out.join("prompt.jsonl").exists(), "the agent never ran");
+        assert_eq!(worktrees(cwd).await, vec![other.to_string_lossy().into_owned()], "no worktree made");
+        assert!(!dir.join(WORKTREE).exists());
+        assert_eq!(git(cwd, &["branch", "--list"]).await.unwrap(), branches, "no branch made or deleted");
+
+        git(cwd, &["worktree", "remove", "--force", other.to_str().unwrap()]).await.unwrap();
+        git(cwd, &["checkout", "-q", BRANCH]).await.unwrap();
+        let rec = fix_one(&worktree_board(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert!(rec.outcome == "error" && rec.summary.contains(&format!("{BRANCH} is checked out in {cwd}")), "{}", rec.summary);
+        assert!(worktrees(cwd).await.is_empty() && !dir.join(WORKTREE).exists());
+        assert_eq!(head(cwd).await, BRANCH);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// The setup command runs programs, so like the agent's commands only on a board that lets the
     /// agent run them: elsewhere it doesn't run, and the run fails saying why.
     #[cfg(unix)]
@@ -2496,5 +2587,48 @@ mod tests {
         assert!(worktrees(cwd).await.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// At startup, what a crash left in `.worktrees/` goes (worktrees and plain folders), and git
+    /// forgets worktrees whose folder is gone; a worktree a run left for the user (with its work)
+    /// and the user's own worktrees stay.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktrees_pruned_at_startup() {
+        let (site, _) = mock_jira().await;
+        let (dir, remote) = clone_with_origin("wt-prune").await;
+        let cwd = dir.to_str().unwrap();
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py; git config core.sshCommand 'ssh -v'").await;
+        let rec = fix_one(&worktree_board(&site, cwd, &fixer), "ABC-1", None, None, &Cancel::default()).await;
+        assert!(rec.notes.iter().any(|n| n.contains("was left as it is")), "{:?}", rec.notes);
+        git(cwd, &["config", "--unset", "core.sshCommand"]).await.unwrap();
+        let kept = dir.join(WORKTREE);
+        let crashed = dir.join(".worktrees/abc-2-crashed");
+        git(cwd, &["worktree", "add", "-q", "--no-track", "-b", "devcat/abc-2-crashed", crashed.to_str().unwrap(), "main"]).await.unwrap();
+        std::fs::write(crashed.join("calc.py"), "# half done\n").unwrap();
+        std::fs::create_dir_all(dir.join(".worktrees/abc-3-half-made/src")).unwrap();
+        let gone = dir.with_extension("gone");
+        git(cwd, &["worktree", "add", "-q", "--detach", gone.to_str().unwrap()]).await.unwrap();
+        std::fs::remove_dir_all(&gone).unwrap();
+        let mine = dir.with_extension("mine");
+        git(cwd, &["worktree", "add", "-q", "-b", "mine", mine.to_str().unwrap()]).await.unwrap();
+
+        prune_worktrees(&worktree_board(&site, cwd, &fixer)).await;
+        let mut all = worktrees(cwd).await;
+        all.sort();
+        assert_eq!(all, vec![mine.to_string_lossy().into_owned(), kept.to_string_lossy().into_owned()], "sorted: `.mine` before `/.worktrees`");
+        let mut left: Vec<String> = std::fs::read_dir(dir.join(".worktrees")).unwrap().flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, vec!["abc-1-average-gives-the-wrong-result".to_string()], "only the kept worktree is left");
+        assert_eq!(changed_files(kept.to_str().unwrap()).await.unwrap(), 1, "with its work");
+        assert!(has_ref(cwd, "refs/heads/devcat/abc-2-crashed").await, "branches stay");
+        assert!(mine.exists());
+
+        git(cwd, &["worktree", "remove", "--force", kept.to_str().unwrap()]).await.unwrap();
+        prune_worktrees(&worktree_board(&site, cwd, &fixer)).await;
+        assert_eq!(std::fs::read_dir(dir.join(".worktrees")).unwrap().count(), 0, "nothing marks the removed worktree as kept");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&mine);
     }
 }
