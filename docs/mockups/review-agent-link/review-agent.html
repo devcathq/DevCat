@@ -1,0 +1,182 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+:root{--app:#0f1114;--panel:#14161a;--raised:#1a1d22;--hover:#232730;--line:#2a2f39;--fg:#e6e8ec;--muted:#8b93a3;--faint:#5c6370;--accent:#f5a524;--ok:#4ade80;--warn:#fbbf24;--blue:#60a5fa}
+*{box-sizing:border-box}
+body{margin:0;background:#07080a;font:13px/1.45 "Segoe UI",Inter,system-ui,sans-serif;color:var(--fg);padding:24px}
+.shot{width:1120px;margin:0 0 40px;padding:20px;background:#07080a}
+.cap{font-size:15px;font-weight:600;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 12px;font-size:12.5px}
+.win{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--app);position:relative}
+.tabs{display:flex;gap:2px;background:var(--panel);border-bottom:1px solid var(--line);padding:6px 8px 0}
+.tab{padding:6px 12px;border-radius:6px 6px 0 0;color:var(--muted);font-size:12px;display:flex;gap:6px;align-items:center}
+.tab.on{background:var(--app);color:var(--fg);border:1px solid var(--line);border-bottom-color:var(--app);margin-bottom:-1px}
+.tb{display:flex;align-items:center;gap:6px;height:38px;padding:0 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+.btn{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:6px;border:1px solid var(--line);background:var(--raised);color:var(--fg);font-size:12px;white-space:nowrap}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a1205;font-weight:600}
+.btn.seg{border-radius:0}.segs{display:flex}.segs .btn:first-child{border-radius:6px 0 0 6px}.segs .btn:last-child{border-radius:0 6px 6px 0}
+.btn.sel{background:var(--hover)}
+.ico{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;color:var(--muted)}
+.url{flex:1;height:26px;border:1px solid var(--line);border-radius:6px;background:var(--app);font:12px Consolas,monospace;display:flex;align-items:center;padding:0 8px}
+.new{outline:2px solid var(--accent);outline-offset:3px;border-radius:7px;position:relative}
+.badge{position:absolute;background:var(--accent);color:#1a1205;font-weight:700;font-size:11px;border-radius:999px;padding:2px 8px;white-space:nowrap;z-index:5;box-shadow:0 2px 10px #0008}
+.chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:999px;border:1px solid #f5a52466;background:#f5a5241a;color:var(--accent);font-size:12px;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block}
+.term{padding:14px 16px;font:12.5px/1.6 Consolas,monospace;height:300px;color:#cfd3da}
+.term .me{color:var(--fg)}.term .dim{color:var(--faint)}.term .acc{color:var(--accent)}.term .ok{color:var(--ok)}.term .tool{color:var(--blue)}
+.body{display:flex;height:400px}
+.page{flex:1;background:#f6f7fb;position:relative;color:#1b1f29;overflow:hidden}
+.side{width:300px;border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column}
+.sh{height:32px;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);color:var(--muted);font-weight:600;font-size:12px}
+.note{display:flex;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line)}
+.num{width:20px;height:20px;border-radius:50%;background:var(--accent);color:#1a1205;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sel{font:11px Consolas,monospace;color:var(--muted)}
+.sent{font-size:11px;color:var(--ok);margin-top:2px}.wait{font-size:11px;color:var(--warn);margin-top:2px}
+.menu{position:absolute;background:var(--raised);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 30px #000a;padding:4px;min-width:250px;z-index:4;font-size:12.5px}
+.mi{padding:6px 10px;border-radius:5px;display:flex;align-items:center;gap:8px}.mi.h{background:var(--hover)}
+.mh{padding:6px 10px 3px;color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.sep{height:1px;background:var(--line);margin:4px 0}
+.k{color:var(--faint);margin-left:auto;font-size:11px}
+.dlg{position:absolute;left:50%;top:100px;transform:translateX(-50%);width:440px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 20px 50px #000c;z-index:6}
+.dlg .hd{padding:12px 16px;border-bottom:1px solid var(--line);font-weight:600;display:flex}
+.dlg .bd{padding:14px 16px;color:var(--muted);font-size:12px}
+.dlg .in{margin-top:6px;height:30px;border:1px solid var(--line);border-radius:6px;background:var(--app);display:flex;align-items:center;padding:0 10px;font:12.5px Consolas,monospace;color:var(--fg)}
+.dlg .ft{padding:10px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;align-items:center}
+.scrim{position:absolute;inset:76px 0 0;background:#0009;z-index:5}
+/* fake page */
+.nav{height:56px;background:#fff;border-bottom:1px solid #e3e6ee;display:flex;align-items:center;padding:0 22px;gap:18px}
+.logo{font-weight:800;font-size:17px;color:#4338ca}.lnk{color:#5b6374;font-size:13px}
+.su{margin-left:6px;background:#4338ca;color:#fff;border-radius:7px;padding:7px 14px;font-weight:600;position:relative}
+.hero{padding:40px 40px 0}.hero h1{font-size:30px;margin:0 0 8px}.hero p{color:#5b6374;margin:0 0 18px;max-width:440px}
+.cta{display:inline-block;background:#111827;color:#fff;border-radius:8px;padding:10px 18px;font-weight:600;position:relative}
+.pin{position:absolute;top:-10px;right:-10px;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#1a1205;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px #fff}
+.hl{outline:2px dashed var(--accent);outline-offset:3px}
+.cbox{position:absolute;background:#fff;border:1px solid #d6dae3;border-radius:8px;box-shadow:0 8px 24px #0002;width:250px;padding:10px;font-size:12.5px;color:#1b1f29}
+.cbox .ta{border:1px solid #c9ced9;border-radius:6px;padding:6px 8px;min-height:44px}
+.status{font-size:11px;color:var(--muted);white-space:nowrap}
+.foot{position:absolute;bottom:0;left:0;right:0;height:46px;background:#fff;border-top:1px solid #e3e6ee;display:flex;align-items:center;padding:0 22px;gap:16px;color:#5b6374;font-size:12px}
+.chat{padding:14px 18px;height:400px;display:flex;flex-direction:column;gap:10px;font-size:13px}
+.bub{background:var(--raised);border:1px solid var(--line);border-radius:10px;padding:9px 12px;max-width:640px}
+.bub.user{align-self:flex-end;background:#f5a52414;border-color:#f5a52444}
+.tc{font:12px Consolas,monospace;border:1px solid var(--line);border-radius:7px;padding:6px 10px;background:var(--panel);color:var(--muted);max-width:640px}
+.tc b{color:var(--blue);font-weight:600}
+.ap{border:1px solid #fbbf2466;background:#fbbf2410;border-radius:8px;padding:9px 12px;max-width:640px}
+.legend{display:flex;gap:18px;margin-top:10px;color:var(--muted);font-size:12px}
+.legend span b{color:var(--accent)}
+</style></head><body>
+
+<!-- 1 -->
+<div class="shot" id="s1">
+<p class="cap">1 · Start from the session: “Review a page” in the Claude Code / DevCat Agent top bar</p>
+<p class="sub">The review that opens is linked to this session.</p>
+<div class="win">
+  <div class="tabs"><div class="tab on">✦ Claude Code · dev-cat</div><div class="tab">query · prod-db</div><div class="tab">Notes</div></div>
+  <div class="tb">
+    <div class="segs"><span class="btn seg sel">Chat</span><span class="btn seg">Diff</span><span class="btn seg">Trace</span></div>
+    <span style="flex:1"></span>
+    <span class="btn new">⌖ Review a page<span class="badge" style="top:-24px;left:50%;transform:translateX(-50%)">NEW</span></span>
+    <span class="btn ghost">⌕ Review changes</span><span class="ico">⋯</span>
+  </div>
+  <div class="term">
+    <div class="dim">╭─ Claude Code ─ ~/AppWork/devcathq/dev-cat</div>
+    <div class="me">&gt; make the landing page sign-up button match the new design</div>
+    <div>● Updated <span class="acc">src/pages/Landing.tsx</span> and <span class="acc">src/styles/buttons.css</span>.</div>
+    <div class="dim">  Run the dev server and check http://localhost:5173.</div>
+  </div>
+  <div class="scrim"></div>
+  <div class="dlg">
+    <div class="hd">Review a page<span style="margin-left:auto;color:var(--muted)">✕</span></div>
+    <div class="bd">Page address<div class="in">http://localhost:5173</div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:6px"><span class="dot"></span>Notes go to <b style="color:var(--fg)">&nbsp;Claude Code · dev-cat</b></div></div>
+    <div class="ft"><span class="btn primary">Review</span></div>
+  </div>
+</div>
+</div>
+
+<!-- 2 -->
+<div class="shot" id="s2">
+<p class="cap">2 · Review tab, linked: every note goes to the session as you add it</p>
+<p class="sub">The chip shows the linked session; its menu turns auto-send off, sends waiting notes, or disconnects.</p>
+<div class="win">
+  <div class="tabs"><div class="tab">✦ Claude Code · dev-cat</div><div class="tab on">⌖ Review · localhost:5173</div></div>
+  <div class="tb">
+    <span class="ico">←</span><span class="ico">⟳</span>
+    <div class="url">http://localhost:5173/</div>
+    <span class="status">1280 × 400</span>
+    <span class="btn" style="color:var(--accent)">⌖ Inspect</span>
+    <span class="chip new"><span class="dot"></span>Claude Code · dev-cat ▾<span class="badge" style="top:-24px;left:50%;transform:translateX(-50%)">NEW</span></span>
+    <span class="ico">⋯</span><span class="btn primary">Finish review</span>
+  </div>
+  <div class="menu" style="right:118px;top:76px">
+    <div class="mh">Linked session</div>
+    <div class="mi h">☑ Send notes as I add them</div>
+    <div class="mi" style="color:var(--faint)">➤ Send 0 waiting notes</div>
+    <div class="mi">↗ Go to session<span class="k">Claude Code · dev-cat</span></div>
+    <div class="sep"></div>
+    <div class="mi">⇄ Connect another session…</div>
+    <div class="mi" style="color:#f87171">⨯ Disconnect</div>
+  </div>
+  <div class="body">
+    <div class="page">
+      <div class="nav"><span class="logo">Acme</span><span class="lnk">Product</span><span class="lnk">Pricing</span><span class="lnk">Docs</span><span style="flex:1"></span><span class="su hl">Sign up<span class="pin">1</span></span></div>
+      <div class="hero"><h1>Ship faster with Acme</h1><p>One place for your team's builds, previews and reviews.</p><span class="cta">Start free trial<span class="pin">2</span></span></div>
+      <div class="cbox" style="left:270px;top:170px"><div style="font:11px Consolas,monospace;color:#6b7280;margin-bottom:6px">main .hero .cta</div><div class="ta">CTA should use the new primary color, like Sign up</div><div style="display:flex;justify-content:flex-end;margin-top:8px"><span style="background:#f5a524;color:#1a1205;border-radius:6px;padding:4px 10px;font-weight:600">Add note</span></div></div>
+      <div class="foot">© Acme · <span>Privacy</span><span>Terms</span></div>
+    </div>
+    <div class="side">
+      <div class="sh">Notes · 2</div>
+      <div class="note"><span class="num">1</span><div><div class="sel">header .btn-primary</div><div>Too close to the logo, add more left margin</div><div class="sent">✓ sent to Claude Code</div></div></div>
+      <div class="note"><span class="num">2</span><div><div class="sel">main .hero .cta</div><div>CTA should use the new primary color, like Sign up</div><div class="sent">✓ sent to Claude Code</div></div></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- 3 -->
+<div class="shot" id="s3">
+<p class="cap">3 · Or connect an open review to a session: “Connect agent” in the Review tab</p>
+<p class="sub">Lists the open Claude Code and DevCat Agent tabs; the notes already there can be sent right away.</p>
+<div class="win" style="height:330px">
+  <div class="tabs"><div class="tab">✦ Claude Code · dev-cat</div><div class="tab">◆ DevCat Agent · site</div><div class="tab on">⌖ Review · staging.acme.dev</div></div>
+  <div class="tb">
+    <span class="ico">←</span><span class="ico">⟳</span>
+    <div class="url">https://staging.acme.dev/pricing</div>
+    <span class="btn" style="color:var(--accent)">⌖ Inspect</span>
+    <span class="btn new">⇄ Connect agent ▾<span class="badge" style="top:-24px;left:50%;transform:translateX(-50%)">NEW</span></span>
+    <span class="ico">⋯</span><span class="btn primary">Finish review</span>
+  </div>
+  <div class="menu" style="right:118px;top:76px;min-width:330px">
+    <div class="mh">Send this review's notes to</div>
+    <div class="mi h">✦ Claude Code · dev-cat<span class="k">~/devcathq/dev-cat · working</span></div>
+    <div class="mi">◆ DevCat Agent · site<span class="k">~/acme/site · idle</span></div>
+    <div class="sep"></div>
+    <div class="mi">☑ Also send the 3 notes already here</div>
+    <div class="mi" style="color:var(--faint)">+ New DevCat Agent chat in this folder</div>
+  </div>
+  <div class="body" style="height:254px"><div class="page" style="opacity:.55"><div class="nav"><span class="logo">Acme</span><span class="lnk">Pricing</span></div><div class="hero"><h1>Pricing</h1></div></div>
+  <div class="side"><div class="sh">Notes · 3</div>
+  <div class="note"><span class="num">1</span><div><div class="sel">.plan-pro .price</div><div>Should be $29, not $39</div><div class="wait">not sent</div></div></div>
+  <div class="note"><span class="num">2</span><div><div class="sel">.faq h3</div><div>Typo: "anual"</div><div class="wait">not sent</div></div></div></div></div>
+</div>
+</div>
+
+<!-- 4 -->
+<div class="shot" id="s4">
+<p class="cap">4 · The agent sees the notes and works with the page itself (issue #185 tools)</p>
+<p class="sub">Reads the page, fixes the code, reloads and checks. Actions on the page ask first, and show in the Review tab.</p>
+<div class="win">
+  <div class="tabs"><div class="tab on">◆ DevCat Agent · site</div><div class="tab">⌖ Review · localhost:5173</div></div>
+  <div class="tb"><div class="segs"><span class="btn seg sel">Chat</span><span class="btn seg">Diff</span></div><span style="flex:1"></span><span class="btn">⌖ Review a page</span><span class="chip"><span class="dot"></span>Review · localhost:5173</span></div>
+  <div class="chat">
+    <div class="bub user">I'm reviewing http://localhost:5173 in DevCat (review rv-1a2b). My notes will come here as I add them.<br>
+      <span style="font:12px Consolas,monospace;color:var(--muted)">1. [/ 1280] `header .btn-primary` "Sign up" → Too close to the logo, add more left margin</span></div>
+    <div class="tc"><b>review_read</b> {review: "rv-1a2b", page: true} · 2 notes, outline 41 elements, header .btn-primary: margin-left 0</div>
+    <div class="tc"><b>edit</b> src/styles/header.css · +1 −1</div>
+    <div class="ap">⚠ <b>review_act</b> {action: "reload"} then {action: "highlight", selector: "header .btn-primary"}<div style="margin-top:6px;display:flex;gap:6px"><span class="btn primary">Allow</span><span class="btn">Allow for this review</span><span class="btn">Deny</span></div></div>
+    <div class="tc"><b>review_read</b> {selector: "header .btn-primary", styles: true} · margin-left 24px ✓</div>
+    <div class="bub">Fixed note 1: the sign-up button now has 24px left margin. I reloaded the page and highlighted it for you.</div>
+  </div>
+</div>
+<div class="legend"><span><b>■</b> new UI</span><span>Review tab status line meanwhile: “Agent reloaded the page · highlighted header .btn-primary”</span></div>
+</div>
+
+</body></html>
