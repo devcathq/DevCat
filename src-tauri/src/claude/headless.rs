@@ -69,18 +69,19 @@ pub async fn run(job: Job, activity: Arc<dyn Fn(String) + Send + Sync>, cancelle
     write_to(&run_id, &user_message(&job.prompt, &job.images)).await?;
 
     let deadline = tokio::time::Instant::now() + job.timeout;
+    // Stop and the time limit are checked on every message and at least every 250 ms, so a run
+    // that streams messages all the time can't put them off.
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut result: Option<Value> = None;
     loop {
+        if cancelled() || tokio::time::Instant::now() >= deadline {
+            let timed_out = !cancelled();
+            let _ = super::runner::claude_stop(run_id.clone()).await;
+            return Err(AppError::msg(if timed_out { "Claude took too long and was stopped" } else { "stopped" }));
+        }
         let next = tokio::select! {
             m = rx.recv() => m,
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                if cancelled() || tokio::time::Instant::now() > deadline {
-                    let timed_out = !cancelled();
-                    let _ = super::runner::claude_stop(run_id.clone()).await;
-                    return Err(AppError::msg(if timed_out { "Claude took too long and was stopped" } else { "stopped" }));
-                }
-                continue;
-            }
+            _ = tick.tick() => continue,
         };
         let Some((event, v)) = next else { break };
         match event {
@@ -141,5 +142,93 @@ mod tests {
         assert_eq!(tool_line("Edit", &json!({ "file_path": "src/a.rs", "old_string": "x" })), "Edit src/a.rs");
         assert_eq!(tool_line("Bash", &json!({ "command": "cargo test\n--quiet" })), "Bash cargo test");
         assert_eq!(tool_line("TodoWrite", &json!({})), "TodoWrite");
+    }
+
+    /// When a run ended, counted from the stand-in's first message: when DevCat closed its stdin
+    /// (the stop began) and when `run` returned.
+    #[cfg(unix)]
+    struct Ended {
+        result: AppResult<Outcome>,
+        stopping: Duration,
+        returned: Duration,
+    }
+
+    /// Runs a stand-in for Claude Code that sends a tool call every 100 ms and never answers (nor
+    /// exits when its stdin closes), with `timeout`; `stop_after` its first message, the run is
+    /// stopped.
+    #[cfg(unix)]
+    async fn chatty(timeout: Duration, stop_after: Option<Duration>) -> Ended {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Instant;
+        let out = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("devcat-headless-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&out).unwrap();
+        let script = out.join("claude");
+        // fd 3: a job in the background reads /dev/null as its stdin, not ours
+        std::fs::write(&script, format!(
+            "#!/bin/sh\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *'\"type\":\"user\"'*) break ;;\n  esac\ndone\nexec 3<&0\n(cat <&3 > /dev/null; touch '{0}/eof') &\nwhile true; do\n  printf '%s\\n' '{{\"type\":\"assistant\",\"session_id\":\"chatty-1\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{{\"file_path\":\"a.txt\"}}}}]}}}}'\n  sleep 0.1\ndone\n",
+            out.display()
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let job = Job {
+            cwd: out.to_string_lossy().into_owned(),
+            prompt: "Work forever.".into(),
+            model: None,
+            allow_commands: false,
+            schema: None,
+            max_turns: 1,
+            program: Some(script),
+            env: vec![],
+            timeout,
+            images: vec![],
+            mcp: None,
+            session: Default::default(),
+            resume: None,
+        };
+        let first: Arc<parking_lot::Mutex<Option<Instant>>> = Default::default();
+        let f = first.clone();
+        let activity: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |_| {
+            f.lock().get_or_insert_with(Instant::now);
+        });
+        let f = first.clone();
+        let cancelled = move || stop_after.is_some_and(|after| f.lock().is_some_and(|t| t.elapsed() >= after));
+        let eof = out.join("eof");
+        let closed = tokio::spawn(async move {
+            for _ in 0..1000 {
+                if eof.exists() {
+                    return Some(Instant::now());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            None
+        });
+        let result = tokio::time::timeout(Duration::from_secs(20), run(job, activity, cancelled)).await.expect("still running 20 s later");
+        let returned = Instant::now();
+        let closed = closed.await.unwrap().expect("its stdin was never closed");
+        let first = first.lock().expect("no message from the stand-in");
+        let _ = std::fs::remove_dir_all(&out);
+        Ended { result, stopping: closed - first, returned: returned - first }
+    }
+
+    /// A run that sends messages all the time is still stopped by its time limit, as soon as it's
+    /// up: the stop begins within a moment (stdin closed) and the run ends once the program is
+    /// gone (`STOP_GRACE`, then killed). The limit counts from the prompt, a little before the
+    /// first message (a new script can take a second to start on macOS).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn time_limit_while_messages_stream() {
+        let e = chatty(Duration::from_secs(3), None).await;
+        assert!(e.result.as_ref().is_err_and(|err| err.to_string().contains("took too long")), "{:?}", e.result.as_ref().err());
+        assert!(e.stopping < Duration::from_millis(3800), "the stop began {:?} after the first message (limit 3 s)", e.stopping);
+        assert!(e.returned < Duration::from_secs(6), "ended {:?} after the first message", e.returned);
+    }
+
+    /// Stop acts within a moment while messages stream.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_while_messages_stream() {
+        let e = chatty(Duration::from_secs(60), Some(Duration::from_secs(1))).await;
+        assert!(e.result.as_ref().is_err_and(|err| err.to_string() == "stopped"), "{:?}", e.result.as_ref().err());
+        assert!(e.stopping < Duration::from_millis(1800), "the stop began {:?} after the first message (stopped at 1 s)", e.stopping);
+        assert!(e.returned < Duration::from_secs(6), "ended {:?} after the first message", e.returned);
     }
 }
