@@ -375,7 +375,7 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
   const notInstalled = isAgent ? false : isClaude && !provider?.command ? infoLoaded && info !== null && !info.path : missing;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-app">
+    <div className="flex h-full min-h-0 flex-col bg-panel">
       {/* As the header narrows, its parts give way in this order: the shortcut hints, the button
           labels (icons stay, with tooltips), the folder path and session id, the branch name gets
           shorter, then the folder name and connection name go (the tab title has them). Past that, whole items
@@ -455,10 +455,10 @@ export default function ClaudeTab({ tab }: { tab: ClaudeTabT }) {
             )
           )}
         </div>
-        {view === "diff" && <div className="absolute inset-0 bg-app"><DiffView tabId={tabId} cwd={tab.cwd} active={active} onReview={reviewNow} agent={agent} /></div>}
-        {isAgent && view === "trace" && <div className="absolute inset-0 bg-app"><TraceView tabId={tabId} cwd={tab.cwd} active={active} /></div>}
+        {view === "diff" && <div className="absolute inset-0 bg-panel"><DiffView tabId={tabId} cwd={tab.cwd} active={active} onReview={reviewNow} agent={agent} /></div>}
+        {isAgent && view === "trace" && <div className="absolute inset-0 bg-panel"><TraceView tabId={tabId} cwd={tab.cwd} active={active} /></div>}
         {isClaude && (
-          <div className={clsx("absolute inset-0 bg-app", view !== "review" && "hidden")}>
+          <div className={clsx("absolute inset-0 bg-panel", view !== "review" && "hidden")}>
             <ReviewView tabId={tabId} cwd={tab.cwd} onFix={(f) => void fixFinding(f)} onShowDiff={() => setView("diff")} />
           </div>
         )}

@@ -174,6 +174,7 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "remote_resolve_dir" => out(c!(crate::claude::remote::remote_resolve_dir, "uri")),
         "fs_preview" => out(c!(files::fs_preview, "path")),
         "ai_providers_list" => out(c!(crate::ai::ai_providers_list)),
+        "ai_usage" => out(c!(crate::ai::usage::ai_usage, "providerId", "refresh")),
         "ai_provider_save" => out(c!(crate::ai::ai_provider_save, "provider")),
         "ai_provider_delete" => out(c!(crate::ai::ai_provider_delete, "id")),
         "ai_provider_detect" => out(c!(crate::ai::ai_provider_detect, "provider")),

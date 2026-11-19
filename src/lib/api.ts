@@ -6,7 +6,7 @@ import type {
   KeepAwakeState,
   UpdateInfo,
   GitRepo, GitLogQuery, GitCommit, GitCommitDetail, GitBlame, GitRefs, GitStash, CommitAction, RemoteOpts,
-  AiDetect, AiProvider,
+  AiDetect, AiProvider, AiUsage,
   ClaudeInfo, ClaudeProject, ClaudeStartOptions, FileEntry, FilePreview, FileVersions, GitStatus, SessionMeta,
   Note, ConnectionConfig, ExecOptions, NetKind, NetProfile, NetProfileFull, NetHelperStatus, NetStatus, NetTools, Project, McpSyncPlan, McpAuditEntry, Memory, MemoryKind, MemoryPlace, PlaceMemories, ClaudeImportPlan, MemorySyncReport, MemoryPeer, MemoryPeersStatus, MemoryTicket, MemoryPeerReport, MemorySyncActivity, SshConfigHost, ForwardStatus, TrafficSample, HistoryEntry, NodeKind, QueryResult, RowChange,
   SavedQuery, SchemaSnapshot, TableDataPage, TableDataRequest, TableRef, TableStructure, TreeNode, Bookmark,
@@ -316,6 +316,8 @@ export const api = {
 
   // AI connections (AI workspace providers). API keys are write-only (keychain).
   aiProvidersList: () => invoke<AiProvider[]>("ai_providers_list"),
+  /** Plan usage (Claude Code session / weekly limits, Antigravity pools) of each connection with a login. */
+  aiUsage: (providerId?: string | null, refresh = false) => invoke<AiUsage[]>("ai_usage", { providerId: providerId ?? null, refresh }),
   aiProviderSave: (provider: AiProvider) => invoke<AiProvider>("ai_provider_save", { provider }),
   aiProviderDelete: (id: string) => invoke<void>("ai_provider_delete", { id }),
   /** No provider: install status of every built-in CLI; with one: test that profile. */

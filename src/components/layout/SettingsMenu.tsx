@@ -8,6 +8,7 @@ import { openSetup, startTour } from "../../features/onboarding/store";
 import { openIntegrations } from "../../features/integrations/store";
 import { openAppearance } from "../../features/appearance/AppearanceDialog";
 import { useContextMenu, type MenuItem } from "../../features/connections/ContextMenu";
+import { UsageChip } from "../../features/claude/usage";
 import { KeepAwakeButton, useKeepAwake } from "../../features/keepawake/KeepAwakeButton";
 import { openMemory } from "../../features/memory/MemoryDialog";
 import { useMobile } from "../../features/mobile/store";
@@ -52,6 +53,7 @@ export function SettingsMenu() {
         <Smartphone className="size-3.5" />
         {pairing && <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-warn" />}
       </button>
+      <UsageChip />
       <KeepAwakeButton keepAwake={keepAwake} />
       <button
         onClick={open}

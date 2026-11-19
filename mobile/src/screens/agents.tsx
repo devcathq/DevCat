@@ -12,12 +12,8 @@ import { uploadPasteImage } from "../lib/transfer";
 import type { AgentStatus, AiProvider, ClaudeProject, PtyInfo, SessionMeta } from "../lib/types";
 import { Btn, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Screen, Section, Seg, Sheet, Spinner, TextArea, ago, folderName, useLoad } from "../ui";
 import { useFocus, useInFocus } from "../lib/focus";
+import { termTheme, useTheme } from "../lib/theme";
 
-const THEME = {
-  background: "#0a0b0d", foreground: "#e6e8ec", cursor: "#f5a524", cursorAccent: "#0a0b0d", selectionBackground: "#f5a52440",
-  black: "#1b1e24", red: "#f87171", green: "#4ade80", yellow: "#fbbf24", blue: "#60a5fa", magenta: "#c084fc", cyan: "#22d3ee", white: "#c9cdd4",
-  brightBlack: "#5c6370", brightRed: "#fca5a5", brightGreen: "#86efac", brightYellow: "#fde68a", brightBlue: "#93c5fd", brightMagenta: "#d8b4fe", brightCyan: "#67e8f9", brightWhite: "#f3f4f6",
-};
 
 function b64ToBytes(s: string): Uint8Array {
   const bin = atob(s);
@@ -127,9 +123,11 @@ export function Terminal({ id }: { id: string }) {
   // attach: scrollback first, then live output
   useEffect(() => {
     let disposed = false;
-    const t = new XTerm({ fontFamily: FONT, fontSize, lineHeight: 1.1, cursorBlink: false, scrollback: 5000, allowProposedApi: true, theme: THEME, convertEol: false });
+    const t = new XTerm({ fontFamily: FONT, fontSize, lineHeight: 1.1, cursorBlink: false, scrollback: 5000, allowProposedApi: true, theme: termTheme(useTheme.getState().light), convertEol: false });
     loadUnicode(t);
     xt.current = t;
+    // light / dark follows the phone's look at once
+    const unTheme = useTheme.subscribe((s, prev) => { if (s.light !== prev.light) t.options.theme = termTheme(s.light); });
     t.onData((d) => write(d));
     t.onScroll(() => { const b = t.buffer.active; setScrolledUp(b.viewportY < b.baseY); });
     const attach = async () => {
@@ -206,6 +204,7 @@ export function Terminal({ id }: { id: string }) {
     area?.addEventListener("touchend", onTouchEnd);
     return () => {
       disposed = true;
+      unTheme();
       if (scan) clearTimeout(scan);
       offOut(); offLag(); offExit();
       document.removeEventListener("visibilitychange", onVis);
@@ -316,7 +315,7 @@ export function Terminal({ id }: { id: string }) {
       {/* one layout for every terminal and agent: the live terminal, keys, and the message box
           (a Claude Code session's history is in the menu: "Open session transcript") */}
       <div className="relative min-h-0 flex-1">
-        <div className="h-full overflow-auto rounded-xl border border-line bg-[#0a0b0d] p-1" onPasteCapture={readonly ? undefined : pastedImages}>
+        <div className="h-full overflow-auto rounded-xl border border-line bg-term p-1" onPasteCapture={readonly ? undefined : pastedImages}>
           <div ref={box} className="h-full min-w-full" />
         </div>
         {/* scrolling without a wheel: a page up, and back to the newest */}

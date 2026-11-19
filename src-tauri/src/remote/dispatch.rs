@@ -262,6 +262,8 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             }
         }
         "ai_providers_list" => out(crate::ai::ai_providers_list().await),
+        // how much of each Claude Code / Antigravity plan is used (a read: percentages only)
+        "ai_usage" => out(crate::ai::usage::ai_usage(arg(args, "providerId").unwrap_or(None), arg(args, "refresh").unwrap_or(None)).await),
         // DevCat Agent chats (src-tauri/src/agent.rs): the phone gets `agent-event`s of the chats it opened.
         "agent_open" => {
             let session_id: Option<String> = arg(args, "sessionId").unwrap_or(None);

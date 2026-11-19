@@ -142,7 +142,7 @@ export default function ShellPanel({ connId, target, visible, onPodChange }: { c
         <div className="flex-1" />
         {state === "closed" && <Button size="sm" onClick={() => setNonce((n) => n + 1)}><RotateCw className="size-3" />Reconnect</Button>}
       </div>
-      <div className="min-h-0 flex-1 bg-app p-1.5">
+      <div className="min-h-0 flex-1 bg-panel p-1.5">
         <div ref={host} className="h-full w-full" />
       </div>
     </div>

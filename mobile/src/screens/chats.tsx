@@ -6,7 +6,7 @@ import { AlertTriangle, ArrowUp, Bot, Check, CheckCircle2, ChevronDown, ChevronR
 import { useEffect, useMemo, useRef, useState } from "react";
 import { claim, focusFolders, focusedProject, useFocus, useInFocus } from "../lib/focus";
 import { host, nav, refreshAgents, toastErr, useApp } from "../lib/store";
-import type { AgentChatInfo, AgentStatus, AiProvider, ClaudeProject, PtyInfo } from "../lib/types";
+import type { AgentChatInfo, AgentStatus, AiProvider, AiUsage, ClaudeProject, PtyInfo } from "../lib/types";
 import { Btn, Empty, ErrorBox, Input, Screen, Section, Sheet, Spinner, TextArea, ago, duration, folderName, useLoad } from "../ui";
 import { uploadPasteImage } from "../lib/transfer";
 import { termSize } from "./agents";
@@ -79,17 +79,28 @@ export function FolderSheet({ open, value, onClose, onPick, title = "Project fol
 }
 
 /** "" = Claude Code in a terminal; otherwise an AI provider of the computer. */
-type AgentChoice = { id: string; name: string; chat: boolean };
+type AgentChoice = { id: string; name: string; chat: boolean; usage?: AiUsage };
 
 function useAgentChoices(): AgentChoice[] {
   const providers = useLoad(() => host<AiProvider[]>("ai_providers_list"), []);
+  // plan usage of Claude Code / Antigravity logins (a computer without `ai_usage` leaves it out)
+  const usage = useLoad(() => host<AiUsage[]>("ai_usage", {}).catch(() => [] as AiUsage[]), []);
   return useMemo(() => {
     const list = providers.data ?? [];
+    const of = (id: string) => (usage.data ?? []).find((u) => u.providerId === id);
     const agent = list.filter((p) => p.kind === "agent").map((p) => ({ id: p.id, name: p.name, chat: true }));
-    const others = list.filter((p) => p.kind !== "agent" && p.id !== "claude").map((p) => ({ id: p.id, name: p.name, chat: false }));
-    return [...agent, { id: "", name: "Claude Code", chat: false }, ...others];
-  }, [providers.data]);
+    const others = list.filter((p) => p.kind !== "agent" && p.id !== "claude").map((p) => ({ id: p.id, name: p.name, chat: false, usage: of(p.id) }));
+    return [...agent, { id: "", name: "Claude Code", chat: false, usage: of("claude") }, ...others];
+  }, [providers.data, usage.data]);
 }
+
+/** "58% used · Weekly", the most used limit of a connection's plan. */
+function usageLine(u?: AiUsage): string | null {
+  if (!u || u.percent == null || !u.windows.length) return null;
+  const top = u.windows.reduce((a, b) => (b.percent > a.percent ? b : a));
+  return `${Math.round(top.percent)}% used · ${top.label}`;
+}
+const usageClass = (u?: AiUsage) => (u?.percent == null ? "text-muted" : u.percent >= 90 ? "text-danger" : u.percent >= 75 ? "text-warn" : "text-muted");
 
 /** Start an agent: a DevCat Agent chat, or a terminal running Claude Code / another CLI agent.
  *  `images` go with the first message: attached in a chat; for a terminal agent saved on the
@@ -193,7 +204,7 @@ function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }
             </button>
             <button onClick={() => setSheet("agent")} className="flex h-8 min-w-0 items-center gap-1 rounded-full bg-hover px-2.5 text-[12.5px] active:bg-line">
               {agent?.chat ? <Sparkles className="size-3.5 shrink-0 text-accent" /> : <TerminalSquare className="size-3.5 shrink-0 text-muted" />}
-              <span className="truncate font-medium">{agent?.name ?? "Agent"}</span><ChevronDown className="size-3.5 shrink-0 text-faint" />
+              <span className="truncate font-medium">{agent?.name ?? "Agent"}</span>{agent?.usage?.percent != null && <span className={clsx("shrink-0 tabular-nums", usageClass(agent.usage))}>{Math.round(agent.usage.percent)}%</span>}<ChevronDown className="size-3.5 shrink-0 text-faint" />
             </button>
           </>
         )}
@@ -218,7 +229,7 @@ function Composer({ readonly, offline }: { readonly: boolean; offline: boolean }
         {choices.map((c) => (
           <button key={c.id || "claude"} onClick={() => pickAgent(c)} className={clsx("flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left active:bg-hover", agent?.id === c.id ? "bg-accent/10 ring-1 ring-accent/60" : "bg-raised")}>
             {c.chat ? <Sparkles className="size-5 shrink-0 text-accent" /> : <TerminalSquare className="size-5 shrink-0 text-muted" />}
-            <span className="min-w-0 flex-1"><span className="block font-semibold">{c.name}</span><span className="block text-[11.5px] text-muted">{c.chat ? "A chat with approvals as buttons" : "Runs in a terminal on the computer"}</span></span>
+            <span className="min-w-0 flex-1"><span className="block font-semibold">{c.name}</span><span className="block text-[11.5px] text-muted">{c.chat ? "A chat with approvals as buttons" : "Runs in a terminal on the computer"}</span>{usageLine(c.usage) && <span className={clsx("block text-[11.5px] tabular-nums", usageClass(c.usage))}>{usageLine(c.usage)}</span>}</span>
             {agent?.id === c.id && <Check className="size-4 text-accent" />}
           </button>
         ))}

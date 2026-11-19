@@ -3,10 +3,11 @@
 import { Bell, Boxes, ChevronRight, Coffee, Copy, Database, HelpCircle, History, Laptop, LogOut, Network, Pencil, Repeat, Server } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { IS_WEB } from "../lib/env";
+import { setTheme, useTheme, type ThemeChoice } from "../lib/theme";
 import { phone, type Background } from "../lib/rpc";
 import { currentMachine, host, loadMachines, nav, toast, toastErr, useApp } from "../lib/store";
 import type { AuditEntry, HostInfo, NotifySettings } from "../lib/types";
-import { Badge, Btn, Card, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Note, Screen, Section, Toggle, TextArea, ago, useLoad } from "../ui";
+import { Badge, Btn, Card, Confirm, Empty, ErrorBox, Field, Input, Item, Loading, Note, Screen, Section, Seg, Toggle, TextArea, ago, useLoad } from "../ui";
 
 
 /** The Tools tab: what DevCat reaches on the computer besides agents and files. */
@@ -59,6 +60,7 @@ export function More() {
       <Item icon={<Repeat className="size-5" />} title="Switch computer" onClick={() => nav.reset([{ s: "computers" }])} chevron />
       <Item icon={<Server className="size-5" />} title="Computer settings" meta="Addresses, name" onClick={() => nav.push({ s: "machine" })} chevron />
       <Section>This phone</Section>
+      <Appearance />
       <PhoneName />
       {IS_WEB && <OtherBrowsers />}
       <div className="text-[11px] text-faint">DevCat Mobile {info?.version} · {info?.platform} · key {info?.deviceId.slice(0, 8)}…</div>
@@ -271,5 +273,16 @@ export function Help() {
         <p>On the computer, click <b>Revoke</b> next to it in DevCat → Mobile. It's cut off immediately.</p>
       </Q>
     </Screen>
+  );
+}
+
+/** Dark, light or as the phone's system setting says (lib/theme.ts). */
+function Appearance() {
+  const choice = useTheme((s) => s.choice);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[12px] text-muted">Appearance</span>
+      <Seg<ThemeChoice> value={choice} onChange={setTheme} options={[{ value: "system", label: "System" }, { value: "dark", label: "Dark" }, { value: "light", label: "Light" }]} />
+    </div>
   );
 }

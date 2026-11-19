@@ -122,7 +122,7 @@ export function NetLog({ id, name }: { id: string; name: string }) {
     <Screen title={name} sub="Log">
       {error && <ErrorBox error={error} />}
       {!lines ? <Loading /> : lines.length === 0 ? <Empty title="Nothing logged yet" /> : (
-        <pre className="selectable rounded-xl border border-line bg-[#0a0b0d] p-2.5 font-mono text-[10.5px] leading-relaxed break-all whitespace-pre-wrap text-[#cfd3da]">{lines.join("\n")}</pre>
+        <pre className="selectable rounded-xl border border-line bg-term p-2.5 font-mono text-[10.5px] leading-relaxed break-all whitespace-pre-wrap text-term-fg">{lines.join("\n")}</pre>
       )}
       <div ref={end} />
     </Screen>
@@ -295,7 +295,7 @@ export function Pod({ connId, namespace, name }: { connId: string; namespace: st
               </select>
             )}
           </div>
-          <div className="min-h-64 rounded-xl border border-line bg-[#0a0b0d] p-2.5" onScroll={(e) => { const el = e.currentTarget; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
+          <div className="min-h-64 rounded-xl border border-line bg-term p-2.5" onScroll={(e) => { const el = e.currentTarget; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
             {lines.length === 0 && !ended ? <Loading text="Waiting for logs…" /> : (
               <pre className="selectable font-mono text-[10.5px] leading-relaxed break-all whitespace-pre-wrap text-[#cfd3da]">{lines.map((l) => (/\b(error|fatal|panic|exception)\b/i.test(l) ? `\u0000${l}` : l)).join("\n").split("\n").map((l, i) => l.startsWith("\u0000") ? <span key={i} className="text-danger">{l.slice(1)}{"\n"}</span> : <span key={i}>{l}{"\n"}</span>)}</pre>
             )}

@@ -99,6 +99,12 @@ must still find the transcripts under the main `projects`. The account's email (
 the window and the phone (`ai_providers_list`); DevCat's own lookups use `ai::providers()`. On SSH hosts the host's
 own login is used (only `DEVCAT_` variables go there).
 
+Plan usage (`ai/usage.rs`, `ai_usage`: the title bar, the AI connections list and the phone) reads each Claude Code
+account's OAuth login where Claude Code keeps it (the keychain entry named after the config folder, through
+`/usr/bin/security`; `.credentials.json` elsewhere) and only reads it: it never refreshes or writes a token back, so
+Claude Code stays the login's one writer. Antigravity's (`agy`) comes from `agy --print /usage`. The phone gets the
+percentages only, never a token or an email beyond what `ai_providers_list` already shows.
+
 ## JDBC connections
 
 A `jdbc` connection (`src-tauri/src/db/jdbc.rs`) reaches a database through a driver jar the user supplies. DevCat has

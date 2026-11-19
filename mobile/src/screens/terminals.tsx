@@ -93,7 +93,7 @@ function NewButton({ icon, title, meta, disabled, onClick }: { icon: React.React
 function TermRow({ t, title, meta, right, done }: { t: PtyInfo; title: React.ReactNode; meta: React.ReactNode; right: string; done?: boolean }) {
   return (
     <button onClick={() => nav.push({ s: "terminal", id: t.id })} className="flex w-full items-center gap-3 rounded-xl bg-raised px-3 py-2.5 text-left active:bg-hover">
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[#0a0b0d] font-mono text-[12px] text-ok">{done ? <CheckCircle2 className="size-4" /> : "›_"}</span>
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-term font-mono text-[12px] text-ok">{done ? <CheckCircle2 className="size-4" /> : "›_"}</span>
       <span className="min-w-0 flex-1"><span className="block truncate font-semibold">{title}</span><span className="block truncate text-[12px] text-muted">{meta}</span></span>
       <span className="flex shrink-0 items-center gap-1 text-[11px] text-faint">{t.origin.startsWith("phone:") ? <Smartphone className="size-3" /> : <Laptop className="size-3" />}{right}</span>
       <ChevronRight className="size-4 shrink-0 text-faint" />

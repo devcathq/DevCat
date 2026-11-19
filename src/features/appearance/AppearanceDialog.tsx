@@ -10,6 +10,7 @@ import { IS_MAC } from "../../lib/windows";
 import { FONT_DEFAULTS, MONO_CHOICES, SANS_CHOICES, UI_ZOOMS, fontInstalled, installedFonts, monoStack, BUNDLED_MONO, useFonts, type Fonts, type InstalledFont } from "./fonts";
 import { Segmented } from "../connections/dialog/formBits";
 import { useTerminalPrefs, type TerminalPrefs } from "./terminal";
+import { useTabLayout, type TabLayout } from "./tabs";
 import { GLASS_SUPPORTED, effectiveOf, useAppearance, type Appearance, type Glass, type GlassStyle, type Mode } from "./store";
 import { DARK_PRESETS, LIGHT_PRESETS, type Palette } from "./themes";
 
@@ -130,6 +131,7 @@ export function AppearanceDialog() {
             </>
           )}
         </Section>
+        <TabsSection />
         <FontsSection />
         <TerminalSection />
       </div>
@@ -205,6 +207,18 @@ function FontsSection() {
           <span className="text-muted">{IS_MAC ? "⌘" : "Ctrl"} + / − / 0</span>
         </label>
       </div>
+    </Section>
+  );
+}
+
+/** Tab bar layout (global, like the fonts). */
+function TabsSection() {
+  const { layout, set } = useTabLayout();
+  return (
+    <Section title="Tabs"
+      hint={layout === "scroll" ? "One row of tabs: when it's full, scroll it sideways (the open tab is kept in view)." : "Every tab stays visible: when a row is full, the next tab goes on a new row below."}>
+      <Segmented<TabLayout> value={layout} onChange={set}
+        options={[{ value: "scroll", label: "One row, scrolling" }, { value: "wrap", label: "Wrap onto more rows" }]} />
     </Section>
   );
 }

@@ -15,8 +15,32 @@
   --color-warn: #fbbf24;
   --color-danger: #f87171;
   --color-info: #60a5fa;
+  /* terminals and logs */
+  --color-term: #0a0b0d;
+  --color-term-fg: #cfd3da;
   --font-sans: -apple-system, BlinkMacSystemFont, "Inter", Roboto, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+}
+
+/* Light look (lib/theme.ts: the phone's system setting, or chosen in More) */
+html.light {
+  --color-app: #eef0f3;
+  --color-panel: #fbfbfc;
+  --color-raised: #eceef2;
+  --color-hover: #e2e5ea;
+  --color-line: #d5d9e0;
+  --color-fg: #1b1f27;
+  --color-muted: #5b6372;
+  --color-faint: #8c93a1;
+  --color-accent: #c2410c;
+  --color-accent-fg: #ffffff;
+  --color-ok: #15803d;
+  --color-warn: #b45309;
+  --color-danger: #dc2626;
+  --color-info: #2563eb;
+  --color-term: #fbfbfc;
+  --color-term-fg: #1b1f27;
+  color-scheme: light;
 }
 
 html, body, #root { height: 100%; }

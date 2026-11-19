@@ -4,6 +4,7 @@ import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useMem
 import { createPortal } from "react-dom";
 import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
 import { useShallow } from "zustand/react/shallow";
+import { useTabLayout } from "../../features/appearance/tabs";
 import { isPinned, pin, unpin, usePins } from "../../features/files/pins";
 import { noteInFocus, useNotes } from "../../features/notes/store";
 import { inFocus, useConnections } from "../../store/connections";
@@ -310,24 +311,25 @@ function TabBar({ pane }: { pane: string }) {
   const connColor = (t: Tab) => { const id = tabConnId(t); return id ? connections.find((c) => c.id === id)?.color : undefined; };
   const target = drag?.drop && "before" in drag.drop && drag.drop.pane === pane ? drag.drop : null;
   const first = pane === firstPane;
+  const wrap = useTabLayout((s) => s.layout) === "wrap";
   // Bring the active tab into view when it changes (a new tab opens at the end of a full bar).
   // Only the bar scrolls: scrollIntoView would also move the containers around it.
   const barRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const bar = barRef.current;
     const el = bar?.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(active ?? "")}"]`);
-    if (!bar || !el) return;
+    if (!bar || !el || wrap) return;
     const b = bar.getBoundingClientRect(), r = el.getBoundingClientRect();
     if (r.left < b.left) bar.scrollLeft -= b.left - r.left;
     else if (r.right > b.left + bar.clientWidth) bar.scrollLeft += r.right - (b.left + bar.clientWidth);
-  }, [active, tabs.length]);
+  }, [active, tabs.length, wrap]);
   return (
     <div
       ref={barRef}
       data-pane-bar={pane}
       data-tour={first ? "tabs" : undefined}
       onMouseDown={() => useTabs.getState().focusPane(pane)}
-      className="no-select flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-line bg-app"
+      className={clsx("no-select flex shrink-0 items-stretch border-b border-line bg-app", wrap ? "flex-wrap overflow-y-auto max-h-[40vh] [&>[data-tab-id]]:h-9 [&>[data-tab-id]]:border-b" : "h-9 overflow-x-auto")}
     >
       {tabs.map((t, i) => (
         <div
@@ -487,9 +489,14 @@ function useTabDrag() {
         // a little below the bar still counts: a drag along it drifts
         if (!inside(bar.getBoundingClientRect(), x, y, 12)) continue;
         let before: string | null = null;
-        for (const el of bar.querySelectorAll<HTMLElement>("[data-tab-id]")) {
-          const r = el.getBoundingClientRect();
-          if (x < r.left + r.width / 2) { before = el.dataset.tabId ?? null; break; }
+        // tabs may wrap onto several rows: the pointer's row (kept within the rows), then left to right
+        const els = [...bar.querySelectorAll<HTMLElement>("[data-tab-id]")];
+        const rects = els.map((el) => el.getBoundingClientRect());
+        const yy = rects.length ? Math.min(Math.max(y, Math.min(...rects.map((r) => r.top))), Math.max(...rects.map((r) => r.bottom)) - 1) : y;
+        for (let i = 0; i < els.length; i++) {
+          const r = rects[i];
+          if (r.bottom <= yy) continue; // a row above
+          if (r.top > yy || x < r.left + r.width / 2) { before = els[i].dataset.tabId ?? null; break; }
         }
         return { pane: bar.dataset.paneBar!, before };
       }

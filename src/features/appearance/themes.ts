@@ -59,14 +59,15 @@ export function withAlpha(hex: string, a: number): string {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${Math.max(0, Math.min(1, a)).toFixed(3)})`;
 }
 
-/** Terminal colors (xterm) for a palette; `glass`: a see-through background (the window's tint
+/** Terminal colors (xterm) for a palette, on the work area's color; `glass`: a see-through background (the window's tint
  *  shows instead; the terminal needs `allowTransparency`). */
 export function terminalTheme(p: Palette, glass = false) {
   const base = {
-    background: glass ? "rgba(0, 0, 0, 0)" : p.app,
+    // the work area's color (editors use it too), so a terminal isn't a darker box in it
+    background: glass ? "rgba(0, 0, 0, 0)" : p.panel,
     foreground: p.fg,
     cursor: p.accent,
-    cursorAccent: p.app,
+    cursorAccent: p.panel,
     selectionBackground: withAlpha(p.accent, p.dark ? 0.25 : 0.22),
     selectionInactiveBackground: withAlpha(p.accent, 0.14),
   };

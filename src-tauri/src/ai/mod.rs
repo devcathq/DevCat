@@ -1,9 +1,10 @@
 //! AI connections for the AI workspace: saved profiles for the coding-agent CLI that runs in
-//! the workspace terminal (Claude Code, Cursor, Codex, Gemini, Copilot, Aider, opencode or a
+//! the workspace terminal (Claude Code, Cursor, Codex, Gemini, Antigravity, Copilot, Aider, opencode or a
 //! custom command). `pty_open(provider_id)` resolves program / args / env here, so API keys go
 //! from the keychain straight into the child's environment and never reach the frontend.
 pub mod claude_account;
 pub mod store;
+pub mod usage;
 
 use crate::claude::locate;
 use crate::error::{AppError, AppResult};
@@ -26,6 +27,8 @@ pub enum AiKind {
     Cursor,
     Codex,
     Gemini,
+    /// Google Antigravity's terminal agent (`agy`), signed in with a Google account.
+    Antigravity,
     Copilot,
     Aider,
     Opencode,
@@ -35,7 +38,7 @@ pub enum AiKind {
 }
 
 impl AiKind {
-    pub const BUILT_IN: [AiKind; 7] = [AiKind::Claude, AiKind::Cursor, AiKind::Codex, AiKind::Gemini, AiKind::Copilot, AiKind::Aider, AiKind::Opencode];
+    pub const BUILT_IN: [AiKind; 8] = [AiKind::Claude, AiKind::Cursor, AiKind::Codex, AiKind::Gemini, AiKind::Antigravity, AiKind::Copilot, AiKind::Aider, AiKind::Opencode];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -43,6 +46,7 @@ impl AiKind {
             AiKind::Cursor => "Cursor",
             AiKind::Codex => "OpenAI Codex",
             AiKind::Gemini => "Gemini CLI",
+            AiKind::Antigravity => "Antigravity",
             AiKind::Copilot => "GitHub Copilot",
             AiKind::Aider => "Aider",
             AiKind::Opencode => "opencode",
@@ -58,6 +62,7 @@ impl AiKind {
             AiKind::Cursor => Some("cursor-agent"),
             AiKind::Codex => Some("codex"),
             AiKind::Gemini => Some("gemini"),
+            AiKind::Antigravity => Some("agy"),
             AiKind::Copilot => Some("copilot"),
             AiKind::Aider => Some("aider"),
             AiKind::Opencode => Some("opencode"),
@@ -71,7 +76,7 @@ impl AiKind {
             AiKind::Claude => Some("ANTHROPIC_API_KEY"),
             AiKind::Cursor => Some("CURSOR_API_KEY"),
             AiKind::Codex | AiKind::Aider | AiKind::Opencode => Some("OPENAI_API_KEY"),
-            AiKind::Gemini => Some("GEMINI_API_KEY"),
+            AiKind::Gemini | AiKind::Antigravity => Some("GEMINI_API_KEY"),
             AiKind::Copilot => Some("GH_TOKEN"),
             // not an env var: the agent sends the key itself
             AiKind::Agent => Some("DEVCAT_AGENT_API_KEY"),
@@ -85,6 +90,7 @@ impl AiKind {
             AiKind::Cursor => Some("curl https://cursor.com/install -fsS | bash"),
             AiKind::Codex => Some("npm i -g @openai/codex"),
             AiKind::Gemini => Some("npm i -g @google/gemini-cli"),
+            AiKind::Antigravity => Some("curl -fsSL https://antigravity.google/cli/install.sh | bash"),
             AiKind::Copilot => Some("npm i -g @github/copilot"),
             AiKind::Aider => Some("pip install aider-chat"),
             AiKind::Opencode => Some("npm i -g opencode-ai"),

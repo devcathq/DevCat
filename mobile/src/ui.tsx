@@ -253,7 +253,7 @@ export function Toasts() {
   return (
     <div className="pointer-events-none fixed inset-x-0 z-[60] flex flex-col items-center gap-2 px-4" style={{ bottom: "calc(max(10px, env(safe-area-inset-bottom)) + 72px)" }}>
       {toasts.map((t) => (
-        <div key={t.id} className={clsx("max-w-full rounded-xl border px-3.5 py-2 text-[13px] shadow-xl backdrop-blur", t.tone === "err" ? "border-danger/40 bg-[#2a1416]/95 text-danger" : t.tone === "ok" ? "border-ok/40 bg-[#122219]/95 text-ok" : "border-line bg-raised/95 text-fg")}>
+        <div key={t.id} className={clsx("max-w-full rounded-xl border px-3.5 py-2 text-[13px] shadow-xl backdrop-blur", t.tone === "err" ? "border-danger/40 bg-raised/95 text-danger" : t.tone === "ok" ? "border-ok/40 bg-raised/95 text-ok" : "border-line bg-raised/95 text-fg")}>
           {t.text}
         </div>
       ))}
