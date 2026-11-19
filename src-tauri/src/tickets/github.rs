@@ -26,6 +26,8 @@ use serde_json::{Value, json};
 const MAX_ISSUES: usize = 50;
 /// Label pages read for the columns, at most (100 labels each).
 const LABEL_PAGES: usize = 10;
+/// Event pages read for an issue's trigger label, at most (100 events each).
+const EVENT_PAGES: usize = 10;
 /// The label of an issue whose pull request closed without a merge (as the triage skills name it).
 const WONTFIX: &str = "wontfix";
 /// Comment pages read for the prompt, at most (100 comments each).
@@ -96,6 +98,28 @@ pub fn issue_ticket(i: &Value, states: &[String]) -> Ticket {
     }
 }
 
+/// The issues a body's `Blocked by: #12, #13` lines name (in this repository: `owner/name#n` is
+/// left out). Markdown around it is fine: `- **Blocked by:** #12`.
+pub fn blocked_by(body: &str) -> Vec<u64> {
+    let mut out = vec![];
+    for line in body.lines() {
+        let l = line.replace(['*', '_'], "");
+        let l = l.trim_start_matches(|c: char| c.is_whitespace() || "-+>".contains(c)).to_lowercase();
+        let Some(rest) = l.strip_prefix("blocked by") else { continue };
+        let b = rest.as_bytes();
+        for (i, _) in rest.match_indices('#') {
+            let alone = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b"/-_.".contains(&b[i - 1]));
+            let digits: String = rest[i + 1..].chars().take_while(char::is_ascii_digit).collect();
+            if let (true, Ok(n)) = (alone, digits.parse::<u64>()) {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Saving a GitHub board: the token works, the repository is there and the token may write to it
 /// (DevCat pushes branches, labels issues and opens pull requests as the token's owner). Sets the
 /// owner's login and the branches' prefix `<login>/`, turns push on (a pull request needs the
@@ -132,7 +156,7 @@ pub(crate) async fn can_write(tr: &Tracker, login: &str) -> AppResult<bool> {
     let w = r.status().as_u16() != 404 && {
         let v = json_of(r, &format!("GitHub permission of {login}")).await?;
         // `permission` shows maintain as write; `role_name` and `push` say it for custom roles too
-        matches!(s(&v, "permission").as_str(), "admin" | "write") || matches!(s(&v, "role_name").as_str(), "admin" | "maintain" | "write") || v["user"]["permissions"]["push"] == json!(true)
+        matches!(s(&v, "permission").as_str(), "admin" | "maintain" | "write") || matches!(s(&v, "role_name").as_str(), "admin" | "maintain" | "write") || v["user"]["permissions"]["push"] == json!(true)
     };
     tr.writers.lock().insert(key, w);
     Ok(w)
@@ -230,6 +254,25 @@ pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord) {
         }
         Err(e) => rec.notes.push(format!("Couldn't open the pull request: {e}")),
     }
+}
+
+/// Whether the watch may queue the issue: the last one to add the trigger label (the board's
+/// pick-from label) did so after the board was made, and may write to the repository or is on
+/// the board's allowlist, so a stranger's label can't make the agent run; and no open issue
+/// blocks it, so it starts at the first check after its last blocker closes. Sending an issue to
+/// the agent by hand skips this.
+pub async fn ready(tr: &Tracker, t: &Ticket) -> AppResult<bool> {
+    let label = tr.board.pick_from.as_ref().map(|c| c.id.clone()).unwrap_or_default();
+    let Some(ev) = tr.gh_labeled(&t.id, &label).await? else { return Ok(false) };
+    // the backlog from before the board: by hand only
+    if chrono::DateTime::parse_from_rfc3339(&s(&ev, "created_at")).map(|d| d.timestamp_millis()).unwrap_or(0) <= tr.board.created {
+        return Ok(false);
+    }
+    let who = s(&ev["actor"], "login");
+    if !tr.board.allowlist.iter().any(|l| l.eq_ignore_ascii_case(&who)) && !can_write(tr, &who).await? {
+        return Ok(false);
+    }
+    Ok(!tr.gh_blocked(t).await?)
 }
 
 // ---------------------------------------------------------------- following pull requests
@@ -422,6 +465,41 @@ impl Tracker {
             }
         }
         Ok(out)
+    }
+
+    /// The issue's latest `labeled` event for `label` (events come oldest first), if any.
+    async fn gh_labeled(&self, id: &str, label: &str) -> AppResult<Option<Value>> {
+        let mut last = None;
+        for page in 1..=EVENT_PAGES {
+            let r = self.gh_repo(Method::GET, &format!("/issues/{id}/events")).query(&[("per_page", "100".to_string()), ("page", page.to_string())]).send().await?;
+            let v = json_of(r, "GitHub issue events").await?;
+            let list = v.as_array().cloned().unwrap_or_default();
+            if let Some(e) = list.iter().rev().find(|e| s(e, "event") == "labeled" && s(&e["label"], "name").eq_ignore_ascii_case(label)) {
+                last = Some(e.clone());
+            }
+            if list.len() < 100 {
+                break;
+            }
+        }
+        Ok(last)
+    }
+
+    /// Whether an open issue blocks this one: in GitHub's issue dependencies (blockers may be in
+    /// other repositories) or in a `Blocked by:` line of its body.
+    async fn gh_blocked(&self, t: &Ticket) -> AppResult<bool> {
+        let r = self.gh_repo(Method::GET, &format!("/issues/{}/dependencies/blocked_by", t.id)).query(&[("per_page", "100")]).send().await?;
+        // 404: a GitHub without issue dependencies (an older Enterprise Server)
+        if r.status().as_u16() != 404 && json_of(r, "GitHub issue blockers").await?.as_array().into_iter().flatten().any(|i| s(i, "state") == "open") {
+            return Ok(true);
+        }
+        for n in blocked_by(&t.description).into_iter().filter(|n| n.to_string() != t.id) {
+            let r = self.gh_repo(Method::GET, &format!("/issues/{n}")).send().await?;
+            // 404: no such issue, nothing to wait for
+            if r.status().as_u16() != 404 && s(&json_of(r, &format!("GitHub issue #{n}")).await?, "state") == "open" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Swaps the issue's state labels (as it has them now) for `label` ("": none), leaving its
@@ -645,6 +723,121 @@ pub(crate) mod tests {
         assert_eq!(list("anyone").await, vec!["#7", "#8", "#10"]);
         let t = super::super::tickets_list(super::super::tickets_board_save(board(&gh.url, "", "")).await.unwrap().id, "ready-for-agent".into()).await.unwrap().remove(0);
         assert_eq!((t.id.as_str(), t.column.as_str(), t.url.as_str()), ("7", "ready-for-agent", "https://github.com/acme/calc/issues/7"));
+    }
+
+    /// A `labeled` event for `label` by `by` at `when` (RFC 3339), as GitHub lists it.
+    fn labeled(label: &str, by: &str, when: &str) -> Value {
+        json!({ "id": 1, "event": "labeled", "created_at": when, "actor": { "login": by }, "label": { "name": label, "color": "0E8A16" }, "performed_via_github_app": null })
+    }
+
+    /// A minute from now: a label added after the board was saved.
+    fn soon() -> String {
+        (chrono::Utc::now() + chrono::Duration::minutes(1)).to_rfc3339()
+    }
+
+    /// What the watch's next check would queue.
+    async fn queued(b: &Board) -> Vec<String> {
+        super::super::worker::to_queue(b).await.unwrap()
+    }
+
+    /// The watch takes an issue only when the person who last added the trigger label may write
+    /// to the repository (write, maintain or admin) or is on the board's allowlist; asking GitHub
+    /// once per login and check.
+    #[tokio::test]
+    async fn trusted_label_actor() {
+        tickets_data();
+        let mut data = Gh::new("octo", "acme/calc")
+            .with_issue(7, "By an admin", "", &["ready-for-agent"], &["octo"])
+            .with_issue(8, "By a writer", "", &["ready-for-agent"], &["octo"])
+            .with_issue(9, "By a reader", "", &["ready-for-agent"], &["octo"])
+            .with_issue(10, "By a stranger", "", &["ready-for-agent"], &["octo"])
+            .with_issue(11, "Writer's label taken off, stranger's put back", "", &["ready-for-agent"], &["octo"])
+            .with_issue(12, "Admin again", "", &["ready-for-agent"], &["octo"]);
+        for (n, who) in [(7, "ana"), (8, "bo"), (9, "cy"), (10, "eve"), (12, "ana")] {
+            data.events.insert(n, vec![labeled("bug", "eve", &soon()), labeled("ready-for-agent", who, &soon())]);
+        }
+        data.events.insert(11, vec![labeled("ready-for-agent", "bo", &soon()), json!({ "event": "unlabeled", "created_at": soon(), "actor": { "login": "bo" }, "label": { "name": "ready-for-agent" } }), labeled("Ready-For-Agent", "eve", &soon())]);
+        data.permissions = [("ana", "admin"), ("bo", "write"), ("cy", "read")].into_iter().map(|(l, p)| (l.to_string(), p.to_string())).collect();
+        let gh = MockGithub::start(data).await;
+        let b = super::super::tickets_board_save(Board { max_per_run: 20, ..board(&gh.url, "", "") }).await.unwrap();
+        assert_eq!(queued(&b).await, vec!["7", "8", "12"]);
+        assert_eq!(gh.sent("GET /repos/acme/calc/collaborators/ana/permission").len(), 1, "once per login: {:?}", gh.requests());
+
+        let b = super::super::tickets_board_save(Board { allowlist: vec![" @Eve ".into(), "".into()], ..b }).await.unwrap();
+        assert_eq!(b.allowlist, vec!["eve"]);
+        assert_eq!(queued(&b).await, vec!["7", "8", "10", "11", "12"], "eve is on the allowlist");
+        assert_eq!(queued(&Board { max_per_run: 2, ..b }).await, vec!["7", "8"], "at most max_per_run");
+    }
+
+    #[test]
+    fn blocked_by_lines() {
+        let body = "Fix it.\nBlocked by: #12, #13\n- **Blocked by** #14\n  blocked by:#15 and acme/other#16\nNot blocked by #17 here.\nBlocked by: nothing";
+        assert_eq!(blocked_by(body), vec![12, 13, 14, 15]);
+        assert!(blocked_by("").is_empty());
+    }
+
+    /// An issue with an open blocker, in GitHub's dependencies or in a `Blocked by:` line, waits;
+    /// the next check after its last blocker closes takes it.
+    #[tokio::test]
+    async fn blocked_issues_wait() {
+        tickets_data();
+        let mut data = Gh::new("octo", "acme/calc")
+            .with_issue(7, "Blocked on GitHub", "", &["ready-for-agent"], &["octo"])
+            .with_issue(8, "Blocked in its body", "Do it.\n\nBlocked by: #21, #22", &["ready-for-agent"], &["octo"])
+            .with_issue(9, "Its blockers are closed", "**Blocked by:** #23", &["ready-for-agent"], &["octo"])
+            .with_issue(20, "Open blocker", "", &[], &[])
+            .with_issue(21, "Closed blocker", "", &[], &[])
+            .with_issue(22, "Open blocker", "", &[], &[])
+            .with_issue(23, "Closed blocker", "", &[], &[]);
+        for n in [21, 23] {
+            data.issues.get_mut(&n).unwrap()["state"] = json!("closed");
+        }
+        data.blocked_by = [(7, vec![20, 21]), (9, vec![21])].into_iter().collect();
+        for n in [7, 8, 9] {
+            data.events.insert(n, vec![labeled("ready-for-agent", "ana", &soon())]);
+        }
+        data.permissions.insert("ana".into(), "write".into());
+        let gh = MockGithub::start(data).await;
+        let b = super::super::tickets_board_save(board(&gh.url, "", "")).await.unwrap();
+        assert_eq!(queued(&b).await, vec!["9"]);
+        gh.gh.lock().issues.get_mut(&20).unwrap()["state"] = json!("closed");
+        assert_eq!(queued(&b).await, vec!["7", "9"], "#7's last blocker closed");
+        gh.gh.lock().issues.get_mut(&22).unwrap()["state"] = json!("closed");
+        assert_eq!(queued(&b).await, vec!["7", "8", "9"], "#8's last blocker closed");
+    }
+
+    /// A new board leaves the backlog alone: the watch skips an issue whose trigger label was
+    /// added before the board was first saved (a later save keeps that time), but sending it to
+    /// the agent by hand works.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backlog_by_hand_only() {
+        use super::super::worker::tests::*;
+        tickets_data();
+        let mut data = one_issue().with_issue(8, "Labelled again", "", &["ready-for-agent"], &["octo"]);
+        data.events.insert(7, vec![labeled("ready-for-agent", "ana", "2026-01-05T10:00:00Z")]);
+        data.events.insert(8, vec![labeled("ready-for-agent", "ana", "2026-01-05T10:00:00Z"), labeled("ready-for-agent", "ana", &soon())]);
+        data.permissions.insert("ana".into(), "admin".into());
+        let gh = MockGithub::start(data).await;
+        let (dir, _remote) = clone_with_origin("gh-backlog").await;
+        let (fixer, _) = stand_in("fixed", "echo '    # fixed' >> calc.py").await;
+        let b = super::super::tickets_board_save(board(&gh.url, dir.to_str().unwrap(), &fixer)).await.unwrap();
+        let made = b.created;
+        assert!(made > chrono::Utc::now().timestamp_millis() - 60_000, "{made}");
+        let b = super::super::tickets_board_save(Board { created: 0, ..b }).await.unwrap();
+        assert_eq!(b.created, made, "kept");
+        assert_eq!(queued(&b).await, vec!["8"]);
+
+        super::super::tickets_fix(b.id.clone(), vec!["7".into()], None).await.unwrap();
+        let t0 = std::time::Instant::now();
+        while super::super::history(&b.id).is_empty() && t0.elapsed().as_secs() < 60 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let rec = super::super::history(&b.id).into_iter().next().expect("ran");
+        assert_eq!((rec.ticket_id.as_str(), rec.outcome.as_str()), ("7", "fixed"), "{} {:?}", rec.summary, rec.notes);
+        assert_eq!(gh.labels_of(7), vec!["bug", "agent-review"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&_remote);
     }
 
     /// The issue the run tests work on, and its branch.

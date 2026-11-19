@@ -155,6 +155,19 @@ token and the repository, reads the token owner's login, and creates the labels 
   repository. A branch with commits after the pull request's last one stays (someone's work), and so does a branch
   that a worktree has checked out; the comment says so. To try again, reopen the issue and add the trigger label.
 
+When the board watches the repository, an issue with the trigger label waits until it passes three checks:
+
+- **Who added the label.** The person who last added it must be able to write to the repository (write,
+  maintain or admin), or be listed in **Also take labels from** (e.g. a triage bot's login). A label from anyone
+  else is ignored, so a stranger can't make the agent run commands on your computer. This needs a token that can
+  write to the repository.
+- **Blockers.** The issue must have no open blocker: none in GitHub's issue dependencies ("Blocked by") and none
+  in a `Blocked by: #12, #13` line in its body. It starts at the first check after its last blocker closes.
+- **The backlog.** The label must have been added after the board was created, so a new board doesn't start on
+  every issue that was labelled before it. To send one of those to the agent, fix it from the list.
+
+Fixing issues from the list skips these checks: you choose them yourself.
+
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
 workspace, where you can read what it did and carry on from there.
 

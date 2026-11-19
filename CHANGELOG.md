@@ -39,6 +39,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   issue's comment has the questions and the issue gets the label `needs-info` (**When the agent has questions,
   label** in the board's settings). When it fails, its unfinished work is committed, pushed, and the comment has the
   reason and the branch, with the label `ready-for-human`. Neither opens a pull request.
+- **Tickets: GitHub issues the agent may take** (#196): a watching GitHub board takes an issue only when the person
+  who added its trigger label can write to the repository or is listed in **Also take labels from**, when no open
+  issue blocks it (GitHub's issue dependencies or a `Blocked by: #n` line in its body; it starts after its last
+  blocker closes), and when the label was added after the board was created. Fix older issues from the list.
 - **Tickets: pull request follow-up** (#201): at each check, a watched GitHub board looks at the pull requests DevCat
   opened. When one merges, the issue loses `agent-review` and is closed if it's still open. When one closes without
   a merge, the issue is closed as not planned with the label `wontfix` and a comment that links the pull request,

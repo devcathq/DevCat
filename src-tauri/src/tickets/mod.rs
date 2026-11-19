@@ -141,6 +141,10 @@ pub struct Board {
     pub id: String,
     pub name: String,
     pub kind: TrackerKind,
+    /// When the board was first saved (ms since 1970; 0: before boards kept it). A GitHub
+    /// board's watch leaves issues alone that got their trigger label before this.
+    #[serde(default)]
+    pub created: i64,
     /// Jira: the site (https://acme.atlassian.net, or a Data Center URL). GitHub: the API address
     /// (https://api.github.com, or https://<host>/api/v3 for GitHub Enterprise Server).
     #[serde(default)]
@@ -165,6 +169,10 @@ pub struct Board {
     /// GitHub: the token owner's login, read when the board is saved (its branches are `<login>/…`).
     #[serde(default)]
     pub login: String,
+    /// GitHub: logins whose trigger label the watch takes although they can't write to the
+    /// repository (e.g. a triage bot). Anyone with write access counts anyway.
+    #[serde(default)]
+    pub allowlist: Vec<String>,
 
     /// The git repository the agent works in, or a folder of repositories (the agent may change any
     /// of them; each gets the ticket's branch).
@@ -449,6 +457,13 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     if b.isolation == Isolation::Worktree && !b.setup_command.is_empty() && !b.allow_commands {
         return Err(AppError::msg("The setup command runs programs, like the agent's commands: let the agent run commands, or clear the setup command"));
     }
+    let mut allow: Vec<String> = vec![];
+    for l in b.allowlist.iter().map(|l| l.trim().trim_start_matches('@').to_lowercase()).filter(|l| !l.is_empty()) {
+        if !allow.contains(&l) {
+            allow.push(l);
+        }
+    }
+    b.allowlist = allow;
     b.interval_min = b.interval_min.clamp(1, 24 * 60);
     b.max_per_run = b.max_per_run.clamp(1, 20);
     b.parallel_runs = b.parallel_runs.clamp(1, 4);
@@ -469,9 +484,16 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     {
         let _g = WRITE.lock();
         let mut list = load_boards()?;
+        let now = chrono::Utc::now().timestamp_millis();
         match list.iter_mut().find(|x| x.id == b.id) {
-            Some(x) => *x = b.clone(),
-            None => list.push(b.clone()),
+            Some(x) => {
+                b.created = if x.created > 0 { x.created } else { now };
+                *x = b.clone()
+            }
+            None => {
+                b.created = now;
+                list.push(b.clone())
+            }
         }
         let clean: Vec<Board> = list.into_iter().map(|x| Board { token: None, webhook: None, has_token: false, has_webhook: false, ..x }).collect();
         write_json(&boards_path()?, &clean)?;

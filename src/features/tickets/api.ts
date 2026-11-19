@@ -34,6 +34,10 @@ export interface Board {
   hasWebhook?: boolean;
   /** GitHub: the token owner's login, read when the board is saved (branches are `<login>/<number>-<title>`). */
   login?: string;
+  /** GitHub: logins whose trigger label the watch takes although they can't write to the repository (e.g. a triage bot). */
+  allowlist: string[];
+  /** When the board was first saved (ms; set by DevCat). A GitHub board's watch skips issues labelled before it. */
+  created?: number;
   /** A git repository, or a folder of them. */
   repo: string;
   /** "worktree": each ticket in `<repo>/.worktrees`, made from origin; `targetBranch` is then the base branch. */
@@ -115,7 +119,7 @@ export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
   pickFrom: null, working: null, doneTo: null, needsInfoTo: null, failedTo: null, label: "", assigned: "anyone",
   comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, parallelRuns: 1, instructions: "",
-  isolation: "inPlace", copyFiles: [], setupCommand: "",
+  isolation: "inPlace", copyFiles: [], setupCommand: "", allowlist: [],
   ...KIND_DEFAULTS[kind],
 });
 
