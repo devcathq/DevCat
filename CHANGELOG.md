@@ -25,8 +25,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   left in a worktree board's `.worktrees` folder when DevCat stopped in the middle (a worktree a run kept for you to
   look at stays). A run whose branch is checked out in another worktree fails with a message that names it.
 - **Tickets: GitHub boards** (#195): connect a GitHub repository (`owner/name`, an API address for GitHub Enterprise
-  and a personal access token). Labels are the columns: the agent takes open issues labelled `ready-for-agent`,
-  labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
+  and a personal access token). Labels are the columns: the agent takes open issues labelled `ready-for-agent` and
+  assigned to you (**Assigned to** starts at **Me** on a new GitHub board), labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
   draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review`. Saving
   the board checks the token and creates the labels the repository lacks.
 - **Tickets: parallel runs** (#193): a board with a worktree for each ticket can work on up to 4 tickets at the same

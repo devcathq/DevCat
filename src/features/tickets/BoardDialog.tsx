@@ -129,8 +129,8 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
                 key={k}
                 disabled={!isNew}
                 onClick={() => {
-                  const { site, isolation, push, branchPrefix, pickFrom, working, doneTo, needsInfoTo, failedTo } = newBoard(k);
-                  set({ kind: k, site, isolation, push, branchPrefix, pickFrom, working, doneTo, needsInfoTo, failedTo });
+                  const { site, assigned, isolation, push, branchPrefix, pickFrom, working, doneTo, needsInfoTo, failedTo } = newBoard(k);
+                  set({ kind: k, site, assigned, isolation, push, branchPrefix, pickFrom, working, doneTo, needsInfoTo, failedTo });
                   setColumns([]);
                 }}
                 className={clsx("h-7 rounded-md border px-3 text-[13px]", b.kind === k ? "border-accent bg-accent/15 text-accent" : "border-line bg-raised text-muted hover:bg-hover", !isNew && b.kind !== k && "opacity-40")}

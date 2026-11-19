@@ -106,11 +106,11 @@ export const TRACKERS: Record<TrackerKind, string> = { jira: "Jira", trello: "Tr
 /** A GitHub board's state labels (its columns: a label's id is its name), as the triage skills name them. */
 const label = (name: string): Column => ({ id: name, name });
 
-/** What a new board of each kind starts with. GitHub: the default state labels, a worktree for each issue, push on. */
+/** What a new board of each kind starts with. GitHub: the default state labels, the token owner's issues, a worktree for each issue, push on. */
 const KIND_DEFAULTS: Record<TrackerKind, Partial<Board>> = {
   jira: {}, trello: {}, linear: {},
   github: {
-    site: "https://api.github.com", isolation: "worktree", push: true, branchPrefix: "",
+    site: "https://api.github.com", assigned: "me", isolation: "worktree", push: true, branchPrefix: "",
     pickFrom: label("ready-for-agent"), working: label("agent-working"), doneTo: label("agent-review"), needsInfoTo: label("needs-info"), failedTo: label("ready-for-human"),
   },
 };

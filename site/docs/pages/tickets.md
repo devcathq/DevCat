@@ -134,7 +134,9 @@ On a GitHub board the repository's labels are the columns. A new board takes iss
 when the agent has questions and `ready-for-human` when it fails; change any of them in the board's settings. Saving the board checks the
 token and the repository, reads the token owner's login, and creates the labels the repository doesn't have yet.
 
-- The agent takes open issues with the trigger label (never pull requests), filtered by **Assigned to**.
+- The agent takes open issues with the trigger label (never pull requests), filtered by **Assigned to**. A new
+  GitHub board starts with **Me**: the issues assigned to the token's owner, so the team decides whose computer
+  works on which issue. Choose **Me, or nobody yet** to take unassigned issues too.
 - Moving an issue removes its current state label and adds the new one, so it always has exactly one.
 - Branches are named `<your login>/<number>-<title>`, e.g. `octo/12-fix-the-login`.
 - New GitHub boards start with **A worktree for each ticket**, and the branch is always pushed: a fixed issue's
