@@ -29,6 +29,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
   draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review`. Saving
   the board checks the token and creates the labels the repository lacks.
+- **Tickets: pull request follow-up** (#201): at each check, a watched GitHub board looks at the pull requests DevCat
+  opened. When one merges, the issue loses `agent-review` and is closed if it's still open. When one closes without
+  a merge, the issue is closed as not planned with the label `wontfix` and a comment that links the pull request,
+  and the branch is deleted on GitHub and in your repository, unless it has newer commits there (or a worktree has
+  it checked out). The history shows what became of each pull request.
 
 ## 0.31.0 - 2026-11-19
 

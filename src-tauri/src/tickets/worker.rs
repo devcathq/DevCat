@@ -1702,7 +1702,8 @@ pub fn where_text(branch: &str, made: bool, repos: &[Repo], skipped: &[(String, 
 // ---------------------------------------------------------------- watching
 
 /// Boards with `watch` on: every `interval_min`, queue the column's tickets the agent hasn't
-/// tried yet (a ticket it tried is only done again when asked). Only with a window open.
+/// tried yet (a ticket it tried is only done again when asked); a GitHub board also follows its
+/// pull requests (`github::follow_pull_requests`). Only with a window open.
 pub fn start_watch() {
     crate::rt::spawn(async {
         let mut last: HashMap<String, i64> = HashMap::new();

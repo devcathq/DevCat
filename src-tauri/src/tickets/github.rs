@@ -6,7 +6,9 @@
 //! `agent-working`, `agent-review`, `ready-for-human`), and moving it swaps that label for the
 //! new one, so it keeps exactly one. Saving the board reads the token owner's login (the
 //! branches are `<login>/<number>-<slug>`) and creates the state labels the repository lacks. A
-//! fixed issue gets a draft pull request into the default branch that closes it.
+//! fixed issue gets a draft pull request into the default branch that closes it. The watch loop
+//! then follows that pull request (`follow_pull_requests`): merged, the issue is closed; closed
+//! without a merge, the issue is closed as not planned and the branch deleted.
 //!
 //! The `Tracker` methods here are what `trackers.rs` calls for a GitHub board; the rest of the
 //! pipeline (`worker.rs`) only adds the pull request after the push.
