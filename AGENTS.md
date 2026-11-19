@@ -1,5 +1,18 @@
 # DevCat: notes for developers and coding agents
 
+## Issues and pull requests
+
+Use the templates in `.github/` (GitHub fills them in; with `gh issue create` / `gh pr create --body`,
+follow the same sections):
+
+- **Bug** (`bug` label): Problem (steps, example, environment) · Why (from reading the code) · Proposal · Notes.
+- **Feature** (`enhancement` label): What · Expected · Notes (code pointers; what it means for SSH folders,
+  the phone / browser version, agent tools, security).
+- **Pull request**: Summary · `Closes #N` · Test plan (tick what you ran, leave manual checks unticked) · Notes.
+- Titles start with the area: `Page review: …`, `DevCat Agent: …`, `Terminal: …`.
+- Plain words. Name files with their paths. A big feature gets one issue per part that can ship on its own,
+  linked to each other.
+
 ## Rule: the SSH workbench is desktop-only
 
 The Xshell-style features (SSH sessions in the sidebar, SFTP tab, quick-command bar, session port
