@@ -49,6 +49,8 @@ export interface Board {
   pickFrom?: Column | null;
   working?: Column | null;
   doneTo?: Column | null;
+  /** Where a ticket goes when the agent asks questions (null: as when it couldn't finish). */
+  needsInfoTo?: Column | null;
   failedTo?: Column | null;
   label: string;
   assigned: Assigned;
@@ -62,12 +64,16 @@ export interface Board {
   watch: boolean;
   intervalMin: number;
   maxPerRun: number;
+  /** Tickets worked on at the same time (1 to 4), each in its own worktree; in place always 1. */
+  parallelRuns: number;
   instructions: string;
 }
 
-export interface JobView {
-  key?: string | null; title?: string | null; url?: string | null;
-  stage: string; log: string[]; queue: string[]; started: number; stopping: boolean;
+/** A board's job: the tickets worked on now (several with parallel runs) and the ones waiting (ids). */
+export interface JobView { runs: RunView[]; queue: string[]; started: number; stopping: boolean }
+export interface RunView {
+  ticketId: string; key?: string | null; title?: string | null; url?: string | null;
+  stage: string; log: string[]; started: number;
 }
 
 export type Outcome = "fixed" | "needs_info" | "failed" | "error" | "stopped";
@@ -99,14 +105,14 @@ const KIND_DEFAULTS: Record<TrackerKind, Partial<Board>> = {
   jira: {}, trello: {}, linear: {},
   github: {
     site: "https://api.github.com", isolation: "worktree", push: true, branchPrefix: "",
-    pickFrom: label("ready-for-agent"), working: label("agent-working"), doneTo: label("agent-review"), failedTo: label("ready-for-human"),
+    pickFrom: label("ready-for-agent"), working: label("agent-working"), doneTo: label("agent-review"), needsInfoTo: label("needs-info"), failedTo: label("ready-for-human"),
   },
 };
 
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
-  pickFrom: null, working: null, doneTo: null, failedTo: null, label: "", assigned: "anyone",
-  comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, instructions: "",
+  pickFrom: null, working: null, doneTo: null, needsInfoTo: null, failedTo: null, label: "", assigned: "anyone",
+  comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, parallelRuns: 1, instructions: "",
   isolation: "inPlace", copyFiles: [], setupCommand: "",
   ...KIND_DEFAULTS[kind],
 });

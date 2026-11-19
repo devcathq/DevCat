@@ -58,7 +58,8 @@ to the column you chose, the move is skipped and the reason shows in the history
 ## Fix tickets
 
 Pick tickets in the list and click **Fix with the agent**, or use the robot icon on a single ticket. Tickets
-are done one at a time; the panel on the right shows what the agent is doing, and **Stop** stops it.
+are done one at a time (a board with a worktree for each ticket can do a few at once, see below); the panel on
+the right shows what the agent is doing, and **Stop** stops it.
 
 To tell the agent something for particular tickets, click **With a prompt…** (or the speech bubble on a single
 ticket). The prompt starts as the board's default prompt; what you write replaces it for those tickets, that
@@ -121,11 +122,16 @@ A ticket's branch can be checked out in one place only. If it's checked out in a
 repository itself, the run fails and names that folder: switch it to another branch (or remove the worktree), then
 run the ticket again.
 
+**Parallel runs** (1 to 4, default 1) sets how many tickets the agent works on at the same time. Each runs in its
+own worktree on its own branch, and the panel on the right shows each one with its log. The other tickets wait
+until a run ends. A ticket you fix again while the agent works on it waits for that run. Boards that run in place
+always do one ticket at a time.
+
 ### GitHub boards
 
 On a GitHub board the repository's labels are the columns. A new board takes issues labelled
-`ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed and
-`ready-for-human` when it needs a person; change any of them in the board's settings. Saving the board checks the
+`ready-for-agent`, labels them `agent-working` while the agent works, `agent-review` when fixed, `needs-info`
+when the agent has questions and `ready-for-human` when it fails; change any of them in the board's settings. Saving the board checks the
 token and the repository, reads the token owner's login, and creates the labels the repository doesn't have yet.
 
 - The agent takes open issues with the trigger label (never pull requests), filtered by **Assigned to**.
@@ -143,6 +149,10 @@ token and the repository, reads the token owner's login, and creates the labels 
 - The agent writes the pull request's description. When the repository has a pull request template
   (`pull_request_template.md` in `.github/`, the top folder or `docs/`), the description follows its sections.
   DevCat adds the issue's link and a line that says the DevCat agent opened it.
+- When the agent has questions, its work so far is pushed to the branch, the comment has the questions and the
+  branch, and the issue gets `needs-info`. When it fails (or the **Setup command** fails), its unfinished work is
+  committed (marked WIP) and pushed, the comment has the reason and the branch, and the issue gets
+  `ready-for-human`, so a person can go on from there. Neither opens a pull request.
 - Labels, comments and pull requests appear as the token's owner.
 
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
