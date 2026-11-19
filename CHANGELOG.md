@@ -29,6 +29,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   labels them `agent-working`, and a fixed issue's branch (`<your login>/<number>-<title>`) is pushed and gets a
   draft pull request that closes the issue, linked in the issue's comment, with the label `agent-review`. Saving
   the board checks the token and creates the labels the repository lacks.
+- **Tickets: GitHub issues the agent may take** (#196): a watching GitHub board takes an issue only when the person
+  who added its trigger label can write to the repository or is listed in **Also take labels from**, when no open
+  issue blocks it (GitHub's issue dependencies or a `Blocked by: #n` line in its body; it starts after its last
+  blocker closes), and when the label was added after the board was created. Fix older issues from the list.
 
 ## 0.31.0 - 2026-11-19
 
