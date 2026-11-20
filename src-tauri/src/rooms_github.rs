@@ -169,8 +169,18 @@ fn origin_in(config: &str) -> Option<String> {
 
 /// What a room may do on GitHub now: the tools on offer, from its settings and the token.
 pub(crate) fn names_for(r: &Room) -> Vec<&'static str> {
-    let g = r.prefs().github;
-    if !is_repo(&g.repo) || api(&g.site).is_err() || !has_token(&r.id) || r.removed() {
+    let names = names_of(&r.prefs().github);
+    if names.is_empty() || !has_token(&r.id) || r.removed() {
+        return vec![];
+    }
+    names
+}
+
+/// The tools a room's settings turn on (a repository at a usable address, and the switches),
+/// whatever the token: what `devcat mcp --room` lists (`rooms_tools::room_agent_tools`), which
+/// reads the settings from disk and leaves the keychain to the app.
+pub(crate) fn names_of(g: &GithubPrefs) -> Vec<&'static str> {
+    if !is_repo(&g.repo) || api(&g.site).is_err() {
         return vec![];
     }
     let mut v = vec![];

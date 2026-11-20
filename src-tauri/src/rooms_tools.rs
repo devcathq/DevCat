@@ -159,15 +159,35 @@ impl Tool for RoomsTool {
 /// input, no `rooms_list`, no `room_post`: its answer is posted as its reply), act as "<name>'s
 /// agent (<client>)", and don't need `Prefs::coding_agents`: this is the user's agent in the room,
 /// not a coding agent reaching in. Editors' tools only for an editor, `room_edit` only where the
-/// owner allows it (checked on every call). `remote`: in `devcat mcp`, they run in the app.
+/// owner allows it (checked on every call). The room's GitHub tools come with them where the
+/// user set a repository and turned Read or Write on (`github_names`); the token, like the role,
+/// is checked in the app on every call. `remote`: in `devcat mcp`, they run in the app.
 pub fn room_agent_tools(room: &str, client: &str, remote: bool) -> Vec<Arc<dyn Tool>> {
     let mut names: Vec<&'static str> = READ_TOOLS.to_vec();
     names.extend(WRITE_TOOLS);
     names.push(EDIT_TOOL);
+    if let Some(dir) = DIR.get() {
+        names.extend(github_names(dir, room));
+    }
     names
         .into_iter()
         .filter_map(|n| Some(Arc::new(RoomAgentTool { name: n, spec: crate::rooms_agent::spec_of(n)?, room: room.to_string(), client: client.to_string(), remote }) as Arc<dyn Tool>))
         .collect()
+}
+
+/// The GitHub tools the settings of room `room` turn on, read from its `room.json` in `dir` (the
+/// rooms folder), as `allowed_anywhere` reads it: `devcat mcp` has no rooms node. Without them in
+/// this list a CLI running the room agent is never shown the tools its run allows.
+pub(crate) fn github_names(dir: &std::path::Path, room: &str) -> Vec<&'static str> {
+    // a room's folder is its id: nothing that could name another path
+    if room.is_empty() || !room.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return vec![];
+    }
+    let Some(v) = std::fs::read_to_string(dir.join(room).join("room.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return vec![] };
+    if v.get("removed").and_then(Value::as_bool).unwrap_or(false) {
+        return vec![];
+    }
+    v.pointer("/prefs/github").and_then(|g| serde_json::from_value::<devcat_rooms::GithubPrefs>(g.clone()).ok()).map(|g| gh::names_of(&g)).unwrap_or_default()
 }
 
 struct RoomAgentTool {
@@ -190,7 +210,8 @@ impl Tool for RoomAgentTool {
         ["path", "title", "name", "query"].iter().find_map(|k| i.get(*k).and_then(Value::as_str)).unwrap_or("").to_string()
     }
     fn timeout(&self, _: &Value) -> Duration {
-        CALL
+        // a post on GitHub waits for the user's OK in the window
+        if gh::writes(self.name) { gh::CONFIRM + CALL } else { CALL }
     }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
         if self.remote {
@@ -214,6 +235,8 @@ pub(crate) async fn run_in_room(node: &Node, room: &str, name: &str, client: &st
     match crate::rooms_agent::tools_for(&r, &me).into_iter().find(|t| t.spec().name == name) {
         Some(t) => t.run(input, &ToolCtx::at(std::env::temp_dir())).await,
         None if name == EDIT_TOOL && r.role().can_edit() => ToolOutput::err("This room's owner hasn't let agents edit directly: propose the change with room_suggest."),
+        // listed from the settings; the token or a switch isn't there (any more)
+        None if gh::is_tool(name) => ToolOutput::err(gh::off_text(&r, name)),
         None => ToolOutput::err(format!("There is no tool named `{name}` for you in this room.")),
     }
 }
@@ -409,6 +432,44 @@ mod tests {
         assert!(!task.is_error, "{}", task.content);
         assert_eq!(open.doc().tasks()[0].assignee.as_ref().map(|a| a.agent), Some(false));
         assert!(run("room_nonsense", json!({ "room": "Study group" })).await.is_error);
+        node.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Claude Code as the room agent is allowed the room's GitHub tools (`rooms_agent.rs`
+    /// `claude_allowed`, from `tools_for`); `devcat mcp --room` has to list them, or it never
+    /// sees them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cli_room_agent_is_listed_the_rooms_github_tools() {
+        use devcat_rooms::{Config, GithubPrefs, Prefs, RelayConfig};
+        let dir = std::env::temp_dir().join(format!("devcat-rooms-cli-gh-{}", uuid::Uuid::new_v4()));
+        let rooms = dir.join("rooms");
+        let node = Node::start(Config { dir: rooms.clone(), relay: RelayConfig::Off, port: 0, keeper: false, keeper_owners: vec![] }, Arc::new(Quiet)).await.unwrap();
+        let r = node.room(&node.create("Spec", "Arif").unwrap()).unwrap();
+        let me = r.agent_via("Claude Code");
+        let allowed = |r: &Arc<Room>| crate::rooms_agent::tools_for(r, &me).into_iter().map(|t| t.spec().name).filter(|n| gh::is_tool(n)).collect::<Vec<_>>();
+        assert!(github_names(&rooms, &r.id).is_empty(), "nothing until it's set up");
+
+        r.set_prefs(Prefs { github: GithubPrefs { repo: "acme/app".into(), site: String::new(), read: true, write: false }, ..r.prefs() });
+        crate::secrets::set(&gh::token_key(&r.id), "t0ken").unwrap();
+        let listed = github_names(&rooms, &r.id);
+        assert_eq!(listed, vec!["gh_issues_search", "gh_issue_read", "gh_discussions_list", "gh_discussion_read", "gh_issue_templates"]);
+        assert_eq!(allowed(&r), listed, "what the run allows is what it's shown");
+        assert!(listed.iter().all(|n| crate::rooms_agent::spec_of(n).is_some()));
+
+        r.set_prefs(Prefs { github: GithubPrefs { read: true, write: true, ..r.prefs().github }, ..r.prefs() });
+        assert_eq!(allowed(&r), github_names(&rooms, &r.id));
+        assert!(github_names(&rooms, &r.id).contains(&"gh_issue_create"));
+
+        // a switch turned off while it runs: the call says so, in the app
+        r.set_prefs(Prefs { github: GithubPrefs { read: false, write: false, ..r.prefs().github }, ..r.prefs() });
+        assert!(github_names(&rooms, &r.id).is_empty());
+        let off = run_in_room(&node, &r.id, "gh_issue_read", "claude-code", json!({ "number": 1 })).await;
+        assert!(off.is_error && off.content.contains("GitHub → Read"), "{}", off.content);
+        // nothing outside the rooms folder is read for a name that isn't a room id
+        assert!(github_names(&rooms, "../x").is_empty() && github_names(&rooms, "").is_empty());
+
+        crate::secrets::delete(&gh::token_key(&r.id));
         node.shutdown().await;
         let _ = std::fs::remove_dir_all(dir);
     }
