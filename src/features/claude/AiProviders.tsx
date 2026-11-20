@@ -6,7 +6,7 @@ import { useEffect, useState, type MouseEvent } from "react";
 import { toast } from "sonner";
 import { Badge, Button, Checkbox, Dialog, Field, IconButton, Input, Select, Spinner } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
-import type { AgentSettings, AiDetect, AiEnvVar, AiKind, AiProvider } from "../../lib/types";
+import type { AgentSettings, AiDetect, AiEnvVar, AiKind, AiProvider, HermesSettings } from "../../lib/types";
 import { useContextMenu, type MenuItem } from "../connections/ContextMenu";
 import { confirmDialog } from "../connections/dialogs";
 import { copyText } from "../files/format";
@@ -111,6 +111,8 @@ interface Form {
   builtin: boolean;
   /** DevCat Agent: the model API. */
   agent: AgentSettings;
+  /** Hermes Agent: its model and provider. */
+  hermes: HermesSettings;
   /** Claude Code: a login of its own (another account). */
   ownLogin: boolean;
   /** Read-only: the account it's logged in with. */
@@ -121,6 +123,7 @@ const toForm = (p: AiProvider): Form => ({
   id: p.id, name: p.name, kind: p.kind, command: p.command ?? "", args: joinArgs(p.args), env: p.env.map((e) => ({ ...e })),
   apiKeyEnv: p.apiKeyEnv ?? "", apiKey: "", hasApiKey: !!p.hasApiKey, replaceKey: false, clearKey: false, builtin: !!p.builtin,
   agent: { ...(p.agent ?? AGENT_PRESETS[0].settings) },
+  hermes: { model: "", provider: "", baseUrl: "", ...p.hermes },
   ownLogin: !!p.ownLogin, login: p.login ?? null,
 });
 
@@ -132,6 +135,7 @@ const fromForm = (f: Form): AiProvider => ({
   apiKeyEnv: KINDS[f.kind].keyEnvEditable ? f.apiKeyEnv.trim() || null : null,
   apiKey: f.clearKey ? "" : f.apiKey.trim() ? f.apiKey.trim() : undefined,
   agent: f.kind === "agent" ? { ...f.agent, baseUrl: f.agent.baseUrl.trim(), model: f.agent.model.trim() } : null,
+  hermes: f.kind === "hermes" ? { model: f.hermes.model.trim(), provider: f.hermes.provider.trim(), baseUrl: f.hermes.provider.trim() === "custom" ? f.hermes.baseUrl.trim() : "" } : null,
   ownLogin: f.kind === "claude" && !f.builtin && f.ownLogin,
 });
 
@@ -152,6 +156,74 @@ function useModelList(value: AgentSettings, providerId: string, apiKey: string) 
     return () => { live = false; clearTimeout(t); };
   }, [value.protocol, value.baseUrl, providerId, apiKey, nonce]);
   return { ...state, reload: () => setNonce((n) => n + 1) };
+}
+
+/** Hermes's providers (its `--provider` ids) offered in the form; any other id can be typed. */
+const HERMES_PROVIDERS: { id: string; label: string; hint: string }[] = [
+  { id: "nous", label: "Nous Portal", hint: "Sign in once with hermes setup --portal. On its free plan, the models ending in :free cost nothing." },
+  { id: "openrouter", label: "OpenRouter", hint: "Put your OpenRouter key under API key (OPENROUTER_API_KEY). Models ending in :free cost nothing." },
+  { id: "anthropic", label: "Anthropic", hint: "API key in ANTHROPIC_API_KEY." },
+  { id: "openai-api", label: "OpenAI", hint: "API key in OPENAI_API_KEY." },
+  { id: "gemini", label: "Google Gemini", hint: "API key in GEMINI_API_KEY (free-tier keys run out quickly)." },
+  { id: "deepseek", label: "DeepSeek", hint: "API key in DEEPSEEK_API_KEY." },
+  { id: "zai", label: "Z.ai GLM", hint: "API key in GLM_API_KEY." },
+  { id: "huggingface", label: "Hugging Face", hint: "Token in HF_TOKEN." },
+  { id: "lmstudio", label: "LM Studio (local)", hint: "Free: a model running on this computer in LM Studio." },
+  { id: "custom", label: "Custom / local (Ollama, vLLM…)", hint: "Free with a local server: enter its OpenAI-compatible address below." },
+];
+
+/** OpenRouter's free models (public list, no key needed), for the model suggestions. */
+function useFreeOpenRouterModels(on: boolean) {
+  const [models, setModels] = useState<string[]>([]);
+  useEffect(() => {
+    if (!on || models.length) return;
+    let live = true;
+    api.agentModels({ protocol: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", model: "" }, null, null)
+      .then((list) => live && setModels(list.map((m) => m.id).filter((id) => id.endsWith(":free")).sort()))
+      .catch(() => {});
+    return () => { live = false; };
+  }, [on]);
+  return models;
+}
+
+/** Hermes Agent: which provider and model it starts with (`hermes chat --provider … --model …`). */
+function HermesFields({ value, onChange }: { value: HermesSettings; onChange: (h: HermesSettings) => void }) {
+  const known = HERMES_PROVIDERS.find((p) => p.id === value.provider);
+  // "Other…": a provider id typed in, kept as a choice while the field is still empty
+  const [other, setOther] = useState(!!value.provider && !known);
+  const free = useFreeOpenRouterModels(value.provider === "openrouter");
+  const examples = value.provider === "nous" ? ["nvidia/nemotron-3-ultra:free"] : value.provider === "openrouter" ? free : [];
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Provider" hint={known?.hint ?? (other ? "A provider id Hermes knows (hermes model lists them)." : "The one you chose in hermes model.")}>
+          <Select value={other ? "other" : value.provider} onChange={(e) => {
+            const v = e.target.value;
+            setOther(v === "other");
+            onChange({ ...value, provider: v === "other" ? "" : v });
+          }}>
+            <option value="">Hermes's own setting</option>
+            {HERMES_PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            <option value="other">Other…</option>
+          </Select>
+        </Field>
+        <Field label="Model" hint={value.provider === "nous" ? "Free plan: pick a model ending in :free." : value.provider === "openrouter" ? `${free.length ? `${free.length} free models suggested; ` : ""}any OpenRouter model id works.` : "Empty: Hermes's default model."}>
+          <Input className="font-mono text-xs" list="hermes-models" value={value.model} placeholder={examples[0] ?? "vendor/model"} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+          <datalist id="hermes-models">{examples.map((m) => <option key={m} value={m} />)}</datalist>
+        </Field>
+      </div>
+      {other && (
+        <Field label="Provider id" hint="As Hermes names it, e.g. kimi-coding, xai, nvidia.">
+          <Input className="font-mono text-xs" value={value.provider} placeholder="provider-id" onChange={(e) => onChange({ ...value, provider: e.target.value })} />
+        </Field>
+      )}
+      {value.provider === "custom" && (
+        <Field label="API address" hint="OpenAI-compatible, e.g. Ollama's http://localhost:11434/v1.">
+          <Input className="font-mono text-xs" value={value.baseUrl} placeholder="http://localhost:11434/v1" onChange={(e) => onChange({ ...value, baseUrl: e.target.value })} />
+        </Field>
+      )}
+    </>
+  );
 }
 
 /** The harness's default (`MAX_STEPS`). */
@@ -363,6 +435,7 @@ export function AiConnectionsDialog() {
               <Input className="font-mono text-xs" value={form.args} placeholder="--flag value" onChange={(e) => set({ args: e.target.value })} />
             </Field>
             </>}
+            {form.kind === "hermes" && <HermesFields key={form.id || "new"} value={form.hermes} onChange={(hermes) => set({ hermes })} />}
             {form.kind === "claude" && <ClaudeLogin form={form} onOwnLogin={(ownLogin) => set({ ownLogin })} />}
             {form.kind === "antigravity" && (
               <div className="flex flex-col gap-1">

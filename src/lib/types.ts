@@ -474,7 +474,9 @@ export interface TrafficSample {
 
 // ---- AI connections (mirror src-tauri/src/ai/mod.rs)
 
-export type AiKind = "claude" | "cursor" | "codex" | "gemini" | "antigravity" | "copilot" | "aider" | "opencode" | "custom" | "agent";
+export type AiKind = "claude" | "cursor" | "codex" | "gemini" | "antigravity" | "copilot" | "aider" | "opencode" | "hermes" | "custom" | "agent";
+/** Hermes Agent: the model and provider it runs with ("" = what Hermes has set up). `baseUrl`: the `custom` provider's address. */
+export interface HermesSettings { model: string; provider: string; baseUrl: string }
 /** Model API of a DevCat Agent connection. */
 /** A model a DevCat Agent API offers; `context` = its window in tokens, when known. */
 /** A model an agent connection offers; `price` is its list price in US dollars per million tokens. */
@@ -501,6 +503,8 @@ export interface AiProvider {
   builtin?: boolean;
   /** DevCat Agent only. */
   agent?: AgentSettings | null;
+  /** Hermes Agent only. */
+  hermes?: HermesSettings | null;
   /** Claude Code only (not the built-in one): a login of its own, for another Claude account. */
   ownLogin?: boolean;
   /** Read-only: the email a Claude Code connection is logged in with. */

@@ -13,6 +13,7 @@ An *AI connection* tells DevCat which agent CLI to start in the AI workspace. Cl
 | GitHub Copilot | `copilot` | `GH_TOKEN` |
 | Aider | `aider` | the key of the model's vendor |
 | opencode | `opencode` | `OPENAI_API_KEY` or another vendor's |
+| Hermes Agent | `hermes` | `OPENROUTER_API_KEY` or another provider's (none for Nous Portal) |
 | Custom | any CLI that runs in a terminal | your choice |
 | DevCat Agent (built in) | none: it talks to a model API | the provider's API key |
 
@@ -23,6 +24,26 @@ An *AI connection* tells DevCat which agent CLI to start in the AI workspace. Cl
 3. Pick the agent. DevCat shows whether its CLI is installed, with the install command if it isn't.
 4. Optionally add arguments, **Environment variables** or an **API key**.
 5. Click **Use for new chats** so the next **New chat** starts this agent.
+
+## Hermes Agent
+
+[Hermes Agent](https://hermes-agent.nousresearch.com) (Nous Research) runs many model providers, some of them free.
+
+1. Install it: `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`.
+2. **Add AI connection** → **Hermes Agent**.
+3. Pick a **Provider** and a **Model**:
+   - **Nous Portal**: run `hermes setup --portal` once and sign in. On its free plan, the models ending in `:free`
+     cost nothing (for example `nvidia/nemotron-3-ultra:free`, while Nous offers it).
+   - **OpenRouter**: put your OpenRouter key under **API key**. Its free models (ending in `:free`) are suggested
+     in **Model**.
+   - **Custom / local**: a model server on your computer (Ollama, vLLM, llama.cpp…). Enter its OpenAI-compatible
+     **API address**, such as `http://localhost:11434/v1`, and the model's name.
+   - **Other…**: any provider id Hermes knows (`kimi-coding`, `xai`, `nvidia`…), with its key under **API key**
+     and the key's variable name (Hermes's docs list them).
+   - Left empty, Hermes uses what you set up with `hermes model`.
+
+DevCat starts it as `hermes chat --model=… --provider=…`, so a connection's choice applies only to its own chats.
+Hermes's other settings (tools, skills, memory) are its own, in `~/.hermes`.
 
 ## DevCat Agent
 

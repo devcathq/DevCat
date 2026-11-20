@@ -40,6 +40,7 @@ pub fn builtin_claude() -> AiProvider {
         has_api_key: false,
         builtin: true,
         agent: None,
+        hermes: None,
         own_login: false,
         login: None,
     }
@@ -140,6 +141,10 @@ impl AiStore {
         } else {
             p.agent = None;
         }
+        p.hermes = match (p.kind, p.hermes.take()) {
+            (AiKind::Hermes, h) => Some(h.unwrap_or_default().cleaned()?),
+            _ => None,
+        };
         // the built-in profile is the main login; other types log in their own way
         p.own_login &= p.kind == AiKind::Claude && p.id != BUILTIN_ID;
         p.login = None;

@@ -1,5 +1,5 @@
 //! AI connections for the AI workspace: saved profiles for the coding-agent CLI that runs in
-//! the workspace terminal (Claude Code, Cursor, Codex, Gemini, Antigravity, Copilot, Aider, opencode or a
+//! the workspace terminal (Claude Code, Cursor, Codex, Gemini, Antigravity, Copilot, Aider, opencode, Hermes or a
 //! custom command). `pty_open(provider_id)` resolves program / args / env here, so API keys go
 //! from the keychain straight into the child's environment and never reach the frontend.
 pub mod claude_account;
@@ -32,13 +32,17 @@ pub enum AiKind {
     Copilot,
     Aider,
     Opencode,
+    /// Nous Research's Hermes Agent (`hermes`): any provider it knows (Nous Portal, whose free plan
+    /// runs the `:free` models, OpenRouter, a local server…), with the model and provider the
+    /// connection chooses ([`HermesSettings`]).
+    Hermes,
     Custom,
     /// DevCat's own agent (crates/harness): talks to a model API directly, no CLI.
     Agent,
 }
 
 impl AiKind {
-    pub const BUILT_IN: [AiKind; 8] = [AiKind::Claude, AiKind::Cursor, AiKind::Codex, AiKind::Gemini, AiKind::Antigravity, AiKind::Copilot, AiKind::Aider, AiKind::Opencode];
+    pub const BUILT_IN: [AiKind; 9] = [AiKind::Claude, AiKind::Cursor, AiKind::Codex, AiKind::Gemini, AiKind::Antigravity, AiKind::Copilot, AiKind::Aider, AiKind::Opencode, AiKind::Hermes];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -50,6 +54,7 @@ impl AiKind {
             AiKind::Copilot => "GitHub Copilot",
             AiKind::Aider => "Aider",
             AiKind::Opencode => "opencode",
+            AiKind::Hermes => "Hermes Agent",
             AiKind::Custom => "Custom",
             AiKind::Agent => "DevCat Agent",
         }
@@ -66,6 +71,7 @@ impl AiKind {
             AiKind::Copilot => Some("copilot"),
             AiKind::Aider => Some("aider"),
             AiKind::Opencode => Some("opencode"),
+            AiKind::Hermes => Some("hermes"),
             AiKind::Custom | AiKind::Agent => None,
         }
     }
@@ -78,6 +84,8 @@ impl AiKind {
             AiKind::Codex | AiKind::Aider | AiKind::Opencode => Some("OPENAI_API_KEY"),
             AiKind::Gemini | AiKind::Antigravity => Some("GEMINI_API_KEY"),
             AiKind::Copilot => Some("GH_TOKEN"),
+            // Nous Portal logs in with `hermes setup --portal` (no key); a key is most often OpenRouter's
+            AiKind::Hermes => Some("OPENROUTER_API_KEY"),
             // not an env var: the agent sends the key itself
             AiKind::Agent => Some("DEVCAT_AGENT_API_KEY"),
             AiKind::Custom => None,
@@ -94,6 +102,7 @@ impl AiKind {
             AiKind::Copilot => Some("npm i -g @github/copilot"),
             AiKind::Aider => Some("pip install aider-chat"),
             AiKind::Opencode => Some("npm i -g opencode-ai"),
+            AiKind::Hermes => Some("curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"),
             AiKind::Custom | AiKind::Agent => None,
         }
     }
@@ -136,6 +145,9 @@ pub struct AiProvider {
     /// DevCat Agent only: which model API to talk to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentSettings>,
+    /// Hermes Agent only: the model and provider it runs with (none: what Hermes has set up).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hermes: Option<HermesSettings>,
     /// Claude Code only (not the built-in one): a login of its own, kept in its own config folder
     /// ([`claude_account`]), so several Claude accounts can be used side by side.
     #[serde(default)]
@@ -160,6 +172,60 @@ pub struct AgentSettings {
     /// work with `agent_delegate`. Off unless the user turns it on for this connection.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub delegate: bool,
+}
+
+/// The model and provider of a Hermes Agent connection: `hermes chat --model=… --provider=…`.
+/// Empty fields leave Hermes's own choice (`hermes model`, `~/.hermes/config.yaml`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSettings {
+    /// e.g. `nvidia/nemotron-3-ultra:free` (Nous Portal's free plan), `openai/gpt-5.5`.
+    #[serde(default)]
+    pub model: String,
+    /// Hermes's provider id: `nous` (Nous Portal), `openrouter`, `anthropic`, `custom`…
+    #[serde(default)]
+    pub provider: String,
+    /// The OpenAI-compatible address, for the `custom` provider only (a local server).
+    #[serde(default)]
+    pub base_url: String,
+}
+
+impl HermesSettings {
+    /// What `hermes` is started with: `chat` (its classic terminal chat, where `--model` and
+    /// `--provider` apply; at the top level they're for `-z` and `--tui` only), then the
+    /// connection's choices, as `--flag=value` so a value can never read as another flag.
+    pub fn args(&self) -> Vec<String> {
+        let mut a = vec!["chat".to_string()];
+        if !self.model.is_empty() {
+            a.push(format!("--model={}", self.model));
+        }
+        if !self.provider.is_empty() {
+            a.push(format!("--provider={}", self.provider));
+        }
+        if self.provider == "custom" && !self.base_url.is_empty() {
+            a.push(format!("--base-url={}", self.base_url));
+        }
+        a
+    }
+
+    /// Trimmed and checked for saving.
+    pub fn cleaned(mut self) -> AppResult<Self> {
+        self.model = self.model.trim().to_string();
+        self.provider = self.provider.trim().to_ascii_lowercase();
+        self.base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        if self.model.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(AppError::msg("The Hermes model name can't contain spaces"));
+        }
+        if !self.provider.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err(AppError::msg("The Hermes provider is a name like nous, openrouter or custom"));
+        }
+        if self.provider != "custom" {
+            self.base_url.clear();
+        } else if !self.base_url.is_empty() && !(self.base_url.starts_with("https://") || self.base_url.starts_with("http://")) {
+            return Err(AppError::msg("The API address must start with https:// or http://"));
+        }
+        Ok(self)
+    }
 }
 
 impl AiProvider {
@@ -189,7 +255,13 @@ pub struct Launch {
 /// Program / args / env for a profile (program not resolved on PATH yet).
 pub fn plan(p: &AiProvider, api_key: Option<String>, extra_args: Vec<String>) -> AppResult<Launch> {
     let program = p.program()?;
-    let args = p.args.iter().cloned().chain(extra_args).collect();
+    // Hermes: `chat` and the connection's model / provider first, then the user's own arguments
+    let lead = match (p.kind, &p.hermes) {
+        (AiKind::Hermes, Some(h)) => h.args(),
+        (AiKind::Hermes, None) => vec!["chat".to_string()],
+        _ => vec![],
+    };
+    let args = lead.into_iter().chain(p.args.iter().cloned()).chain(extra_args).collect();
     let mut env: Vec<(String, String)> = p.env.iter().map(|e| (e.key.clone(), e.value.clone())).collect();
     if let (Some(key), Some(var)) = (api_key.filter(|k| !k.is_empty()), p.key_env()) {
         env.retain(|(k, _)| *k != var);
@@ -557,6 +629,40 @@ mod tests {
         let mut g = provider(AiKind::Gemini);
         g.command = Some("~/bin/gemini-dev".into());
         assert_eq!(plan(&g, None, vec![]).unwrap().program, "~/bin/gemini-dev");
+    }
+
+    #[test]
+    fn hermes_runs_its_model_and_provider() {
+        assert!(AiKind::BUILT_IN.contains(&AiKind::Hermes));
+        assert_eq!(AiKind::Hermes.program(), Some("hermes"));
+        assert_eq!(serde_json::to_value(AiKind::Hermes).unwrap(), "hermes");
+        let mut p = provider(AiKind::Hermes);
+        // nothing chosen: Hermes's own setup
+        assert_eq!(plan(&p, None, vec![]).unwrap().args, vec!["chat"]);
+        p.hermes = Some(HermesSettings { model: "nvidia/nemotron-3-ultra:free".into(), provider: "nous".into(), base_url: "http://ignored".into() });
+        p.args = vec!["--yolo".into()];
+        let l = plan(&p, Some("sk-or".into()), vec![]).unwrap();
+        assert_eq!(l.program, "hermes");
+        // the address is only for the custom provider
+        assert_eq!(l.args, vec!["chat", "--model=nvidia/nemotron-3-ultra:free", "--provider=nous", "--yolo"]);
+        assert_eq!(l.env, vec![("OPENROUTER_API_KEY".into(), "sk-or".into())]);
+        p.hermes = Some(HermesSettings { model: "qwen3.5:27b".into(), provider: "custom".into(), base_url: "http://localhost:11434/v1".into() });
+        assert_eq!(plan(&p, None, vec![]).unwrap().args[1..4], ["--model=qwen3.5:27b", "--provider=custom", "--base-url=http://localhost:11434/v1"]);
+        // other kinds ignore Hermes settings
+        let mut c = provider(AiKind::Codex);
+        c.hermes = p.hermes.clone();
+        assert!(plan(&c, None, vec![]).unwrap().args.is_empty());
+    }
+
+    #[test]
+    fn hermes_settings_are_checked() {
+        let ok = HermesSettings { model: " openai/gpt-5.5 ".into(), provider: " OpenRouter ".into(), base_url: "http://x/v1/".into() }.cleaned().unwrap();
+        assert_eq!(ok, HermesSettings { model: "openai/gpt-5.5".into(), provider: "openrouter".into(), base_url: String::new() });
+        let custom = HermesSettings { model: String::new(), provider: "custom".into(), base_url: "http://127.0.0.1:8000/v1/".into() }.cleaned().unwrap();
+        assert_eq!(custom.base_url, "http://127.0.0.1:8000/v1");
+        assert!(HermesSettings { model: "a b".into(), ..Default::default() }.cleaned().is_err());
+        assert!(HermesSettings { provider: "nous --yolo".into(), ..Default::default() }.cleaned().is_err());
+        assert!(HermesSettings { provider: "custom".into(), base_url: "file:///etc".into(), ..Default::default() }.cleaned().is_err());
     }
 
     #[test]

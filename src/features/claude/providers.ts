@@ -33,11 +33,12 @@ export const KINDS: Record<AiKind, KindInfo> = {
   copilot: { label: "GitHub Copilot", program: "copilot", keyEnv: "GH_TOKEN", keyEnvEditable: true, install: "npm i -g @github/copilot", login: "Use /login on first start, or set a GitHub token." },
   aider: { label: "Aider", program: "aider", keyEnv: "OPENAI_API_KEY", keyEnvEditable: true, install: "pip install aider-chat", login: "Aider reads the API key of the model's vendor." },
   opencode: { label: "opencode", program: "opencode", keyEnv: "OPENAI_API_KEY", keyEnvEditable: true, install: "npm i -g opencode-ai", login: "Run opencode auth login once, or set an API key." },
+  hermes: { label: "Hermes Agent", program: "hermes", keyEnv: "OPENROUTER_API_KEY", keyEnvEditable: true, install: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash", login: "Run hermes setup --portal once to sign in to Nous Portal (its free plan runs the :free models), or set a provider's API key." },
   custom: { label: "Custom", program: "", keyEnv: null, keyEnvEditable: true, install: null, login: "Any CLI that runs in a terminal." },
   agent: { label: "DevCat Agent", program: "", keyEnv: null, keyEnvEditable: false, install: null, login: "Built in: talks to a model API directly. Nothing to install." },
 };
 
-export const KIND_ORDER: AiKind[] = ["claude", "agent", "cursor", "codex", "gemini", "antigravity", "copilot", "aider", "opencode", "custom"];
+export const KIND_ORDER: AiKind[] = ["claude", "agent", "cursor", "codex", "gemini", "antigravity", "copilot", "aider", "opencode", "hermes", "custom"];
 
 export const builtinClaude = (): AiProvider => ({ id: CLAUDE_PROVIDER_ID, name: "Claude Code", kind: "claude", args: [], env: [], builtin: true });
 
