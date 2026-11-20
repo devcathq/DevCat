@@ -212,6 +212,17 @@ pub fn run_config(project: Option<&str>, folder: &Path) -> AppResult<Value> {
     Ok(json!({ "mcpServers": { NAME: { "type": "stdio", "command": exe, "args": args, "env": {} } } }))
 }
 
+/// `--mcp-config` for Claude Code answering a mention in a room (`rooms_agent.rs`): `devcat mcp
+/// --room <id>`, which serves that room's agent tools and nothing else (`Scope::room`).
+pub fn room_config(room: &str) -> AppResult<Value> {
+    let (exe, data_dir) = program()?;
+    let mut args = vec!["mcp".to_string(), "--room".to_string(), room.to_string()];
+    if let Some(d) = data_dir {
+        args.extend(["--data-dir".to_string(), d]);
+    }
+    Ok(json!({ "mcpServers": { NAME: { "type": "stdio", "command": exe, "args": args, "env": {} } } }))
+}
+
 const EVERY_FOLDER: &str = "Every folder";
 
 fn project_scope(p: &Project, folder: &str) -> String {

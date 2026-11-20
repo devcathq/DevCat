@@ -62,6 +62,10 @@ pub struct Scope {
     /// connection tools, but none that reach ticket boards, schedule jobs, add connections or
     /// add, change or delete network profiles.
     pub unattended: bool,
+    /// A room's agent run by a CLI (Claude Code answering a mention: `devcat mcp --room <id>`,
+    /// `rooms_agent.rs`): it gets that room's agent tools and nothing else of DevCat's (no
+    /// connections, memory, notes, boards or jobs). Always with `unattended` too.
+    pub room: Option<String>,
 }
 
 impl Scope {
