@@ -15,16 +15,43 @@ export type Item =
    *  helper's own session). */
   | { kind: "tool"; key: string; id: string; name: string; input: Record<string, unknown> | null; status: ToolStatus; output: string; request: AgentApprovalRequest | null; question?: AgentQuestion | null; helper?: HelperStep[] }
   | { kind: "end"; key: string; end: "answered" | "stepLimit" | "stopped" | "error"; error: string | null; elapsedMs: number | null; tokens: number }
-  /** The conversation before it was summarized (automatically, or `/compact`). */
-  | { kind: "compacted"; key: string; state: "running" | "done" | "failed"; summary: string; tokensBefore: number }
-  /** A hook's message: its `systemMessage`, a failure, or why a Stop hook sent the agent on. */
-  | { kind: "hook"; key: string; event: string; text: string };
+  /** The conversation before it was summarized (automatically, or `/compact`). `error`: why it
+   *  failed. */
+  | { kind: "compacted"; key: string; state: "running" | "done" | "failed"; summary: string; tokensBefore: number; error?: string }
+  /** A hook's message: its `systemMessage`, a failure, or why a Stop hook sent the agent on. With
+   *  the event `HARNESS`: what DevCat itself told the agent. */
+  | { kind: "hook"; key: string; event: string; text: string }
+  /** The model's step is being tried again (live only: it goes when the step comes through). */
+  | { kind: "retry"; key: string; attempt: number; of: number; reason: string };
 
 export type ToolItem = Extract<Item, { kind: "tool" }>;
 export type HelperStep = { name: string; input: Record<string, unknown> | null };
 
 /** The tool that hands a question to a helper (the harness runs it: crates/harness/src/agent.rs). */
 export const SUBAGENT = "subagent";
+
+/** The "hook" that is DevCat itself (the harness's `NOTE`): what it told the agent in the user's
+ *  place, such as that its answer was empty or cut off. */
+export const HARNESS = "DevCat";
+
+/** Who a hook note is from: "Stop hook", or "DevCat told the agent". */
+export const hookLabel = (event: string) => (event === HARNESS ? "DevCat told the agent" : `${event} hook`);
+
+/** Why a step is tried again, in a few words (`reason` is the harness's error text). */
+export function retryLabel(reason: string) {
+  const r = reason.toLowerCase();
+  if (/\b429\b|rate.?limit/.test(r)) return "The provider is rate-limiting";
+  if (/\b5\d\d\b|overloaded|unavailable/.test(r)) return "The provider is busy";
+  return "The connection to the model broke";
+}
+
+/** How a turn that didn't finish reads in the log (`interrupted`), as the end the chat shows. */
+function endOf(reason: string): Extract<Item, { kind: "end" }>["end"] {
+  if (reason.startsWith("Stopped by")) return "stopped";
+  // the harness's "Stopped after N steps": a pause, not a failure
+  if (/^Stopped after \d+ steps/.test(reason)) return "stepLimit";
+  return "error";
+}
 
 /** What the live events change in a chat. */
 export interface ChatView {
@@ -81,7 +108,8 @@ export function itemsFromLog(events: AgentSessionEvent[]): Item[] {
     } else if (e.event === "compacted") {
       items.push({ kind: "compacted", key: key(), state: "done", summary: e.summary, tokensBefore: e.tokens_before });
     } else if (e.event === "interrupted") {
-      items.push({ kind: "end", key: key(), end: e.reason.startsWith("Stopped by") ? "stopped" : "error", error: e.reason.startsWith("Stopped by") ? null : e.reason, elapsedMs: null, tokens: 0 });
+      const end = endOf(e.reason);
+      items.push({ kind: "end", key: key(), end, error: end === "error" ? e.reason : null, elapsedMs: null, tokens: 0 });
     }
   }
   return items;
@@ -197,7 +225,22 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
       if (last?.kind === "answer" && last.streaming && last.thinkingStart && last.thinkingMs === null) items[items.length - 1] = { ...last, thinkingMs: now - last.thinkingStart };
       if (toolIdx(e.id) < 0 && e.id) items.push({ kind: "tool", key: key(), id: e.id, name: e.name, input: null, status: "pending", output: "", request: null });
       return { items };
+    case "retry": {
+      // What this step streamed so far is void: it comes again. Take it out (the half-written
+      // answer, calls that only started), and say that it's trying again. Messages the user sent
+      // meanwhile wait at the end: they stay, and what's void is right before them.
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (it.kind === "user" && it.queued) continue;
+        if (!((it.kind === "answer" && it.streaming) || (it.kind === "tool" && it.status === "pending" && it.input === null) || it.kind === "retry")) break;
+        items.splice(i, 1);
+      }
+      items.push({ kind: "retry", key: key(), attempt: e.attempt, of: e.of, reason: e.reason });
+      return { items };
+    }
     case "step": {
+      // it came through: a note that it was tried again has done its job
+      for (let i = items.length - 1; i >= 0; i--) if (items[i].kind === "retry") items.splice(i, 1);
       // The finished step: close the streamed answer, or add it when nothing was streamed.
       const streamed = items.findIndex((i) => i.kind === "answer" && i.streaming);
       if (streamed >= 0) {
@@ -240,6 +283,11 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
       else items.push(done);
       return { items, usage: plus(c.usage, e.usage), contextTokens: Math.round(e.summary.length / 4) };
     }
+    case "compactFailed": {
+      const i = items.map((x) => x.kind === "compacted" && x.state === "running").lastIndexOf(true);
+      if (i >= 0) items[i] = { ...(items[i] as Extract<Item, { kind: "compacted" }>), state: "failed", error: e.message };
+      return { items };
+    }
     case "toolResult":
       setTool(e.id, (t) => ({
         output: e.content,
@@ -251,7 +299,7 @@ export function apply(c: ChatView, e: AgentLiveEvent): Partial<ChatView> {
     case "turnEnd": {
       // what it didn't read goes back to the chat box
       const draft = e.unsent?.length ? e.unsent.map((t) => splitAttachments(t).text).join("\n\n") : null;
-      const closed = items.filter((i) => !(i.kind === "user" && i.queued)).map((i): Item => (i.kind === "answer" && i.streaming ? { ...i, streaming: false }
+      const closed = items.filter((i) => !(i.kind === "user" && i.queued) && i.kind !== "retry").map((i): Item => (i.kind === "answer" && i.streaming ? { ...i, streaming: false }
         : i.kind === "tool" && (i.status === "pending" || i.status === "running" || i.status === "approval" || i.status === "question") ? { ...i, status: "error" as const, request: null, question: null }
         : i.kind === "compacted" && i.state === "running" ? { ...i, state: "failed" }
         : i));
@@ -367,6 +415,8 @@ function isStep(it: Item) {
   if (it.kind === "tool") return it.name !== SUBAGENT && !(it.status === "approval" && it.request) && !(it.status === "question" && it.question);
   // a hook's note folds in with the steps around it, except a Stop hook sending the agent on
   if (it.kind === "hook") return !isStopHook(it.event);
+  // shown while it's the last thing that happened (the step in progress), folded away after
+  if (it.kind === "retry") return true;
   return it.kind === "answer" && !it.text.trim();
 }
 

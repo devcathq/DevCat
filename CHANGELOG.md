@@ -12,6 +12,18 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **DevCat Agent: long turns hold up**: a helper that reaches its 60 steps now answers with what it found instead
+  of failing, so the agent no longer asks the same helper again from the start. A summary of the conversation that
+  comes back empty is asked for again, and one that fails no longer ends the turn. A small context window isn't
+  summarized after every step anymore, a conversation the provider refuses as too long is summarized and the step
+  taken again, and each summary keeps your messages word for word (the one you just sent stays as it is, with its
+  images). A connection that drops while the model answers
+  is tried again (the chat says so) instead of ending the turn or passing half an answer on, and an answer cut off
+  at the output limit goes on where it stopped. Reasoning some providers send twice shows once. After a pause at
+  the step limit, "continue" carries on instead of starting over. A command that times out or is stopped takes what
+  it started with it (a build, an install), so the next command doesn't wait on its locks. The chat
+  points out an MCP server whose tools weigh on every request (hundreds of tools can be half the context window).
+
 ## 0.33.1 - 2026-11-20
 
 - **Rooms: Claude Code as your room agent reads GitHub** (#219): with Claude Code chosen as the room's agent, it

@@ -3,14 +3,14 @@
 //! their results go back to the model, until it answers without a tool call.
 use crate::approval::{ApprovalRequest, Approver, Decision, DenyAll, Kind, Policy, Question};
 use crate::hooks::{self, Hooks, Outcome};
-use crate::llm::{Delta, Llm, Reply, Request};
-use crate::message::{Block, Role, ToolSpec, Usage};
+use crate::llm::{Delta, Llm, Reply, Request, UNPARSED, is_overflow};
+use crate::message::{Block, Message, Role, ToolSpec, Usage};
 use crate::session::{Session, SessionEvent};
 use crate::tools::{ASK_USER, MAX_OUTPUT, Registry, SUBAGENT, TODO_WRITE, ToolCtx, ToolOutput, truncate};
 use crate::{Error, Result};
 use async_trait::async_trait;
-use futures::StreamExt;
 use futures::future::BoxFuture;
+use futures::{FutureExt, StreamExt};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -28,6 +28,60 @@ pub const HELPER_MAX_STEPS: u32 = 60;
 
 /// Share of the context window at which the conversation is summarized before the next step.
 pub const COMPACT_AT: f64 = 0.8;
+
+/// Share of the window kept free on top of the model's answer: what was added since the
+/// provider last counted is only estimated.
+const MARGIN: f64 = 0.05;
+
+/// The room kept for the answer never brings the limit under this share of the window. Servers
+/// that don't count the answer against the window (llama.cpp, Ollama) would summarize far too
+/// early with a small window otherwise; one that does, and refuses a step for it, is handled
+/// when it says so (see [`is_overflow`]).
+const COMPACT_FLOOR: f64 = 0.6;
+
+/// The provider refused the conversation as too long this many times in a row with hardly a step
+/// between the summaries: the window is too small for the work, and the turn ends saying so.
+const MAX_SQUEEZED: u32 = 3;
+
+/// The conversation is summarized again only once it grew by this share of the window since the
+/// last summary. With a small window the system prompt, the tools and the summary can be over the
+/// limit on their own: summarizing every step then frees nothing and makes the model forget what
+/// it just did.
+const WORTH_COMPACTING: f64 = 0.1;
+
+/// After a summary that failed, the next automatic one waits this many steps.
+const COMPACT_AGAIN_AFTER: u32 = 5;
+
+/// How far the conversation is cut down for the summary request when it doesn't fit the window
+/// itself (see [`shrink`]).
+const SHRINK_LEVELS: u8 = 4;
+
+/// The user's own messages carried over a compaction word for word: this many characters in all,
+/// and of each one.
+const KEPT_WORDS: usize = 6_000;
+const KEPT_MESSAGE: usize = 2_000;
+
+/// The user's messages a summary finds unanswered (the one that starts a turn, ones sent while
+/// the agent worked) stay as they are after it, up to this many characters in all, and no more
+/// than a quarter of a known window: more is left to the summary, or it would be what doesn't fit.
+const KEPT_UNANSWERED: usize = 32_000;
+
+/// What marks a message the harness wrote to the model itself, in the user's place: in the
+/// session log (`User::hook`) and in the chat ([`AgentEvent::Hook`]).
+pub const NOTE: &str = "DevCat";
+
+/// An answer cut off at the output limit is asked to go on this many times in a row.
+const MAX_CUT_OFF: u32 = 3;
+
+const EMPTY_REPLY: &str = "Your last message was empty. If the task is done, say so in a sentence or two (what you did, what's left). If not, go on with the next step.";
+
+const CUT_OFF: &str = "Your message was cut off at the output limit. Go on exactly where it stopped, without repeating what you already wrote.";
+
+const CUT_OFF_CALL: &str = "Not run: your message hit the output limit before this call's arguments were complete. Make the call smaller: write a long file in parts (`write` the first part, then add the rest with `edit`), and put a long script in a file instead of the command line.";
+
+const EMPTY_SUMMARY: &str = "\n\nYour last reply had no text. Write the summary now, as plain text, without calling a tool.";
+
+const MID_TURN: &str = "\n\nThe conversation was summarized while you were working. Nothing else changed: go on now with what is still open (the user's latest message, if you hadn't finished with it), without starting over and without asking the user to repeat anything.";
 
 /// Added to the system prompt while the user plans (see [`Policy::Plan`]).
 const PLAN_MODE: &str = "\
@@ -54,7 +108,9 @@ Another agent gave you the task in the user message. Your final answer goes back
 and it can't ask you anything afterwards. You can read and search the project and use the other tools that don't \
 change anything; you can't edit files, run commands or ask the user, whatever the instructions above say about that. \
 Work through the task, then answer with what the other agent needs: the facts, with file paths and line numbers, and \
-short code excerpts only where they matter. If you couldn't find something, say so and say where you looked.";
+short code excerpts only where they matter. If you couldn't find something, say so and say where you looked. \
+You get a limited number of steps, so look where the answer is likely instead of reading everything, and answer as \
+soon as you can: an answer that says what's still unchecked is worth more than none.";
 
 const COMPACT_PROMPT: &str = "\
 The conversation is about to be cut to free the context window, and this summary will replace it. \
@@ -68,6 +124,136 @@ Don't call any tools: answer with the summary only, in this structure.
 6. Still to do: the remaining steps and open questions.
 
 Keep paths, names, numbers and error messages exact. Leave out what no longer matters.";
+
+/// What the user wrote in `session`, word for word and oldest first: the newest messages that fit
+/// in [`KEPT_WORDS`] characters, long ones cut to [`KEPT_MESSAGE`]. A summary paraphrases; what
+/// was asked for should survive it as it was said. (The log keeps every message, also the ones
+/// before an earlier compaction.)
+fn user_words(session: &Session) -> Option<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut left = KEPT_WORDS;
+    for e in session.events().iter().rev() {
+        let SessionEvent::User { text, hook: None, .. } = e else { continue };
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let cut: String = text.chars().take(KEPT_MESSAGE).collect();
+        let cut = if cut.len() < text.len() { format!("{cut} […]") } else { cut };
+        if cut.len() > left && !kept.is_empty() {
+            break;
+        }
+        left = left.saturating_sub(cut.len());
+        kept.push(cut);
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    kept.reverse();
+    Some(kept.iter().enumerate().map(|(n, m)| format!("{}. {m}", n + 1)).collect::<Vec<_>>().join("\n\n"))
+}
+
+/// The answer a conversation ends with: the text of the last step that said something, and of the
+/// steps before it when the answer was cut off at the output limit and went on from there (the
+/// last step alone would be its tail).
+pub fn answer_of(events: &[SessionEvent]) -> String {
+    let said = |e: &SessionEvent| match e {
+        SessionEvent::Assistant { content, .. } => Some(content.iter().filter_map(|b| if let Block::Text { text } = b { Some(text.as_str()) } else { None }).collect::<String>()),
+        _ => None,
+    };
+    let Some(mut at) = events.iter().rposition(|e| said(e).is_some_and(|t| !t.trim().is_empty())) else { return String::new() };
+    let mut parts = vec![said(&events[at]).unwrap_or_default()];
+    while at >= 2
+        && matches!(&events[at - 1], SessionEvent::User { hook: Some(h), text, .. } if h == NOTE && text == CUT_OFF)
+        && let Some(before) = said(&events[at - 2])
+    {
+        parts.push(before);
+        at -= 2;
+    }
+    parts.reverse();
+    parts.concat().trim().to_string()
+}
+
+/// `s` with its middle left out when it's longer than `max` characters.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max * 2 / 3).collect();
+    let tail: String = s.chars().rev().take(max / 3).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("{head}\n[… {} characters left out …]\n{tail}", s.chars().count() - max)
+}
+
+/// Long strings in a tool call's input (a file's content, a script) clipped to `max` characters.
+fn clip_input(v: &Value, max: usize) -> Value {
+    match v {
+        Value::String(s) => Value::String(clip(s, max)),
+        Value::Array(a) => Value::Array(a.iter().map(|x| clip_input(x, max)).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), clip_input(x, max))).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The conversation made smaller for the summary request, when the whole of it doesn't fit the
+/// window anymore. Each level leaves out more: 1 and 2 clip tool results, tool inputs and long
+/// messages (a pasted log) and drop reasoning and images, 3 and 4 also keep only the newer half,
+/// then the newest quarter. Every tool call keeps its result, and the first message stays the
+/// user's.
+fn shrink(messages: &[Message], level: u8) -> Vec<Message> {
+    if level == 0 {
+        return messages.to_vec();
+    }
+    let (result, input, said) = if level == 1 { (4_000, 2_000, 8_000) } else { (600, 300, 2_000) };
+    let mut out: Vec<Message> = messages
+        .iter()
+        .map(|m| Message {
+            role: m.role,
+            content: m
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Thinking { .. } => None,
+                    Block::Image { .. } => Some(Block::Text { text: "[an image]".into() }),
+                    Block::ToolResult { tool_use_id, content, is_error } => Some(Block::ToolResult { tool_use_id: tool_use_id.clone(), content: clip(content, result), is_error: *is_error }),
+                    Block::ToolUse { id, name, input: i } => Some(Block::ToolUse { id: id.clone(), name: name.clone(), input: clip_input(i, input) }),
+                    Block::Text { text } => Some(Block::Text { text: clip(text, said) }),
+                })
+                .collect(),
+        })
+        .filter(|m| !m.content.is_empty())
+        .collect();
+    if level >= 3 {
+        let cut = if level == 3 { out.len() / 2 } else { out.len() - out.len() / 4 };
+        // from one of the model's messages on: its tool calls have their results right after it
+        let from = (cut..out.len()).find(|&i| out[i].role == Role::Assistant).or_else(|| (0..cut).rev().find(|&i| out[i].role == Role::Assistant));
+        if let Some(from) = from.filter(|&f| f > 0) {
+            let mut tail = vec![Message::user_text("[The earlier part of the conversation is left out here: it no longer fits the context window.]")];
+            tail.extend(out.drain(from..));
+            out = tail;
+        }
+    }
+    out
+}
+
+/// The provider's "too long" (`e`) after the conversation was already summarized: what's left
+/// can't be made smaller, so the error says what would help.
+fn too_small(e: &Error) -> Error {
+    let m = match e {
+        Error::Provider(m) => m.clone(),
+        other => other.to_string(),
+    };
+    Error::Provider(format!("{m} (the conversation was just summarized and still doesn't fit: the system prompt, the project's rules, the tools and the work at hand need more than this model's context window. Use a model with a larger window, or fewer rule files and MCP servers.)"))
+}
+
+/// The characters the tools' definitions add to every request.
+fn specs_chars(specs: &[ToolSpec]) -> usize {
+    specs.iter().map(|s| s.name.len() + s.description.len() + s.input_schema.to_string().len()).sum()
+}
+
+/// About how many characters a request with `messages` has (see [`Session::weight`]).
+fn chars_of(messages: &[Message]) -> usize {
+    messages.iter().flat_map(|m| &m.content).map(crate::session::block_chars).sum()
+}
 
 /// The latest `todo_write` list in `session` as `[x]` / `[>]` / `[ ]` lines, if a step is still
 /// open (a finished list has nothing to carry on).
@@ -98,6 +284,11 @@ fn open_todos(session: &Session) -> Option<String> {
 #[async_trait]
 pub trait Model: Send + Sync {
     fn name(&self) -> String;
+    /// The most tokens it's asked to answer with (`max_tokens`): providers count them against
+    /// the context window, so that much of it has to stay free. 0 when it isn't known.
+    fn max_output(&self) -> u64 {
+        0
+    }
     async fn step(&self, req: &Request<'_>, on: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply>;
 }
 
@@ -105,6 +296,9 @@ pub trait Model: Send + Sync {
 impl Model for Llm {
     fn name(&self) -> String {
         self.config.model.clone()
+    }
+    fn max_output(&self) -> u64 {
+        self.config.max_tokens as u64
     }
     async fn step(&self, req: &Request<'_>, on: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
         Llm::step(self, req, on).await
@@ -125,6 +319,12 @@ pub enum AgentEvent {
     Compacting { tokens_before: u64 },
     /// The summary that now stands for the conversation before it.
     Compacted { summary: String, tokens_before: u64, usage: Usage },
+    /// Summarizing didn't work (`message`): the conversation is as it was.
+    CompactFailed { message: String },
+    /// The model's step is tried again (`attempt` of `of`): the provider was busy or the
+    /// connection broke (`reason`). What the step streamed so far (text, thinking, tool starts)
+    /// is void: it comes again.
+    Retry { attempt: u32, of: u32, reason: String },
     /// A tool call is about to run (after approval, if it needed one).
     ToolCall { id: String, name: String, summary: String, input: Value },
     ToolResult { id: String, content: String, is_error: bool },
@@ -133,7 +333,8 @@ pub enum AgentEvent {
     /// The helper started by `subagent` call `id` finished a step; its tokens count for the chat.
     HelperStep { id: String, usage: Usage },
     /// A hook has something to tell the user: its `systemMessage`, that it failed, or (Stop) why
-    /// the agent goes on.
+    /// the agent goes on. With `event` [`NOTE`] it's the harness's own: what it told the model in
+    /// the user's place (that its answer was empty or cut off).
     Hook { event: String, message: String },
     /// A message the user sent while the agent worked is now part of the conversation, or
     /// (`blocked`) a UserPromptSubmit hook refused it: it's dropped, and a `Hook` event says why.
@@ -269,7 +470,15 @@ impl Agent {
     /// Summarize the conversation so far and continue from the summary (`/compact`). `focus` says
     /// what the summary should keep in particular.
     pub async fn compact(&mut self, session: &mut Session, focus: Option<&str>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<()> {
-        let mut messages = session.messages();
+        self.compact_now(session, focus, false, true, cancel, on).await.map(|_| ())
+    }
+
+    /// [`Agent::compact`]; `mid_turn`: the agent is in the middle of its work and goes on right
+    /// after. `keep`: the user's messages nothing answered yet stay as they are after the summary
+    /// when they're small enough ([`KEPT_UNANSWERED`]). Returns whether the conversation was
+    /// summarized (a PreCompact hook can stop the automatic one).
+    async fn compact_now(&mut self, session: &mut Session, focus: Option<&str>, mid_turn: bool, keep: bool, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<bool> {
+        let messages = session.messages();
         if messages.is_empty() {
             return Err(Error::Provider("There's nothing to compact yet.".into()));
         }
@@ -278,36 +487,23 @@ impl Agent {
         let pre = self.hook(session, "PreCompact", Some(&[trigger]), json!({ "trigger": trigger, "custom_instructions": focus.unwrap_or("") }), cancel, on).await;
         if let Some(why) = pre.stop.or(pre.block) {
             // the automatic one goes on without compacting
-            return if trigger == "manual" { Err(Error::Hook(format!("A PreCompact hook stopped the compaction: {why}"))) } else { Ok(()) };
+            return if trigger == "manual" { Err(Error::Hook(format!("A PreCompact hook stopped the compaction: {why}"))) } else { Ok(false) };
         }
         let tokens_before = session.context_tokens();
         on(AgentEvent::Compacting { tokens_before });
-        let mut ask = COMPACT_PROMPT.to_string();
-        if let Some(f) = focus.map(str::trim).filter(|f| !f.is_empty()) {
-            ask.push_str(&format!("\n\nThe user wants the summary to focus on: {f}"));
-        }
-        match messages.last_mut() {
-            Some(m) if m.role == crate::message::Role::User => m.content.push(Block::Text { text: ask }),
-            _ => messages.push(crate::message::Message { role: crate::message::Role::User, content: vec![Block::Text { text: ask }] }),
-        }
-        // Same system prompt and tools as every step, so the provider's cache still applies.
-        let specs = self.tools.specs();
-        let system = self.system_now();
-        let req = Request { system: &system, messages: &messages, tools: &specs, cache_key: Some(&session.id) };
-        let mut ignore = |_| {};
-        let reply = tokio::select! {
-            r = self.model.step(&req, &mut ignore) => r?,
-            _ = cancel.cancelled() => return Err(Error::Cancelled),
+        let (mut summary, usage) = match self.summarize(&session.id, &messages, focus, cancel).await {
+            Ok(s) => s,
+            Err(e) => {
+                on(AgentEvent::CompactFailed { message: e.to_string() });
+                return Err(e);
+            }
         };
-        let mut summary: String = reply.content.iter().filter_map(|b| match b {
-            Block::Text { text } => Some(text.as_str()),
-            _ => None,
-        }).collect::<Vec<_>>().join("").trim().to_string();
-        if summary.is_empty() {
-            return Err(Error::Provider("The model returned an empty summary; the conversation was left as it was.".into()));
+        // A summary paraphrases. What must survive it as it was goes in word for word: what the
+        // user asked for, and the checklist (it lives in a `todo_write` call the summary
+        // replaces), so the model goes on with the same task and the same plan.
+        if let Some(said) = user_words(session) {
+            summary.push_str(&format!("\n\n## What the user wrote, word for word (oldest first)\n{said}"));
         }
-        // the checklist lives in a `todo_write` call the summary replaces: carry it over word for
-        // word, so the model goes on with the same plan (and keeps updating it)
         if let Some(list) = open_todos(session) {
             summary.push_str(&format!("
 
@@ -316,15 +512,120 @@ impl Agent {
 
 Go on from the step marked [>] and keep the list up to date with `todo_write`."));
         }
-        session.append(SessionEvent::Compacted { summary: summary.clone(), model: self.model.name(), usage: reply.usage, tokens_before }).await?;
-        on(AgentEvent::Compacted { summary, tokens_before, usage: reply.usage });
+        if mid_turn {
+            summary.push_str(MID_TURN);
+        }
+        // The message that started this turn (or came while it ran) isn't history yet: it stays,
+        // with its images, instead of being read by the model as a paraphrase of itself.
+        let unanswered = session.unanswered();
+        let fits = unanswered.iter().sum::<usize>() <= self.context_window.map_or(KEPT_UNANSWERED, |w| KEPT_UNANSWERED.min(w as usize));
+        let kept = if keep && fits { unanswered.len() } else { 0 };
+        session.append(SessionEvent::Compacted { summary: summary.clone(), model: self.model.name(), usage, tokens_before, kept }).await?;
+        on(AgentEvent::Compacted { summary, tokens_before, usage });
         self.hook(session, "PostCompact", Some(&[trigger]), json!({ "trigger": trigger }), cancel, on).await;
-        Ok(())
+        Ok(true)
     }
 
-    /// Whether the conversation has outgrown [`COMPACT_AT`] of the context window.
-    fn over_limit(&self, session: &Session) -> bool {
-        self.context_window.is_some_and(|w| session.context_tokens() as f64 > w as f64 * COMPACT_AT)
+    /// Ask the model for the summary of `messages`: its text, and the tokens asking took. A
+    /// reply without text (a tool call instead, or nothing) is asked for once more. When the
+    /// conversation is too long even for this request, it's cut down step by step ([`shrink`])
+    /// until it fits: a summary of most of it beats a chat that can't go on.
+    async fn summarize(&self, key: &str, messages: &[Message], focus: Option<&str>, cancel: &Cancel) -> Result<(String, Usage)> {
+        // Same system prompt and tools as every step, so the provider's cache still applies.
+        let specs = self.tools.specs();
+        let system = self.system_now();
+        let overhead = system.len() + specs_chars(&specs);
+        let mut usage = Usage::default();
+        let mut level = 0;
+        // what can be told ahead: with a known window, don't send what can't fit
+        if let Some(room) = self.context_window.map(|w| w.saturating_sub(self.model.max_output())).filter(|r| *r > 0) {
+            while level < SHRINK_LEVELS && ((chars_of(&shrink(messages, level)) + overhead) / 4) as u64 > room {
+                level += 1;
+            }
+        }
+        let mut again = false;
+        loop {
+            let mut ask = COMPACT_PROMPT.to_string();
+            if let Some(f) = focus.map(str::trim).filter(|f| !f.is_empty()) {
+                ask.push_str(&format!("\n\nThe user wants the summary to focus on: {f}"));
+            }
+            if again {
+                ask.push_str(EMPTY_SUMMARY);
+            }
+            let mut messages = shrink(messages, level);
+            match messages.last_mut() {
+                Some(m) if m.role == Role::User => m.content.push(Block::Text { text: ask }),
+                _ => messages.push(Message { role: Role::User, content: vec![Block::Text { text: ask }] }),
+            }
+            let req = Request { system: &system, messages: &messages, tools: &specs, cache_key: Some(key) };
+            let mut ignore = |_| {};
+            let reply = tokio::select! {
+                r = self.model.step(&req, &mut ignore) => r,
+                _ = cancel.cancelled() => return Err(Error::Cancelled),
+            };
+            let reply = match reply {
+                Ok(r) => r,
+                Err(e) if is_overflow(&e) && level < SHRINK_LEVELS => {
+                    level += 1;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            usage += reply.usage;
+            let summary: String = reply.content.iter().filter_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            }).collect::<Vec<_>>().join("").trim().to_string();
+            if !summary.is_empty() {
+                return Ok((summary, usage));
+            }
+            if again {
+                return Err(Error::Provider("The model returned an empty summary; the conversation was left as it was.".into()));
+            }
+            again = true;
+        }
+    }
+
+    /// Up to how many tokens the conversation may grow before it's summarized: [`COMPACT_AT`] of
+    /// the window, or less (down to [`COMPACT_FLOOR`]) when the model's answer (`max_tokens`,
+    /// which most providers count against the window) needs more room than that leaves. None
+    /// when the window isn't known.
+    fn limit(&self) -> Option<u64> {
+        let window = self.context_window? as f64;
+        let room = window - self.model.max_output() as f64 - window * MARGIN;
+        Some((window * COMPACT_AT).min(room).max(window * COMPACT_FLOOR) as u64)
+    }
+
+    /// About how many tokens the next request takes. `overhead`: the characters of the system
+    /// prompt and the tools, which count when the provider doesn't (the log doesn't have them).
+    fn context_now(&self, session: &Session, overhead: usize) -> u64 {
+        let w = session.weight();
+        match w.counted {
+            Some(_) => w.tokens(),
+            None => ((w.chars + overhead) / 4) as u64,
+        }
+    }
+
+    /// Whether to summarize before the next step: the conversation has outgrown the limit, and
+    /// enough of it is new since the last summary for another one to free anything.
+    fn should_compact(&self, session: &Session, overhead: usize) -> bool {
+        let (Some(limit), Some(window)) = (self.limit(), self.context_window) else { return false };
+        let now = self.context_now(session, overhead);
+        // (before the model's first step there's no conversation to summarize, only a message)
+        if now <= limit || session.steps_since_compaction() == 0 {
+            return false;
+        }
+        let Some(summary) = session.last_summary() else { return true };
+        // what a compacted conversation weighs at the least: the system prompt, tools and summary
+        let base = session.compacted_base().unwrap_or(((summary.len() + overhead) / 4) as u64);
+        now.saturating_sub(base) as f64 >= window as f64 * WORTH_COMPACTING
+    }
+
+    /// Tell the model something in the user's place (`text`, as the next message), and the chat
+    /// that it was told.
+    async fn nudge(&self, session: &mut Session, text: &str, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<()> {
+        on(AgentEvent::Hook { event: NOTE.into(), message: text.to_string() });
+        session.append(SessionEvent::User { text: text.to_string(), images: vec![], context: vec![], hook: Some(NOTE.into()) }).await
     }
 
     /// Run one turn for `user_text`, writing everything to `session`.
@@ -368,17 +669,35 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         let mut last: Option<(String, Value)> = None;
         let mut same = 0;
         let system = self.system_now();
+        let overhead = system.len() + specs_chars(&specs);
         // a Stop hook already sent the agent back to work this turn
         let mut stop_hook_active = false;
         let mut steps = 0u32;
+        // the model was just told that its answer was empty (a second one in a row ends the turn)
+        let mut told_empty = false;
+        // answers in a row that were cut off at the output limit
+        let mut cut_off = 0u32;
+        // an automatic summary failed: the step before which it isn't tried again
+        let mut compact_from = 0u32;
+        // the provider refused the conversation as too long this many times in a row with hardly
+        // a step since the summary before
+        let mut squeezed = 0u32;
+        // the model had answered, and came back only for messages sent meanwhile
+        let mut answered = false;
         loop {
             if self.max_steps > 0 && steps >= self.max_steps {
+                // A helper's answer is all its caller gets: at the limit it's asked for what it
+                // found, instead of throwing its work away.
+                if self.helper.is_some() {
+                    self.wrap_up(session, &system, &specs, cancel, on).await?;
+                }
                 return Ok(TurnEnd::StepLimit);
             }
             steps += 1;
             // what the user sent meanwhile goes in before the step (after the tool results), past
             // the UserPromptSubmit hooks like a message that starts a turn
             let mut queued = self.inbox.take().into_iter();
+            let mut read = 0;
             while let Some((text, images)) = queued.next() {
                 let o = self.hook(session, "UserPromptSubmit", None, json!({ "prompt": text }), cancel, on).await;
                 if cancel.is_cancelled() {
@@ -397,9 +716,22 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                 }
                 session.append(SessionEvent::User { text: text.clone(), images, context: o.context, hook: None }).await?;
                 on(AgentEvent::UserMessage { text, blocked: false });
+                read += 1;
             }
-            if self.over_limit(session) {
-                self.compact(session, None, cancel, on).await?;
+            // every one of them was refused by a hook: its answer stands, and there's nothing
+            // new to ask the model about (a request ending with its own message isn't one)
+            if std::mem::take(&mut answered) && read == 0 {
+                return Ok(TurnEnd::Answered);
+            }
+            if steps >= compact_from && self.should_compact(session, overhead) {
+                match self.compact_now(session, None, true, true, cancel, on).await {
+                    Ok(_) => {}
+                    Err(Error::Cancelled) => return Err(Error::Cancelled),
+                    // The step may still fit: go on, and try the summary again a few steps later.
+                    // If it doesn't fit, the provider says so and it's summarized for that below.
+                    // (the chat already heard why: `CompactFailed`)
+                    Err(_) => compact_from = steps + COMPACT_AGAIN_AFTER,
+                }
             }
             let messages = session.messages();
             let req = Request { system: &system, messages: &messages, tools: &specs, cache_key: Some(&session.id) };
@@ -408,12 +740,61 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                     Delta::Text(text) => AgentEvent::Text { text },
                     Delta::Thinking(text) => AgentEvent::Thinking { text },
                     Delta::ToolStart { id, name } => AgentEvent::ToolStart { id, name },
+                    Delta::Retry { attempt, of, reason } => AgentEvent::Retry { attempt, of, reason },
                 })
             };
             let reply = tokio::select! {
-                r = self.model.step(&req, &mut forward) => r?,
+                r = self.model.step(&req, &mut forward) => r,
                 _ = cancel.cancelled() => return Err(Error::Cancelled),
             };
+            let mut reply = match reply {
+                Ok(reply) => reply,
+                // The conversation doesn't fit the model's window (the window isn't known, was
+                // guessed too large, or the last results were bigger than estimated): summarize
+                // it and take the step again. Each way of making it smaller is tried once: first
+                // the steps since the last summary, then the user's unanswered messages that
+                // summary kept whole. If it still doesn't fit, nothing more can be taken out,
+                // and the turn ends with the provider's message.
+                Err(e) if is_overflow(&e) => {
+                    let fresh = session.steps_since_compaction() == 0;
+                    let keep = if !fresh {
+                        // A summary every step or two isn't work, it's forgetting: the window
+                        // is too small for this, and going on would only spend tokens.
+                        squeezed = if session.last_summary().is_some() && session.steps_since_compaction() < 3 { squeezed + 1 } else { 0 };
+                        if squeezed >= MAX_SQUEEZED {
+                            return Err(too_small(&e));
+                        }
+                        true
+                    } else if session.last_summary().is_some() && !session.unanswered().is_empty() {
+                        false
+                    } else if session.last_summary().is_some() {
+                        return Err(too_small(&e));
+                    } else {
+                        // a first message that's too long by itself: there's nothing to summarize
+                        return Err(e);
+                    };
+                    match self.compact_now(session, None, true, keep, cancel, on).await {
+                        Ok(true) => {
+                            steps -= 1;
+                            continue;
+                        }
+                        Ok(false) => return Err(e),
+                        Err(Error::Cancelled) => return Err(Error::Cancelled),
+                        Err(c) => return Err(Error::Provider(format!("the conversation no longer fits the model's context window ({e}), and it couldn't be summarized to make room ({c})"))),
+                    }
+                }
+                Err(e) => return Err(e),
+            };
+            // A call whose arguments were cut off can't run. Its raw text would go back to the
+            // model with every later step, so only its start is kept.
+            for b in &mut reply.content {
+                if let Block::ToolUse { input, .. } = b
+                    && let Some(raw) = input.get(UNPARSED).and_then(Value::as_str)
+                    && raw.chars().count() > 400
+                {
+                    *input = json!({ UNPARSED: format!("{}… ({} characters)", raw.chars().take(400).collect::<String>(), raw.chars().count()) });
+                }
+            }
             session.append(SessionEvent::Assistant { content: reply.content.clone(), model: self.model.name(), usage: reply.usage }).await?;
             on(AgentEvent::Step { content: reply.content.clone(), usage: reply.usage });
 
@@ -424,11 +805,28 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
             if calls.is_empty() {
                 // a message came while it answered: it reads that before ending
                 if !self.inbox.is_empty() {
+                    answered = true;
                     continue;
                 }
+                let answer: String = reply.content.iter().filter_map(|b| if let Block::Text { text } = b { Some(text.as_str()) } else { None }).collect();
+                // The answer stopped at the output limit: it isn't finished, so the model goes on
+                // with it (a few times: a model that never ends would otherwise never stop).
+                // (An answer with no text has nothing to go on from: that's the empty one below.)
+                if reply.truncated && !answer.trim().is_empty() && cut_off < MAX_CUT_OFF {
+                    cut_off += 1;
+                    self.nudge(session, CUT_OFF, on).await?;
+                    continue;
+                }
+                // Nothing at all (no text, no call): a hiccup of the provider more often than an
+                // answer. It's asked once; a second empty reply in a row ends the turn as before.
+                if answer.trim().is_empty() && !told_empty {
+                    told_empty = true;
+                    self.nudge(session, EMPTY_REPLY, on).await?;
+                    continue;
+                }
+                told_empty = false;
                 // Stop hooks (SubagentStop in a helper) may send the agent back to work
                 let event = if self.helper.is_some() { "SubagentStop" } else { "Stop" };
-                let answer: String = reply.content.iter().filter_map(|b| if let Block::Text { text } = b { Some(text.as_str()) } else { None }).collect();
                 let names: &[&str] = &["helper"];
                 let o = self.hook(session, event, self.helper.as_ref().map(|_| names), json!({ "stop_hook_active": stop_hook_active, "last_assistant_message": answer }), cancel, on).await;
                 if cancel.is_cancelled() {
@@ -443,6 +841,7 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                 }
                 return Ok(TurnEnd::Answered);
             }
+            (cut_off, told_empty) = (0, false);
             // the repeat guard, decided before anything runs
             let mut repeated = HashSet::new();
             for (id, name, input) in &calls {
@@ -477,6 +876,8 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                     ToolOutput::err(format!(
                         "Not run: you already made this exact `{name}` call {MAX_SAME_CALL} times in a row. Doing it again won't help: try something different, or tell the user what's in the way."
                     ))
+                } else if reply.truncated && input.get(UNPARSED).is_some() {
+                    ToolOutput::err(CUT_OFF_CALL)
                 } else {
                     self.call(session, &ctx, &id, &name, input, cancel, on).await?
                 };
@@ -495,6 +896,28 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                 return Err(Error::Hook(why));
             }
         }
+    }
+
+    /// A helper is out of steps: one last request for its answer from what it found. Only what
+    /// it says counts (a tool call here can't run anymore).
+    async fn wrap_up(&mut self, session: &mut Session, system: &str, specs: &[ToolSpec], cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<()> {
+        let ask = format!(
+            "You've used all {} steps you get, so no more tool calls will run. Answer now from what you found so far: the facts, with file paths and line numbers. Say plainly what you didn't get to, so whoever asked can look there next.",
+            self.max_steps
+        );
+        self.nudge(session, &ask, on).await?;
+        let messages = session.messages();
+        // the same tools as every step (providers want them for a conversation with tool calls)
+        let req = Request { system, messages: &messages, tools: specs, cache_key: Some(&session.id) };
+        let mut ignore = |_| {};
+        let reply = tokio::select! {
+            r = self.model.step(&req, &mut ignore) => r?,
+            _ = cancel.cancelled() => return Err(Error::Cancelled),
+        };
+        let content: Vec<Block> = reply.content.into_iter().filter(|b| !matches!(b, Block::ToolUse { .. })).collect();
+        session.append(SessionEvent::Assistant { content: content.clone(), model: self.model.name(), usage: reply.usage }).await?;
+        on(AgentEvent::Step { content, usage: reply.usage });
+        Ok(())
     }
 
     /// The system prompt for this turn: plan mode adds what it means.
@@ -604,22 +1027,28 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                 let e = match e {
                     AgentEvent::ToolCall { name, input, .. } => AgentEvent::HelperTool { id: id.to_string(), name, input },
                     AgentEvent::Step { usage, .. } | AgentEvent::Compacted { usage, .. } => AgentEvent::HelperStep { id: id.to_string(), usage },
+                    // (what the harness told the helper isn't for the chat: it reads as said to the agent)
+                    AgentEvent::Hook { event, .. } if event == NOTE => return,
                     e @ AgentEvent::Hook { .. } => e,
                     _ => return,
                 };
                 let _ = tx.send(e);
             };
             let res = helper.turn(&mut session, &prompt, cancel, &mut forward).await;
-            let answer = session.messages().last().filter(|m| m.role == Role::Assistant).map(|m| m.text().trim().to_string()).unwrap_or_default();
+            // (all of it, when it was cut off at the output limit and went on)
+            let answer = if session.messages().last().is_some_and(|m| m.role == Role::Assistant) { answer_of(session.events()) } else { String::new() };
+            // when it didn't get to answer: the last thing it said, so its work isn't lost
+            let so_far = || Some(answer_of(session.events())).filter(|t| !t.is_empty()).map(|t| format!(" What it had so far:\n\n{t}")).unwrap_or_default();
             let out = match res {
                 Ok(TurnEnd::Answered) if !answer.is_empty() => ToolOutput::ok(answer),
                 Ok(TurnEnd::Answered) => ToolOutput::err("The helper finished without an answer."),
-                Ok(TurnEnd::StepLimit) => ToolOutput::err(format!(
-                    "The helper stopped after {HELPER_MAX_STEPS} steps without an answer.{}",
-                    if answer.is_empty() { String::new() } else { format!(" What it had so far:\n\n{answer}") }
+                // out of steps, and asked for what it found: that's its answer, marked as partial
+                Ok(TurnEnd::StepLimit) if !answer.is_empty() => ToolOutput::ok(format!(
+                    "{answer}\n\n[The helper ran out of steps ({HELPER_MAX_STEPS}) before it was done, so this is what it found up to there. For what's missing, ask a narrower question or look yourself: the same question again would run out the same way.]"
                 )),
+                Ok(TurnEnd::StepLimit) => ToolOutput::err(format!("The helper stopped after {HELPER_MAX_STEPS} steps without an answer.{} Ask a narrower question or look yourself: the same question again would run out the same way.", so_far())),
                 Err(Error::Cancelled) => ToolOutput::err("Stopped by the user."),
-                Err(e) => ToolOutput::err(format!("The helper stopped: {e}")),
+                Err(e) => ToolOutput::err(format!("The helper stopped: {e}.{}", so_far())),
             };
             let mut out = out;
             // PostToolUse hooks on the call, with the helper's answer
@@ -652,8 +1081,10 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         let Some(tool) = self.tools.get(name) else {
             return Ok(ToolOutput::err(format!("There is no tool named `{name}`.")));
         };
-        if let Some(raw) = input.get("_unparsed_arguments") {
-            return Ok(ToolOutput::err(format!("The arguments weren't valid JSON: {raw}")));
+        if let Some(raw) = input.get(UNPARSED) {
+            // its start is enough to recognise the call; all of it would fill the context again
+            let raw = raw.as_str().map(String::from).unwrap_or_else(|| raw.to_string());
+            return Ok(ToolOutput::err(format!("The arguments weren't valid JSON: {}", clip(&raw, 600))));
         }
         let mut input = input;
         let mut kind = tool.kind(&input, ctx);
@@ -754,8 +1185,17 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         // 3. timeout
         let limit = tool.timeout(&input);
         let after = foreign(&input);
+        // a tool that panics fails its call, not the turn (and with it the chat)
+        let run = std::panic::AssertUnwindSafe(tool.run(input, ctx)).catch_unwind();
         let mut out = tokio::select! {
-            r = tokio::time::timeout(limit, tool.run(input, ctx)) => r.unwrap_or_else(|_| ToolOutput::err(format!("Timed out after {} s.", limit.as_secs()))),
+            r = tokio::time::timeout(limit, run) => match r {
+                Ok(Ok(out)) => out,
+                Ok(Err(panic)) => {
+                    let why = panic.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
+                    ToolOutput::err(format!("The `{name}` tool crashed{}. That's a bug in the tool, not in your call: try another way, and tell the user.", if why.is_empty() { String::new() } else { format!(" ({why})") }))
+                }
+                Err(_) => ToolOutput::err(format!("Timed out after {} s.", limit.as_secs())),
+            },
             _ = cancel.cancelled() => ToolOutput::err("Stopped by the user."),
         };
         // 4. PostToolUse hooks (PostToolUseFailure when it failed) see the whole output, and may
@@ -807,6 +1247,129 @@ async fn fit(session: &Session, id: &str, name: &str, out: ToolOutput) -> ToolOu
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn result(id: &str, content: String) -> Message {
+        Message { role: Role::User, content: vec![Block::ToolResult { tool_use_id: id.into(), content, is_error: false }] }
+    }
+
+    fn call(id: &str, input: Value) -> Message {
+        Message { role: Role::Assistant, content: vec![Block::Thinking { text: "t".repeat(500), signature: None }, Block::ToolUse { id: id.into(), name: "write".into(), input }] }
+    }
+
+    /// Every tool call is followed by its result, the roles alternate, and the user speaks first:
+    /// what providers insist on.
+    fn well_formed(messages: &[Message]) -> bool {
+        let alternating = messages.windows(2).all(|w| w[0].role != w[1].role);
+        let paired = messages.iter().enumerate().all(|(i, m)| {
+            m.tool_uses().all(|(id, _, _)| messages.get(i + 1).is_some_and(|n| n.content.iter().any(|b| matches!(b, Block::ToolResult { tool_use_id, .. } if tool_use_id == id))))
+                && m.content.iter().all(|b| match b {
+                    Block::ToolResult { tool_use_id, .. } => i > 0 && messages[i - 1].tool_uses().any(|(id, _, _)| id == tool_use_id),
+                    _ => true,
+                })
+        });
+        alternating && paired && messages.first().is_some_and(|m| m.role == Role::User)
+    }
+
+    #[test]
+    fn a_conversation_is_cut_down_for_its_summary_without_breaking_it() {
+        let mut messages = vec![Message::user_text("the task")];
+        for i in 0..10 {
+            messages.push(call(&format!("c{i}"), json!({ "path": "a.txt", "content": "c".repeat(10_000), "n": i })));
+            let mut r = result(&format!("c{i}"), format!("START{}END", "r".repeat(20_000)));
+            if i == 4 {
+                r.content.push(Block::Image { media_type: "image/png".into(), data: "A".repeat(50_000) });
+            }
+            messages.push(r);
+        }
+        assert_eq!(shrink(&messages, 0), messages);
+        let sizes: Vec<usize> = (0..=SHRINK_LEVELS).map(|l| chars_of(&shrink(&messages, l))).collect();
+        assert!(sizes.windows(2).all(|w| w[1] < w[0]), "each level is smaller: {sizes:?}");
+        assert!(sizes[4] * 100 < sizes[0], "{sizes:?}");
+        for level in 1..=SHRINK_LEVELS {
+            let s = shrink(&messages, level);
+            assert!(well_formed(&s), "level {level}");
+            // the newest exchange is always there, with both ends of its output
+            let last = s.last().unwrap();
+            assert!(matches!(&last.content[0], Block::ToolResult { tool_use_id, content, .. } if tool_use_id == "c9" && content.starts_with("START") && content.ends_with("END")), "level {level}");
+            assert!(!s.iter().flat_map(|m| &m.content).any(|b| matches!(b, Block::Thinking { .. } | Block::Image { .. })));
+        }
+        // the first levels keep the whole conversation, the task included
+        assert_eq!(shrink(&messages, 2).len(), messages.len());
+        assert_eq!(shrink(&messages, 2)[0].text(), "the task");
+        // the last ones say that the start is missing
+        assert!(shrink(&messages, 3).len() < messages.len() && shrink(&messages, 4).len() < shrink(&messages, 3).len());
+        assert!(shrink(&messages, 4)[0].text().contains("left out"));
+        // a conversation of one message stays as it is
+        let one = [Message::user_text("hi")];
+        assert_eq!(shrink(&one, 4), one);
+    }
+
+    /// A model with a given `max_tokens`, never asked.
+    struct Answers(u64);
+
+    #[async_trait]
+    impl Model for Answers {
+        fn name(&self) -> String {
+            "answers".into()
+        }
+        fn max_output(&self) -> u64 {
+            self.0
+        }
+        async fn step(&self, _: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn the_answer_gets_its_room_in_the_window_but_a_small_window_isnt_given_away() {
+        let limit = |window: Option<u64>, max_tokens: u64| {
+            let mut a = Agent::new(Arc::new(Answers(max_tokens)), Registry::default(), Policy::Ask, Arc::new(DenyAll), String::new());
+            a.context_window = window;
+            a.limit()
+        };
+        assert_eq!(limit(None, 16_000), None);
+        // a large window: 80% of it, as ever
+        assert_eq!(limit(Some(200_000), 16_000), Some(160_000));
+        assert_eq!(limit(Some(1_000), 0), Some(800));
+        // a middling one: the answer's 16,000 tokens and 5% stay free
+        assert_eq!(limit(Some(64_000), 16_000), Some(44_800));
+        // a small one: not under 60%, whatever the answer may take
+        assert_eq!(limit(Some(32_000), 16_000), Some(19_200));
+        assert_eq!(limit(Some(8_000), 16_000), Some(4_800));
+    }
+
+    #[test]
+    fn a_pasted_wall_of_text_is_clipped_for_the_summary_too() {
+        let messages = [Message::user_text("the task"), Message { role: Role::Assistant, content: vec![Block::Text { text: "OK.".into() }] }, Message::user_text(format!("START{}END", "log line\n".repeat(20_000)))];
+        let sizes: Vec<usize> = (0..=2).map(|l| chars_of(&shrink(&messages, l))).collect();
+        assert!(sizes[0] > 180_000 && sizes[1] < 8_200 && sizes[2] < 2_200, "{sizes:?}");
+        let last = shrink(&messages, 2).pop().unwrap().text();
+        assert!(last.starts_with("START") && last.ends_with("END"), "{last}");
+    }
+
+    #[test]
+    fn an_answer_that_was_cut_off_and_went_on_is_read_whole() {
+        let said = |t: &str| SessionEvent::Assistant { content: vec![Block::Thinking { text: "hm".into(), signature: None }, Block::Text { text: t.into() }], model: "m".into(), usage: Usage::default() };
+        let told = |t: &str| SessionEvent::User { text: t.into(), images: vec![], context: vec![], hook: Some(NOTE.into()) };
+        let call = SessionEvent::Assistant { content: vec![Block::ToolUse { id: "t".into(), name: "read".into(), input: json!({}) }], model: "m".into(), usage: Usage::default() };
+        let mut events = vec![SessionEvent::user("explain", vec![]), said("Looking."), call.clone(), said("Part one, "), told(CUT_OFF), said("part two, "), told(CUT_OFF), said("part three.")];
+        assert_eq!(answer_of(&events), "Part one, part two, part three.");
+        // only what it went on from: not what it said before a tool call, or before another nudge
+        events.extend([told(EMPTY_REPLY), said("Done.")]);
+        assert_eq!(answer_of(&events), "Done.");
+        // the last step that said something, whatever came after it
+        events.extend([call, SessionEvent::Interrupted { reason: "Stopped by the user".into() }]);
+        assert_eq!(answer_of(&events), "Done.");
+        assert_eq!(answer_of(&events[..1]), "");
+    }
+
+    #[test]
+    fn long_text_is_clipped_in_the_middle() {
+        assert_eq!(clip("short", 10), "short");
+        let c = clip(&format!("START{}END", "é".repeat(1_000)), 90);
+        assert!(c.starts_with("START") && c.ends_with("END") && c.contains("[… 918 characters left out …]"), "{c}");
+        assert_eq!(clip_input(&json!({ "path": "a", "lines": ["x".repeat(50)], "n": 3 }), 9), json!({ "path": "a", "lines": ["xxxxxx\n[… 41 characters left out …]\nxxx"], "n": 3 }));
+    }
 
     /// A stop with no turn waiting on it yet is kept: the turn (or the poller) that looks later
     /// still sees it, and a wait started after it ends at once.

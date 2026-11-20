@@ -21,6 +21,7 @@
     "check:tree": "node --experimental-strip-types src/features/connections/tree/rows.check.ts",
     "check:osc52": "node --experimental-strip-types src/lib/osc52.check.ts",
     "check:panes": "node --experimental-strip-types src/store/panes.check.ts",
+    "check:agent": "node --experimental-strip-types src/features/agent/model.check.ts",
     "check:html-assets": "node --experimental-strip-types src/features/files/viewers/htmlAssets.check.ts",
     "check:review": "node src-tauri/src/review/inspector.check.mjs && node --experimental-strip-types src/features/review/overlay.check.ts"
   },

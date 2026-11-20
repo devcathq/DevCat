@@ -83,6 +83,8 @@ async fn main() {
             AgentEvent::Compacting { tokens_before } => eprintln!("
 [compacting {tokens_before} tokens of conversation…]"),
             AgentEvent::Compacted { summary, .. } => eprintln!("[compacted to {} characters]", summary.len()),
+            AgentEvent::CompactFailed { message } => eprintln!("[couldn't summarize: {message}]"),
+            AgentEvent::Retry { attempt, of, reason } => eprintln!("\n[trying again ({attempt} of {of}): {reason}]"),
             AgentEvent::HelperTool { id, name, .. } => println!("  [{id}] {name}"),
             AgentEvent::HelperStep { .. } => {}
             AgentEvent::Hook { event, message } => eprintln!("[{event} hook] {message}"),

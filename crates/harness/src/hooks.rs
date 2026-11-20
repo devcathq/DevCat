@@ -519,7 +519,7 @@ fn wildcard(pattern: &str, text: &str) -> bool {
 /// turn. Killing only the shell would leave what it started running. On macOS and Linux the hook
 /// leads its own process group (setsid); on Windows it's put in a job object, which what it
 /// starts joins too (Git Bash's processes don't form a tree `taskkill /T` can follow).
-struct Tree {
+pub(crate) struct Tree {
     #[cfg(unix)]
     pid: Option<u32>,
     #[cfg(windows)]
@@ -528,7 +528,7 @@ struct Tree {
 }
 
 impl Tree {
-    fn of(child: &tokio::process::Child) -> Tree {
+    pub(crate) fn of(child: &tokio::process::Child) -> Tree {
         Tree {
             #[cfg(unix)]
             pid: child.id(),
@@ -538,7 +538,7 @@ impl Tree {
         }
     }
 
-    fn done(mut self) {
+    pub(crate) fn done(mut self) {
         self.armed = false;
     }
 }

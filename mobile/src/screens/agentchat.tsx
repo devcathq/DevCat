@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  POLICIES, SUBAGENT, SUGGESTIONS, ZERO, allowAllLabel, applyAll, approvalTitle, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, itemsFromLog, lastContext, str, summarize, toBlocks,
+  POLICIES, SUBAGENT, SUGGESTIONS, ZERO, allowAllLabel, applyAll, approvalTitle, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, itemsFromLog, lastContext, retryLabel, str, summarize, toBlocks,
   type ChatView, type Item, type ToolItem, type ToolStatus,
 } from "../../../src/features/agent/model";
 import type { AgentDecision, AgentLiveEvent, AgentModel, AgentOpened, AgentPolicy } from "../../../src/lib/types";
@@ -420,7 +420,7 @@ const ItemView = memo(function ItemView({ item, ctx, working }: { item: Item; ct
         <div className="flex items-center gap-2 text-[12px] text-muted">
           <span className="h-px flex-1 bg-line" />
           {item.state === "running" ? <><Spinner className="size-3.5" />Summarizing the conversation…</>
-            : item.state === "failed" ? <span className="text-danger">Couldn't summarize the conversation</span>
+            : item.state === "failed" ? <span className="text-danger">Couldn't summarize the conversation{item.error ? ` (${item.error})` : ""}</span>
             : <>Conversation summarized{item.tokensBefore ? ` (${fmtTokens(item.tokensBefore)} tokens)` : ""}</>}
           <span className="h-px flex-1 bg-line" />
         </div>
@@ -429,7 +429,14 @@ const ItemView = memo(function ItemView({ item, ctx, working }: { item: Item; ct
       return (
         <div className="flex items-start gap-2 px-1 text-[12.5px] text-muted">
           <Webhook className="mt-0.5 size-3.5 shrink-0" />
-          <span className="min-w-0 whitespace-pre-wrap"><span className="text-fg">{item.event} hook</span> · {item.text.replace(/^\w+ hook feedback:\n/, "")}</span>
+          <span className="min-w-0 whitespace-pre-wrap"><span className="text-fg">{hookLabel(item.event)}</span> · {item.text.replace(/^\w+ hook feedback:\n/, "")}</span>
+        </div>
+      );
+    case "retry":
+      return (
+        <div className="flex items-center gap-2 px-1 text-[12.5px] text-muted">
+          <Spinner className="size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">{retryLabel(item.reason)}: trying again ({item.attempt} of {item.of})…</span>
         </div>
       );
   }

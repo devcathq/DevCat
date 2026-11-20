@@ -8,6 +8,7 @@ pub(crate) mod sse;
 use crate::message::{Block, Message, ToolSpec, Usage};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +56,9 @@ pub enum Delta {
     Thinking(String),
     /// The model started a tool call (its input is still streaming).
     ToolStart { id: String, name: String },
+    /// The step is tried again (`attempt` of `of`): the provider was busy, or the connection broke
+    /// (`reason`). Whatever was streamed for this step so far is void and comes again.
+    Retry { attempt: u32, of: u32, reason: String },
 }
 
 /// The finished assistant message of one step.
@@ -69,10 +73,46 @@ pub struct Reply {
 pub struct Llm {
     pub config: LlmConfig,
     http: reqwest::Client,
+    /// The wait before the first retry; it doubles each time, up to [`MAX_WAIT`].
+    backoff: Duration,
+    /// This server ends its streams without saying so (no finish reason, no `[DONE]`): a stream
+    /// that just ends is its answer. Learned from the server (see [`Llm::step`]).
+    quiet_end: AtomicBool,
+    /// This server has said "done" at the end of a stream: one that just ends is a broken one.
+    says_done: AtomicBool,
 }
 
-/// Retries for overloaded / rate-limited / flaky providers, before anything was streamed.
-const RETRIES: u32 = 3;
+/// Retries of one step: for an overloaded, rate-limited or unreachable provider, and for a stream
+/// that breaks before the answer is complete.
+pub const RETRIES: u32 = 4;
+
+/// The longest wait between two tries.
+const MAX_WAIT: Duration = Duration::from_secs(30);
+
+/// A step that has taken this long isn't tried again: a server that answers each try with five
+/// minutes of silence would otherwise keep the turn waiting for half an hour.
+const RETRY_FOR: Duration = Duration::from_secs(8 * 60);
+
+/// Why reading a streamed answer stopped short.
+pub(crate) enum Broken {
+    /// The connection broke, or the provider said it's overloaded: trying again can help.
+    Retry(Error),
+    /// The provider refused or failed for good.
+    Never(Error),
+    /// The stream ended without the provider saying the answer was complete. What came is here.
+    Incomplete(Reply),
+}
+
+/// Whether a reply that came without its end can still be a whole answer: it says something, and
+/// no tool call was cut in the middle of its arguments.
+fn looks_whole(reply: &Reply) -> bool {
+    let says = reply.content.iter().any(|b| matches!(b, Block::Text { .. } | Block::ToolUse { .. }));
+    let cut = reply.content.iter().any(|b| matches!(b, Block::ToolUse { input, .. } if input.get(UNPARSED).is_some()));
+    says && !cut
+}
+
+/// The key under which a tool call's arguments are kept when they aren't valid JSON.
+pub const UNPARSED: &str = "_unparsed_arguments";
 
 impl Llm {
     pub fn new(config: LlmConfig) -> Llm {
@@ -80,37 +120,112 @@ impl Llm {
             .connect_timeout(Duration::from_secs(20))
             // a stalled stream: no bytes for this long
             .read_timeout(Duration::from_secs(300))
+            // a long tool call sits between two steps: don't come back to a connection the
+            // server gave up on meanwhile
+            .pool_idle_timeout(Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
-        Llm { config, http }
+        Llm { config, http, backoff: Duration::from_secs(2), quiet_end: AtomicBool::new(false), says_done: AtomicBool::new(false) }
     }
 
-    /// Run one model step, calling `on` for every streamed piece.
+    /// The same, waiting `first` before the first retry (tests don't wait seconds).
+    pub fn with_backoff(mut self, first: Duration) -> Llm {
+        self.backoff = first;
+        self
+    }
+
+    /// Run one model step, calling `on` for every streamed piece. A step that fails in a way
+    /// another try can fix (the provider is busy, the connection broke, the stream stopped in the
+    /// middle of the answer) is tried again up to [`RETRIES`] times; `on` hears of each retry
+    /// ([`Delta::Retry`]), since what it streamed before is void.
     pub async fn step(&self, req: &Request<'_>, on: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
         let mut attempt = 0;
+        let started = std::time::Instant::now();
+        // a stream already ended without its end once in this step
+        let mut ended_quietly = false;
         loop {
-            let res = match self.config.protocol {
+            let sent = match self.config.protocol {
                 Protocol::Anthropic => anthropic::send(&self.http, &self.config, req).await,
                 Protocol::OpenaiChat => openai::send(&self.http, &self.config, req).await,
                 Protocol::OpenaiResponses => responses::send(&self.http, &self.config, req).await,
             };
-            match res {
+            let (error, wait) = match sent {
                 Ok(resp) => {
-                    return match self.config.protocol {
+                    let read = match self.config.protocol {
                         Protocol::Anthropic => anthropic::read(resp, on).await,
                         Protocol::OpenaiChat => openai::read(resp, on).await,
                         Protocol::OpenaiResponses => responses::read(resp, on).await,
                     };
+                    match read {
+                        Ok(reply) => {
+                            self.says_done.store(true, Ordering::Relaxed);
+                            self.quiet_end.store(false, Ordering::Relaxed);
+                            return Ok(reply);
+                        }
+                        Err(Broken::Never(e)) => return Err(e),
+                        Err(Broken::Retry(e)) => (e, None),
+                        Err(Broken::Incomplete(reply)) => {
+                            // Some small OpenAI-compatible servers never say that they're done.
+                            // One that ends a whole answer this way twice in a row, and has
+                            // never said "done", is one of them and is believed from then on.
+                            // Anthropic's and the Responses API always say it, and an answer
+                            // cut in the middle is never whole.
+                            let may_be_quiet = self.config.protocol == Protocol::OpenaiChat && !self.says_done.load(Ordering::Relaxed) && looks_whole(&reply);
+                            if may_be_quiet && (ended_quietly || self.quiet_end.load(Ordering::Relaxed)) {
+                                self.quiet_end.store(true, Ordering::Relaxed);
+                                return Ok(reply);
+                            }
+                            // (out of tries or time on its first answer: taken as it is, once)
+                            if may_be_quiet && (attempt >= RETRIES || started.elapsed() >= RETRY_FOR) {
+                                return Ok(reply);
+                            }
+                            ended_quietly |= may_be_quiet;
+                            (Error::Io("the connection closed before the model finished its answer".into()), None)
+                        }
+                    }
                 }
-                Err(Retry::Later(e, wait)) if attempt < RETRIES => {
-                    attempt += 1;
-                    tokio::time::sleep(wait.unwrap_or(Duration::from_secs(2u64.pow(attempt)))).await;
-                    let _ = e;
-                }
-                Err(Retry::Later(e, _)) | Err(Retry::Never(e)) => return Err(e),
+                Err(Retry::Later(e, wait)) => (e, wait),
+                Err(Retry::Never(e)) => return Err(e),
+            };
+            if attempt >= RETRIES || started.elapsed() >= RETRY_FOR {
+                return Err(error);
             }
+            attempt += 1;
+            on(Delta::Retry { attempt, of: RETRIES, reason: error.to_string() });
+            // the provider's own "retry after", or ours: doubling, up to MAX_WAIT
+            let wait = wait.unwrap_or_else(|| (self.backoff * 2u32.pow(attempt - 1)).min(MAX_WAIT));
+            tokio::time::sleep(wait).await;
         }
     }
+}
+
+/// Whether `e` is the provider saying the conversation doesn't fit the model's context window
+/// (each provider words it its own way). Summarizing the conversation can fix that.
+pub fn is_overflow(e: &Error) -> bool {
+    let Error::Provider(m) = e else { return false };
+    let m = m.to_lowercase();
+    // 413 is the request's size in bytes; the same cure
+    m.starts_with("413 ")
+        || [
+            "context length",
+            "context_length",
+            "context window",
+            "context size",
+            "context limit",
+            "maximum context",
+            "prompt is too long",
+            "prompt too long",
+            "input is too long",
+            "too many tokens",
+            "token limit",
+            "maximum number of tokens",
+            "exceeds the maximum input",
+            "reduce the length",
+            "request too large",
+        ]
+        .iter()
+        .any(|p| m.contains(p))
 }
 
 /// A model a provider offers.
@@ -224,8 +339,21 @@ pub(crate) async fn http_error(resp: reqwest::Response) -> Retry {
     if status.as_u16() == 429 || status.as_u16() == 529 || status.is_server_error() { Retry::Later(e, wait) } else { Retry::Never(e) }
 }
 
+/// A request that didn't get an answer. Nearly always the network (the server unreachable, a kept
+/// connection it had closed meanwhile, a reset): trying again helps, and at worst asks the model
+/// twice. Only a request that could never be sent (a bad address) isn't tried again.
 pub(crate) fn transport(e: reqwest::Error) -> Retry {
-    if e.is_connect() || e.is_timeout() { Retry::Later(e.into(), None) } else { Retry::Never(e.into()) }
+    if e.is_builder() || e.is_redirect() { Retry::Never(e.into()) } else { Retry::Later(e.into(), None) }
+}
+
+/// Whether an error a provider reports in the middle of a stream is worth another try, from its
+/// `kind` (a type or code such as "overloaded_error", "rate_limit_exceeded", 503).
+pub(crate) fn transient(kind: &str) -> bool {
+    let k = kind.to_lowercase();
+    if let Ok(code) = k.parse::<u16>() {
+        return matches!(code, 408 | 409 | 425 | 429) || code >= 500;
+    }
+    ["overloaded", "rate_limit", "ratelimit", "server_error", "api_error", "timeout", "unavailable", "internal"].iter().any(|p| k.contains(p))
 }
 
 /// `base_url` + `path`, without doubling the slash.
@@ -244,6 +372,38 @@ mod tests {
         assert_eq!(ids(&openai), vec!["glm-5.2", "glm-4.5"]);
         let anthropic = serde_json::json!({ "data": [{ "id": "a", "created_at": "2025-07-28T00:00:00Z" }, { "id": "b", "created_at": "2026-01-01T00:00:00Z" }] });
         assert_eq!(ids(&anthropic), vec!["b", "a"]);
+    }
+
+    #[test]
+    fn a_conversation_that_doesnt_fit_is_recognised_in_each_providers_words() {
+        for m in [
+            "400 This model's maximum context length is 128000 tokens. However, your messages resulted in 130812 tokens. Please reduce the length of the messages.",
+            "400 prompt is too long: 215234 tokens > 200000 maximum",
+            "400 input length and `max_tokens` exceed context limit: 190000 + 16000 > 200000, decrease input length or `max_tokens` and try again",
+            "400 Your input exceeds the context window of this model. Please adjust your input and try again.",
+            "400 the request exceeds the available context size, try increasing it",
+            "400 This endpoint's maximum context length is 65536 tokens. However, you requested about 70211 tokens",
+            "400 The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).",
+            "413 Request too large",
+            "400 Invalid request: Your request exceeded model token limit: 262144",
+        ] {
+            assert!(is_overflow(&Error::Provider(m.into())), "{m}");
+        }
+        for m in ["401 invalid x-api-key", "429 rate limited", "400 tools.0.input_schema: invalid", "500 internal error", "404 model not found"] {
+            assert!(!is_overflow(&Error::Provider(m.into())), "{m}");
+        }
+        // a broken connection is no verdict on the conversation
+        assert!(!is_overflow(&Error::Io("maximum context length".into())));
+    }
+
+    #[test]
+    fn which_errors_in_a_stream_are_worth_another_try() {
+        for kind in ["overloaded_error", "rate_limit_error", "api_error", "server_error", "rate_limit_exceeded", "timeout_error", "service_unavailable", "429", "502", "529"] {
+            assert!(transient(kind), "{kind}");
+        }
+        for kind in ["invalid_request_error", "authentication_error", "content_filter", "400", "401", "404", ""] {
+            assert!(!transient(kind), "{kind}");
+        }
     }
 
     #[test]

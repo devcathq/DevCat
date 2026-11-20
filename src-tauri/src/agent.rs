@@ -87,19 +87,12 @@ pub fn meta(session_id: &str) -> Option<ChatMeta> {
     })
 }
 
-/// The open chat's last answer (the text of its last step that said something), as of its last
-/// finished turn.
+/// The open chat's last answer (the text of its last step that said something; all of it when
+/// it was cut off at the output limit and went on), as of its last finished turn.
 pub fn last_answer(session_id: &str) -> Option<String> {
     let run = RUNS.lock().get(session_id).cloned()?;
     let log = run.log.lock();
-    log.events.iter().rev().find_map(|e| match e {
-        SessionEvent::Assistant { content, .. } => {
-            let text: Vec<&str> = content.iter().filter_map(|b| if let devcat_harness::Block::Text { text } = b { Some(text.as_str()) } else { None }).collect();
-            let text = text.join("\n").trim().to_string();
-            (!text.is_empty()).then_some(text)
-        }
-        _ => None,
-    })
+    Some(devcat_harness::answer_of(&log.events)).filter(|t| !t.is_empty())
 }
 
 /// Files the open chat wrote or edited (absolute paths, first change first), as of its last
@@ -535,6 +528,23 @@ pub async fn agent_trust_hooks(session_id: String, digest: String) -> AppResult<
 /// MCP servers get this long to start; the chat works without them meanwhile.
 const MCP_START: std::time::Duration = std::time::Duration::from_secs(25);
 
+/// An MCP server whose tool definitions take more than about this many tokens is pointed out:
+/// they go with every request of the chat.
+const HEAVY_TOOLS: usize = 15_000;
+
+/// What to tell the user about an MCP server with `tools` tools whose definitions have `chars`
+/// characters, when that's a lot: every step of the chat sends them, so answers get slower and
+/// dearer and the context window fills sooner (with a few hundred tools, in a few dozen steps).
+fn heavy_tools_notice(name: &str, tools: usize, chars: usize) -> Option<String> {
+    let tokens = chars / 4;
+    (tokens > HEAVY_TOOLS).then(|| {
+        format!(
+            "MCP server \"{name}\" adds {tools} tools, about {}k tokens, to every request of this chat: each step is slower and costs more, and the context window fills that much sooner. If you don't need it here, turn it off where it's configured (\"disabled\": true in its entry).",
+            (tokens + 500) / 1000
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, owner: &str, focus: Option<&str>, ghost: Option<&str>, connections: bool) -> AppResult<Arc<Run>> {
     let (provider, cfg) = crate::ai::agent_config(provider_id)?;
@@ -638,10 +648,15 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
                 Err(_) => (vec![], vec![format!("MCP servers took longer than {} s to start; this chat runs without them.", MCP_START.as_secs())]),
             };
             let Some(run) = run2.upgrade() else { return };
+            let mut heavy = Vec::new();
             {
+                use devcat_harness::tools::Tool;
                 let mut g = run.turn.lock().await;
                 for s in &servers {
-                    for t in McpTool::all(s) {
+                    let tools = McpTool::all(s);
+                    let chars: usize = tools.iter().map(|t| t.spec()).map(|s| s.name.len() + s.description.len() + s.input_schema.to_string().len()).sum();
+                    heavy.extend(heavy_tools_notice(&s.name, tools.len(), chars));
+                    for t in tools {
                         g.0.tools.add(t);
                     }
                 }
@@ -649,6 +664,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
             let ctx = {
                 let mut c = run.context.lock();
                 c.notices.extend(errors);
+                c.notices.extend(heavy);
                 c.mcp = servers.iter().map(|s| McpInfo { name: s.name.clone(), tools: s.tools.len() }).collect();
                 c.mcp_loading = false;
                 c.clone()
@@ -1008,6 +1024,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
         let ap = run.approver.clone();
         ap.send(json!({ "type": "turnStart", "text": text, "attachments": attachments }));
         chat_changed(&run.id);
+        let work = async {
         let mut g = run.turn.lock().await;
         let (agent, session) = &mut *g;
         agent.policy = policy;
@@ -1063,9 +1080,46 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
             res = agent.turn_with_images(session, &first, first_images, &cancel, &mut on).await;
         };
         drop(g);
+        (end, error)
+        };
+        // A panic anywhere in the turn (a bug in a model adapter, a hook, a tool) would end this
+        // task with the chat still marked as working: nothing it's sent afterwards would ever be
+        // read. It ends the turn with an error instead; the chat stays usable.
+        use futures::FutureExt;
+        let (end, error) = match std::panic::AssertUnwindSafe(work).catch_unwind().await {
+            Ok(r) => r,
+            Err(panic) => crashed(&run, started, panic.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default()).await,
+        };
         chat_changed(&run.id);
         (end, error)
     })))
+}
+
+/// End a turn whose task panicked (`why`: the panic's message): the chat gets a `turnEnd` with
+/// the error and stops being busy, as after any failed turn.
+async fn crashed(run: &Arc<Run>, started: std::time::Instant, why: String) -> (Value, Option<String>) {
+    let error = format!("DevCat Agent ran into a bug and stopped this turn{}. What it did up to there is kept: send a message to go on.", if why.is_empty() { String::new() } else { format!(" ({why})") });
+    let ap = &run.approver;
+    ap.deny_all();
+    // in the log like any turn that didn't finish: a chat opened again shows where it ended, and
+    // the model is told with the next message
+    if let Ok(mut g) = run.turn.try_lock() {
+        let _ = g.1.append(SessionEvent::Interrupted { reason: format!("DevCat Agent ran into a bug{}", if why.is_empty() { String::new() } else { format!(" ({why})") }) }).await;
+    }
+    let mut live = ap.live.lock();
+    // the panic let go of the session; what it wrote up to there is the chat now
+    let snap = match run.turn.try_lock() {
+        Ok(g) => Snapshot::of(&g.0, &g.1),
+        Err(_) => run.log.lock().clone(),
+    };
+    let unsent: Vec<String> = run.inbox.take().into_iter().map(|(t, _)| t).collect();
+    let (usage, title) = (snap.usage, snap.title.clone());
+    *run.log.lock() = snap;
+    ap.send_with(&mut live, json!({ "type": "turnEnd", "end": "error", "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64, "unsent": unsent }));
+    live.events.clear();
+    run.since.store(now_ms(), Ordering::SeqCst);
+    run.busy.store(false, Ordering::SeqCst);
+    (json!("error"), Some(error))
 }
 
 /// Stop the running turn (pending approvals count as a no).
@@ -1203,6 +1257,15 @@ pub fn shutdown_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_mcp_server_with_a_great_many_tools_is_pointed_out() {
+        // a usual server: nothing to say
+        assert_eq!(heavy_tools_notice("github", 40, 30_000), None);
+        // 263 tools in 369,000 characters (measured: REA's server) is 92k tokens with every request
+        let note = heavy_tools_notice("rea", 263, 368_913).unwrap();
+        assert!(note.contains("\"rea\" adds 263 tools, about 92k tokens, to every request"), "{note}");
+    }
 
     #[test]
     fn live_events_are_numbered_kept_per_turn_and_show_what_waits() {

@@ -1,6 +1,6 @@
 //! Anthropic Messages API (`POST {base}/v1/messages`, streamed).
 use super::sse::Sse;
-use super::{Delta, LlmConfig, Reply, Request, Retry, http_error, transport, url};
+use super::{Broken, Delta, LlmConfig, Reply, Request, Retry, UNPARSED, http_error, transient, transport, url};
 use crate::message::{Block, Message, Role, Usage};
 use crate::{Error, Result};
 use serde_json::{Value, json};
@@ -64,16 +64,38 @@ enum Part {
     Tool { id: String, name: String, json: String },
 }
 
-pub(super) async fn read(resp: reqwest::Response, on: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
+pub(super) async fn read(resp: reqwest::Response, on: &mut (dyn FnMut(Delta) + Send)) -> std::result::Result<Reply, Broken> {
     let mut sse = Sse::new(resp);
     let mut parser = Parser::default();
-    while let Some(data) = sse.next().await? {
-        let v: Value = serde_json::from_str(&data).map_err(|e| Error::Provider(format!("bad stream event: {e}")))?;
-        if parser.event(&v, on)? {
-            break;
+    let mut finished = false;
+    loop {
+        let data = match sse.next().await {
+            Ok(Some(data)) => data,
+            Ok(None) => break,
+            // the message had its stop reason: whatever went wrong after it doesn't take it back
+            Err(_) if parser.stopped => break,
+            Err(e) => return Err(Broken::Retry(e)),
+        };
+        // an event that isn't JSON is a stream that broke in the middle of one (or, after the
+        // stop reason, a compatible API's own way of ending, such as `[DONE]`)
+        let v: Value = match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(_) if parser.stopped => break,
+            Err(e) => return Err(Broken::Retry(Error::Provider(format!("bad stream event: {e}")))),
+        };
+        match parser.event(&v, on) {
+            Ok(true) => {
+                finished = true;
+                break;
+            }
+            Ok(false) => {}
+            Err(e) => return Err(if parser.transient { Broken::Retry(e) } else { Broken::Never(e) }),
         }
     }
-    Ok(parser.finish())
+    // a stop reason is the end too (compatible APIs don't all send `message_stop`)
+    let finished = finished || parser.stopped;
+    let reply = parser.finish();
+    if finished { Ok(reply) } else { Err(Broken::Incomplete(reply)) }
 }
 
 #[derive(Default)]
@@ -81,6 +103,10 @@ pub(super) struct Parser {
     parts: Vec<(u64, Part)>,
     usage: Usage,
     truncated: bool,
+    /// The message got its stop reason.
+    pub(super) stopped: bool,
+    /// The error it stopped with is worth another try.
+    pub(super) transient: bool,
 }
 
 impl Parser {
@@ -133,7 +159,9 @@ impl Parser {
                 }
             }
             "message_delta" => {
-                if s("/delta/stop_reason") == "max_tokens" {
+                let reason = s("/delta/stop_reason");
+                self.stopped |= !reason.is_empty();
+                if reason == "max_tokens" {
                     self.truncated = true;
                 }
                 if v.pointer("/usage/output_tokens").is_some() {
@@ -148,7 +176,12 @@ impl Parser {
                 }
             }
             "message_stop" => return Ok(true),
-            "error" => return Err(Error::Provider(s("/error/message"))),
+            "error" => {
+                // overloaded_error, rate_limit_error, api_error: the same request can work a moment later
+                self.transient = transient(&s("/error/type"));
+                let msg = s("/error/message");
+                return Err(Error::Provider(if msg.is_empty() { v.to_string() } else { msg }));
+            }
             _ => {}
         }
         Ok(false)
@@ -163,7 +196,7 @@ impl Parser {
                 Part::Text(_) => None,
                 Part::Thinking(t, sig) => Some(Block::Thinking { text: t, signature: sig }),
                 Part::Tool { id, name, json } => {
-                    let input = if json.trim().is_empty() { json!({}) } else { serde_json::from_str(&json).unwrap_or_else(|_| json!({ "_unparsed_arguments": json })) };
+                    let input = if json.trim().is_empty() { json!({}) } else { serde_json::from_str(&json).unwrap_or_else(|_| json!({ UNPARSED: json })) };
                     Some(Block::ToolUse { id, name, input })
                 }
             })
@@ -206,6 +239,22 @@ mod tests {
         ]);
         assert_eq!(r.usage, Usage { input_tokens: 950, output_tokens: 42, cache_read_tokens: 900 });
         assert!(!r.truncated);
+    }
+
+    #[test]
+    fn an_overloaded_error_in_the_stream_is_worth_another_try() {
+        let mut p = Parser::default();
+        let e = p.event(&json!({ "type": "error", "error": { "type": "overloaded_error", "message": "Overloaded" } }), &mut |_| {}).unwrap_err();
+        assert_eq!(e.to_string(), "model provider: Overloaded");
+        assert!(p.transient);
+        let mut p = Parser::default();
+        assert!(p.event(&json!({ "type": "error", "error": { "type": "invalid_request_error", "message": "no" } }), &mut |_| {}).is_err());
+        assert!(!p.transient);
+        // a stop reason ends the message, with or without `message_stop` after it
+        let mut p = Parser::default();
+        assert!(!p.stopped);
+        p.event(&json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 3 } }), &mut |_| {}).unwrap();
+        assert!(p.stopped);
     }
 
     #[test]
