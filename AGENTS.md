@@ -171,6 +171,41 @@ id) instead of a window, so only that phone can use one (`dispatch.rs` checks `a
 call) and a window's stay refused. One ends when the phone leaves its screen (`agent_close`) or stays away for
 `PHONE_GHOST_GRACE` (`remote::disconnected`), and calls on it aren't in the phone activity log.
 
+## DevCat Agent: turns that run for hours
+
+The harness (`crates/harness`: `agent.rs` the loop, `session.rs` the log, `llm/` the model adapters) runs turns of
+hundreds of steps, where anything that can go wrong once will. Keep these rules:
+
+- **Nothing ends a turn that another try can fix.** `Llm::step` tries a step again when the provider is busy, the
+  connection breaks, or the stream stops before the answer is complete (`Broken`, `RETRIES`), and says so
+  (`Delta::Retry` → `AgentEvent::Retry`: what the step streamed before is void, and the chat takes it out,
+  `model.ts`). An adapter must tell a complete answer from a cut one (`finished` / `stopped`); only a server that
+  ends whole answers without saying so twice in a row, and never said "done", is believed (`quiet_end`,
+  Chat Completions only). An answer that was complete stays, whatever the connection does after it.
+- **Every loop is bounded.** Each `continue` in `Agent::run` has its own counter or flag (an empty answer is asked
+  about once, a cut-off one goes on `MAX_CUT_OFF` times, a refused-as-too-long conversation is summarized once per
+  step and at most `MAX_SQUEEZED` times in a row). A new one needs the same.
+- **Summarizing must leave the model where it was.** The summary carries the user's messages and the open checklist
+  word for word (`user_words`, `open_todos`), and the messages nothing answered yet (the one that starts the turn,
+  with its images) stay whole after it (`Compacted::kept`). It isn't done again until the conversation grew
+  (`WORTH_COMPACTING`): with a small window that would be every step. A summary that fails doesn't end the turn,
+  and a conversation too long to summarize is cut down for the request (`shrink`), never the log.
+- **The context is weighed without trusting the provider**: no token count means characters (`Session::weight`),
+  a window guessed too large shows as the provider's "too long" (`llm::is_overflow`), and that is cured by a
+  summary, not shown as an error.
+- **`Session::messages` is what providers accept**: roles alternate, every tool call has its result, no message is
+  empty (a step that said nothing is left out), and a turn that didn't finish is told to the model with the next
+  message (`interrupted_note`), so "continue" continues.
+- **What the harness tells the model itself** (an empty or cut-off answer, a helper out of steps) is a `User` event
+  with `hook: NOTE` ("DevCat"): not the user's message (titles, counts, `user_words` skip it), and shown in the
+  chat as "DevCat told the agent". A helper's stay in the helper's log.
+- **A helper's work comes back.** At `HELPER_MAX_STEPS` it's asked for what it found (`wrap_up`) and that's its
+  answer, marked as partial: an error there makes the agent ask the same helper again from the start. Whoever reads
+  "the answer" of a chat reads `answer_of`: one cut off at the output limit goes on over several steps.
+- **A tool can't take the turn down**: a panic in one fails its call (`catch_unwind` in `Agent::call`), a panic
+  anywhere else ends the turn with an error and leaves the chat usable (`agent.rs` `crashed`), and a command that
+  times out or is stopped is killed with what it started (`hooks::Tree`).
+
 ## Agent bots and notification channels (`integrations/`)
 
 `src-tauri/src/integrations/` puts DevCat in the user's chat apps: notification webhooks (Discord, Slack, plain) next

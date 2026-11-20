@@ -8,7 +8,7 @@ import { Button, Empty, Spinner } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { AgentTrace, AgentUsage } from "../../lib/types";
 import { openFile } from "../claude/util";
-import { describe, fmtDuration, fmtTokens } from "./model";
+import { describe, fmtDuration, fmtTokens, hookLabel } from "./model";
 import { useAgent } from "./store";
 import { buildTrace, helperFile, type TraceCall, type TraceRow, type TraceTurn } from "./trace";
 
@@ -126,7 +126,7 @@ function Row({ row, turn, trace, cwd }: { row: TraceRow; turn: TraceTurn; trace:
         <>
           <Line time={offset(turn, row.ms)} bar={<span className="w-28 shrink-0" />} icon={row.hook ? <Webhook className="size-3.5" /> : <MessageSquare className="size-3.5" />}
             onClick={row.context.length || row.text.length > 160 ? () => setOpen(!open) : undefined} open={open}>
-            <span className="text-fg">{row.hook ? `${row.hook} hook` : "You"}</span>
+            <span className="text-fg">{row.hook ? hookLabel(row.hook) : "You"}</span>
             <span className="text-muted"> · {open ? "" : row.text.replace(/\s+/g, " ").slice(0, 160)}</span>
             {row.context.length > 0 && <span className="ml-1 text-[11px] text-faint">+ hook context</span>}
           </Line>

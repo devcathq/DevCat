@@ -482,7 +482,7 @@ export interface HermesSettings { model: string; provider: string; baseUrl: stri
 /** A model an agent connection offers; `price` is its list price in US dollars per million tokens. */
 export interface AgentModel { id: string; context: number | null; price?: { input: number; output: number; cacheRead: number | null } | null }
 
-export interface AgentSettings { protocol: "openai-chat" | "openai-responses" | "anthropic"; baseUrl: string; model: string; /** Steps per turn before it pauses; 0 = no limit, absent = 60. */ maxSteps?: number | null; /** Coding agents may hand it work (`agent_delegate`). */ delegate?: boolean }
+export interface AgentSettings { protocol: "openai-chat" | "openai-responses" | "anthropic"; baseUrl: string; model: string; /** Steps per turn before it pauses; 0 = no limit, absent = 200. */ maxSteps?: number | null; /** Coding agents may hand it work (`agent_delegate`). */ delegate?: boolean }
 export interface AiEnvVar { key: string; value: string }
 /** Saved AI connection: the coding-agent CLI the AI workspace terminal runs. */
 export interface AiProvider {
@@ -617,7 +617,8 @@ export type AgentSessionEvent =
   | { event: "approval"; tool_use_id: string; tool: string; allowed: boolean; by: string }
   | { event: "interrupted"; reason: string }
   | { event: "title"; title: string }
-  | { event: "compacted"; summary: string; model: string; usage: AgentUsage; tokens_before: number };
+  /** `kept`: the user's last messages, not answered yet, stay in the conversation after the summary. */
+  | { event: "compacted"; summary: string; model: string; usage: AgentUsage; tokens_before: number; kept?: number };
 export interface AgentContext {
   rules: string[]; skills: string[]; mcp: { name: string; tools: number }[]; notices: string[]; mcpLoading: boolean; connections?: string[];
   /** The connection the chat was opened from (its name and kind): the chat is about it. */
@@ -666,13 +667,19 @@ export type AgentLiveEvent =
   | { type: "step"; content: AgentBlock[]; usage: AgentUsage }
   | { type: "compacting"; tokens_before: number }
   | { type: "compacted"; summary: string; tokens_before: number; usage: AgentUsage }
+  /** Summarizing didn't work: the conversation is as it was (the turn goes on when it can). */
+  | { type: "compactFailed"; message: string }
+  /** The model's step is tried again: the provider was busy or the connection broke. What the
+   *  step streamed so far is void and comes again. */
+  | { type: "retry"; attempt: number; of: number; reason: string }
   | { type: "approval"; request: AgentApprovalRequest }
   | { type: "toolCall"; id: string; name: string; summary: string; input: Record<string, unknown> }
   | { type: "toolResult"; id: string; content: string; is_error: boolean }
   /** The helper started by `subagent` call `id` made a tool call / finished a step. */
   | { type: "helperTool"; id: string; name: string; input: Record<string, unknown> }
   | { type: "helperStep"; id: string; usage: AgentUsage }
-  /** A hook's message for the user: its `systemMessage`, a failure, or why a Stop hook sent the agent on. */
+  /** A hook's message for the user: its `systemMessage`, a failure, or why a Stop hook sent the agent on.
+   *  With `event` "DevCat": what DevCat itself told the agent (an empty or cut-off answer). */
   | { type: "hook"; event: string; message: string }
   /** A message sent while the agent works: shown at once, read before its next step. */
   | { type: "queued"; text: string; attachments?: string[] }

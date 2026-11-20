@@ -1,6 +1,6 @@
 //! OpenAI-compatible Chat Completions (`POST {base}/chat/completions`, streamed).
 use super::sse::Sse;
-use super::{Delta, LlmConfig, Reply, Request, Retry, http_error, transport, url};
+use super::{Broken, Delta, LlmConfig, Reply, Request, Retry, UNPARSED, http_error, transient, transport, url};
 use crate::message::{Block, Message, Role, Usage};
 use crate::{Error, Result};
 use serde_json::{Value, json};
@@ -147,17 +147,34 @@ impl ThinkTags {
     }
 }
 
-pub(super) async fn read(resp: reqwest::Response, on: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
+pub(super) async fn read(resp: reqwest::Response, on: &mut (dyn FnMut(Delta) + Send)) -> std::result::Result<Reply, Broken> {
     let mut sse = Sse::new(resp);
     let mut parser = Parser::default();
-    while let Some(data) = sse.next().await? {
+    loop {
+        let data = match sse.next().await {
+            Ok(Some(data)) => data,
+            Ok(None) => break,
+            // the answer was complete (only the usage or `[DONE]` could still come): keep it
+            Err(_) if parser.finished => break,
+            Err(e) => return Err(Broken::Retry(e)),
+        };
         if data.trim() == "[DONE]" {
+            parser.finished = true;
             break;
         }
-        let v: Value = serde_json::from_str(&data).map_err(|e| Error::Provider(format!("bad stream event: {e}")))?;
-        parser.event(&v, on)?;
+        // an event that isn't JSON is a stream that broke in the middle of one
+        let v: Value = match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(_) if parser.finished => break,
+            Err(e) => return Err(Broken::Retry(Error::Provider(format!("bad stream event: {e}")))),
+        };
+        if let Err(e) = parser.event(&v, on) {
+            return Err(if parser.transient { Broken::Retry(e) } else { Broken::Never(e) });
+        }
     }
-    Ok(parser.finish())
+    let finished = parser.finished;
+    let reply = parser.finish();
+    if finished { Ok(reply) } else { Err(Broken::Incomplete(reply)) }
 }
 
 #[derive(Default)]
@@ -168,12 +185,22 @@ pub(super) struct Parser {
     tags: ThinkTags,
     usage: Usage,
     truncated: bool,
+    /// The provider said the answer is complete (a finish reason; `[DONE]` counts too).
+    pub(super) finished: bool,
+    /// The error it stopped with is worth another try.
+    pub(super) transient: bool,
 }
 
 impl Parser {
     pub(super) fn event(&mut self, v: &Value, on: &mut (dyn FnMut(Delta) + Send)) -> Result<()> {
-        if let Some(err) = v.get("error") {
+        if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
             let msg = err.get("message").and_then(Value::as_str).map(String::from).unwrap_or_else(|| err.to_string());
+            // "code" is a number (OpenRouter: the upstream's HTTP status) or a word; "type" a word
+            self.transient = ["code", "type"].iter().any(|k| match err.get(k) {
+                Some(Value::String(s)) => transient(s),
+                Some(Value::Number(n)) => transient(&n.to_string()),
+                _ => false,
+            });
             return Err(Error::Provider(msg));
         }
         if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
@@ -184,15 +211,18 @@ impl Parser {
             self.usage = Usage { input_tokens: n("/prompt_tokens"), output_tokens: n("/completion_tokens"), cache_read_tokens: cached };
         }
         let Some(choice) = v.pointer("/choices/0") else { return Ok(()) };
-        if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
-            self.truncated = true;
+        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            self.finished = true;
+            if reason == "length" {
+                self.truncated = true;
+            }
         }
         let Some(d) = choice.get("delta") else { return Ok(()) };
-        for key in ["reasoning_content", "reasoning"] {
-            if let Some(r) = d.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()) {
-                self.thinking.push_str(r);
-                on(Delta::Thinking(r.to_string()));
-            }
+        // DeepSeek and Qwen call it `reasoning_content`, OpenRouter and vLLM `reasoning`. A
+        // gateway that sends the same text under both names means it once.
+        if let Some(r) = ["reasoning_content", "reasoning"].iter().find_map(|key| d.get(*key).and_then(Value::as_str).filter(|s| !s.is_empty())) {
+            self.thinking.push_str(r);
+            on(Delta::Thinking(r.to_string()));
         }
         if let Some(c) = d.get("content").and_then(Value::as_str).filter(|s| !s.is_empty()) {
             let (think, text) = self.tags.feed(c);
@@ -241,7 +271,7 @@ impl Parser {
             content.push(Block::Text { text: self.text });
         }
         for (n, c) in self.calls.into_iter().enumerate().filter(|(_, c)| !c.name.is_empty()) {
-            let input = if c.args.trim().is_empty() { Value::Object(Default::default()) } else { serde_json::from_str(&c.args).unwrap_or_else(|_| json!({ "_unparsed_arguments": c.args })) };
+            let input = if c.args.trim().is_empty() { Value::Object(Default::default()) } else { serde_json::from_str(&c.args).unwrap_or_else(|_| json!({ UNPARSED: c.args })) };
             let id = if c.id.is_empty() { format!("call_{n}_{}", uuid::Uuid::new_v4().simple()) } else { c.id };
             content.push(Block::ToolUse { id, name: c.name, input });
         }
@@ -280,6 +310,33 @@ mod tests {
         ]);
         assert_eq!(r.usage, Usage { input_tokens: 120, output_tokens: 30, cache_read_tokens: 100 });
         assert!(d.contains(&Delta::ToolStart { id: "call_1".into(), name: "glob".into() }));
+    }
+
+    #[test]
+    fn reasoning_sent_under_both_names_is_taken_once() {
+        // a gateway that fills `reasoning_content` and `reasoning` with the same text
+        let both = |s: &str| json!({ "choices": [{ "delta": { "reasoning_content": s, "reasoning": s } }] });
+        let (r, d) = run(&[both("Let me "), both("look."), json!({ "choices": [{ "delta": { "reasoning": " Then answer." } }] }), json!({ "choices": [{ "delta": { "content": "Hi." } }] })]);
+        assert_eq!(r.content, vec![Block::Thinking { text: "Let me look. Then answer.".into(), signature: None }, Block::Text { text: "Hi.".into() }]);
+        assert_eq!(d.iter().filter(|d| matches!(d, Delta::Thinking(_))).count(), 3);
+    }
+
+    #[test]
+    fn knows_when_the_answer_is_complete_and_which_errors_pass() {
+        let mut p = Parser::default();
+        p.event(&json!({ "choices": [{ "delta": { "content": "Hi" }, "finish_reason": null }] }), &mut |_| {}).unwrap();
+        assert!(!p.finished);
+        p.event(&json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] }), &mut |_| {}).unwrap();
+        assert!(p.finished);
+        // `"error": null` beside a normal chunk isn't an error
+        p.event(&json!({ "error": null, "choices": [] }), &mut |_| {}).unwrap();
+
+        let mut p = Parser::default();
+        assert!(p.event(&json!({ "error": { "code": 502, "message": "Provider disconnected" } }), &mut |_| {}).is_err());
+        assert!(p.transient);
+        let mut p = Parser::default();
+        assert!(p.event(&json!({ "error": { "type": "invalid_request_error", "message": "bad tool schema" } }), &mut |_| {}).is_err());
+        assert!(!p.transient);
     }
 
     #[test]

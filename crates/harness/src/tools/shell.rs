@@ -12,6 +12,17 @@ use tokio::io::AsyncReadExt;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// How long the command may run: `timeout_secs`, at most [`MAX_TIMEOUT`]. Models often write
+/// `timeout` instead (other agents' shell tools call it that, some in milliseconds); ignoring it
+/// stops a build the model gave five minutes after two.
+fn limit_of(input: &Value) -> Duration {
+    let secs = input.get("timeout_secs").and_then(Value::as_u64).or_else(|| {
+        // nobody means more than an hour: that's milliseconds
+        input.get("timeout").and_then(Value::as_u64).map(|t| if t > 3_600 { t / 1_000 } else { t })
+    });
+    secs.filter(|s| *s > 0).map(Duration::from_secs).unwrap_or(DEFAULT_TIMEOUT).min(MAX_TIMEOUT)
+}
+
 pub struct Shell;
 
 fn shell_name() -> &'static str {
@@ -45,14 +56,14 @@ impl Tool for Shell {
     }
     fn timeout(&self, input: &Value) -> Duration {
         // the pipeline's limit; a little over the command's own, so its message wins
-        input.get("timeout_secs").and_then(Value::as_u64).map(Duration::from_secs).unwrap_or(DEFAULT_TIMEOUT).min(MAX_TIMEOUT) + Duration::from_secs(5)
+        limit_of(input) + Duration::from_secs(5)
     }
     async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
         let command = match str_arg(&input, "command") {
             Ok(c) => c,
             Err(e) => return e,
         };
-        let limit = input.get("timeout_secs").and_then(Value::as_u64).map(Duration::from_secs).unwrap_or(DEFAULT_TIMEOUT).min(MAX_TIMEOUT);
+        let limit = limit_of(&input);
         // the sandbox's guard lives until the command has started
         let (cmd, _guard) = match command_for(command, ctx) {
             Ok(c) => c,
@@ -90,6 +101,10 @@ pub(super) async fn run_process(mut cmd: tokio::process::Command, ctx: &ToolCtx,
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let mut child = cmd.spawn().map_err(|e| ToolOutput::err(format!("Couldn't start {what}: {e}")))?;
+    // On a timeout or a stop (this future is dropped), what the command started goes with it.
+    // Killing only the shell would leave a build or an install running: it keeps its locks, and
+    // the next command waits on them until it times out too.
+    let tree = crate::hooks::Tree::of(&child);
     let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let read = async {
         let (mut o, mut e) = (Vec::new(), Vec::new());
@@ -97,7 +112,9 @@ pub(super) async fn run_process(mut cmd: tokio::process::Command, ctx: &ToolCtx,
         let status = child.wait().await;
         (o, e, status)
     };
-    let (o, e, status) = tokio::time::timeout(limit, read).await.map_err(|_| ToolOutput::err(format!("Timed out after {} s and was stopped.", limit.as_secs())))?;
+    let (o, e, status) = tokio::time::timeout(limit, read).await.map_err(|_| ToolOutput::err(format!("Timed out after {} s and was stopped, with everything it started.", limit.as_secs())))?;
+    // it ended by itself: what it left running on purpose stays
+    tree.done();
     let mut text = String::from_utf8_lossy(&o).into_owned();
     let e = String::from_utf8_lossy(&e);
     if !e.trim().is_empty() {
@@ -157,5 +174,42 @@ mod tests {
 
         let slow = Shell.run(json!({ "command": if cfg!(windows) { "Start-Sleep -Seconds 5" } else { "sleep 5" }, "timeout_secs": 1 }), &ctx).await;
         assert!(slow.is_error && slow.content.contains("Timed out"), "{}", slow.content);
+    }
+
+    #[test]
+    fn the_time_limit_is_read_however_the_model_writes_it() {
+        let secs = |input: Value| limit_of(&input).as_secs();
+        assert_eq!(secs(json!({ "command": "x" })), 120);
+        assert_eq!(secs(json!({ "command": "x", "timeout_secs": 300 })), 300);
+        // `timeout`, in seconds or (as some agents' tools have it) milliseconds
+        assert_eq!(secs(json!({ "command": "x", "timeout": 300 })), 300);
+        assert_eq!(secs(json!({ "command": "x", "timeout": 300_000 })), 300);
+        assert_eq!(secs(json!({ "command": "x", "timeout_secs": 30, "timeout": 300 })), 30);
+        // never more than ten minutes, and nonsense is the default
+        assert_eq!(secs(json!({ "command": "x", "timeout_secs": 9_000 })), 600);
+        assert_eq!(secs(json!({ "command": "x", "timeout": 0 })), 120);
+        assert_eq!(secs(json!({ "command": "x", "timeout": "soon" })), 120);
+    }
+
+    /// A command that times out takes what it started with it: a build left running would keep
+    /// its locks and make the next command wait.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timeout_stops_what_the_command_started_too() {
+        let dir = std::env::temp_dir().join(format!("devcat-harness-shell-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = ToolCtx::at(&dir);
+        // a child of the shell that would write a file after the timeout, if it were still alive
+        let slow = Shell.run(json!({ "command": "(sleep 3; echo late > late.txt) & wait", "timeout_secs": 1 }), &ctx).await;
+        assert!(slow.is_error && slow.content.contains("Timed out"), "{}", slow.content);
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(!dir.join("late.txt").exists(), "the command's child outlived the timeout");
+
+        // a command that ends by itself leaves what it started in the background alone
+        let ok = Shell.run(json!({ "command": "(sleep 1; echo kept > kept.txt) > /dev/null 2>&1 &" }), &ctx).await;
+        assert!(!ok.is_error, "{}", ok.content);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(dir.join("kept.txt").exists(), "a background process was killed with a command that ended normally");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

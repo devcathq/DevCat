@@ -284,7 +284,9 @@ async fn compact_on_request_and_nothing_to_compact() {
     agent.compact(&mut session, Some("the greeting"), &Cancel::default(), &mut |_| {}).await.unwrap();
     assert_eq!(session.messages().len(), 1);
     assert!(session.messages()[0].text().contains("Summary: greeted."));
-    assert!(session.context_tokens() < 20);
+    // the summary, with what the user wrote kept word for word
+    assert!(session.messages()[0].text().contains("word for word") && session.messages()[0].text().contains("1. hello"));
+    assert!(session.context_tokens() < 60);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -454,7 +456,7 @@ async fn the_step_limit_is_a_setting_and_zero_means_none() {
     assert_eq!(end, TurnEnd::StepLimit);
     let _ = std::fs::remove_dir_all(dir);
 
-    // 0: past the default of 60 and on to the answer
+    // 0: past any limit and on to the answer
     let (dir, mut session) = project().await;
     let mut steps: Vec<Vec<Block>> = (0..70).map(glob).collect();
     steps.push(vec![text("done")]);
@@ -1007,5 +1009,573 @@ async fn a_tools_image_goes_to_the_model_after_the_tool_results() {
     assert!(matches!(&results.content[0], Block::ToolResult { tool_use_id, content, .. } if tool_use_id == "p" && content.contains("cat.png")));
     assert!(matches!(&results.content[1], Block::ToolResult { tool_use_id, .. } if tool_use_id == "r"));
     assert_eq!(results.content[2], Block::Image { media_type: "image/png".into(), data: "AAAA".into() });
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// ------------------------------------------------------------------ long turns: limits, summaries, flaky providers
+
+/// One scripted step with everything a provider can do to it.
+struct Say {
+    content: Vec<Block>,
+    /// What the provider counted as input (0: it doesn't count).
+    input: u64,
+    truncated: bool,
+    error: Option<String>,
+}
+
+fn say(content: Vec<Block>) -> Say {
+    Say { content, input: 100, truncated: false, error: None }
+}
+
+fn fail(error: &str) -> Say {
+    Say { content: vec![], input: 0, truncated: false, error: Some(error.into()) }
+}
+
+/// Plays [`Say`] steps and keeps every request's messages.
+struct Script {
+    steps: Mutex<std::collections::VecDeque<Say>>,
+    requests: Mutex<Vec<Vec<devcat_harness::Message>>>,
+    /// Refuses a request with more characters than this, the way a provider refuses one that
+    /// doesn't fit its context window (without using up a scripted step).
+    fits: Option<usize>,
+}
+
+impl Script {
+    fn new(steps: Vec<Say>) -> Arc<Script> {
+        Arc::new(Script { steps: Mutex::new(steps.into()), requests: Mutex::default(), fits: None })
+    }
+    fn tight(steps: Vec<Say>, fits: usize) -> Arc<Script> {
+        Arc::new(Script { steps: Mutex::new(steps.into()), requests: Mutex::default(), fits: Some(fits) })
+    }
+    fn asked(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+    /// Scripted steps the model wasn't asked for.
+    fn left(&self) -> usize {
+        self.steps.lock().unwrap().len()
+    }
+    /// The text of request `n`'s last message.
+    fn last_text(&self, n: usize) -> String {
+        self.requests.lock().unwrap()[n].last().unwrap().text()
+    }
+}
+
+const TOO_LONG: &str = "400 This model's maximum context length is 32768 tokens. However, your messages resulted in 40211 tokens. Please reduce the length of the messages.";
+
+fn chars(messages: &[devcat_harness::Message]) -> usize {
+    messages.iter().flat_map(|m| &m.content).map(|b| match b {
+        Block::Text { text } | Block::Thinking { text, .. } => text.len(),
+        Block::ToolResult { content, .. } => content.len(),
+        Block::ToolUse { input, .. } => input.to_string().len(),
+        Block::Image { .. } => 6_000,
+    }).sum()
+}
+
+#[async_trait]
+impl Model for Script {
+    fn name(&self) -> String {
+        "script".into()
+    }
+    async fn step(&self, req: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
+        self.requests.lock().unwrap().push(req.messages.to_vec());
+        if self.fits.is_some_and(|max| chars(req.messages) > max) {
+            return Err(Error::Provider(TOO_LONG.into()));
+        }
+        let s = self.steps.lock().unwrap().pop_front().expect("the model was asked more steps than scripted");
+        match s.error {
+            Some(e) => Err(Error::Provider(e)),
+            None => Ok(Reply { content: s.content, usage: Usage { input_tokens: s.input, output_tokens: if s.input > 0 { 10 } else { 0 }, cache_read_tokens: 0 }, truncated: s.truncated }),
+        }
+    }
+}
+
+fn agent_with(model: Arc<dyn Model>) -> Agent {
+    Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "system".into())
+}
+
+fn notes(events: &[AgentEvent]) -> Vec<String> {
+    events.iter().filter_map(|e| if let AgentEvent::Hook { event, message } = e { (event == "DevCat").then(|| message.clone()) } else { None }).collect()
+}
+
+fn compactions(events: &[AgentEvent]) -> usize {
+    events.iter().filter(|e| matches!(e, AgentEvent::Compacted { .. })).count()
+}
+
+fn read_notes(id: &str) -> Say {
+    say(vec![tool(id, "read", json!({ "path": "notes.txt" }))])
+}
+
+#[tokio::test]
+async fn a_helper_out_of_steps_answers_with_what_it_found() {
+    let (dir, mut session) = project().await;
+    // 60 lookups (the helper's limit), then what it says when it's asked for its answer: the
+    // call it still tries doesn't run
+    let mut looking: Vec<Vec<Block>> = (0..60).map(|i| vec![tool(&format!("g{i}"), "glob", json!({ "pattern": format!("*{i}*") }))]).collect();
+    looking.push(vec![text("The version is set in notes.txt (version = 1). I didn't get to the tests."), tool("late", "glob", json!({ "pattern": "*" }))]);
+    let model = Router::new(
+        vec![
+            ("where is the version?", vec![vec![helper_call("h1", "Find the version", "Find where the version is set.")], vec![text("It's in notes.txt.")]]),
+            ("Find where the version is set.", looking),
+        ],
+        None,
+    );
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, "where is the version?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    let result = events.iter().find_map(|e| match e {
+        AgentEvent::ToolResult { id, content, is_error } if id == "h1" => Some((content.clone(), *is_error)),
+        _ => None,
+    }).unwrap();
+    // its work comes back as an answer, marked as partial: not an error that sends the caller
+    // to ask the same thing again
+    assert!(!result.1, "{}", result.0);
+    assert!(result.0.starts_with("The version is set in notes.txt (version = 1). I didn't get to the tests."), "{}", result.0);
+    assert!(result.0.contains("ran out of steps (60)"), "{}", result.0);
+    // what the helper was told at its limit is between the harness and the helper, not in the chat
+    assert!(notes(&events).is_empty(), "{:?}", notes(&events));
+    // 60 steps and the one that asked for the answer; it was told why, and its late call isn't kept
+    assert_eq!(model.requests("Find where the version is set.").len(), 61);
+    let helper = Session::open(&session.path().with_extension("agents").join("h1.jsonl")).await.unwrap();
+    assert!(helper.events().iter().any(|e| matches!(e, SessionEvent::User { hook: Some(h), text, .. } if h == "DevCat" && text.contains("all 60 steps"))));
+    assert!(!helper.events().iter().any(|e| matches!(e, SessionEvent::Assistant { content, .. } if content.iter().any(|b| matches!(b, Block::ToolUse { id, .. } if id == "late")))));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_helper_that_says_nothing_at_its_limit_still_hands_back_its_last_words() {
+    let (dir, mut session) = project().await;
+    let mut looking: Vec<Vec<Block>> = (0..60).map(|i| vec![text(if i == 59 { "So far: the version is in notes.txt." } else { "" }), tool(&format!("g{i}"), "glob", json!({ "pattern": format!("*{i}*") }))]).collect();
+    // asked for its answer, it only calls a tool again
+    looking.push(vec![tool("late", "glob", json!({ "pattern": "*" }))]);
+    let model = Router::new(
+        vec![
+            ("where is the version?", vec![vec![helper_call("h1", "Find the version", "Find where the version is set.")], vec![text("Looking myself.")]]),
+            ("Find where the version is set.", looking),
+        ],
+        None,
+    );
+    let mut agent = Agent::new(model, Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    let mut results = Vec::new();
+    agent.turn(&mut session, "where is the version?", &Cancel::default(), &mut |e| {
+        if let AgentEvent::ToolResult { content, is_error, .. } = e {
+            results.push((content, is_error));
+        }
+    }).await.unwrap();
+    assert!(results[0].1 && results[0].0.contains("stopped after 60 steps") && results[0].0.contains("So far: the version is in notes.txt."), "{:?}", results[0]);
+    assert!(results[0].0.contains("Ask a narrower question"), "{:?}", results[0]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn an_empty_summary_is_asked_for_again() {
+    let (dir, mut session) = project().await;
+    // 110 tokens a step in a 120-token window: summarized after the first step
+    let model = Script::new(vec![
+        read_notes("t1"),
+        // asked for the summary, the model calls a tool instead (it still has them), then writes it
+        say(vec![tool("oops", "read", json!({ "path": "notes.txt" }))]),
+        say(vec![text("5. State now: notes.txt read, version = 1.")]),
+        say(vec![text("The version is 1.")]),
+    ]);
+    let mut agent = agent_with(model.clone());
+    agent.context_window = Some(120);
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    assert_eq!(compactions(&events), 1);
+    assert!(model.last_text(2).contains("Your last reply had no text"), "{}", model.last_text(2));
+    // the tokens of both tries count
+    assert!(session.events().iter().any(|e| matches!(e, SessionEvent::Compacted { usage, .. } if usage.input_tokens == 200)));
+    assert_eq!(session.messages().last().unwrap().text(), "The version is 1.");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_summary_that_fails_doesnt_end_the_turn() {
+    let (dir, mut session) = project().await;
+    let model = Script::new(vec![
+        read_notes("t1"),
+        // no summary, twice: the turn goes on without one
+        say(vec![]),
+        say(vec![]),
+        read_notes("t2"),
+        // not tried again at the very next step
+        say(vec![text("The version is 1.")]),
+    ]);
+    let mut agent = agent_with(model.clone());
+    agent.context_window = Some(120);
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    assert_eq!(compactions(&events), 0);
+    // the chat hears why, once
+    assert_eq!(events.iter().filter(|e| matches!(e, AgentEvent::CompactFailed { message } if message.contains("empty summary"))).count(), 1);
+    // the conversation is whole: nothing was replaced
+    assert!(session.messages()[0].text().starts_with("what's the version?"));
+    assert_eq!(model.asked(), 5);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_small_window_isnt_summarized_at_every_step() {
+    let (dir, mut session) = project().await;
+    let heavy = |id: &str, input: u64| Say { input, ..read_notes(id) };
+    // A 1000-token window (summarized above 800). What stays after a summary (the system
+    // prompt, the tools, the summary itself) is over that on its own here.
+    let model = Script::new(vec![
+        heavy("t1", 850),
+        say(vec![text("5. State now: reading notes.txt.")]),
+        heavy("t2", 820),
+        heavy("t3", 830),
+        heavy("t4", 840),
+        Say { input: 850, ..say(vec![text("The version is 1.")]) },
+    ]);
+    let mut agent = agent_with(model.clone());
+    agent.context_window = Some(1000);
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    // once: again after every step would free nothing and make the model forget each step
+    assert_eq!((compactions(&events), model.left()), (1, 0));
+    // ...until the conversation grew enough since then (a tenth of the window)
+    let model = Script::new(vec![
+        heavy("t1", 850),
+        say(vec![text("5. State now: reading notes.txt.")]),
+        heavy("t2", 820),
+        heavy("t3", 930),
+        say(vec![text("5. State now: still reading.")]),
+        say(vec![text("The version is 1.")]),
+    ]);
+    let (dir2, mut session) = project().await;
+    let mut agent = agent_with(model.clone());
+    agent.context_window = Some(1000);
+    let mut events = Vec::new();
+    agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!((compactions(&events), model.left()), (2, 0));
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(dir2);
+}
+
+#[tokio::test]
+async fn a_provider_that_doesnt_count_tokens_still_gets_its_conversation_summarized() {
+    let (dir, mut session) = project().await;
+    std::fs::write(dir.join("proj/long.txt"), "a long line in the file\n".repeat(300)).unwrap();
+    let quiet = |content: Vec<Block>| Say { input: 0, ..say(content) };
+    let model = Script::new(vec![
+        quiet(vec![tool("r1", "read", json!({ "path": "long.txt" }))]),
+        quiet(vec![text("5. State now: long.txt read.")]),
+        quiet(vec![text("It's long.")]),
+    ]);
+    let mut agent = agent_with(model.clone());
+    // about 2000 tokens of file in a 1000-token window: without a count from the provider, the
+    // characters say so
+    agent.context_window = Some(1000);
+    let mut events = Vec::new();
+    agent.turn(&mut session, "how long is long.txt?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!((compactions(&events), model.left()), (1, 0));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_conversation_the_provider_refuses_as_too_long_is_summarized_and_the_step_taken_again() {
+    let (dir, mut session) = project().await;
+    let model = Script::new(vec![
+        read_notes("t1"),
+        // the window isn't known (or was guessed too large): the provider says it doesn't fit
+        fail(TOO_LONG),
+        say(vec![text("5. State now: notes.txt read, version = 1.")]),
+        say(vec![text("The version is 1.")]),
+    ]);
+    let mut agent = agent_with(model.clone());
+    agent.max_steps = 2;
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    // (the refused step didn't count against the step limit)
+    assert_eq!(end, TurnEnd::Answered);
+    assert_eq!(compactions(&events), 1);
+    let summary = session.messages()[0].text();
+    assert!(summary.contains("State now") && summary.contains("1. what's the version?") && summary.contains("go on now with what is still open"), "{summary}");
+    assert_eq!(session.messages().last().unwrap().text(), "The version is 1.");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // still too long after the summary: summarizing again can't help, and the error says why
+    let (dir, mut session) = project().await;
+    let model = Script::new(vec![read_notes("t1"), fail(TOO_LONG), say(vec![text("Summary.")]), fail(TOO_LONG)]);
+    let mut agent = agent_with(model.clone());
+    let end = agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |_| {}).await;
+    assert!(matches!(&end, Err(Error::Provider(m)) if m.contains("maximum context length") && m.contains("still doesn't fit")), "{end:?}");
+    assert_eq!(model.asked(), 4);
+    // a first message that's too long by itself has nothing to summarize: the provider's word stands
+    let model = Script::new(vec![fail(TOO_LONG)]);
+    let (dir2, mut session) = project().await;
+    let end = agent_with(model.clone()).turn(&mut session, "a very long message", &Cancel::default(), &mut |_| {}).await;
+    assert!(matches!(&end, Err(Error::Provider(m)) if m == TOO_LONG), "{end:?}");
+    assert_eq!(model.asked(), 1);
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(dir2);
+}
+
+#[tokio::test]
+async fn a_summary_as_a_turn_starts_keeps_the_message_that_started_it() {
+    let (dir, mut session) = project().await;
+    // the first turn ends over the limit of a 100,000-token window: the next one starts with a summary
+    let model = Script::new(vec![Say { input: 85_000, ..say(vec![text("The version is 1.")]) }, say(vec![text("5. State now: told the user the version.")]), say(vec![text("A red build badge.")])]);
+    let mut agent = agent_with(model.clone());
+    agent.context_window = Some(100_000);
+    agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |_| {}).await.unwrap();
+    let image = Block::Image { media_type: "image/png".into(), data: "AAAA".into() };
+    let mut events = Vec::new();
+    agent.turn_with_images(&mut session, "and what does this screenshot show?", vec![image.clone()], &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!((compactions(&events), model.left()), (1, 0));
+    // the model answers the message itself, picture included: not a paraphrase of it
+    let asked = model.requests.lock().unwrap()[2].clone();
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].content.contains(&Block::Text { text: "and what does this screenshot show?".into() }) && asked[0].content.contains(&image), "{:?}", asked[0].content);
+    assert!(matches!(&asked[0].content[0], Block::Text { text } if text.contains("State now")));
+    // and a chat opened again says the same
+    let again = Session::open(session.path()).await.unwrap();
+    assert!(again.messages()[0].content.contains(&image));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_kept_message_that_doesnt_fit_is_summarized_too_before_giving_up() {
+    let (dir, mut session) = project().await;
+    // the provider takes 8,000 characters; the second turn's message has 9,000
+    let model = Script::tight(
+        vec![read_notes("t1"), say(vec![text("The version is 1.")]), say(vec![text("S1: told the user the version.")]), say(vec![text("S2: the user pasted a long log.")]), say(vec![text("The log shows a timeout.")])],
+        8_000,
+    );
+    let mut agent = agent_with(model.clone());
+    agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |_| {}).await.unwrap();
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, &format!("what's wrong here? {}", "log line\n".repeat(1_000)), &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    // summarized keeping the message (still too long), then with the message in the summary
+    assert_eq!((end, compactions(&events), model.left()), (TurnEnd::Answered, 2, 0));
+    let first = session.messages()[0].text();
+    assert!(first.contains("S2: the user pasted a long log.") && first.contains("what's wrong here? log line") && first.contains("[…]"), "{}", &first[..300]);
+    assert_eq!(session.messages().last().unwrap().text(), "The log shows a timeout.");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_message_refused_by_a_hook_after_the_answer_doesnt_ask_the_model_again() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join(".claude")).unwrap();
+    let settings = json!({ "hooks": { "UserPromptSubmit": [{ "hooks": [hook(
+        "if grep -q password; then echo 'no passwords in prompts' >&2; exit 2; fi",
+        "$i = [Console]::In.ReadToEnd(); if ($i -match 'password') { [Console]::Error.WriteLine('no passwords in prompts'); exit 2 }",
+    )] }] } });
+    std::fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let inbox = Inbox::default();
+    // sent while the model writes its answer
+    let model = Arc::new(Typist { steps: Mutex::new(vec![vec![text("Version 1.")]]), say: vec![Some("my password is hunter2")], inbox: inbox.clone(), n: Mutex::new(0), last: Mutex::new(vec![]) });
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Ask, Arc::new(DenyAll), "s".into());
+    agent.hooks = Arc::new(devcat_harness::hooks::load(&proj, None).hooks);
+    agent.inbox = inbox;
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, "what's the version?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    // its answer stands: a request that ends with the model's own message isn't a question
+    assert_eq!((end, *model.n.lock().unwrap()), (TurnEnd::Answered, 1));
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::UserMessage { blocked: true, .. })));
+    assert_eq!(session.messages().last().unwrap().text(), "Version 1.");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_window_too_small_for_the_work_ends_the_turn_instead_of_summarizing_forever() {
+    let (dir, mut session) = project().await;
+    let look = |i: usize| say(vec![tool(&format!("g{i}"), "glob", json!({ "pattern": format!("*{i}") }))]);
+    let summary = || say(vec![text("5. State now: looking around.")]);
+    // every step after a summary is one too many for the window
+    let model = Script::new(vec![look(1), fail(TOO_LONG), summary(), look(2), fail(TOO_LONG), summary(), look(3), fail(TOO_LONG), summary(), look(4), fail(TOO_LONG)]);
+    let mut events = Vec::new();
+    let end = agent_with(model.clone()).turn(&mut session, "look around", &Cancel::default(), &mut |e| events.push(e)).await;
+    // three summaries with a step between them, then it says what would help
+    assert!(matches!(&end, Err(Error::Provider(m)) if m.contains("maximum context length") && m.contains("Use a model with a larger window")), "{end:?}");
+    assert_eq!((compactions(&events), model.left()), (3, 0));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_conversation_too_long_to_summarize_is_cut_down_until_it_fits() {
+    let (dir, mut session) = project().await;
+    // the provider takes 12,000 characters; `big` returns 30,000
+    let model = Script::tight(vec![say(vec![tool("b1", "big", json!({}))]), say(vec![text("5. State now: ran big, it printed lines.")]), say(vec![text("It printed a lot.")])], 12_000);
+    let mut tools = Registry::standard();
+    tools.add(Big);
+    let mut agent = Agent::new(model.clone(), tools, Policy::Ask, Arc::new(DenyAll), "system".into());
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, "run big", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    assert_eq!(compactions(&events), 1);
+    // the step, refused; the summary request, refused whole and taken with the output clipped;
+    // then the step again
+    let requests = model.requests.lock().unwrap();
+    let sizes: Vec<usize> = requests.iter().map(|r| chars(r)).collect();
+    assert_eq!(requests.len(), 5, "{sizes:?}");
+    assert!(sizes[1] > 12_000 && sizes[2] > 12_000 && sizes[3] <= 12_000 && sizes[3] > 2_000, "{sizes:?}");
+    // clipped, not dropped: the call still has its result, and its start and end are there
+    let clipped = requests[3].iter().flat_map(|m| &m.content).find_map(|b| if let Block::ToolResult { tool_use_id, content, .. } = b { (tool_use_id == "b1").then(|| content.clone()) } else { None }).unwrap();
+    assert!(clipped.starts_with("START") && clipped.contains("characters left out"), "{}", &clipped[..200]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn an_answer_cut_off_at_the_output_limit_goes_on() {
+    let (dir, mut session) = project().await;
+    let model = Script::new(vec![Say { truncated: true, ..say(vec![text("The first half")]) }, say(vec![text(" and the second.")])]);
+    let mut agent = agent_with(model.clone());
+    let mut events = Vec::new();
+    let end = agent.turn(&mut session, "explain it", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    assert_eq!(model.asked(), 2);
+    assert!(model.last_text(1).contains("cut off at the output limit"));
+    assert_eq!(notes(&events).len(), 1);
+    // told by the harness, not typed by the user: the chat's title and message count don't change
+    assert!(session.events().iter().any(|e| matches!(e, SessionEvent::User { hook: Some(h), .. } if h == "DevCat")));
+    assert_eq!(session.title(), "explain it");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // a model that never gets to the end is stopped asking after three times
+    let (dir, mut session) = project().await;
+    let model = Script::new((0..4).map(|_| Say { truncated: true, ..say(vec![text("more")]) }).collect());
+    let end = agent_with(model.clone()).turn(&mut session, "explain it", &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert_eq!((end, model.asked()), (TurnEnd::Answered, 4));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_call_cut_off_at_the_output_limit_isnt_run_and_its_text_isnt_kept() {
+    let (dir, mut session) = project().await;
+    let raw = format!("{{\"path\": \"big.txt\", \"content\": \"{}", "x".repeat(20_000));
+    let model = Script::new(vec![Say { truncated: true, ..say(vec![tool("w1", "write", json!({ "_unparsed_arguments": raw }))]) }, say(vec![text("I'll write it in parts.")])]);
+    let mut agent = agent_with(model.clone());
+    agent.policy = Policy::Bypass;
+    let mut results = Vec::new();
+    agent.turn(&mut session, "write big.txt", &Cancel::default(), &mut |e| {
+        if let AgentEvent::ToolResult { content, is_error, .. } = e {
+            results.push((content, is_error));
+        }
+    }).await.unwrap();
+    assert!(results[0].1 && results[0].0.contains("hit the output limit") && results[0].0.contains("in parts"), "{:?}", results[0]);
+    assert!(!dir.join("proj/big.txt").exists());
+    // the 20,000 characters don't go back to the model with every later step
+    let sent = chars(&model.requests.lock().unwrap()[1]);
+    assert!(sent < 2_000, "{sent}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn an_empty_answer_is_asked_about_once() {
+    let (dir, mut session) = project().await;
+    let thinking = || Block::Thinking { text: "hm".into(), signature: None };
+    let model = Script::new(vec![read_notes("t1"), say(vec![thinking()]), say(vec![text("The version is 1.")])]);
+    let mut events = Vec::new();
+    let end = agent_with(model.clone()).turn(&mut session, "what's the version?", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    assert!(model.last_text(2).contains("Your last message was empty"));
+    assert_eq!(session.messages().last().unwrap().text(), "The version is 1.");
+    // the empty step isn't sent back (providers refuse an empty message), so the roles still alternate
+    for request in model.requests.lock().unwrap().iter() {
+        assert!(request.iter().all(|m| !m.content.is_empty()));
+        assert!(request.windows(2).all(|w| w[0].role != w[1].role));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+
+    // empty again: the turn ends, as it did before
+    let (dir, mut session) = project().await;
+    let model = Script::new(vec![say(vec![]), say(vec![])]);
+    let end = agent_with(model.clone()).turn(&mut session, "hello?", &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert_eq!((end, model.asked()), (TurnEnd::Answered, 2));
+    // and the session stays usable
+    let model = Script::new(vec![say(vec![text("Hi.")])]);
+    agent_with(model.clone()).turn(&mut session, "hello again", &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert!(model.requests.lock().unwrap()[0].iter().all(|m| !m.content.is_empty()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_turn_that_didnt_finish_is_told_to_the_model_with_the_next_message() {
+    let (dir, mut session) = project().await;
+    let glob = |i: usize| say(vec![tool(&format!("g{i}"), "glob", json!({ "pattern": format!("*{i}") }))]);
+    let model = Script::new(vec![glob(0), glob(1), say(vec![text("Done.")]), say(vec![text("Hello.")])]);
+    let mut agent = agent_with(model.clone());
+    agent.max_steps = 2;
+    assert_eq!(agent.turn(&mut session, "look around", &Cancel::default(), &mut |_| {}).await.unwrap(), TurnEnd::StepLimit);
+    agent.turn(&mut session, "continue", &Cancel::default(), &mut |_| {}).await.unwrap();
+    // "continue" alone, after work that just ends, reads like a new task: the model is told
+    // that the turn was cut short and that its work stands
+    let last = model.last_text(2);
+    assert!(last.contains("ended before you answered: Stopped after 2 steps") && last.contains("instead of starting over") && last.ends_with("continue"), "{last}");
+    // only the message right after it says so
+    agent.turn(&mut session, "thanks", &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert_eq!(model.last_text(3), "thanks");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A tool with a bug.
+struct Crash;
+
+#[async_trait]
+impl Tool for Crash {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "crash".into(), description: "Crashes.".into(), input_schema: json!({ "type": "object" }) }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, _: &Value) -> String {
+        "crash".into()
+    }
+    async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        panic!("the row had no name")
+    }
+}
+
+#[tokio::test]
+async fn a_tool_that_crashes_fails_its_call_not_the_turn() {
+    let (dir, mut session) = project().await;
+    let model = Script::new(vec![say(vec![tool("c1", "crash", json!({})), tool("r1", "read", json!({ "path": "notes.txt" }))]), say(vec![text("The tool is broken; the version is 1.")])]);
+    let mut tools = Registry::standard();
+    tools.add(Crash);
+    let mut agent = Agent::new(model, tools, Policy::Ask, Arc::new(DenyAll), "s".into());
+    let mut results = Vec::new();
+    let end = agent.turn(&mut session, "try it", &Cancel::default(), &mut |e| {
+        if let AgentEvent::ToolResult { content, is_error, .. } = e {
+            results.push((content, is_error));
+        }
+    }).await.unwrap();
+    assert_eq!(end, TurnEnd::Answered);
+    assert!(results[0].1 && results[0].0.contains("`crash` tool crashed (the row had no name)"), "{:?}", results[0]);
+    // the call after it ran
+    assert!(!results[1].1 && results[1].0.contains("version = 1"), "{:?}", results[1]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn compaction_keeps_what_the_user_wrote_word_for_word() {
+    let (dir, mut session) = project().await;
+    let model = Script::new(vec![
+        say(vec![text("OK.")]),
+        say(vec![text("Summary one.")]),
+        say(vec![text("Done.")]),
+        say(vec![text("Summary two.")]),
+    ]);
+    let mut agent = agent_with(model);
+    agent.turn(&mut session, "Rename the flag --dry to --dry-run, but keep --dry working.", &Cancel::default(), &mut |_| {}).await.unwrap();
+    agent.compact(&mut session, None, &Cancel::default(), &mut |_| {}).await.unwrap();
+    agent.turn(&mut session, &format!("Also update the docs. {}", "x".repeat(3_000)), &Cancel::default(), &mut |_| {}).await.unwrap();
+    agent.compact(&mut session, None, &Cancel::default(), &mut |_| {}).await.unwrap();
+    let summary = session.messages()[0].text();
+    // the second summary still has the first request as it was said (the log keeps it), and
+    // a long message is cut, not dropped
+    assert!(summary.contains("1. Rename the flag --dry to --dry-run, but keep --dry working."), "{summary}");
+    assert!(summary.contains("2. Also update the docs. xxx") && summary.contains("[…]"), "{}", &summary[..400]);
+    assert!(summary.len() < 3_000, "{}", summary.len());
+    // a summary asked for between turns doesn't tell the model to carry on by itself
+    assert!(!summary.contains("go on now with what is still open"));
     let _ = std::fs::remove_dir_all(dir);
 }

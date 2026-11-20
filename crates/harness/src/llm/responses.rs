@@ -2,7 +2,7 @@
 //! ones only offered there (codex). Stateless (`store: false`): the whole conversation goes with
 //! every request, like the other adapters.
 use super::sse::Sse;
-use super::{Delta, LlmConfig, Reply, Request, Retry, http_error, transport, url};
+use super::{Broken, Delta, LlmConfig, Reply, Request, Retry, UNPARSED, http_error, transient, transport, url};
 use crate::message::{Block, Message, Role, Usage};
 use crate::{Error, Result};
 use serde_json::{Value, json};
@@ -94,17 +94,33 @@ fn wire_items(m: &Message) -> Vec<Value> {
     }
 }
 
-pub(super) async fn read(resp: reqwest::Response, on: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
+pub(super) async fn read(resp: reqwest::Response, on: &mut (dyn FnMut(Delta) + Send)) -> std::result::Result<Reply, Broken> {
     let mut sse = Sse::new(resp);
     let mut parser = Parser::default();
-    while let Some(data) = sse.next().await? {
+    loop {
+        let data = match sse.next().await {
+            Ok(Some(data)) => data,
+            Ok(None) => break,
+            // the response was complete: whatever went wrong after it doesn't take it back
+            Err(_) if parser.finished => break,
+            Err(e) => return Err(Broken::Retry(e)),
+        };
         if data.trim() == "[DONE]" {
             break;
         }
-        let v: Value = serde_json::from_str(&data).map_err(|e| Error::Provider(format!("bad stream event: {e}")))?;
-        parser.event(&v, on)?;
+        // an event that isn't JSON is a stream that broke in the middle of one
+        let v: Value = match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(_) if parser.finished => break,
+            Err(e) => return Err(Broken::Retry(Error::Provider(format!("bad stream event: {e}")))),
+        };
+        if let Err(e) = parser.event(&v, on) {
+            return Err(if parser.transient { Broken::Retry(e) } else { Broken::Never(e) });
+        }
     }
-    Ok(parser.finish())
+    let finished = parser.finished;
+    let reply = parser.finish();
+    if finished { Ok(reply) } else { Err(Broken::Incomplete(reply)) }
 }
 
 #[derive(Default)]
@@ -122,6 +138,10 @@ pub(super) struct Parser {
     calls: Vec<Call>,
     usage: Usage,
     truncated: bool,
+    /// The response ended as `completed` or `incomplete`: this is all of it.
+    pub(super) finished: bool,
+    /// The error it stopped with is worth another try.
+    pub(super) transient: bool,
 }
 
 impl Parser {
@@ -171,6 +191,7 @@ impl Parser {
                 }
             }
             "response.completed" | "response.incomplete" => {
+                self.finished = true;
                 if let Some(u) = v.pointer("/response/usage") {
                     let n = |p: &str| u.pointer(p).and_then(Value::as_u64).unwrap_or(0);
                     self.usage = Usage { input_tokens: n("/input_tokens"), output_tokens: n("/output_tokens"), cache_read_tokens: n("/input_tokens_details/cached_tokens") };
@@ -183,11 +204,13 @@ impl Parser {
                 }
             }
             "response.failed" => {
+                self.transient = transient(s("/response/error/code"));
                 let msg = v.pointer("/response/error/message").and_then(Value::as_str).unwrap_or("the response failed");
                 return Err(Error::Provider(msg.to_string()));
             }
             "error" => {
-                let msg = v.get("message").and_then(Value::as_str).map(String::from).unwrap_or_else(|| v.to_string());
+                self.transient = transient(s("/code")) || transient(s("/error/code")) || transient(s("/error/type"));
+                let msg = v.get("message").or_else(|| v.pointer("/error/message")).and_then(Value::as_str).map(String::from).unwrap_or_else(|| v.to_string());
                 return Err(Error::Provider(msg));
             }
             _ => {}
@@ -204,7 +227,7 @@ impl Parser {
             content.push(Block::Text { text: self.text });
         }
         for (n, c) in self.calls.into_iter().enumerate().filter(|(_, c)| !c.name.is_empty()) {
-            let input = if c.args.trim().is_empty() { Value::Object(Default::default()) } else { serde_json::from_str(&c.args).unwrap_or_else(|_| json!({ "_unparsed_arguments": c.args })) };
+            let input = if c.args.trim().is_empty() { Value::Object(Default::default()) } else { serde_json::from_str(&c.args).unwrap_or_else(|_| json!({ UNPARSED: c.args })) };
             let id = if c.call_id.is_empty() { format!("call_{n}_{}", uuid::Uuid::new_v4().simple()) } else { c.call_id };
             content.push(Block::ToolUse { id, name: c.name, input });
         }
@@ -269,6 +292,21 @@ mod tests {
         assert!(filtered.to_string().contains("content_filter"), "{filtered}");
         let (done, _) = run(&[json!({ "type": "response.completed", "response": { "incomplete_details": null, "usage": { "input_tokens": 1, "output_tokens": 1 } } })]).unwrap();
         assert!(!done.truncated);
+    }
+
+    #[test]
+    fn knows_when_the_response_is_complete_and_which_errors_pass() {
+        let mut p = Parser::default();
+        p.event(&json!({ "type": "response.output_text.delta", "delta": "Hi" }), &mut |_| {}).unwrap();
+        assert!(!p.finished);
+        p.event(&json!({ "type": "response.completed", "response": { "usage": { "input_tokens": 1, "output_tokens": 1 } } }), &mut |_| {}).unwrap();
+        assert!(p.finished);
+        let mut p = Parser::default();
+        assert!(p.event(&json!({ "type": "response.failed", "response": { "error": { "code": "server_error", "message": "boom" } } }), &mut |_| {}).is_err());
+        assert!(p.transient);
+        let mut p = Parser::default();
+        assert!(p.event(&json!({ "type": "response.failed", "response": { "error": { "code": "invalid_prompt", "message": "no" } } }), &mut |_| {}).is_err());
+        assert!(!p.transient);
     }
 
     #[test]

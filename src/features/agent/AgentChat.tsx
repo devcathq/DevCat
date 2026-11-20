@@ -14,7 +14,7 @@ import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { GHOST_SUGGESTIONS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, focusSuggestions, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { GHOST_SUGGESTIONS, HARNESS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, focusSuggestions, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, retryLabel, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { fmtCost } from "../claude/util";
 import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
 import { useClaude } from "../claude/store";
@@ -202,6 +202,13 @@ const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: I
       return <CompactedRow item={item} cwd={cwd} />;
     case "hook":
       return <HookNote item={item} />;
+    case "retry":
+      return (
+        <div className="flex items-center gap-2 px-1 text-[12px] text-muted" title={item.reason}>
+          <Spinner className="size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">{retryLabel(item.reason)}: trying again ({item.attempt} of {item.of})…</span>
+        </div>
+      );
   }
 });
 
@@ -209,8 +216,8 @@ const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: I
 function HookNote({ item }: { item: Extract<Item, { kind: "hook" }> }) {
   return (
     <div className="flex items-start gap-2 px-1 text-[12px] text-muted">
-      <Webhook className="mt-0.5 size-3.5 shrink-0" />
-      <span className="min-w-0 whitespace-pre-wrap"><span className="text-fg">{item.event} hook</span> · {item.text.replace(/^\w+ hook feedback:\n/, "")}</span>
+      {item.event === HARNESS ? <Bot className="mt-0.5 size-3.5 shrink-0" /> : <Webhook className="mt-0.5 size-3.5 shrink-0" />}
+      <span className="min-w-0 whitespace-pre-wrap"><span className="text-fg">{hookLabel(item.event)}</span> · {item.text.replace(/^\w+ hook feedback:\n/, "")}</span>
     </div>
   );
 }
@@ -518,7 +525,7 @@ function QuestionCard({ item, tabId }: { item: ToolItem; tabId: string }) {
 function CompactedRow({ item, cwd }: { item: Extract<Item, { kind: "compacted" }>; cwd: string }) {
   const [open, setOpen] = useState(false);
   const label = item.state === "running" ? "Summarizing the conversation to free the context window…"
-    : item.state === "failed" ? "Couldn't summarize the conversation"
+    : item.state === "failed" ? `Couldn't summarize the conversation${item.error ? ` (${item.error})` : ""}`
     : `Conversation summarized${item.tokensBefore ? ` (${fmtTokens(item.tokensBefore)} tokens)` : ""}: the model continues from the summary`;
   return (
     <div className="flex flex-col gap-1.5">
@@ -662,6 +669,11 @@ function ContextMeter({ tabId, models }: { tabId: string; models: AgentModel[] }
               <Row label="Connections">{ctx?.connections?.length ? <span title={ctx.connections.join("\n")}>{ctx.connections.length}</span> : "none"}</Row>
               <Row label="MCP">{ctx?.mcpLoading ? "connecting…" : ctx?.mcp.length ? <span title={ctx.mcp.map((m) => `${m.name}: ${m.tools} tools`).join("\n")}>{ctx.mcp.length} server{ctx.mcp.length === 1 ? "" : "s"} · {mcpTools} tools</span> : "none"}</Row>
             </div>
+            {!!ctx?.notices.length && (
+              <div className="mt-2.5 flex flex-col gap-1.5 border-t border-line pt-2.5 text-[11.5px] text-warn">
+                {ctx.notices.map((n) => <div key={n} className="flex items-start gap-1.5"><TriangleAlert className="mt-0.5 size-3 shrink-0" />{n}</div>)}
+              </div>
+            )}
           </div>
         </>
       )}

@@ -159,3 +159,190 @@ async fn openai_responses_streams_a_tool_call_after_a_retry() {
     assert_eq!(s.body["tools"][0]["name"], "read");
     assert_eq!((s.body["stream"].clone(), s.body["store"].clone()), (json!(true), json!(false)));
 }
+
+// ------------------------------------------------------------------ streams that break
+
+use std::time::Duration;
+
+fn quick(protocol: Protocol, base: String) -> Llm {
+    let base_url = if protocol == Protocol::Anthropic { base } else { format!("{base}/v1") };
+    Llm::new(LlmConfig { protocol, base_url, api_key: None, model: "m".into(), max_tokens: 1000 }).with_backoff(Duration::from_millis(5))
+}
+
+/// A whole Chat Completions answer: some text and a `read` call.
+fn chat_answer() -> Vec<Value> {
+    vec![
+        json!({ "choices": [{ "delta": { "role": "assistant", "content": "Reading " } }] }),
+        json!({ "choices": [{ "delta": { "content": "the file." } }] }),
+        json!({ "choices": [{ "delta": { "tool_calls": [{ "index": 0, "id": "call_9", "type": "function", "function": { "name": "read", "arguments": "{\"path\":" } }] } }] }),
+        json!({ "choices": [{ "delta": { "tool_calls": [{ "index": 0, "function": { "arguments": "\"a.txt\"}" } }] } }] }),
+        json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }),
+    ]
+}
+
+async fn step(llm: &Llm, deltas: &mut Vec<Delta>) -> devcat_harness::Result<devcat_harness::llm::Reply> {
+    let msgs = [Message::user_text("what's in a.txt?")];
+    llm.step(&Request { system: "s", messages: &msgs, tools: &tools(), cache_key: None }, &mut |d| deltas.push(d)).await
+}
+
+#[tokio::test]
+async fn an_answer_cut_off_in_the_middle_is_asked_for_again() {
+    // the connection closes in the middle of the call's arguments, with nothing wrong on the wire
+    let cut = sse(&chat_answer()[..3]);
+    let whole = sse(&chat_answer()) + "data: [DONE]\n\n";
+    let (base, seen) = server(vec![(200, cut), (200, whole)]).await;
+    let llm = quick(Protocol::OpenaiChat, base);
+    let mut deltas = Vec::new();
+    let reply = step(&llm, &mut deltas).await.unwrap();
+    // not half a call handed on as if it were the answer
+    assert_eq!(reply.content, vec![Block::Text { text: "Reading the file.".into() }, Block::ToolUse { id: "call_9".into(), name: "read".into(), input: json!({ "path": "a.txt" }) }]);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    // whoever shows the stream hears that it starts over, between the two tries
+    let retry = deltas.iter().position(|d| matches!(d, Delta::Retry { attempt: 1, reason, .. } if reason.contains("before the model finished"))).expect("no retry was reported");
+    assert!(deltas[..retry].contains(&Delta::Text("Reading ".into())) && deltas[retry..].contains(&Delta::Text("Reading ".into())));
+}
+
+#[tokio::test]
+async fn an_answer_that_keeps_breaking_ends_with_an_error_not_with_half_of_it() {
+    let cut = sse(&chat_answer()[..3]);
+    let (base, seen) = server((0..5).map(|_| (200, cut.clone())).collect()).await;
+    let llm = quick(Protocol::OpenaiChat, base);
+    let mut deltas = Vec::new();
+    let err = step(&llm, &mut deltas).await.unwrap_err();
+    assert!(err.to_string().contains("before the model finished its answer"), "{err}");
+    assert_eq!(seen.lock().unwrap().len(), 5);
+    assert_eq!(deltas.iter().filter(|d| matches!(d, Delta::Retry { .. })).count(), 4);
+}
+
+#[tokio::test]
+async fn a_server_that_never_says_it_is_done_is_believed_the_second_time() {
+    // whole answers, but no finish reason and no [DONE] (some small servers)
+    let quiet = sse(&[json!({ "choices": [{ "delta": { "content": "Hello." } }] })]);
+    let (base, seen) = server((0..3).map(|_| (200, quiet.clone())).collect()).await;
+    let llm = quick(Protocol::OpenaiChat, base);
+    let mut deltas = Vec::new();
+    let reply = step(&llm, &mut deltas).await.unwrap();
+    assert_eq!(reply.content, vec![Block::Text { text: "Hello.".into() }]);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    // from then on it's taken at its word: one request a step
+    let reply = step(&llm, &mut deltas).await.unwrap();
+    assert_eq!(reply.content, vec![Block::Text { text: "Hello.".into() }]);
+    assert_eq!(seen.lock().unwrap().len(), 3);
+}
+
+/// Serve raw HTTP responses in order, each written as it is before the connection closes.
+async fn raw_server(responses: Vec<String>) -> (String, Arc<Mutex<usize>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(Mutex::new(0));
+    let seen2 = seen.clone();
+    tokio::spawn(async move {
+        for resp in responses {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let (head, body_start) = loop {
+                let n = sock.read(&mut chunk).await.unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break (String::from_utf8_lossy(&buf[..i]).to_string(), i + 4);
+                }
+            };
+            let len: usize = head.lines().find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap())).unwrap_or(0);
+            while buf.len() < body_start + len {
+                let n = sock.read(&mut chunk).await.unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            *seen2.lock().unwrap() += 1;
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            let _ = sock.shutdown().await;
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+#[tokio::test]
+async fn a_connection_that_drops_after_the_answer_was_complete_keeps_the_answer() {
+    // everything but the usage and [DONE] arrived, then the connection died
+    let whole = sse(&chat_answer());
+    let (base, seen) = raw_server(vec![ok_stream(&whole, whole.len() + 500)]).await;
+    let llm = quick(Protocol::OpenaiChat, base);
+    let mut deltas = Vec::new();
+    let reply = step(&llm, &mut deltas).await.unwrap();
+    assert_eq!(reply.content.last(), Some(&Block::ToolUse { id: "call_9".into(), name: "read".into(), input: json!({ "path": "a.txt" }) }));
+    // not asked again, and nothing taken back from whoever shows it
+    assert_eq!(*seen.lock().unwrap(), 1);
+    assert!(!deltas.iter().any(|d| matches!(d, Delta::Retry { .. })));
+}
+
+#[tokio::test]
+async fn only_a_server_that_never_said_done_is_believed_when_a_stream_just_ends() {
+    let quiet = sse(&[json!({ "choices": [{ "delta": { "content": "Hello." } }] })]);
+    // this one says "done": a stream of its that just ends later was cut, however whole it looks
+    let mut responses = vec![(200, sse(&chat_answer()) + "data: [DONE]\n\n")];
+    responses.extend((0..5).map(|_| (200, quiet.clone())));
+    let (base, seen) = server(responses).await;
+    let llm = quick(Protocol::OpenaiChat, base);
+    let mut deltas = Vec::new();
+    step(&llm, &mut deltas).await.unwrap();
+    let err = step(&llm, &mut deltas).await.unwrap_err();
+    assert!(err.to_string().contains("before the model finished its answer"), "{err}");
+    assert_eq!(seen.lock().unwrap().len(), 6);
+
+    // Anthropic's API always ends its messages: one without its end is never taken as whole
+    let cut = sse(&[
+        json!({ "type": "message_start", "message": { "usage": { "input_tokens": 11, "output_tokens": 1 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "Hello, and" } }),
+    ]);
+    let (base, seen) = server((0..5).map(|_| (200, cut.clone())).collect()).await;
+    let llm = quick(Protocol::Anthropic, base);
+    assert!(step(&llm, &mut deltas).await.is_err());
+    assert_eq!(seen.lock().unwrap().len(), 5);
+}
+
+fn ok_stream(body: &str, declared: usize) -> String {
+    format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\ncontent-length: {declared}\r\n\r\n{body}")
+}
+
+#[tokio::test]
+async fn a_connection_that_drops_while_the_model_answers_is_tried_again() {
+    let whole = sse(&[
+        json!({ "type": "message_start", "message": { "usage": { "input_tokens": 11, "output_tokens": 1 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "Hello." } }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 5 } }),
+        json!({ "type": "message_stop" }),
+    ]);
+    // the first try promises more bytes than it sends: the connection died on the way
+    let part = &whole[..whole.find("content_block_delta").unwrap() + 80];
+    let (base, seen) = raw_server(vec![ok_stream(part, whole.len() + 500), ok_stream(&whole, whole.len())]).await;
+    let llm = quick(Protocol::Anthropic, base);
+    let mut deltas = Vec::new();
+    let reply = step(&llm, &mut deltas).await.unwrap();
+    assert_eq!(reply.content, vec![Block::Text { text: "Hello.".into() }]);
+    assert_eq!(*seen.lock().unwrap(), 2);
+    assert!(deltas.iter().any(|d| matches!(d, Delta::Retry { attempt: 1, of: 4, .. })));
+}
+
+#[tokio::test]
+async fn an_overloaded_provider_in_the_middle_of_a_stream_is_tried_again_and_a_refusal_isnt() {
+    let start = json!({ "type": "message_start", "message": { "usage": { "input_tokens": 11, "output_tokens": 1 } } });
+    let overloaded = sse(&[start.clone(), json!({ "type": "error", "error": { "type": "overloaded_error", "message": "Overloaded" } })]);
+    let whole = sse(&[
+        start.clone(),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "Hello." } }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 5 } }),
+        json!({ "type": "message_stop" }),
+    ]);
+    let refused = sse(&[start, json!({ "type": "error", "error": { "type": "invalid_request_error", "message": "no such tool" } })]);
+    let (base, seen) = server(vec![(200, overloaded), (200, whole), (200, refused)]).await;
+    let llm = quick(Protocol::Anthropic, base);
+    let mut deltas = Vec::new();
+    assert_eq!(step(&llm, &mut deltas).await.unwrap().content, vec![Block::Text { text: "Hello.".into() }]);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let err = step(&llm, &mut deltas).await.unwrap_err();
+    assert_eq!(err.to_string(), "model provider: no such tool");
+    assert_eq!(seen.lock().unwrap().len(), 3);
+}
