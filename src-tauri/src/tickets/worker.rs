@@ -500,7 +500,12 @@ async fn work(b: &Board, tr: &Tracker, ticket_id: &str, custom: Option<&str>, re
             Ok(false) => Some("Draft pull requests are not available in this repository, so this pull request is ready for review.".to_string()),
             Err(e) => {
                 for_review = false;
-                let again = b.pick_from.as_ref().map(|c| format!(", or add the label `{}` again to let DevCat try again", c.id)).unwrap_or_default();
+                let again = match &b.pick_from {
+                    // it goes to the failed label (below)
+                    _ if b.takes_any() => format!(", or {} to let DevCat try again", super::github::run_again(b, b.failed_to.as_ref().map(|c| c.id.as_str()))),
+                    Some(c) => format!(", or add the label `{}` again to let DevCat try again", c.id),
+                    None => String::new(),
+                };
                 Some(format!("DevCat couldn't open the pull request: {e}\n\nThe work is on the branch below: open a pull request from it yourself{again}."))
             }
         };
@@ -933,9 +938,17 @@ pub fn comment_text(b: &Board, r: &RunRecord, pushed: bool, pr_note: Option<&str
             c.push_str(&format!("\n\nBranch: {br} ({where_}) in {}.", r.repos.join(", ")));
         }
     }
-    // GitHub: the trigger label added again starts a new run (`github::ready`)
-    if let (TrackerKind::Github, Some(pick)) = (b.kind, &b.pick_from) {
-        let on = if r.branch.is_some() { ", which goes on from this branch" } else { "" };
+    // GitHub: the trigger label added again starts a new run (`github::ready`); on a board that
+    // takes any open issue, the state label the issue was left with taken off
+    let on = if r.branch.is_some() { ", which goes on from this branch" } else { "" };
+    if b.takes_any() {
+        let again = super::github::run_again(b, r.moved_to.as_deref());
+        match r.outcome.as_str() {
+            "needs_info" => c.push_str(&format!("\n\nAnswer in a comment, then {again} to run the agent again{on}.")),
+            "failed" => c.push_str(&format!("\n\nTo let the agent try again, {again}{on}.")),
+            _ => {}
+        }
+    } else if let (TrackerKind::Github, Some(pick)) = (b.kind, &b.pick_from) {
         match r.outcome.as_str() {
             "needs_info" => c.push_str(&format!("\n\nAnswer in a comment, then add the label `{}` again to run the agent again{on}.", pick.id)),
             "failed" => c.push_str(&format!("\n\nTo let the agent try again, add the label `{}` again{on}.", pick.id)),
@@ -1964,7 +1977,7 @@ pub fn start_watch() {
                 continue;
             }
             let Ok(boards) = super::load_boards() else { continue };
-            for b in boards.into_iter().filter(|b| b.watch && b.pick_from.is_some() && check_board(b).is_ok()) {
+            for b in boards.into_iter().filter(|b| b.watch && b.pick_column().is_some() && check_board(b).is_ok()) {
                 let due = last.get(&b.id).is_none_or(|t| now_ms() - t >= b.interval_min as i64 * 60_000);
                 if !due || JOBS.lock().contains_key(&b.id) {
                     continue;
@@ -1981,7 +1994,7 @@ pub fn start_watch() {
 }
 
 pub(crate) async fn check_column(b: &Board) -> AppResult<()> {
-    if b.pick_from.is_none() {
+    if b.pick_column().is_none() {
         return Ok(());
     }
     // also when there's nothing new to work on, or the clone isn't ready
@@ -2000,9 +2013,10 @@ pub(crate) async fn check_column(b: &Board) -> AppResult<()> {
 
 /// What a check queues: the column's tickets (with the board's label) the agent hasn't tried yet,
 /// at most `max_per_run`. On GitHub only the issues `github::ready` lets through, tried or not:
-/// there the trigger label added again after the last run is what asks for another.
+/// there the trigger label added again after the last run is what asks for another (on a board
+/// that takes any open issue: a state label taken off).
 pub(super) async fn to_queue(b: &Board) -> AppResult<Vec<String>> {
-    let Some(col) = &b.pick_from else { return Ok(vec![]) };
+    let Some(col) = b.pick_column() else { return Ok(vec![]) };
     // when each ticket's last run ended (a stopped one doesn't count)
     let mut ended: HashMap<String, i64> = HashMap::new();
     for r in super::history(&b.id).into_iter().filter(|r| r.outcome != "stopped") {
@@ -2011,7 +2025,7 @@ pub(super) async fn to_queue(b: &Board) -> AppResult<Vec<String>> {
     }
     let tr = Tracker::new(b, super::token(b))?;
     let mut ids = vec![];
-    for t in with_label(b, tr.list(&col.id).await?).into_iter().filter(|t| b.kind == TrackerKind::Github || !ended.contains_key(&t.id)) {
+    for t in with_label(b, tr.list(&col).await?).into_iter().filter(|t| b.kind == TrackerKind::Github || !ended.contains_key(&t.id)) {
         if ids.len() >= b.max_per_run as usize {
             break;
         }

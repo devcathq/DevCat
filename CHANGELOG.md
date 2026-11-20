@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Tickets: GitHub boards can take any open issue** (#210): **Take issues labelled** has a new first choice, **Any
+  open issue (no label needed)**, for repositories where nobody labels issues. The board then takes every open issue
+  without one of its state labels (pull requests left out). The watch takes an issue only if it was opened after the
+  board was made by someone who can write to the repository (or is in **Also take issues from**); others are sent to
+  the agent by hand. Taking the state label off an issue runs it again. Boards with a trigger label don't change.
+
 ## 0.32.0 - 2026-11-19
 
 - **Tickets: Stop stops the agent** (#203): **Stop** on a board's run ends the agent within a few seconds, and the
