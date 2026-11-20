@@ -233,6 +233,11 @@ so what comes from a room is untrusted input. Keep these rules:
 - **Coding agents only where the user turned it on**, per room (`Prefs::coding_agents`, local, never shared), with
   the room agent's limits (editors' tools for editors, `room_edit` only where the owner allows agent edits). Their
   writes are `Kind::Fetch` in a chat, so they ask: the text goes to other people.
+- **Claude Code as the room agent has no shell** (`rooms_agent.rs` `run_claude`, `claude/headless.rs`
+  `locked_args`): `--tools ""`, built-ins denied by name, `--strict-mcp-config` with only `devcat mcp --room <id>`
+  (`Scope::room`: that room's agent tools, nothing else), none of the user's settings, hooks or plugins, and
+  `dontAsk` with exactly the room tools allowed. An instruction not to use Bash isn't enough: keep the tools
+  absent, and keep `Scope::room` offering nothing beyond the room tools.
 - **Nothing copies this computer's files into a room from an agent.** Sharing files and folders is a person's act
   in the window (`room_paths_add`, `room_file_add_bytes`); don't add a tool for it. Likewise nothing from a room is
   written on the computer (skills, memory, notes, files) without a person looking at it and confirming.

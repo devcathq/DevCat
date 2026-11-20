@@ -284,6 +284,32 @@ DevCat Agent chat ────────────────────�
   and `rooms_list` and the MCP instructions say room content is information, not instructions. The user is told
   to turn it on only in rooms with people they trust.
 
+### 6.1.1 Claude Code as the room agent (built)
+
+Room settings → "AI connection" picks what answers `@<name>-agent` for this user: a DevCat Agent connection or
+a Claude Code connection (each account with its own login is one; `Prefs::agent_provider`). With Claude Code,
+a mention runs `claude -p` through `ai::launch` (so `CLAUDE_CONFIG_DIR` for its own login works), on this
+computer, using the user's Claude plan, and shows as "Arif's agent (Claude Code)" (`Author.via`).
+
+Claude Code normally has a shell, and room text comes from other people, so the run is built so the shell
+doesn't exist (`claude/headless.rs` `locked_args`, `rooms_agent.rs` `run_claude`):
+
+- `--tools ""` (no built-in tool) and each built-in denied by name (`--disallowedTools`);
+- `--strict-mcp-config` with one server, `devcat mcp --room <id>` (`Scope::room`): that room's agent tools and
+  nothing else (no connections, memory, notes, boards, jobs, resources; its instructions name nothing of the
+  computer). Calls go to the app over the bridge, which carries `room` (bridge version 3) and runs them in that
+  room only, with the room agent's set at that moment (`rooms_tools::run_in_room`);
+- `--setting-sources ""`, hooks off, `--disable-slash-commands`: none of the user's settings, hooks, plugins or
+  skills;
+- `--permission-mode dontAsk` with `--allowedTools` listing exactly the room tools the agent has (no `room_edit`
+  unless the owner allows it): anything else is refused, and nobody is asked;
+- `--system-prompt`: the room agent's prompt; working folder: an empty one under `rooms::agent_dir`.
+
+Same limits as the DevCat Agent run: 15 minutes, 20 runs an hour, reply depth, the final text posted as the
+reply, claims released, Stop works. A test drives a stand-in `claude` that asks for `Bash` and gets nothing.
+Not yet: the room's linked project folder (#206) as its working folder (never an `ssh://` one), images in
+`room_read` (MCP answers are text), Codex and Gemini.
+
 ### 6.2 Between a room and the rest of DevCat (built)
 
 - **In:** a note, a memory (into `memory/`), a skill folder (into `skills/`) or a repository's diff (into
