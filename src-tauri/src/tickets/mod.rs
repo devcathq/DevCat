@@ -209,6 +209,13 @@ pub struct Board {
     /// Column the agent takes tickets from.
     #[serde(default)]
     pub pick_from: Option<Column>,
+    /// GitHub: take any open issue, with or without labels, instead of a trigger label
+    /// (`pick_from` is None then). Pull requests and issues with one of the board's state labels
+    /// are left out; the watch takes an issue only when its author may write to the repository
+    /// (or is on the allowlist), see `github::ready`. Explicit, so an older board missing its
+    /// label isn't read as "any".
+    #[serde(default)]
+    pub pick_any: bool,
     /// Where a ticket goes while the agent works on it (None: it stays put).
     #[serde(default)]
     pub working: Option<Column>,
@@ -268,6 +275,22 @@ pub struct Board {
     /// a prompt of its own gets that one instead.
     #[serde(default)]
     pub instructions: String,
+}
+
+impl Board {
+    /// A GitHub board that takes any open issue (no trigger label).
+    pub fn takes_any(&self) -> bool {
+        self.kind == TrackerKind::Github && self.pick_any
+    }
+
+    /// What the watch lists, as `Tracker::list` takes it: the pick-from column's id, or "" for a
+    /// GitHub board that takes any open issue. None: neither is set, nothing to watch.
+    pub fn pick_column(&self) -> Option<String> {
+        if self.takes_any() {
+            return Some(String::new());
+        }
+        self.pick_from.as_ref().map(|c| c.id.clone())
+    }
 }
 
 /// What became of a run's pull request, once the watch loop saw it closed.
@@ -524,6 +547,11 @@ pub async fn tickets_board_save(board: Board) -> AppResult<Board> {
     b.max_per_run = b.max_per_run.clamp(1, 20);
     b.parallel_runs = b.parallel_runs.clamp(1, 4);
     b.time_limit_min = b.time_limit_min.clamp(1, 24 * 60);
+    // any open issue is for GitHub only: the other trackers need a column
+    b.pick_any = b.pick_any && b.kind == TrackerKind::Github;
+    if b.pick_any {
+        b.pick_from = None;
+    }
     if b.kind == TrackerKind::Github {
         let t = token(&b);
         github::on_save(&mut b, t).await?;

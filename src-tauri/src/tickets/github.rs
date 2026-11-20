@@ -13,7 +13,9 @@
 //! watch loop then follows that pull request (`follow_pull_requests`): merged, the issue is
 //! closed; closed without a merge, the issue is closed as not planned (with the board's
 //! not-planned label) and the branch deleted.
-//! Adding the trigger label again after a run runs the issue again (`ready`), on its branch.
+//! Adding the trigger label again after a run runs the issue again (`ready`), on its branch. A
+//! board may also take any open issue (`Board::pick_any`): no trigger label, the issue's author
+//! is checked instead, and taking off the state label a run left asks for another.
 //!
 //! The agent gets the issue's body and the comments of people with write access (`can_write`),
 //! with the images GitHub stores for them (`images`).
@@ -368,18 +370,64 @@ pub async fn pull_request(tr: &Tracker, t: &Ticket, rec: &mut RunRecord, base: &
 /// after its last blocker closes. So a run's issue runs again only when someone adds the label
 /// again (after answering the agent's questions, say). Sending an issue to the agent by hand
 /// skips this.
+///
+/// A board that takes any open issue (`Board::takes_any`) has no label to go by, so there the
+/// issue's author is what counts: an issue never run is taken when it was opened after the board
+/// was made by someone who may write (or is on the allowlist), since on a public repository
+/// anyone can open one. An issue run before has a state label after its run (and isn't listed);
+/// someone who may write taking that label off after the run ended asks for another (`gh_unlabeled`).
 pub async fn ready(tr: &Tracker, t: &Ticket, ended: Option<i64>) -> AppResult<bool> {
-    let label = tr.board.pick_from.as_ref().map(|c| c.id.clone()).unwrap_or_default();
-    let Some(ev) = tr.gh_labeled(&t.id, &label).await? else { return Ok(false) };
+    let since = tr.board.created.max(ended.unwrap_or(0));
+    let (when, who) = if tr.board.takes_any() {
+        match ended {
+            None => {
+                let i = json_of(tr.gh_repo(Method::GET, &format!("/issues/{}", t.id)).send().await?, "GitHub issue").await?;
+                (s(&i, "created_at"), s(&i["user"], "login"))
+            }
+            Some(_) => match tr.gh_unlabeled(&t.id, &asked_again(&tr.board)).await? {
+                Some(ev) => (s(&ev, "created_at"), s(&ev["actor"], "login")),
+                None => return Ok(false),
+            },
+        }
+    } else {
+        let label = tr.board.pick_from.as_ref().map(|c| c.id.clone()).unwrap_or_default();
+        let Some(ev) = tr.gh_labeled(&t.id, &label).await? else { return Ok(false) };
+        (s(&ev, "created_at"), s(&ev["actor"], "login"))
+    };
     // the backlog from before the board: by hand only; a label from before the last run: done
-    if chrono::DateTime::parse_from_rfc3339(&s(&ev, "created_at")).map(|d| d.timestamp_millis()).unwrap_or(0) <= tr.board.created.max(ended.unwrap_or(0)) {
+    if millis(&when) <= since {
         return Ok(false);
     }
-    let who = s(&ev["actor"], "login");
-    if !tr.board.allowlist.iter().any(|l| l.eq_ignore_ascii_case(&who)) && !can_write(tr, &who).await? {
+    if !trusted(tr, &who).await? {
         return Ok(false);
     }
     Ok(!tr.gh_blocked(t).await?)
+}
+
+/// A board that takes any open issue: how a person asks for another run of an issue left with
+/// the state label `label` (None, or not one of the board's: it has none), for DevCat's comments.
+pub fn run_again(b: &Board, label: Option<&str>) -> String {
+    match label.filter(|l| !l.is_empty() && states(b).iter().any(|x| x.as_str() == *l)) {
+        Some(l) => format!("remove the label `{l}` (or send it to the agent in DevCat)"),
+        None => "send it to the agent in DevCat".into(),
+    }
+}
+
+/// A GitHub time (RFC 3339) in ms since 1970 (0 when it isn't one).
+fn millis(when: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(when).map(|d| d.timestamp_millis()).unwrap_or(0)
+}
+
+/// Whether the watch takes `login`'s word: on the board's allowlist, or may write to the repository.
+async fn trusted(tr: &Tracker, login: &str) -> AppResult<bool> {
+    Ok(tr.board.allowlist.iter().any(|l| l.eq_ignore_ascii_case(login)) || can_write(tr, login).await?)
+}
+
+/// A board that takes any open issue: the state labels whose removal asks for another run (the
+/// ones a run ends with). Not the working label: DevCat takes that off itself at a run's end.
+fn asked_again(b: &Board) -> Vec<String> {
+    let working = b.working.as_ref().map(|c| c.id.as_str());
+    states(b).into_iter().filter(|l| Some(l.as_str()) != working).collect()
 }
 
 // ---------------------------------------------------------------- following pull requests
@@ -460,7 +508,11 @@ async fn follow_pull_request(b: &Board, tr: &Tracker, rec: &RunRecord, n: u64) -
     }
     let url = Some(s(&p, "html_url")).filter(|u| !u.is_empty()).or_else(|| rec.pr_url.clone()).unwrap_or_else(|| format!("#{n}"));
     let fate = if kept.is_empty() { format!("Its branch `{branch}` is deleted.") } else { format!("Its branch `{branch}` is kept {}.", kept.join(" and ")) };
-    let again = b.pick_from.as_ref().map(|c| format!(" To try again, reopen the issue and add the label `{}`.", c.id)).unwrap_or_default();
+    let again = match &b.pick_from {
+        _ if b.takes_any() => format!(" To try again, reopen the issue and {}.", run_again(b, b.not_planned_to.as_ref().map(|c| c.id.as_str()))),
+        Some(c) => format!(" To try again, reopen the issue and add the label `{}`.", c.id),
+        None => String::new(),
+    };
     tr.gh_comment(&t, &format!("The pull request {url} was closed without a merge, so DevCat closed this issue as not planned. {fate}{again}")).await?;
     Ok(Some(PrState::Closed))
 }
@@ -568,10 +620,15 @@ impl Tracker {
     // ------------------------------------------------------------ issues
 
     /// Open issues with `label` (pull requests left out), oldest first, filtered by assignee.
+    /// `label` "": any open issue (a board that `takes_any`), with or without labels, except the
+    /// ones with one of the board's state labels (in or past a run).
     pub(super) async fn gh_list(&self, label: &str) -> AppResult<Vec<Ticket>> {
         let assigned = self.board.assigned;
         let me = if assigned == Assigned::Anyone { String::new() } else { self.gh_me().await? };
-        let mut q = vec![("state", "open"), ("labels", label), ("sort", "created"), ("direction", "asc"), ("per_page", "100")];
+        let mut q = vec![("state", "open"), ("sort", "created"), ("direction", "asc"), ("per_page", "100")];
+        if !label.is_empty() {
+            q.push(("labels", label));
+        }
         if assigned == Assigned::Me {
             q.push(("assignee", &me));
         }
@@ -582,6 +639,7 @@ impl Tracker {
             .flatten()
             .filter(|i| i["pull_request"].is_null())
             .map(|i| issue_ticket(i, &states))
+            .filter(|t| !label.is_empty() || t.column.is_empty())
             .filter(|t| assignee_wanted(&t.assignees, &me, assigned))
             .take(MAX_ISSUES)
             .collect())
@@ -616,6 +674,12 @@ impl Tracker {
     async fn gh_labeled(&self, id: &str, label: &str) -> AppResult<Option<Value>> {
         let events = self.gh_pages(&format!("/issues/{id}/events"), false, EVENT_PAGES, "GitHub issue events").await?;
         Ok(events.into_iter().rev().find(|e| s(e, "event") == "labeled" && s(&e["label"], "name").eq_ignore_ascii_case(label)))
+    }
+
+    /// The issue's latest `unlabeled` event for one of `labels`, if any.
+    async fn gh_unlabeled(&self, id: &str, labels: &[String]) -> AppResult<Option<Value>> {
+        let events = self.gh_pages(&format!("/issues/{id}/events"), false, EVENT_PAGES, "GitHub issue events").await?;
+        Ok(events.into_iter().rev().find(|e| s(e, "event") == "unlabeled" && labels.iter().any(|l| s(&e["label"], "name").eq_ignore_ascii_case(l))))
     }
 
     /// Whether an open issue blocks this one: in GitHub's issue dependencies (blockers may be in
@@ -953,6 +1017,77 @@ pub(crate) mod tests {
         assert_eq!(b.allowlist, vec!["eve"]);
         assert_eq!(queued(&b).await, vec!["7", "8", "10", "11", "12"], "eve is on the allowlist");
         assert_eq!(queued(&Board { max_per_run: 2, ..b }).await, vec!["7", "8"], "at most max_per_run");
+    }
+
+    /// A board that takes any open issue lists open issues without the label filter, leaving out
+    /// pull requests and issues with a state label; the watch takes only the ones opened after
+    /// the board was made by someone who may write (or is on the allowlist). An issue run before
+    /// runs again when someone who may write takes the state label it was left with off, not
+    /// when DevCat takes its working label off.
+    #[tokio::test]
+    async fn any_open_issue() {
+        tickets_data();
+        let mut data = Gh::new("octo", "acme/calc")
+            .with_issue(7, "No labels", "", &[], &["octo"])
+            .with_issue(8, "Other labels", "", &["bug"], &["octo"])
+            .with_issue(9, "A pull request", "", &[], &["octo"])
+            .with_issue(10, "Already asked", "", &["needs-info"], &["octo"])
+            .with_issue(11, "By a stranger", "", &[], &["octo"])
+            .with_issue(12, "From before the board", "", &[], &["octo"])
+            .with_issue(13, "Asked again", "", &[], &["octo"])
+            .with_issue(14, "Working label taken off by DevCat", "", &[], &["octo"])
+            .with_issue(15, "State label taken off by a stranger", "", &[], &["octo"])
+            .with_issue(16, "Run, not asked again", "", &[], &["octo"]);
+        data.issues.get_mut(&9).unwrap()["pull_request"] = json!({ "url": "https://api.github.com/repos/acme/calc/pulls/9" });
+        for (n, who) in [(7, "ana"), (8, "bo"), (9, "ana"), (10, "ana"), (11, "eve"), (12, "ana"), (13, "eve"), (14, "ana"), (15, "ana"), (16, "ana")] {
+            let i = data.issues.get_mut(&n).unwrap();
+            i["user"] = json!({ "login": who });
+            i["created_at"] = json!(if n == 12 { "2026-01-05T10:00:00Z".to_string() } else { soon() });
+        }
+        let unlabeled = |label: &str, by: &str| json!({ "event": "unlabeled", "created_at": soon(), "actor": { "login": by }, "label": { "name": label } });
+        data.events.insert(13, vec![unlabeled("needs-info", "ana")]);
+        data.events.insert(14, vec![unlabeled("agent-working", "octo")]);
+        data.events.insert(15, vec![unlabeled("ready-for-human", "eve")]);
+        data.permissions = [("ana", "admin"), ("bo", "write"), ("octo", "admin")].into_iter().map(|(l, p)| (l.to_string(), p.to_string())).collect();
+        let gh = MockGithub::start(data).await;
+        let b = super::super::tickets_board_save(Board { pick_any: true, max_per_run: 20, ..board(&gh.url, "", "") }).await.unwrap();
+        assert!(b.pick_any && b.pick_from.is_none() && b.takes_any(), "no trigger label");
+        assert!(!states(&b).contains(&"ready-for-agent".to_string()));
+        // 13 to 16 ran before (a minute ago)
+        for n in [13, 14, 15, 16] {
+            let ago = chrono::Utc::now().timestamp_millis() - 60_000;
+            let rec: RunRecord = serde_json::from_value(json!({ "ticketId": n.to_string(), "key": format!("#{n}"), "title": "", "url": "", "outcome": "needs_info", "summary": "", "testing": "",
+                "branch": null, "filesChanged": 0, "movedTo": "needs-info", "notes": [], "started": ago, "finished": ago, "costUsd": null })).unwrap();
+            super::super::record(&b.id, rec);
+        }
+
+        let listed = super::super::tickets_list(b.id.clone(), String::new()).await.unwrap().into_iter().map(|t| t.key).collect::<Vec<_>>();
+        assert_eq!(listed, vec!["#7", "#8", "#11", "#12", "#13", "#14", "#15", "#16"], "no pull request, no state label");
+        let asked = gh.sent("GET /repos/acme/calc/issues?");
+        assert!(asked.last().is_some_and(|r| r.contains("state=open") && !r.contains("labels=") && r.contains("assignee=octo")), "{asked:?}");
+        assert_eq!(queued(&b).await, vec!["7", "8", "13"]);
+
+        let b = super::super::tickets_board_save(Board { allowlist: vec!["eve".into()], ..b }).await.unwrap();
+        assert_eq!(queued(&b).await, vec!["7", "8", "11", "13", "15"], "eve is on the allowlist");
+        assert_eq!(queued(&Board { max_per_run: 2, ..b.clone() }).await, vec!["7", "8"], "at most max_per_run");
+
+        // another tracker can't take "any": it keeps needing a column
+        assert!(!Board { kind: super::super::TrackerKind::Jira, ..b.clone() }.takes_any());
+        assert_eq!(b.pick_column().as_deref(), Some(""));
+
+        assert_eq!(run_again(&b, Some("needs-info")), "remove the label `needs-info` (or send it to the agent in DevCat)");
+        assert_eq!(run_again(&b, Some("where it was")), "send it to the agent in DevCat");
+        assert_eq!(run_again(&b, None), "send it to the agent in DevCat");
+    }
+
+    /// Boards saved before "any open issue" (no `pickAny`) keep their trigger label, and one
+    /// missing its label isn't read as "any".
+    #[test]
+    fn older_boards_keep_their_label() {
+        let b = board("", "", "");
+        assert!(!b.pick_any && !b.takes_any());
+        assert_eq!(b.pick_column().as_deref(), Some("ready-for-agent"));
+        assert_eq!(Board { pick_from: None, ..b }.pick_column(), None);
     }
 
     #[test]

@@ -816,7 +816,8 @@ impl Tool for Tickets {
                 .iter()
                 .map(|b| {
                     let col = |c: &Option<tickets::Column>| c.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "-".into());
-                    format!("- {} ({:?} {}) id {} · repo {} · picks from {} → working {} → done {}", b.name, b.kind, b.project, b.id, if b.repo.is_empty() { "-" } else { &b.repo }, col(&b.pick_from), col(&b.working), col(&b.done_to))
+                    let pick = if b.takes_any() { "any open issue".into() } else { col(&b.pick_from) };
+                    format!("- {} ({:?} {}) id {} · repo {} · picks from {} → working {} → done {}", b.name, b.kind, b.project, b.id, if b.repo.is_empty() { "-" } else { &b.repo }, pick, col(&b.working), col(&b.done_to))
                 })
                 .collect();
             return ToolOutput::ok(lines.join("\n"));
@@ -840,8 +841,8 @@ impl Tool for Tickets {
                 },
                 Err(e) => return ToolOutput::err(e.to_string()),
             },
-            None => match &b.pick_from {
-                Some(c) => c.id.clone(),
+            None => match b.pick_column() {
+                Some(c) => c,
                 None => return ToolOutput::err("Give the `column`."),
             },
         };
@@ -905,8 +906,8 @@ impl Tool for TicketsFix {
             return ToolOutput::err("Missing `tickets`.");
         }
         // keys → ids, from the board's pick-from column
-        let listed = match &b.pick_from {
-            Some(c) => tickets::tickets_list(b.id.clone(), c.id.clone()).await.unwrap_or_default(),
+        let listed = match b.pick_column() {
+            Some(c) => tickets::tickets_list(b.id.clone(), c).await.unwrap_or_default(),
             None => vec![],
         };
         let ids: Vec<String> = wanted.iter().map(|w| listed.iter().find(|t| t.key.eq_ignore_ascii_case(w) || &t.id == w).map(|t| t.id.clone()).unwrap_or_else(|| w.clone())).collect();

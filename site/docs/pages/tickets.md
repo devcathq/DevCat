@@ -209,6 +209,12 @@ When the board watches the repository, an issue with the trigger label waits unt
 
 Fixing issues from the list skips these checks: you choose them yourself.
 
+**Take issues labelled** can also be **Any open issue (no label needed)** (GitHub only): the board then lists every
+open issue without one of its state labels, pull requests left out. With no label to go by, the watch checks who
+**opened** the issue (write access, or listed in **Also take issues from**) and that it was opened after the board
+was created; blockers count as above. An issue the agent worked on runs again when someone who can write takes off
+the state label it was left with. See [GitHub board](github-board.md#any-open-issue-without-a-label).
+
 Each entry in the history has **open chat**: it opens the agent's conversation for that ticket in the AI
 workspace, where you can read what it did and carry on from there.
 

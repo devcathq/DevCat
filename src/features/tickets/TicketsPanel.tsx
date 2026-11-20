@@ -11,7 +11,7 @@ import { useConnections } from "../../store/connections";
 import { useTabs } from "../../store/tabs";
 import { useContextMenu } from "../connections/ContextMenu";
 import { confirmDialog } from "../connections/dialogs";
-import { TRACKERS, tickets, type Board } from "./api";
+import { TRACKERS, pickName, tickets, type Board } from "./api";
 import { boardProject, openTickets, startTickets, useTickets } from "./store";
 
 export default function TicketsPanel() {
@@ -67,7 +67,7 @@ export default function TicketsPanel() {
               e.preventDefault();
               menu.show(e, [
                 { label: "Board settings…", icon: <Pencil className="size-3.5" />, onClick: () => useTickets.getState().edit(b) },
-                { label: b.watch ? "Stop watching" : `Watch ${b.pickFrom?.name ?? "the column"}`, icon: <Eye className="size-3.5" />, disabled: !b.repo || !b.doneTo || !b.pickFrom, onClick: () => void toggleWatch(b) },
+                { label: b.watch ? "Stop watching" : `Watch ${b.kind === "github" && b.pickAny ? "the open issues" : b.pickFrom?.name ?? "the column"}`, icon: <Eye className="size-3.5" />, disabled: !b.repo || !b.doneTo || !pickName(b), onClick: () => void toggleWatch(b) },
                 ...(job ? [{ label: "Stop the agent", icon: <Square className="size-3.5" />, onClick: () => void tickets.stop(b.id) }] : []),
                 "separator",
                 { label: "Disconnect…", icon: <Trash2 className="size-3.5" />, danger: true, onClick: () => void remove(b) },
@@ -80,7 +80,7 @@ export default function TicketsPanel() {
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px]">{b.name}</span>
               <span className="block truncate text-[11px] text-faint">
-                {job ? <span className="text-accent">{runs.length > 1 ? `${runs.length} tickets: ${runs.map((r) => r.key ?? r.ticketId).join(", ")}` : `${runs[0]?.key ?? ""} ${runs[0]?.stage ?? "Starting"}`}</span> : <>{TRACKERS[b.kind]}{project ? ` · ${project.name}` : ""} · {b.pickFrom?.name ?? "?"} → {b.doneTo?.name ?? "?"}</>}
+                {job ? <span className="text-accent">{runs.length > 1 ? `${runs.length} tickets: ${runs.map((r) => r.key ?? r.ticketId).join(", ")}` : `${runs[0]?.key ?? ""} ${runs[0]?.stage ?? "Starting"}`}</span> : <>{TRACKERS[b.kind]}{project ? ` · ${project.name}` : ""} · {pickName(b) ?? "?"} → {b.doneTo?.name ?? "?"}</>}
               </span>
             </span>
             {job ? <Spinner className="size-3.5 text-accent" /> : b.watch && <Eye className="size-3.5 text-ok" aria-label="Watching" />}
