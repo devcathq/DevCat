@@ -12,6 +12,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **AI connections: Hermes Agent**: add Nous Research's [Hermes Agent](https://hermes-agent.nousresearch.com)
+  (`hermes`) as an AI connection and choose its **Provider** and **Model** in the connection: Nous Portal (its free
+  plan runs the models ending in `:free`), OpenRouter (its free models are suggested), Anthropic, OpenAI, Gemini,
+  DeepSeek, Z.ai, Hugging Face, LM Studio, a local server such as Ollama (**Custom / local**, with its address) or any
+  other provider id Hermes knows. Left empty, Hermes uses what you set up with `hermes model`.
 - **Rooms: GitHub issues and discussions** (#208): set a room's GitHub repository and a token in **Room settings →
   GitHub**, and your agents there can read its issues and discussions (**Read**) and create issues or answer in
   discussions (**Write**). Every post shows you the exact text first and goes to GitHub only when you confirm it;
