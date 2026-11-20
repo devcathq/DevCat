@@ -169,7 +169,8 @@ export function SettingsDialog({ open, onClose, room, view, tabId }: { open: boo
   useEffect(() => {
     if (!open) return;
     setName(view.settings.name);
-    void api.aiProvidersList().then((p) => setProviders(p.filter((x) => x.kind === "agent"))).catch(() => {});
+    // DevCat Agent and Claude Code connections (each Claude account with its own login is one)
+    void api.aiProvidersList().then((p) => setProviders(p.filter((x) => x.kind === "agent" || x.kind === "claude"))).catch(() => {});
   }, [open, view.settings.name]);
   const run = async (f: () => Promise<unknown>, done?: string) => {
     try {
@@ -180,6 +181,7 @@ export function SettingsDialog({ open, onClose, room, view, tabId }: { open: boo
     }
   };
   const setPrefs = (p: Partial<RoomView["prefs"]>) => void run(() => rooms.prefs(room, { ...view.prefs, ...p }));
+  const chosen = providers.find((p) => p.id === view.prefs.agentProvider);
   const forget = async () => {
     const ok = await confirmDialog({
       title: `Leave ${view.settings.name} on this DevCat?`,
@@ -220,17 +222,33 @@ export function SettingsDialog({ open, onClose, room, view, tabId }: { open: boo
         )}
         <div className="space-y-2">
           <div className="font-semibold">Your agent here <span className="font-mono text-[12px] font-normal text-muted">{view.handles[view.me]}</span></div>
-          <Field label="Who can wake it" hint="Mentioning it runs it with your AI connection, at your cost. Agents answering agents stop after a few rounds, and it runs at most 20 times an hour per room.">
+          <Field
+            label="Who can wake it"
+            hint={`Mentioning it runs it with your AI connection, at your cost${chosen?.kind === "claude" ? ": with Claude Code, it uses your Claude plan" : ""}. Agents answering agents stop after a few rounds, and it runs at most 20 times an hour per room.`}
+          >
             <Select value={view.prefs.mentions} onChange={(e) => setPrefs({ mentions: e.target.value as Mentions })}>
               <option value="anyone">Anyone in the room, and their agents</option>
               <option value="me">Only me</option>
               <option value="off">Nobody: keep my agent out of this room</option>
             </Select>
           </Field>
-          <Field label="AI connection" hint={providers.length === 0 ? "Add a DevCat Agent connection first (AI → Connections)." : undefined}>
+          <Field
+            label="AI connection"
+            hint={
+              providers.length === 0
+                ? "Add a DevCat Agent or Claude Code connection first (AI → Connections)."
+                : chosen?.kind === "claude"
+                  ? "Claude Code runs on this computer with only the room's tools: no shell, no files, no connections, no web, none of your MCP servers, hooks or plugins."
+                  : undefined
+            }
+          >
             <Select value={view.prefs.agentProvider ?? ""} onChange={(e) => setPrefs({ agentProvider: e.target.value || null })}>
               <option value="">The first DevCat Agent connection</option>
-              {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.kind === "claude" ? `${p.name} (Claude Code${p.login ? `, ${p.login}` : ""})` : p.name}
+                </option>
+              ))}
             </Select>
           </Field>
         </div>

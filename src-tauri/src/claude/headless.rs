@@ -33,6 +33,31 @@ pub struct Job {
     /// Told the program's process id once it started (the ticket worker notes it, to stop it
     /// after a crash: `tickets::recover`).
     pub spawned: Option<Arc<dyn Fn(u32) + Send + Sync>>,
+    /// Only these of `mcp`'s tools (`mcp__devcat__room_read`…), nothing else (a room's agent,
+    /// `rooms_agent.rs`): see [`locked_args`]. Overrides `allow_commands`.
+    pub locked: Option<Vec<String>>,
+    /// Replaces Claude Code's system prompt (`--system-prompt`).
+    pub system: Option<String>,
+}
+
+/// Claude Code's own tools, denied by name on top of `--tools ""` (a deny rule wins over any
+/// allow rule a settings file might still bring).
+pub const BUILT_IN_TOOLS: &[&str] = &[
+    "Bash", "BashOutput", "KillShell", "KillBash", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "Task", "Agent", "TodoWrite", "Skill",
+    "SlashCommand", "ExitPlanMode", "ListMcpResourcesTool", "ReadMcpResourceTool",
+];
+
+/// Flags for a locked run: no built-in tools at all (`--tools ""`, and each denied by name), no
+/// MCP server but the one in `--mcp-config` (`--strict-mcp-config`), none of the user's settings
+/// (so no hooks, plugins or allow rules: `--setting-sources ""`, and hooks off), no skills or
+/// slash commands, and `allowed` (MCP tool names) the only ones it may call: with `dontAsk`,
+/// anything else is refused without a prompt nobody would answer.
+pub fn locked_args(allowed: &[String]) -> Vec<String> {
+    let mut a: Vec<String> = vec!["--tools".into(), String::new(), "--disallowedTools".into(), BUILT_IN_TOOLS.join(",")];
+    a.extend(["--strict-mcp-config".into(), "--setting-sources".into(), String::new()]);
+    a.extend(["--settings".into(), json!({ "disableAllHooks": true }).to_string(), "--disable-slash-commands".into()]);
+    a.extend(["--allowedTools".into(), allowed.join(",")]);
+    a
 }
 
 pub struct Outcome {
@@ -46,20 +71,32 @@ pub async fn run(job: Job, activity: Arc<dyn Fn(String) + Send + Sync>, cancelle
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(&'static str, Value)>();
     let sink: Sink = Arc::new(move |e, v| drop(tx.send((e, v))));
     let mut extra: Vec<String> = vec!["--max-turns".into(), job.max_turns.to_string()];
-    if !job.allow_commands {
+    if let Some(allowed) = &job.locked {
+        extra.extend(locked_args(allowed));
+    } else if !job.allow_commands {
         // acceptEdits without a prompt tool: anything else that would ask is refused.
         extra.extend(["--disallowedTools".into(), "Bash".into()]);
     }
     if let Some(m) = &job.mcp {
         extra.extend(["--mcp-config".into(), m.to_string()]);
-        if !job.allow_commands {
+        if job.locked.is_none() && !job.allow_commands {
             extra.extend(["--allowedTools".into(), format!("mcp__{}", crate::mcp_sync::NAME)]);
         }
     }
     if let Some(s) = &job.schema {
         extra.extend(["--json-schema".into(), s.to_string()]);
     }
-    let mode = if job.allow_commands { "bypassPermissions" } else { "acceptEdits" };
+    if let Some(s) = &job.system {
+        extra.extend(["--system-prompt".into(), s.clone()]);
+    }
+    // dontAsk: what isn't allowed is refused without asking
+    let mode = if job.locked.is_some() {
+        "dontAsk"
+    } else if job.allow_commands {
+        "bypassPermissions"
+    } else {
+        "acceptEdits"
+    };
     let spec = Spawn {
         opts: StartOptions { model: job.model.clone(), permission_mode: Some(mode.into()), resume: job.resume.clone(), ..Default::default() },
         prompt_tool: false,
@@ -191,6 +228,8 @@ mod tests {
             session: Default::default(),
             resume: None,
             spawned: None,
+            locked: None,
+            system: None,
         };
         let first: Arc<parking_lot::Mutex<Option<Instant>>> = Default::default();
         let f = first.clone();

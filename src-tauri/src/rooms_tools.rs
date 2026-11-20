@@ -154,6 +154,70 @@ impl Tool for RoomsTool {
     }
 }
 
+/// The room agent's tools in one room, for this DevCat's agent run by a CLI (Claude Code answering
+/// a mention: `devcat mcp --room <id>`, `rooms_agent.rs`). They're the room agent's own (no `room`
+/// input, no `rooms_list`, no `room_post`: its answer is posted as its reply), act as "<name>'s
+/// agent (<client>)", and don't need `Prefs::coding_agents`: this is the user's agent in the room,
+/// not a coding agent reaching in. Editors' tools only for an editor, `room_edit` only where the
+/// owner allows it (checked on every call). `remote`: in `devcat mcp`, they run in the app.
+pub fn room_agent_tools(room: &str, client: &str, remote: bool) -> Vec<Arc<dyn Tool>> {
+    let mut names: Vec<&'static str> = READ_TOOLS.to_vec();
+    names.extend(WRITE_TOOLS);
+    names.push(EDIT_TOOL);
+    names
+        .into_iter()
+        .filter_map(|n| Some(Arc::new(RoomAgentTool { name: n, spec: crate::rooms_agent::spec_of(n)?, room: room.to_string(), client: client.to_string(), remote }) as Arc<dyn Tool>))
+        .collect()
+}
+
+struct RoomAgentTool {
+    name: &'static str,
+    spec: ToolSpec,
+    room: String,
+    client: String,
+    remote: bool,
+}
+
+#[async_trait::async_trait]
+impl Tool for RoomAgentTool {
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        if writes(self.name) { Kind::Fetch } else { Kind::Read }
+    }
+    fn summary(&self, i: &Value) -> String {
+        ["path", "title", "name", "query"].iter().find_map(|k| i.get(*k).and_then(Value::as_str)).unwrap_or("").to_string()
+    }
+    fn timeout(&self, _: &Value) -> Duration {
+        CALL
+    }
+    async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        if self.remote {
+            return ToolOutput::err(APP_CLOSED);
+        }
+        match crate::rooms::node().await {
+            Ok(node) => run_in_room(node, &self.room, self.name, &self.client, input).await,
+            Err(e) => ToolOutput::err(format!("Rooms aren't running: {e}")),
+        }
+    }
+}
+
+/// Run the room agent's tool `name` in room `room`, as this user's agent via `client`.
+pub(crate) async fn run_in_room(node: &Node, room: &str, name: &str, client: &str, input: Value) -> ToolOutput {
+    let r = match node.room(room) {
+        Ok(r) => r,
+        Err(e) => return ToolOutput::err(e),
+    };
+    let me = r.agent_via(&client_label(client));
+    // the same set the room agent gets right now (role and the owner's setting may have changed)
+    match crate::rooms_agent::tools_for(&r, &me).into_iter().find(|t| t.spec().name == name) {
+        Some(t) => t.run(input, &ToolCtx::at(std::env::temp_dir())).await,
+        None if name == EDIT_TOOL && r.role().can_edit() => ToolOutput::err("This room's owner hasn't let agents edit directly: propose the change with room_suggest."),
+        None => ToolOutput::err(format!("There is no tool named `{name}` for you in this room.")),
+    }
+}
+
 /// Rooms that let coding agents in.
 fn open_rooms(node: &Node) -> Vec<Arc<Room>> {
     node.rooms().into_iter().filter_map(|s| node.room(&s.id).ok()).filter(|r| r.prefs().coding_agents && !r.removed()).collect()

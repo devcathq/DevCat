@@ -26,8 +26,9 @@ use tokio::net::{TcpListener, TcpStream};
 const FILE: &str = "agent-bridge.json";
 /// Calls and answers change shape: a `devcat mcp` and a DevCat of different versions don't
 /// talk (the call runs in `devcat mcp` instead). 2: calls carry `unattended`, which a DevCat
-/// speaking 1 would drop (and run a ticket's call with the full tool set).
-const VERSION: u32 = 2;
+/// speaking 1 would drop (and run a ticket's call with the full tool set). 3: calls carry `room`
+/// (a room's agent run by a CLI), which a DevCat speaking 2 would drop.
+const VERSION: u32 = 3;
 /// Longest call or answer line (a tool's input; answers are truncated before this).
 const MAX_LINE: u64 = 16 * 1024 * 1024;
 /// How long reading a call may take once connected.
@@ -55,6 +56,10 @@ struct Call {
     /// narrower tool set, never a wider one.
     #[serde(default)]
     unattended: bool,
+    /// The caller's `Scope::room` (a room's agent run by Claude Code): DevCat offers it only that
+    /// room's agent tools.
+    #[serde(default)]
+    room: Option<String>,
     /// The agent, as memories record it.
     client: String,
     /// Where relative paths start (the agent's folder).
@@ -163,7 +168,8 @@ async fn serve(stream: TcpStream, token: &str) {
 }
 
 async fn run(call: Call) -> Reply {
-    let scope = Scope { project: call.project, folder: call.folder, mcp: true, unattended: call.unattended };
+    // a room run is unattended too, whatever the call says
+    let scope = Scope { project: call.project, folder: call.folder, mcp: true, unattended: call.unattended || call.room.is_some(), room: call.room };
     let tool = crate::mcp_server::tools_for(&scope, &call.client, true).into_iter().find(|t| t.spec().name == call.tool);
     let Some(tool) = tool else { return Reply { content: String::new(), is_error: false, unknown: true } };
     let ctx = ToolCtx::at(call.cwd);
@@ -200,6 +206,7 @@ async fn call_at(dir: &Path, scope: &Scope, client: &str, name: &str, input: &Va
         project: scope.project.clone(),
         folder: scope.folder.clone(),
         unattended: scope.unattended,
+        room: scope.room.clone(),
         client: client.to_string(),
         cwd: cwd.to_path_buf(),
     };

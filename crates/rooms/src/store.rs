@@ -35,7 +35,8 @@ pub enum Mentions {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prefs {
-    /// The AI connection the agent uses here (none: the first DevCat Agent connection).
+    /// The AI connection the agent uses here: a DevCat Agent or a Claude Code connection (none:
+    /// the first DevCat Agent connection).
     #[serde(default)]
     pub agent_provider: Option<String>,
     #[serde(default)]
