@@ -6,16 +6,16 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ILink } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import clsx from "clsx";
 import { useEffect, useRef, useState } from "react";
 import { ActivityDetector } from "./activity";
 import { api, errMsg } from "../../lib/api";
 import { ptyEventsReady, subscribePty } from "./pty";
 import { openFile, resolvePath } from "./util";
 import { openExternally } from "../files/format";
-import { glassOn, onPaletteChange, palette } from "../appearance/store";
 import { paneKey } from "../../lib/paneKeys";
 import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
-import { terminalTheme } from "../appearance/themes";
+import { currentTerminalTheme, followTerminalTheme, useTerminalPrefs } from "../appearance/terminal";
 import { enableGpu } from "../../lib/xtermGpu";
 import { loadUnicode } from "../../lib/xtermUnicode";
 import { clipboardText, copyOnSelect, copyText, EDIT_KEYS, IS_MAC, IS_WIN, programCopy, terminalEditKey } from "../../lib/terminalKeys";
@@ -122,7 +122,9 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
   cb.current = { getArgs, onPty, onTitle, beforeRestart, cwd };
 
   // Colors follow the Appearance theme.
-  useEffect(() => onPaletteChange((p, glass) => { if (termRef.current) termRef.current.term.options.theme = terminalTheme(p, glass); }), []);
+  useEffect(() => followTerminalTheme(() => termRef.current?.term), []);
+  // No background of its own (Appearance → Terminal): it shows the region it sits in.
+  const solid = !useTerminalPrefs((s) => s.appBackground);
   // Fonts follow the Appearance font settings.
   useEffect(() => onFontsChange((f) => {
     if (!termRef.current) return;
@@ -143,7 +145,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
       rightClickSelectsWord: IS_MAC,
       drawBoldTextInBrightColors: false,
       allowTransparency: true,
-      theme: terminalTheme(palette(), glassOn()),
+      theme: currentTerminalTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -472,7 +474,7 @@ export function TerminalPane({ cwd, program, providerId, getArgs, startKey = 0, 
   };
 
   return (
-    <div className="relative h-full w-full bg-panel px-2 pt-1.5 pb-1" onMouseDown={() => termRef.current?.term.focus()}
+    <div className={clsx("relative h-full w-full px-2 pt-1.5 pb-1", solid && "solid bg-panel")} onMouseDown={() => termRef.current?.term.focus()}
       onDragOver={(e) => { if (isFileDrag(e.dataTransfer)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDropping(true); } }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropping(false); }}
       onDrop={(e) => void onDrop(e)}>
