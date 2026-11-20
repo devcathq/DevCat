@@ -258,6 +258,15 @@ Arif's DevCat                          Akbar's DevCat
 - **Prompt injection:** documents and messages from others are untrusted input. With only room
   tools, the worst an injected instruction can do is bad text, which history can undo.
 
+- **A linked project (built):** each member may link the room to a folder (repository) or DevCat project on
+  their own computer (Room settings → Project folder; `Prefs::folder` / `Prefs::project` in their `room.json`,
+  never shared; an `ssh://` folder can't be linked, it has no local memory). Their agent then starts its turn
+  with that project's memories (name and description; never the memories for every project, which are about
+  the user) and gets `memory_search` / `memory_read` for that place only, unless the user chose "brief only".
+  It can't write that memory: `memory_propose` records a proposal (`<room>/memory-proposals.json`, local), and
+  the user saves or dismisses it from the room's header. Whatever it reads may end up in the thread; the setting
+  says so. It still gets none of the folder's files (`rooms_memory.rs`).
+
 ### 6.1 The user's own coding agents (built)
 
 Besides the room agent, a user can let *their own* coding agents work in a room: Claude Code, Codex, Cursor

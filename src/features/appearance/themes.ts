@@ -59,12 +59,15 @@ export function withAlpha(hex: string, a: number): string {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${Math.max(0, Math.min(1, a)).toFixed(3)})`;
 }
 
-/** Terminal colors (xterm) for a palette, on the work area's color; `glass`: a see-through background (the window's tint
- *  shows instead; the terminal needs `allowTransparency`). */
-export function terminalTheme(p: Palette, glass = false) {
+/** Terminal colors (xterm) for a palette. The default background is see-through: the terminal draws on whatever is
+ *  behind it (the work area, a pane, the dock, the window glass and its tint), so it follows the theme, glass and
+ *  opacity like the rest of the app (the terminal needs `allowTransparency`). `solid`: the work area's color instead. */
+export function terminalTheme(p: Palette, solid = false) {
   const base = {
-    // the work area's color (editors use it too), so a terminal isn't a darker box in it
-    background: glass ? "rgba(0, 0, 0, 0)" : p.panel,
+    // See-through, but still the work area's color with alpha 0: xterm answers OSC 11 ("what's the background?") with
+    // its RGB, so programs pick light or dark text correctly, and inverse text (the background color as text) and
+    // contrast checks use it too, where plain transparent black would be black on a light theme.
+    background: solid ? p.panel : withAlpha(p.panel, 0),
     foreground: p.fg,
     cursor: p.accent,
     cursorAccent: p.panel,

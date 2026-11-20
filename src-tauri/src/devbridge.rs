@@ -86,6 +86,8 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "room_keeper_add" => out(c!(crate::rooms::room_keeper_add, "room", "keeper", "name")),
         "room_focus" => out(c!(crate::rooms::room_focus, "room", "file", "typing")),
         "room_agent_stop" => out(c!(crate::rooms::room_agent_stop, "room")),
+        "room_memory_proposals" => out(c!(crate::rooms_memory::room_memory_proposals, "room")),
+        "room_memory_proposal_done" => out(c!(crate::rooms_memory::room_memory_proposal_done, "room", "id")),
         // tickets (boards in the throwaway folder, tokens in memory)
         "tickets_boards" => out(c!(crate::tickets::tickets_boards)),
         "tickets_board_save" => out(c!(crate::tickets::tickets_board_save, "board")),

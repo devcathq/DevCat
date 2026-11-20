@@ -51,6 +51,8 @@ export interface Board {
   providerId: string;
   model?: string | null;
   pickFrom?: Column | null;
+  /** GitHub: take any open issue instead of a trigger label (`pickFrom` is null then); the watch only takes issues opened by people who may write (or the allowlist). */
+  pickAny?: boolean;
   working?: Column | null;
   doneTo?: Column | null;
   /** Where a ticket goes when the agent asks questions (null: as when it couldn't finish). */
@@ -105,6 +107,9 @@ export interface RunRecord {
 
 export const ASSIGNED: Record<Assigned, string> = { anyone: "Anyone", me: "Me", meOrNobody: "Me, or nobody yet" };
 
+/** What the board takes from, for its toolbar and list: the pick-from column's name, or "any open issue". */
+export const pickName = (b: Board): string | null => (b.kind === "github" && b.pickAny ? "Any open issue" : b.pickFrom?.name ?? null);
+
 export const TRACKERS: Record<TrackerKind, string> = { jira: "Jira", trello: "Trello", linear: "Linear", github: "GitHub" };
 
 /** A GitHub board's state labels (its columns: a label's id is its name), as the triage skills name them. */
@@ -122,7 +127,7 @@ const KIND_DEFAULTS: Record<TrackerKind, Partial<Board>> = {
 
 export const newBoard = (kind: TrackerKind = "jira"): Board => ({
   id: "", name: "", kind, site: "", user: "", project: "", repo: "", projectId: null, providerId: "claude", model: null,
-  pickFrom: null, working: null, doneTo: null, needsInfoTo: null, failedTo: null, notPlannedTo: null, label: "", assigned: "anyone",
+  pickFrom: null, pickAny: false, working: null, doneTo: null, needsInfoTo: null, failedTo: null, notPlannedTo: null, label: "", assigned: "anyone",
   comment: true, push: false, branchPrefix: "devcat/", targetBranch: "", allowCommands: false, watch: false, intervalMin: 10, maxPerRun: 3, parallelRuns: 1, timeLimitMin: 60, instructions: "",
   isolation: "inPlace", copyFiles: [], setupCommand: "", allowlist: [],
   ...KIND_DEFAULTS[kind],

@@ -1,4 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
+import clsx from "clsx";
 import { paneKey } from "../../lib/paneKeys";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -8,9 +9,8 @@ import { Button, Select } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { events, eventsReady, k8s } from "./api";
 import PodSwitcher from "./PodSwitcher";
-import { glassOn, onPaletteChange, palette } from "../appearance/store";
 import { onFontsChange, terminalFont, terminalZoomKey } from "../appearance/fonts";
-import { terminalTheme } from "../appearance/themes";
+import { currentTerminalTheme, followTerminalTheme, useTerminalPrefs } from "../appearance/terminal";
 import { enableGpu } from "../../lib/xtermGpu";
 import { copyOnSelect, programCopy, terminalEditKey } from "../../lib/terminalKeys";
 
@@ -33,7 +33,9 @@ export default function ShellPanel({ connId, target, visible, onPodChange }: { c
   const [state, setState] = useState<"connecting" | "open" | "closed">("connecting");
   const [nonce, setNonce] = useState(0);
 
-  useEffect(() => onPaletteChange((p, glass) => { if (termRef.current) termRef.current.term.options.theme = terminalTheme(p, glass); }), []);
+  useEffect(() => followTerminalTheme(() => termRef.current?.term), []);
+  // No background of its own (Appearance → Terminal): it shows the dock it sits in.
+  const solid = !useTerminalPrefs((s) => s.appBackground);
   useEffect(() => onFontsChange((f) => {
     if (!termRef.current) return;
     Object.assign(termRef.current.term.options, terminalFont(f));
@@ -48,7 +50,7 @@ export default function ShellPanel({ connId, target, visible, onPodChange }: { c
       scrollback: 10000,
       allowProposedApi: true,
       allowTransparency: true,
-      theme: terminalTheme(palette(), glassOn()),
+      theme: currentTerminalTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -142,7 +144,7 @@ export default function ShellPanel({ connId, target, visible, onPodChange }: { c
         <div className="flex-1" />
         {state === "closed" && <Button size="sm" onClick={() => setNonce((n) => n + 1)}><RotateCw className="size-3" />Reconnect</Button>}
       </div>
-      <div className="min-h-0 flex-1 bg-panel p-1.5">
+      <div className={clsx("min-h-0 flex-1 p-1.5", solid && "solid bg-panel")}>
         <div ref={host} className="h-full w-full" />
       </div>
     </div>

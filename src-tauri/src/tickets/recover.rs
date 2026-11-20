@@ -243,6 +243,11 @@ async fn put_one(b: &Board, f: &Flight, working: bool) -> AppResult<RunRecord> {
 fn comment(b: &Board, f: &Flight) -> String {
     let mut c = if f.branch.is_empty() { format!("{STOPPED}.") } else { format!("{STOPPED}; the branch {} keeps any committed work.", f.branch) };
     match (b.kind, &b.pick_from) {
+        // any open issue: the failed label taken off asks again (it goes there, see `recover`)
+        _ if b.takes_any() => {
+            let again = super::github::run_again(b, b.failed_to.as_ref().map(|c| c.id.as_str()));
+            c.push_str(&format!(" To try again, {again}."));
+        }
         // the trigger label added again starts a new run (`github::ready`)
         (TrackerKind::Github, Some(pick)) => c.push_str(&format!(" Add the label `{}` again to try again.", pick.id)),
         _ => c.push_str(" To try again, fix it with the agent in DevCat's Tickets tab."),

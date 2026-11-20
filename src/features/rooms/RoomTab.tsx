@@ -6,7 +6,7 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
 import clsx from "clsx";
-import { Brain, CheckSquare, Columns2, Copy, Download, Eye, FilePlus2, FileText, FolderInput, FolderUp, History, Lightbulb, MessagesSquare, NotebookPen, Pencil, PenTool, Plus, Settings, Sparkles, SquarePen, Trash2, Upload, Users } from "lucide-react";
+import { Brain, CheckSquare, Columns2, Copy, Download, Eye, FilePlus2, FileText, FolderGit2, FolderInput, FolderUp, History, Lightbulb, MessagesSquare, NotebookPen, Pencil, PenTool, Plus, Settings, Sparkles, SquarePen, Trash2, Upload, Users, X } from "lucide-react";
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Badge, Button, Empty, IconButton, Spinner } from "../../components/ui";
@@ -20,7 +20,7 @@ import { confirmDialog, promptDialog } from "../connections/dialogs";
 import { isFileDrag } from "../files/drop";
 import { MarkdownDoc } from "../files/viewers/MarkdownDoc";
 import { fromB64, label, rooms, type Claim, type FileInfo, type RoomBoard, type RoomView, type Suggestion } from "./api";
-import { AddSkillDialog, copyToNotes, frontmatter, SaveMemoryDialog, ShareFromDevCatDialog } from "./Exchange";
+import { AddSkillDialog, copyToNotes, frontmatter, MemoryProposalsDialog, SaveMemoryDialog, ShareFromDevCatDialog } from "./Exchange";
 import { FileTree, type TreeTarget } from "./FileTree";
 import { bind, Replica, utf16 } from "./replica";
 import { PeopleDialog, SettingsDialog, pathText } from "./RoomDialogs";
@@ -54,6 +54,9 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
   const [sharing, setSharing] = useState(false);
   const [skill, setSkill] = useState<string | null>(null);
   const [memory, setMemory] = useState<string | null>(null);
+  // the agent's proposals for this user's memory of the linked project
+  const [proposals, setProposals] = useState(false);
+  const closeProposals = useCallback(() => setProposals(false), []);
   const [mdMode, setMdMode] = useState<MdMode>("split");
   // the file or folder whose sharing and editing history is shown
   const [historyOf, setHistoryOf] = useState<string | null>(null);
@@ -263,6 +266,22 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
         {view.summary.removed && <Badge tone="danger">You were removed: read only</Badge>}
         {view.summary.role === "viewer" && <Badge>Reads only</Badge>}
         {view.prefs.codingAgents && <Badge tone="info">Your coding agents may use it</Badge>}
+        {view.linked && (
+          <span title={view.linked.problem ?? `Your agent here works with your memory of ${view.linked.label}. Only you see this link.`}
+            className={clsx("flex max-w-[260px] items-center gap-1 rounded border px-1.5 py-0.5 text-[11px]", view.linked.problem ? "border-danger/40 text-danger" : "border-line text-muted")}>
+            <FolderGit2 className="size-3 shrink-0" />
+            <span className="truncate">{view.linked.label}</span>
+            <button className="shrink-0 rounded hover:bg-hover hover:text-fg" title="Unlink: your agent here stops using this project's memory"
+              onClick={() => void run(() => rooms.prefs(room, { ...view.prefs, folder: null, project: null }), "Unlinked")}>
+              <X className="size-3" />
+            </button>
+          </span>
+        )}
+        {view.memoryProposals.length > 0 && (
+          <Button size="sm" variant="ghost" onClick={() => setProposals(true)} title="Your agent proposed these for your memory: nothing is saved until you save it">
+            <Brain className="size-3.5 text-accent" />{view.memoryProposals.length} for your memory
+          </Button>
+        )}
         <div className="ml-3 flex items-center gap-1">
           {here.slice(0, 6).map((m) => (
             <span key={m.id} title={`${m.name}${m.file ? ` · in ${m.file}${m.typing ? ", typing" : ""}` : ""}${pathText(m) ? ` · ${pathText(m)}` : ""}`} className={clsx("flex size-6 items-center justify-center rounded-full bg-accent/20 text-[11px] font-semibold text-accent", m.file === file && "ring-2 ring-ok")}>
@@ -370,6 +389,9 @@ export default function RoomTab({ tab }: { tab: Tab & { type: "room" } }) {
       <ShareFromDevCatDialog room={room} open={sharing} onClose={() => setSharing(false)} onShared={setFile} />
       {skill && <AddSkillDialog room={room} folder={skill} files={files} skillText={textOf(`${skill}/SKILL.md`)} onClose={() => setSkill(null)} />}
       {memory && <SaveMemoryDialog room={room} path={memory} text={textOf(memory)} onClose={() => setMemory(null)} />}
+      {proposals && view.memoryProposals.length > 0 && (
+        <MemoryProposalsDialog room={room} proposals={view.memoryProposals} placeLabel={view.linked?.label ?? "the linked project"} onClose={closeProposals} onDone={() => void load()} />
+      )}
       {historyOf && <FileHistoryDialog room={room} path={historyOf} onClose={() => setHistoryOf(null)} />}
       {menuCtx.element}
     </div>
