@@ -249,6 +249,11 @@ so what comes from a room is untrusted input. Keep these rules:
 - **Who shared, moved and took out what** goes in the room's `activity` (`doc.log`, or `rename` for moves); a new
   way into or out of a room records itself there. Who *edited* comes from the document's history (`doc.edits`):
   an agent's changes must be committed with `commit_by` so they show as the agent.
+- **A room's GitHub** (`rooms_github.rs`, registered through `rooms_agent.rs` like every room tool): the
+  repository and switches are local `Prefs::github` (Read, Write: off by default), the token is in the keychain
+  (`room-github-token:<room>`), never in `room.json`, a prompt, a tool result or the room. Every post on GitHub
+  goes through `rooms_github::confirm`: the user sees the exact text (secrets scrubbed) in the window and nothing is
+  posted without their OK (no window: refused). Only the configured API host is called, without redirects.
 - Rooms are desktop-only, like the SSH workbench: keep them out of the phone dispatcher.
 
 ## Page review

@@ -43,6 +43,7 @@ mod remote;
 mod review;
 mod rooms;
 mod rooms_agent;
+mod rooms_github;
 mod rooms_tools;
 mod rt;
 #[cfg(debug_assertions)]
@@ -464,6 +465,13 @@ pub fn run() {
             rooms::room_keeper_add,
             rooms::room_focus,
             rooms::room_agent_stop,
+            rooms_github::room_github_pending,
+            rooms_github::room_github_answer,
+            rooms_github::room_github_from_folder,
+            rooms_github::room_github_save,
+            rooms_github::room_github_check,
+            rooms_github::room_github_issue,
+            rooms_github::room_github_labels,
             // tickets (Jira, Trello, Linear → the agent)
             tickets::tickets_boards,
             tickets::tickets_board_save,

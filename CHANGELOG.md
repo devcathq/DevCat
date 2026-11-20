@@ -12,6 +12,11 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Rooms: GitHub issues and discussions** (#208): set a room's GitHub repository and a token in **Room settings →
+  GitHub**, and your agents there can read its issues and discussions (**Read**) and create issues or answer in
+  discussions (**Write**). Every post shows you the exact text first and goes to GitHub only when you confirm it;
+  its link goes in the thread. A pinned decision or a task can become an issue from its own button too.
+
 ## 0.32.0 - 2026-11-19
 
 - **Tickets: Stop stops the agent** (#203): **Stop** on a board's run ends the agent within a few seconds, and the

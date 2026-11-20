@@ -147,6 +147,27 @@ see it.
 - **Only in rooms with people you trust.** What people write in a room reaches an agent that can run commands on
   your computer. Agents are told that room content is information, not instructions, but that's not a guarantee.
 
+## GitHub issues and discussions
+
+Your agents in a room (the room's agent and your coding agents) can work with the project's GitHub repository, so
+what the room decided lands where the rest of the team tracks it. Set it in **Room settings → GitHub**: the
+repository as `owner/name` (or **From a folder…** reads it from a folder's `origin` remote, on this computer only),
+GitHub Enterprise Server's host when it isn't github.com, and a token (a fine-grained token for that repository,
+with Issues and Discussions). The token goes to your keychain, never into the room. Only you set this, only for you.
+
+Two switches, both off until you turn them on:
+
+- **Read**: `gh_issues_search`, `gh_issue_read`, `gh_discussions_list`, `gh_discussion_read`. What your agent reads
+  there can show up in the thread for everyone in the room: think twice for a private repository.
+- **Write**: `gh_issue_create` (in the format of the repository's issue template, with its existing labels:
+  `gh_issue_templates`), `gh_discussion_comment` and `gh_discussion_create`. **Every post waits for you**: DevCat
+  shows you the exact title and text (with secret-looking text hidden) and posts only when you press **Post on
+  GitHub**. With DevCat closed, or no answer within 10 minutes, nothing is posted. The link goes in the thread, and
+  the room's activity records it.
+
+With **Write** on, a pinned decision and a task also get a **Create a GitHub issue** button: you write the issue
+yourself, and it's posted as you see it.
+
 ## Who shared and edited it
 
 Every file shows who shared or made it, and from where, above it ("shared by Arif from this computer"). Click

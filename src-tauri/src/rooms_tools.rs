@@ -8,7 +8,9 @@
 //! allows them. There is no tool that copies files from this computer into a room: an agent with a
 //! shell, steered by something a room member wrote, must not be able to send this computer's files
 //! to the room. Writes (posting, suggesting, tasks) ask in a DevCat Agent chat, like a web fetch:
-//! their text goes to other people.
+//! their text goes to other people. The room's GitHub tools (`rooms_github.rs`) come only where
+//! the user set up a repository and turned Read or Write on; each post there is also confirmed by
+//! the user in the window, so with the app closed (or nobody at it) nothing is posted.
 //!
 //! `devcat mcp` runs in its own process, and rooms live in the app (their network node). With the
 //! app open, `devcat mcp` hands every tool call to it (`agent_bridge.rs`), and the app runs room
@@ -25,6 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::rooms_agent::{EDIT_TOOL, READ_TOOLS, WRITE_TOOLS};
+use crate::rooms_github as gh;
 
 /// The rooms folder (`<data>/rooms`): the app's, or the one `devcat mcp` was given.
 static DIR: OnceCell<PathBuf> = OnceCell::new();
@@ -98,11 +101,21 @@ fn names() -> Vec<&'static str> {
     v.extend(READ_TOOLS);
     v.extend(WRITE_TOOLS);
     v.push(EDIT_TOOL);
+    v.extend(gh::READ_TOOLS);
+    v.push(gh::TEMPLATES_TOOL);
+    v.extend(gh::WRITE_TOOLS);
     v
 }
 
-fn writes(name: &str) -> bool {
+/// Changes the room (editors only).
+fn room_writes(name: &str) -> bool {
     name == "room_post" || name == EDIT_TOOL || WRITE_TOOLS.contains(&name)
+}
+
+/// Sends text to other people: the room, or GitHub (where the user also confirms each post in
+/// the window).
+fn writes(name: &str) -> bool {
+    room_writes(name) || gh::writes(name)
 }
 
 /// The room tools for an agent (`client` as MCP names it: claude-code, codex, devcat-agent…).
@@ -132,7 +145,8 @@ impl Tool for RoomsTool {
         [room, what].iter().filter(|x| !x.is_empty()).copied().collect::<Vec<_>>().join(" · ")
     }
     fn timeout(&self, _: &Value) -> Duration {
-        CALL
+        // a post on GitHub waits for the user's OK in the window
+        if gh::writes(self.name) { gh::CONFIRM + CALL } else { CALL }
     }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
         // remote: the open app didn't take the call (`agent_bridge`), so there's no app to run it
@@ -186,8 +200,11 @@ async fn run_on(node: &Node, name: &str, client: &str, input: Value) -> ToolOutp
         Err(e) => return ToolOutput::err(e),
     };
     let me = r.agent_via(&client_label(client));
-    if writes(name) && (!r.role().can_edit() || r.removed()) && name != "room_post" {
+    if room_writes(name) && (!r.role().can_edit() || r.removed()) && name != "room_post" {
         return ToolOutput::err("Your user can only read this room: you can read it, and write in the thread.");
+    }
+    if gh::is_tool(name) && !gh::names_for(&r).contains(&name) {
+        return ToolOutput::err(gh::off_text(&r, name));
     }
     if name == "room_post" {
         return post(&r, &me, &input);
@@ -239,6 +256,9 @@ fn list(node: &Node) -> ToolOutput {
                 d.files().len(),
                 if crate::rooms_agent::may_edit(r) { "; agents may edit inside their claims" } else { "; agents suggest, people accept" }
             );
+            if let Some(g) = gh::brief(r) {
+                line.push_str(&format!("\n  {g}"));
+            }
             if !memory.is_empty() {
                 line.push_str(&format!("\n  Team memory (read with room_read):\n  {}", memory.join("\n  ")));
             }

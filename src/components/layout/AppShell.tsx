@@ -28,6 +28,7 @@ import { Setup } from "../../features/onboarding/Setup";
 import { Tour } from "../../features/onboarding/Tour";
 import { firstRun } from "../../features/onboarding/store";
 import { RoomJoinPrompt, RoomsDialog, RoomsPanel } from "../../features/rooms/RoomsDialog";
+import { GithubConfirmPrompt } from "../../features/rooms/GithubDialogs";
 import { ShareToRoomDialog } from "../../features/rooms/Exchange";
 import { startRooms, useRooms } from "../../features/rooms/store";
 import TicketsPanel from "../../features/tickets/TicketsPanel";
@@ -188,6 +189,7 @@ export default function AppShell() {
       <LinkPrompt />
       <RoomsDialog />
       <RoomJoinPrompt />
+      <GithubConfirmPrompt />
       <ShareToRoomDialog />
       <AppearanceDialog />
       <MemoryDialog />

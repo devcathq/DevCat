@@ -1,12 +1,13 @@
 // The room's tasks: work for a person or an agent. Giving a task to someone else, or to an agent,
 // says so in the thread (rooms.rs `announce_task`), which tells them and wakes a named agent.
 import clsx from "clsx";
-import { Bot, Check, CircleDot, Plus, Trash2, User } from "lucide-react";
+import { Bot, Check, CircleDot, ExternalLink, Plus, Trash2, User } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button, Input, Select } from "../../components/ui";
 import { errMsg } from "../../lib/api";
 import { label, rooms, type Assignee, type RoomView, type Task, type TaskState } from "./api";
+import { canCreateIssues, GithubIssueDialog, issueDraft } from "./GithubDialogs";
 
 const STATE: Record<TaskState, string> = { open: "To do", doing: "Doing", done: "Done" };
 
@@ -26,6 +27,8 @@ export function TasksPanel({ room, view, tasks, canEdit }: { room: string; view:
   const [assign, setAssign] = useState("");
   const [busy, setBusy] = useState(false);
   const [showDone, setShowDone] = useState(false);
+  const [issue, setIssue] = useState<{ title: string; body: string } | null>(null);
+  const canIssue = canCreateIssues(view);
   const people = view.members.filter((m) => m.role !== "keeper");
   const options = people.flatMap((m) => [
     { k: key({ member: m.id, agent: false }), label: m.me ? `Me (${m.name})` : m.name },
@@ -61,6 +64,10 @@ export function TasksPanel({ room, view, tasks, canEdit }: { room: string; view:
             <span className="text-faint">by {label(t.createdBy)}</span>
           </div>
         </div>
+        {canIssue && (
+          <button className="hidden text-faint group-hover:block hover:text-fg" title={`Create a GitHub issue from this task (${view.prefs.github?.repo})`}
+            onClick={() => setIssue(issueDraft(t.title, `A task of the DevCat room “${view.settings.name}”, made by ${label(t.createdBy)}.`, t.notes))}><ExternalLink className="size-3" /></button>
+        )}
         {canEdit && (
           <button className="hidden text-faint group-hover:block hover:text-danger" title="Delete the task" onClick={() => void run(() => rooms.taskDelete(room, t.id))}><Trash2 className="size-3" /></button>
         )}
@@ -102,6 +109,7 @@ export function TasksPanel({ room, view, tasks, canEdit }: { room: string; view:
           </div>
         </div>
       )}
+      <GithubIssueDialog room={room} view={view} draft={issue} onClose={() => setIssue(null)} />
     </div>
   );
 }
