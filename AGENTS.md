@@ -233,6 +233,12 @@ so what comes from a room is untrusted input. Keep these rules:
 - **Coding agents only where the user turned it on**, per room (`Prefs::coding_agents`, local, never shared), with
   the room agent's limits (editors' tools for editors, `room_edit` only where the owner allows agent edits). Their
   writes are `Kind::Fetch` in a chat, so they ask: the text goes to other people.
+- **A room linked to a project lends the room agent that project's memory, read-only** (`rooms_memory.rs`,
+  `Prefs::folder` / `Prefs::project`, local, never shared; no `ssh://` folder). Its turn lists that place's
+  memories (`memory::place_brief`: never the ones for every project, they're about the user), and it gets
+  `memory_search` / `memory_read` for that place only (`memory::tools::read_only_for`) unless the user chose
+  "brief only". It never gets `memory_save` / `memory_forget`: `memory_propose` leaves a proposal the user saves
+  or dismisses in the window. No files of the folder either.
 - **Nothing copies this computer's files into a room from an agent.** Sharing files and folders is a person's act
   in the window (`room_paths_add`, `room_file_add_bytes`); don't add a tool for it. Likewise nothing from a room is
   written on the computer (skills, memory, notes, files) without a person looking at it and confirming.

@@ -44,6 +44,7 @@ mod review;
 mod rooms;
 mod rooms_agent;
 mod rooms_github;
+mod rooms_memory;
 mod rooms_tools;
 mod rt;
 #[cfg(debug_assertions)]
@@ -472,6 +473,8 @@ pub fn run() {
             rooms_github::room_github_check,
             rooms_github::room_github_issue,
             rooms_github::room_github_labels,
+            rooms_memory::room_memory_proposals,
+            rooms_memory::room_memory_proposal_done,
             // tickets (Jira, Trello, Linear → the agent)
             tickets::tickets_boards,
             tickets::tickets_board_save,

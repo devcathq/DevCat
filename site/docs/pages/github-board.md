@@ -59,10 +59,15 @@ Click **Tickets** in the left bar, then **Connect a board**, and choose **GitHub
    `ready-for-agent`, `needs-info`, `ready-for-human` and `wontfix` are the labels of Matt Pocock's triage skills;
    `agent-working` and `agent-review` are DevCat's own. An issue always has exactly one of these labels. Saving
    the board creates the labels the repository doesn't have.
+
+   In a repository where nobody labels issues, set **Take issues labelled** to **Any open issue (no label
+   needed)**: the board then takes every open issue, with or without labels (see
+   [Any open issue](#any-open-issue-without-a-label) below).
 4. **Assigned to**: a new board starts with **Me**, the issues assigned to the token's owner, so each person's
    DevCat works on their own issues. **Me, or nobody yet** takes unassigned issues too.
 5. **Also take labels from**: logins whose labels count although they can't write to the repository, e.g. a triage
-   bot. Labels from anyone else without write access are ignored.
+   bot. Labels from anyone else without write access are ignored. With **Any open issue** it's **Also take issues
+   from**: logins whose issues the watch takes although they can't write to the repository.
 6. **Agent** section:
    - **Repository**: your local clone (**Choose**). **Project**: the DevCat project whose memory and connections
      the agent gets (or leave **From the repository**).
@@ -114,6 +119,29 @@ Then:
    closed. When it closes without a merge, the issue is closed as not planned with `wontfix`, and the branch is
    deleted (unless it has newer commits).
 
+### Any open issue, without a label
+
+With **Take issues labelled** set to **Any open issue (no label needed)**, the board lists the repository's open
+issues without asking for a label (still filtered by **Assigned to**, oldest first). It leaves out pull requests
+and issues that already have one of the board's state labels (`agent-working`, `agent-review`, `needs-info`,
+`ready-for-human`, `wontfix`): those are in or past a run.
+
+There's no label to say who asked, so the watch goes by who **opened** the issue. It takes an issue only if:
+
+- **Who opened it**: someone who can write to the repository, or a login in **Also take issues from**. On a public
+  repository anyone can open an issue; a stranger's issue stays in the list until you send it to the agent
+  yourself.
+- **The backlog**: it was opened after you connected the board. Older issues are fixed from the list by hand.
+- **Blockers**: as above.
+
+After a run the issue has a state label (`needs-info`, `ready-for-human`…), so it isn't taken again by itself.
+To run it again, someone who can write to the repository takes that label off (or you send it to the agent in
+DevCat); DevCat's comment says which label. Reopening an issue whose pull request was merged (DevCat took
+`agent-review` off when it closed it) also runs it again at the next check.
+
+Boards that already have a trigger label keep it: nothing changes until you pick **Any open issue**. Jira, Trello
+and Linear boards always take tickets from a column.
+
 ## 5. Troubleshooting
 
 - **"GitHub repository owner/name was not found with this token"** when you connect or click **Load columns**: check
@@ -135,4 +163,4 @@ Then:
   With **Watch** on, the next check takes it again, so turn **Watch** off first if it should wait.
 - **An issue doesn't start**: check who added the label, its blockers and when the label was added (above), and
   that it's assigned as **Assigned to** says. A label only counts once: to run an issue again, add the label
-  again.
+  again. With **Any open issue**: check who opened it and when, and that it has none of the state labels.

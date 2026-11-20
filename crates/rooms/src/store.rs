@@ -48,6 +48,27 @@ pub struct Prefs {
     /// The GitHub repository this user's agents work with from the room.
     #[serde(default)]
     pub github: GithubPrefs,
+    /// The folder (a repository) on this computer the room is about: the agent here works with its
+    /// memory. Each member links their own copy; none: no project's memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// Or a DevCat project (its id), instead of a folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// How much of that project's memory the agent gets (only with a folder or project linked).
+    #[serde(default)]
+    pub memory_reach: MemoryReach,
+}
+
+/// How much of a linked project's memory the room agent gets. All of it can end up in the thread.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryReach {
+    /// The list of its memories (name and description), and `memory_search` / `memory_read`.
+    #[default]
+    Search,
+    /// Only the list.
+    Brief,
 }
 
 /// A GitHub repository this DevCat's agents may read and write from a room: issues and

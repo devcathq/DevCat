@@ -86,6 +86,14 @@ pub(crate) fn agent_dir(room: &str) -> std::io::Result<PathBuf> {
     Ok(d)
 }
 
+/// Where the room agent's proposals for this user's memory wait (`rooms_memory.rs`).
+pub(crate) fn proposals_file(room: &str) -> std::io::Result<PathBuf> {
+    if !devcat_rooms::store::valid_id(room) {
+        return Err(std::io::Error::other("bad room id"));
+    }
+    Ok(DIR.get().ok_or_else(|| std::io::Error::other("rooms not initialised"))?.join(room).join("memory-proposals.json"))
+}
+
 pub(crate) async fn room(id: &str) -> AppResult<Arc<Room>> {
     node().await?.room(id).map_err(AppError::msg)
 }
@@ -215,6 +223,29 @@ pub struct RoomView {
     /// A GitHub token is saved for the room (`rooms_github.rs`; the token itself never leaves
     /// the keychain).
     pub github_token: bool,
+    /// The project this user linked the room to (`prefs.folder` / `prefs.project`), only for them.
+    pub linked: Option<LinkedView>,
+    /// The agent's proposals for this user's memory, waiting for them.
+    pub memory_proposals: Vec<crate::rooms_memory::Proposal>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedView {
+    /// How it shows ("~/src/shop", a project's name).
+    pub label: String,
+    /// Its memory's place (none: the link doesn't work any more, see `problem`).
+    pub place: Option<crate::memory::Place>,
+    pub problem: Option<String>,
+}
+
+fn linked_view(p: &Prefs) -> Option<LinkedView> {
+    let projects = crate::memory::projects();
+    match crate::rooms_memory::place_of(p) {
+        Ok(None) => None,
+        Ok(Some(place)) => Some(LinkedView { label: place.label(&projects), place: Some(place), problem: None }),
+        Err(e) => Some(LinkedView { label: p.folder.clone().or_else(|| p.project.clone()).unwrap_or_default(), place: None, problem: Some(e) }),
+    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -233,6 +264,8 @@ pub async fn room_view(room: String) -> AppResult<RoomView> {
         handles,
         people,
         invites: if r.is_owner() { r.invites() } else { vec![] },
+        linked: linked_view(&r.prefs()),
+        memory_proposals: crate::rooms_memory::proposals(&room),
         prefs: r.prefs(),
         agent_running: crate::rooms_agent::running(&room),
         // only asked of the keychain for a room with a repository
@@ -870,13 +903,15 @@ pub async fn room_settings(room: String, name: Option<String>, agent_edits: Opti
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn room_prefs(room: String, prefs: Prefs) -> AppResult<()> {
+    // a linked folder must be one on this computer, a project one DevCat has (rooms_memory.rs)
     let r = self::room(&room).await?;
+    let mut prefs = crate::rooms_memory::checked(prefs, &r.prefs())?;
     // the GitHub repository and address change only through `room_github_save` (checked, and
     // with the token that goes with them); here only its Read and Write switches
-    let mut prefs = prefs;
     let had = r.prefs().github;
     prefs.github = devcat_rooms::GithubPrefs { read: prefs.github.read, write: prefs.github.write, ..had };
     r.set_prefs(prefs);
+    crate::events::emit("rooms-changed", json!({ "room": room, "what": "prefs" }));
     Ok(())
 }
 

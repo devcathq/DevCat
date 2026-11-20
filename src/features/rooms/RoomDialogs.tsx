@@ -1,15 +1,17 @@
 // The room tab's dialogs: people (who's here, invites, roles) and settings (the room's, and this
 // user's agent in it).
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import clsx from "clsx";
-import { Copy, Link2, Trash2, UserMinus } from "lucide-react";
+import { AlertTriangle, Copy, FolderOpen, Link2, Trash2, UserMinus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Badge, Button, Checkbox, Dialog, Field, Input, Select } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { AiProvider } from "../../lib/types";
+import { useConnections } from "../../store/connections";
 import { useTabs } from "../../store/tabs";
 import { confirmDialog } from "../connections/dialogs";
-import { rooms, type MemberView, type Mentions, type Role, type RoomView } from "./api";
+import { rooms, type MemberView, type MemoryReach, type Mentions, type Role, type RoomView } from "./api";
 import { GithubSettings } from "./GithubDialogs";
 import { useRooms } from "./store";
 
@@ -110,6 +112,56 @@ export function PeopleDialog({ open, onClose, room, view }: { open: boolean; onC
   );
 }
 
+/** Room settings → "Project folder": the folder or DevCat project on this computer the room is
+ *  about (this user's own link, never shared). Their agent here works with its memory. */
+function ProjectLink({ view, setPrefs }: { view: RoomView; setPrefs: (p: Partial<RoomView["prefs"]>) => void }) {
+  const projects = useConnections((s) => s.projects);
+  const { folder, project } = view.prefs;
+  const value = folder ? "folder" : project ? `project:${project}` : "";
+  const pick = async () => {
+    const dir = await openDialog({ directory: true, multiple: false, title: "The folder (repository) this room is about" });
+    if (typeof dir === "string") setPrefs({ folder: dir, project: null });
+  };
+  const choose = (v: string) => {
+    if (v === "") setPrefs({ folder: null, project: null });
+    else if (v.startsWith("project:")) setPrefs({ folder: null, project: v.slice("project:".length) });
+  };
+  return (
+    <div className="space-y-2">
+      <div className="font-semibold">Project folder</div>
+      <Field label="The project this room is about" hint="Your agent here then works with your memory of it: the one your coding agents use in that folder. Only for you: the others don't see it, and each links their own copy.">
+        <div className="flex gap-2">
+          <Select className="flex-1" value={value} onChange={(e) => choose(e.target.value)}>
+            <option value="">None</option>
+            {folder && <option value="folder">{folder}</option>}
+            {project && !projects.some((p) => p.id === project) && <option value={`project:${project}`}>A project that's gone</option>}
+            {projects.map((p) => <option key={p.id} value={`project:${p.id}`}>{p.name} (DevCat project)</option>)}
+          </Select>
+          <Button onClick={() => void pick()}><FolderOpen className="size-3.5" />Pick a folder…</Button>
+        </div>
+      </Field>
+      {view.linked?.problem && <p className="text-[11px] text-danger">{view.linked.problem}</p>}
+      {(folder || project) && (
+        <>
+          <Field label="What your agent gets">
+            <Select value={view.prefs.memoryReach ?? "search"} onChange={(e) => setPrefs({ memoryReach: e.target.value as MemoryReach })}>
+              <option value="search">The list of its memories, and it can search and read them</option>
+              <option value="brief">Only the list of its memories (name and description)</option>
+            </Select>
+          </Field>
+          <div className="flex gap-2 rounded-md border border-warn/40 bg-warn/10 p-2.5 text-[12px] text-fg">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" />
+            <span>
+              What your agent reads from this memory can end up in the thread, where everyone in the room reads it. Your memories for every project stay out, and so do the folder's files.
+              It never saves to your memory itself: it proposes, and you save or dismiss each proposal in the room's header.
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function SettingsDialog({ open, onClose, room, view, tabId }: { open: boolean; onClose: () => void; room: string; view: RoomView; tabId: string }) {
   const [name, setName] = useState(view.settings.name);
   const [providers, setProviders] = useState<AiProvider[]>([]);
@@ -182,6 +234,7 @@ export function SettingsDialog({ open, onClose, room, view, tabId }: { open: boo
             </Select>
           </Field>
         </div>
+        <ProjectLink view={view} setPrefs={setPrefs} />
         <div className="space-y-2">
           <div className="font-semibold">Your coding agents</div>
           <Checkbox

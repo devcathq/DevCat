@@ -93,6 +93,8 @@ async fn call(cmd: &str, args: &Value) -> Result<Value, Value> {
         "room_github_check" => out(c!(crate::rooms_github::room_github_check, "room")),
         "room_github_issue" => out(c!(crate::rooms_github::room_github_issue, "room", "title", "body", "labels")),
         "room_github_labels" => out(c!(crate::rooms_github::room_github_labels, "room")),
+        "room_memory_proposals" => out(c!(crate::rooms_memory::room_memory_proposals, "room")),
+        "room_memory_proposal_done" => out(c!(crate::rooms_memory::room_memory_proposal_done, "room", "id")),
         // tickets (boards in the throwaway folder, tokens in memory)
         "tickets_boards" => out(c!(crate::tickets::tickets_boards)),
         "tickets_board_save" => out(c!(crate::tickets::tickets_board_save, "board")),

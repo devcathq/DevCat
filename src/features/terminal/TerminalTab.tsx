@@ -23,7 +23,8 @@ export default function TerminalTab({ tab }: { tab: TerminalTabT }) {
     useTabs.getState().update(tab.id, { title: (!own && !isProgramPath(t.trim()) && t.trim()) || name });
   };
   return (
-    <div className="flex h-full flex-col bg-app">
+    // no background: the terminal draws on the work area's (Appearance → Terminal)
+    <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1">
         <TerminalPane cwd={tab.cwd} program={tab.program ?? null} getArgs={tab.args ? async () => tab.args! : undefined} name={tab.program ? "docker" : tab.connId ? "ssh" : "shell"} visible={visible} focus={focused} onPty={setPty} onTitle={onTitle} />
       </div>

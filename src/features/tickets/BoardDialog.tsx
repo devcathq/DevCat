@@ -84,7 +84,7 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
       const cols = await tickets.columns(withSecrets(x));
       setColumns(cols);
       // Sensible first picks on a new board.
-      if (!x.pickFrom && cols.length) {
+      if (!x.pickFrom && !x.pickAny && cols.length) {
         const find = (...names: string[]) => cols.find((c) => names.some((n) => c.name.toLowerCase() === n)) ?? null;
         set({
           pickFrom: find("to do", "todo", "backlog", "open") ?? cols[0],
@@ -128,7 +128,21 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
     </Select>
   );
 
-  const help = gh ? { ...TOKEN_HELP.github, url: githubTokenUrl(b) } : TOKEN_HELP[b.kind];
+  // GitHub: "Take issues labelled" may also be any open issue (no label; `pickAny`).
+  const ANY = "\u0000any";
+  const ghPick = (
+    <Select
+      value={b.pickAny ? ANY : b.pickFrom?.id ?? ""}
+      onChange={(e) => (e.target.value === ANY ? set({ pickAny: true, pickFrom: null }) : set({ pickAny: false, pickFrom: columns.find((c) => c.id === e.target.value) ?? null }))}
+    >
+      <option value={ANY}>Any open issue (no label needed)</option>
+      {!b.pickAny && !b.pickFrom && <option value="">Choose…</option>}
+      {b.pickFrom && !columns.some((c) => c.id === b.pickFrom?.id) && <option value={b.pickFrom.id}>{b.pickFrom.name}</option>}
+      {columns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+    </Select>
+  );
+
+  const help = gh ?{ ...TOKEN_HELP.github, url: githubTokenUrl(b) } : TOKEN_HELP[b.kind];
   // The save refuses a setup command without commands; say so at the field, before Connect.
   const setupNeedsCommands = wt && !!b.setupCommand.trim() && !b.allowCommands;
   const canSave = b.project.trim() && (token.trim() || b.hasToken);
@@ -153,8 +167,8 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
                 key={k}
                 disabled={!isNew}
                 onClick={() => {
-                  const { site, assigned, isolation, push, branchPrefix, pickFrom, working, doneTo, needsInfoTo, failedTo, notPlannedTo } = newBoard(k);
-                  set({ kind: k, site, assigned, isolation, push, branchPrefix, pickFrom, working, doneTo, needsInfoTo, failedTo, notPlannedTo });
+                  const { site, assigned, isolation, push, branchPrefix, pickFrom, pickAny, working, doneTo, needsInfoTo, failedTo, notPlannedTo } = newBoard(k);
+                  set({ kind: k, site, assigned, isolation, push, branchPrefix, pickFrom, pickAny, working, doneTo, needsInfoTo, failedTo, notPlannedTo });
                   setColumns([]);
                 }}
                 className={clsx("h-7 rounded-md border px-3 text-[13px]", b.kind === k ? "border-accent bg-accent/15 text-accent" : "border-line bg-raised text-muted hover:bg-hover", !isNew && b.kind !== k && "opacity-40")}
@@ -204,7 +218,18 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
             </Button>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label={gh ? "Take issues labelled" : "Take tickets from"}>{colSelect(b.pickFrom, (c) => set({ pickFrom: c }))}</Field>
+            {gh ? (
+              <Field
+                label="Take issues labelled"
+                hint={b.pickAny
+                  ? "Every open issue without one of the labels below (pull requests left out). The watch takes only issues opened after the board was made by someone who can write to the repository (or is in “Also take issues from”); send the others to the agent by hand. Taking a label below off an issue runs it again."
+                  : undefined}
+              >
+                {ghPick}
+              </Field>
+            ) : (
+              <Field label="Take tickets from">{colSelect(b.pickFrom, (c) => set({ pickFrom: c }))}</Field>
+            )}
             <Field label={gh ? "While the agent works, label" : "While the agent works, move to"}>{colSelect(b.working, (c) => set({ working: c }), "Leave it where it is")}</Field>
             <Field label={gh ? "When fixed (draft pull request), label" : "When fixed, move to"}>{colSelect(b.doneTo, (c) => set({ doneTo: c }))}</Field>
             {gh && <Field label="When the agent has questions, label">{colSelect(b.needsInfoTo, (c) => set({ needsInfoTo: c }), "Same as when it fails")}</Field>}
@@ -216,7 +241,12 @@ export function BoardDialog({ board, onClose, onSaved }: { board: Board | null; 
               </Select>
             </Field>
             {gh && (
-              <Field label="Also take labels from" hint="Logins, comma-separated. A label from anyone who can't write to the repository is ignored, unless they're here.">
+              <Field
+                label={b.pickAny ? "Also take issues from" : "Also take labels from"}
+                hint={b.pickAny
+                  ? "Logins, comma-separated. An issue opened by anyone who can't write to the repository waits for you, unless they're here."
+                  : "Logins, comma-separated. A label from anyone who can't write to the repository is ignored, unless they're here."}
+              >
                 <Input value={b.allowlist.join(",")} onChange={(e) => set({ allowlist: e.target.value.split(",") })} placeholder="triage-bot, ana" />
               </Field>
             )}

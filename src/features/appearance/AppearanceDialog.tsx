@@ -240,6 +240,7 @@ function TerminalSection() {
             options={[{ value: "select", label: "Copy on select" }, { value: "shortcut", label: `Copy with ${copyKey} only` }]} />
         </div>
         <Checkbox label="Allow programs to copy to the clipboard (OSC 52)" checked={t.osc52} onChange={(osc52) => t.set({ osc52 })} />
+        <Checkbox label="Terminal uses the app background (theme, glass and opacity); off: a solid terminal" checked={t.appBackground} onChange={(appBackground) => t.set({ appBackground })} />
       </div>
     </Section>
   );

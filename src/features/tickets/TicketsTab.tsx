@@ -10,7 +10,7 @@ import { errMsg } from "../../lib/api";
 import { useConnections } from "../../store/connections";
 import { openClaudeWorkspace } from "../claude/open";
 import { confirmDialog } from "../connections/dialogs";
-import { ASSIGNED, TRACKERS, tickets, type Board, type JobView, type Outcome, type RunRecord, type RunView, type Ticket } from "./api";
+import { ASSIGNED, TRACKERS, pickName, tickets, type Board, type JobView, type Outcome, type RunRecord, type RunView, type Ticket } from "./api";
 import { BoardDialog } from "./BoardDialog";
 import { boardProject, openTickets, startTickets, useTickets } from "./store";
 
@@ -95,7 +95,9 @@ export function TicketsDialog() {
 }
 
 function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; onEdit: () => void }) {
-  const [column, setColumn] = useState(board.pickFrom?.id ?? "");
+  // GitHub "any open issue": the column "" (no label filter, state labels left out)
+  const any = board.kind === "github" && !!board.pickAny;
+  const [column, setColumn] = useState(any ? "" : board.pickFrom?.id ?? "");
   const [list, setList] = useState<Ticket[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,12 +106,12 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
   const tick = useTickets((s) => s.ticks[board.id] ?? 0);
   // The columns we know of: the board's own (refetched from the tracker when listing).
   const columns = useMemo(() => {
-    const all = [board.pickFrom, board.working, board.doneTo, board.needsInfoTo, board.failedTo].filter((c): c is NonNullable<typeof c> => !!c);
+    const all = [any ? { id: "", name: "Any open issue" } : board.pickFrom, board.working, board.doneTo, board.needsInfoTo, board.failedTo].filter((c): c is NonNullable<typeof c> => !!c);
     return all.filter((c, i) => all.findIndex((x) => x.id === c.id) === i);
-  }, [board]);
+  }, [board, any]);
 
   const load = useCallback(async () => {
-    if (!column) return;
+    if (!column && !any) return;
     setLoading(true);
     setError(null);
     try {
@@ -120,7 +122,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
     } finally {
       setLoading(false);
     }
-  }, [board.id, column]);
+  }, [board.id, column, any]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void tickets.history(board.id).then(setHistory).catch(() => {}); }, [board.id, tick]);
   // A finished ticket has moved: refresh the column.
@@ -190,7 +192,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
         <span className="truncate font-medium">{board.name}</span>
         <Badge>{TRACKERS[board.kind]}</Badge>
         <span className="truncate text-[12px] text-muted">
-          {board.pickFrom?.name ?? "?"}{board.working ? ` → ${board.working.name}` : ""} → {board.doneTo?.name ?? "?"}
+          {pickName(board) ?? "?"}{board.working ? ` → ${board.working.name}` : ""} → {board.doneTo?.name ?? "?"}
         </span>
         <span
           className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
@@ -202,7 +204,7 @@ function BoardView({ board, job, onEdit }: { board: Board; job: JobView | null; 
           {project ? project.name : "repository memory"}{detected && project ? " (detected)" : ""}
         </span>
         <div className="ml-auto flex items-center gap-1">
-          <Button size="sm" variant={board.watch ? "primary" : "default"} onClick={() => void toggleWatch()} disabled={!ready || !board.pickFrom} title={`Check ${board.pickFrom?.name ?? "the column"} every ${board.intervalMin} min and work on new tickets`}>
+          <Button size="sm" variant={board.watch ? "primary" : "default"} onClick={() => void toggleWatch()} disabled={!ready || !pickName(board)} title={`Check ${any ? "the open issues" : board.pickFrom?.name ?? "the column"} every ${board.intervalMin} min and work on new tickets`}>
             <Eye className="size-3" />{board.watch ? `Watching (${board.intervalMin} min)` : "Watch"}
           </Button>
           <IconButton title="Board settings" onClick={onEdit}><Pencil className="size-3.5" /></IconButton>
