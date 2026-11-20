@@ -12,16 +12,30 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-- **AI connections: Hermes Agent**: add Nous Research's [Hermes Agent](https://hermes-agent.nousresearch.com)
+## 0.33.0 - 2026-11-20
+
+- **Rooms: Claude Code as your room agent** (#214): **Room settings → AI connection** lists your Claude Code
+  connections next to DevCat Agent ones (each Claude account separately). With Claude Code chosen, a mention runs it
+  on your Claude plan, with only the room's tools: no shell, files, web, or your own settings, hooks and plugins. It
+  shows in the thread as "*your name*'s agent (Claude Code)".
+- **Rooms: link a room to your project** (#215): **Room settings → Project folder** links a room to a folder or a
+  DevCat project on this computer (only for you, never shared), and your agent there works with that project's
+  memory: its list, plus search and read unless you choose the list only. It can't change your memory: it proposes
+  entries, and you edit, save or dismiss them from the room header. Whatever it reads can end up in the thread.
+- **Terminal: follows the app's background** (#212): terminals show the color and transparency set in **Appearance**
+  (theme, window glass, **Work area opacity**) instead of a box of their own, in every place a terminal shows. Colors
+  programs set (vim, htop, Claude Code) are unchanged. **Appearance → Terminal → Terminal uses the app background**
+  turns it off for a solid terminal.
+- **AI connections: Hermes Agent** (#216): add Nous Research's [Hermes Agent](https://hermes-agent.nousresearch.com)
   (`hermes`) as an AI connection and choose its **Provider** and **Model** in the connection: Nous Portal (its free
   plan runs the models ending in `:free`), OpenRouter (its free models are suggested), Anthropic, OpenAI, Gemini,
   DeepSeek, Z.ai, Hugging Face, LM Studio, a local server such as Ollama (**Custom / local**, with its address) or any
   other provider id Hermes knows. Left empty, Hermes uses what you set up with `hermes model`.
-- **Rooms: GitHub issues and discussions** (#208): set a room's GitHub repository and a token in **Room settings →
+- **Rooms: GitHub issues and discussions** (#213): set a room's GitHub repository and a token in **Room settings →
   GitHub**, and your agents there can read its issues and discussions (**Read**) and create issues or answer in
   discussions (**Write**). Every post shows you the exact text first and goes to GitHub only when you confirm it;
   its link goes in the thread. A pinned decision or a task can become an issue from its own button too.
-- **Tickets: GitHub boards can take any open issue** (#210): **Take issues labelled** has a new first choice, **Any
+- **Tickets: GitHub boards can take any open issue** (#211): **Take issues labelled** has a new first choice, **Any
   open issue (no label needed)**, for repositories where nobody labels issues. The board then takes every open issue
   without one of its state labels (pull requests left out). The watch takes an issue only if it was opened after the
   board was made by someone who can write to the repository (or is in **Also take issues from**); others are sent to
