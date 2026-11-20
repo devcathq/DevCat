@@ -20,7 +20,7 @@ pub use crypto::RoomKey;
 pub use doc::{Author, RoomDoc};
 pub use model::{Invite, Member, Membership, Role, RoomSettings, Ticket};
 pub use node::{Change, Config, Gone, Host, JoinRequest, MemberView, Node, RelayConfig, Room, RoomSummary};
-pub use store::{MemoryReach, Mentions, Prefs};
+pub use store::{GithubPrefs, MemoryReach, Mentions, Prefs};
 
 /// Milliseconds since the Unix epoch.
 pub fn now_ms() -> i64 {

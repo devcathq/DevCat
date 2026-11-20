@@ -46,6 +46,9 @@ pub struct Prefs {
     /// turns it on.
     #[serde(default)]
     pub coding_agents: bool,
+    /// The GitHub repository this user's agents work with from the room.
+    #[serde(default)]
+    pub github: GithubPrefs,
     /// The folder (a repository) on this computer the room is about: the agent here works with its
     /// memory. Each member links their own copy; none: no project's memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +70,27 @@ pub enum MemoryReach {
     Search,
     /// Only the list.
     Brief,
+}
+
+/// A GitHub repository this DevCat's agents may read and write from a room: issues and
+/// discussions. Local, like the rest of [`Prefs`]: never in the room's document. The token isn't
+/// here either: the app keeps it in the keychain.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubPrefs {
+    /// `owner/name` ("": none).
+    #[serde(default)]
+    pub repo: String,
+    /// GitHub Enterprise Server: its host or API address ("": github.com).
+    #[serde(default)]
+    pub site: String,
+    /// Agents may read issues and discussions (what they read can show up in the thread).
+    #[serde(default)]
+    pub read: bool,
+    /// Agents may create issues and comment in discussions, each one confirmed by this user in
+    /// the window first.
+    #[serde(default)]
+    pub write: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

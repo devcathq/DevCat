@@ -6,12 +6,14 @@ import { toast } from "sonner";
 import { create } from "zustand";
 import { IS_MAIN_WINDOW } from "../../lib/windows";
 import { isTabVisible, openTab, useTabs } from "../../store/tabs";
-import { label, rooms, type JoinRequest, type Message, type RoomSummary } from "./api";
+import { label, rooms, type GithubPublish, type JoinRequest, type Message, type RoomSummary } from "./api";
 
 interface RoomsState {
   id: string | null;
   list: RoomSummary[];
   pending: JoinRequest[];
+  /** Agents' posts on GitHub waiting for this user's OK (rooms_github.rs). */
+  github: GithubPublish[];
   /** Rooms whose agent (this DevCat's) is working. */
   agents: Record<string, boolean>;
   agentErrors: Record<string, string | undefined>;
@@ -32,6 +34,7 @@ export const useRooms = create<RoomsState>((set) => ({
   id: null,
   list: [],
   pending: [],
+  github: [],
   agents: {},
   agentErrors: {},
   dialog: false,
@@ -87,6 +90,13 @@ export function startRooms() {
   });
   void listen<JoinRequest>("room-join-request", (e) => useRooms.setState((s) => ({ pending: [...s.pending.filter((p) => p.requestId !== e.payload.requestId), e.payload] })));
   void listen<{ requestId: string }>("room-join-resolved", (e) => useRooms.setState((s) => ({ pending: s.pending.filter((p) => p.requestId !== e.payload.requestId) })));
+  // an agent wants to post on GitHub: this user confirms it (GithubConfirmPrompt)
+  void rooms.githubPending().then((g) => useRooms.setState({ github: g })).catch(() => {});
+  void listen<GithubPublish>("room-github-confirm", (e) => {
+    useRooms.setState((s) => ({ github: [...s.github.filter((p) => p.id !== e.payload.id), e.payload] }));
+    if (IS_MAIN_WINDOW && !document.hasFocus()) void getCurrentWindow().requestUserAttention(UserAttentionType.Critical).catch(() => {});
+  });
+  void listen<{ id: string }>("room-github-resolved", (e) => useRooms.setState((s) => ({ github: s.github.filter((p) => p.id !== e.payload.id) })));
   void listen<{ room: string; roomName: string; message: Message }>("room-mention", (e) => {
     const { room, roomName, message } = e.payload;
     // the room on screen: seen as it arrives

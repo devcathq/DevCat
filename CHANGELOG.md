@@ -12,6 +12,10 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Rooms: GitHub issues and discussions** (#208): set a room's GitHub repository and a token in **Room settings →
+  GitHub**, and your agents there can read its issues and discussions (**Read**) and create issues or answer in
+  discussions (**Write**). Every post shows you the exact text first and goes to GitHub only when you confirm it;
+  its link goes in the thread. A pinned decision or a task can become an issue from its own button too.
 - **Tickets: GitHub boards can take any open issue** (#210): **Take issues labelled** has a new first choice, **Any
   open issue (no label needed)**, for repositories where nobody labels issues. The board then takes every open issue
   without one of its state labels (pull requests left out). The watch takes an issue only if it was opened after the

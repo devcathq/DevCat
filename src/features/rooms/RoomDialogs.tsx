@@ -12,6 +12,7 @@ import { useConnections } from "../../store/connections";
 import { useTabs } from "../../store/tabs";
 import { confirmDialog } from "../connections/dialogs";
 import { rooms, type MemberView, type MemoryReach, type Mentions, type Role, type RoomView } from "./api";
+import { GithubSettings } from "./GithubDialogs";
 import { useRooms } from "./store";
 
 const ROLE: Record<Role, string> = { owner: "Owner", editor: "Editor", viewer: "Reads only", keeper: "Keeper" };
@@ -264,6 +265,7 @@ export function SettingsDialog({ open, onClose, room, view, tabId }: { open: boo
             What people write in the room reaches agents that can run commands on your computer: turn it on in rooms with people you trust. They can't copy your files into the room.
           </p>
         </div>
+        <div className="border-t border-line pt-3"><GithubSettings room={room} view={view} open={open} /></div>
         <div className="flex items-center justify-between border-t border-line pt-3">
           <span className="text-[11px] text-faint">
             Your DevCat's id in rooms <span className="font-mono">{view.me.slice(0, 12)}…</span>{" "}

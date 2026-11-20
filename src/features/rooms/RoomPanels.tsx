@@ -2,7 +2,7 @@
 // messages pinned as decisions), suggestions waiting for people, and the history of applied
 // changes (each can be reverted while its text is untouched).
 import clsx from "clsx";
-import { AtSign, Bot, Check, ChevronDown, ChevronRight, CornerDownRight, Loader2, Paperclip, Pin as PinIcon, Reply, RotateCcw, Send, SmilePlus, Square, X } from "lucide-react";
+import { AtSign, Bot, Check, ChevronDown, ChevronRight, CircleDot, CornerDownRight, Loader2, Paperclip, Pin as PinIcon, Reply, RotateCcw, Send, SmilePlus, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Badge, Button, Textarea, Spin } from "../../components/ui";
@@ -10,6 +10,7 @@ import { errMsg } from "../../lib/api";
 import { isFileDrag } from "../files/drop";
 import { label, REACTIONS, rooms, type Activity, type HistoryItem, type Message, type Pin, type Reaction, type RoomView, type Suggestion } from "./api";
 import { ActivityFeed } from "./FileHistory";
+import { canCreateIssues, GithubIssueDialog, issueDraft } from "./GithubDialogs";
 import { shareFiles } from "./share";
 import { useRooms } from "./store";
 
@@ -91,6 +92,8 @@ export function ThreadPanel({ room, view, messages, pins, reactions, files, onOp
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [picking, setPicking] = useState<string | null>(null);
   const [decisionsOpen, setDecisionsOpen] = useState(true);
+  const [issue, setIssue] = useState<{ title: string; body: string } | null>(null);
+  const canIssue = canCreateIssues(view);
   const running = useRooms((s) => s.agents[room]) ?? view.agentRunning;
   const agentError = useRooms((s) => s.agentErrors[room]);
   const end = useRef<HTMLDivElement>(null);
@@ -177,6 +180,7 @@ export function ThreadPanel({ room, view, messages, pins, reactions, files, onOp
                   {!view.summary.removed && <button className="hover:text-fg" title="React" onClick={() => setPicking(m.id)}><SmilePlus className="size-3.5" /></button>}
                   {!view.summary.removed && <button className="hover:text-fg" title="Reply" onClick={() => setReplyTo(m)}><Reply className="size-3.5" /></button>}
                   {canEdit && <button className="hover:text-fg" title={isPinned ? "Unpin" : "Pin as a decision"} onClick={() => pin(m, !isPinned)}><PinIcon className={clsx("size-3.5", isPinned && "text-warn")} /></button>}
+                  {isPinned && canIssue && <button className="hover:text-fg" title={`Create a GitHub issue from this decision (${view.prefs.github?.repo})`} onClick={() => setIssue(issueDraft(m.text, `A decision of the DevCat room “${view.settings.name}”, by ${label(m.author)}.`))}><CircleDot className="size-3.5" /></button>}
                 </span>
               </div>
               {reply && (
@@ -239,6 +243,7 @@ export function ThreadPanel({ room, view, messages, pins, reactions, files, onOp
           <Button variant="primary" loading={sending || sharing} disabled={!text.trim() || sharing} onClick={() => void send()} title="Send"><Send className="size-3.5" /></Button>
         </div>
       </div>
+      <GithubIssueDialog room={room} view={view} draft={issue} onClose={() => setIssue(null)} />
     </div>
   );
 }

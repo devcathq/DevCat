@@ -10,6 +10,9 @@
 //! `room-mention` ({ room, roomName, message }: someone named this user in a thread).
 //!
 //! This user's coding agents reach rooms through `rooms_tools.rs` (only rooms that allow it).
+//! A room's GitHub repository (issues, discussions) is `rooms_github.rs`, with its events
+//! `room-github-confirm` (Publish: a post waiting for the user's OK) and `room-github-resolved`
+//! ({ id }).
 use crate::error::{AppError, AppResult};
 use async_trait::async_trait;
 use devcat_rooms::doc::{Activity, ActivityKind, Assignee, ChangeKind, ChangeRecord, ClaimView, FileInfo, FileKind, Message, Pin, Reaction, SuggestionView, Task, TaskPatch, clean_path};
@@ -197,7 +200,9 @@ pub async fn room_join_answer(request_id: String, role: Option<Role>) -> AppResu
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn room_forget(room: String) -> AppResult<()> {
     crate::rooms_agent::stop(&room);
-    node().await?.forget(&room).map_err(AppError::msg)
+    node().await?.forget(&room).map_err(AppError::msg)?;
+    crate::secrets::delete(&crate::rooms_github::token_key(&room));
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -215,6 +220,9 @@ pub struct RoomView {
     pub invites: Vec<Invite>,
     pub prefs: Prefs,
     pub agent_running: bool,
+    /// A GitHub token is saved for the room (`rooms_github.rs`; the token itself never leaves
+    /// the keychain).
+    pub github_token: bool,
     /// The project this user linked the room to (`prefs.folder` / `prefs.project`), only for them.
     pub linked: Option<LinkedView>,
     /// The agent's proposals for this user's memory, waiting for them.
@@ -260,6 +268,8 @@ pub async fn room_view(room: String) -> AppResult<RoomView> {
         memory_proposals: crate::rooms_memory::proposals(&room),
         prefs: r.prefs(),
         agent_running: crate::rooms_agent::running(&room),
+        // only asked of the keychain for a room with a repository
+        github_token: !r.prefs().github.repo.is_empty() && crate::rooms_github::has_token(&room),
     })
 }
 
@@ -895,7 +905,11 @@ pub async fn room_settings(room: String, name: Option<String>, agent_edits: Opti
 pub async fn room_prefs(room: String, prefs: Prefs) -> AppResult<()> {
     // a linked folder must be one on this computer, a project one DevCat has (rooms_memory.rs)
     let r = self::room(&room).await?;
-    let prefs = crate::rooms_memory::checked(prefs, &r.prefs())?;
+    let mut prefs = crate::rooms_memory::checked(prefs, &r.prefs())?;
+    // the GitHub repository and address change only through `room_github_save` (checked, and
+    // with the token that goes with them); here only its Read and Write switches
+    let had = r.prefs().github;
+    prefs.github = devcat_rooms::GithubPrefs { read: prefs.github.read, write: prefs.github.write, ..had };
     r.set_prefs(prefs);
     crate::events::emit("rooms-changed", json!({ "room": room, "what": "prefs" }));
     Ok(())

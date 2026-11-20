@@ -28,11 +28,23 @@ export type MemoryReach = "search" | "brief";
 export interface Prefs {
   agentProvider?: string | null; mentions: Mentions; codingAgents?: boolean;
   folder?: string | null; project?: string | null; memoryReach?: MemoryReach;
+  github?: GithubPrefs;
 }
 /** The project linked to the room: `place` none when it doesn't work any more (`problem` says why). */
 export interface LinkedView { label: string; place: MemoryPlace | null; problem: string | null }
 /** An entry the room agent proposes for this user's memory: saved only if they save it. */
 export interface MemoryProposal { id: string; name: string; description: string; kind: MemoryKind; body: string; place: MemoryPlace; at: number; message?: string }
+/** The room's GitHub repository (this user's own; the token is in the keychain). `site`: GitHub
+ *  Enterprise Server's host or API address, "" for github.com. `read` / `write`: what agents may do. */
+export interface GithubPrefs { repo: string; site: string; read: boolean; write: boolean }
+/** What GitHub says about the repository with the room's token. */
+export interface GithubCheck { repo: string; private: boolean; canWrite: boolean; discussions: boolean }
+/** A post on GitHub an agent wants to make, waiting for this user's OK: exactly what is posted. */
+export interface GithubPublish {
+  id: string; room: string; roomName: string; repo: string; host: string;
+  action: "issue" | "comment" | "discussion";
+  title?: string | null; body: string; labels: string[]; target?: string | null; by: string; redacted: boolean;
+}
 export interface RoomView {
   summary: RoomSummary;
   settings: RoomSettings;
@@ -46,6 +58,8 @@ export interface RoomView {
   invites: Invite[];
   prefs: Prefs;
   agentRunning: boolean;
+  /** A GitHub token is saved for the room. */
+  githubToken: boolean;
   linked: LinkedView | null;
   memoryProposals: MemoryProposal[];
 }
@@ -154,6 +168,17 @@ export const rooms = {
   keeperAdd: (room: string, keeper: string, name?: string) => invoke<void>("room_keeper_add", { room, keeper, name: name ?? null }),
   focus: (room: string, file: string | null, typing: boolean) => invoke<void>("room_focus", { room, file, typing }),
   agentStop: (room: string) => invoke<void>("room_agent_stop", { room }),
+  /** Agents' posts on GitHub waiting for this user's OK. */
+  githubPending: () => invoke<GithubPublish[]>("room_github_pending"),
+  githubAnswer: (id: string, ok: boolean) => invoke<void>("room_github_answer", { id, ok }),
+  /** The repository of a folder's `origin` remote (this computer's folders only). */
+  githubFromFolder: (folder: string) => invoke<{ repo: string; site: string }>("room_github_from_folder", { folder }),
+  /** Set the repository (and a new token); "" takes GitHub off the room. Checks with GitHub. */
+  githubSave: (room: string, repo: string, site: string, token?: string) => invoke<GithubCheck | null>("room_github_save", { room, repo, site, token: token ?? null }),
+  githubCheck: (room: string) => invoke<GithubCheck | null>("room_github_check", { room }),
+  /** This user's own issue (they saw and confirmed it in the form); returns its link. */
+  githubIssue: (room: string, title: string, body: string, labels: string[]) => invoke<string>("room_github_issue", { room, title, body, labels }),
+  githubLabels: (room: string) => invoke<string[]>("room_github_labels", { room }),
   /** A memory proposal the user saved (with api.memorySave) or dismissed: it's gone. */
   memoryProposalDone: (room: string, id: string) => invoke<void>("room_memory_proposal_done", { room, id }),
 };
