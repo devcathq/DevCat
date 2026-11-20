@@ -15,11 +15,14 @@ pub struct Ctx {
     pub here: Option<Place>,
     /// The agent, as memories record it (`codex`, `devcat-agent`, …).
     pub origin: String,
+    /// It also reads the memories for every project (about the user). Not for an agent whose words
+    /// other people read.
+    pub global: bool,
 }
 
 /// The memory tools for an agent working in `scope`.
 pub fn for_scope(scope: &Scope, origin: &str) -> Vec<Arc<dyn Tool>> {
-    let ctx = Arc::new(Ctx { here: place_for(scope), origin: origin.to_string() });
+    let ctx = Arc::new(Ctx { here: place_for(scope), origin: origin.to_string(), global: true });
     vec![
         Arc::new(Search(ctx.clone())),
         Arc::new(ReadMemory(ctx.clone())),
@@ -30,10 +33,18 @@ pub fn for_scope(scope: &Scope, origin: &str) -> Vec<Arc<dyn Tool>> {
     ]
 }
 
+/// Only `memory_search` and `memory_read`, and only for `place`: for a room's agent, working with
+/// the project its user linked to the room (`rooms_memory.rs`). It never writes the memory itself
+/// (room content is other people's), and never reads the memories for every project.
+pub fn read_only_for(place: Place, origin: &str) -> Vec<Arc<dyn Tool>> {
+    let ctx = Arc::new(Ctx { here: Some(place), origin: origin.to_string(), global: false });
+    vec![Arc::new(Search(ctx.clone())), Arc::new(ReadMemory(ctx))]
+}
+
 impl Ctx {
-    /// This place, then every project.
+    /// This place, then every project (when it reads those).
     fn places(&self) -> Vec<Place> {
-        self.here.iter().cloned().chain([Place::Global]).collect()
+        self.here.iter().cloned().chain(self.global.then_some(Place::Global)).collect()
     }
 
     /// Where a save goes: `scope: "global"` (or a `user` memory) is for every project.
@@ -64,7 +75,12 @@ impl Tool for Search {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "memory_search".into(),
-            description: "Search the memory the user's coding agents share (DevCat): preferences, corrections, decisions, project facts and pointers saved by any agent (Claude Code, Codex, Gemini, …). Searches this project's memories and the ones for every project; every word must match. An empty query lists them all. Use `memory_read` for a memory's whole text.".into(),
+            description: if self.0.global {
+                "Search the memory the user's coding agents share (DevCat): preferences, corrections, decisions, project facts and pointers saved by any agent (Claude Code, Codex, Gemini, …). Searches this project's memories and the ones for every project; every word must match. An empty query lists them all. Use `memory_read` for a memory's whole text."
+            } else {
+                "Search your user's own memory for the project linked to this room (what their coding agents learned about it: decisions, conventions, pointers); every word must match. An empty query lists them all. Use `memory_read` for a memory's whole text."
+            }
+            .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
