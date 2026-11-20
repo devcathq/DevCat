@@ -50,6 +50,8 @@ html.glass .glass-work, html.glass .glass-side {
 }
 html.glass .glass-work { background-color: var(--glass-work-tint) !important; }
 html.glass .glass-side { background-color: var(--glass-side-tint) !important; }
+/* xterm.css paints the terminal's viewport #000 under the (clear) theme background. */
+html.glass .xterm .xterm-viewport { background-color: transparent; }
 html.glass .solid, html.glass .sticky, html.glass [class*="shadow-lg"], html.glass [class*="shadow-xl"], html.glass [class*="shadow-2xl"] {
   --color-app: var(--solid-app); --color-panel: var(--solid-panel); --color-raised: var(--solid-raised); --color-hover: var(--solid-hover);
 }
