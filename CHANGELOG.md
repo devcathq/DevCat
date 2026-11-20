@@ -12,6 +12,12 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+## 0.33.1 - 2026-11-20
+
+- **Rooms: Claude Code as your room agent reads GitHub** (#219): with Claude Code chosen as the room's agent, it
+  now gets the room's GitHub tools (**Room settings → GitHub**, **Read** and **Write**), as the DevCat Agent already
+  did. Before, it answered that it had no access to GitHub. A tool that is off says why (no token, or the switch).
+
 ## 0.33.0 - 2026-11-20
 
 - **Rooms: Claude Code as your room agent** (#214): **Room settings → AI connection** lists your Claude Code
