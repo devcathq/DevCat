@@ -4,6 +4,7 @@
 // "room-join-resolved" ({ requestId }), "room-agent" ({ room, running, error? }),
 // "room-mention" ({ room, roomName, message }: someone named this user).
 import { invoke } from "@tauri-apps/api/core";
+import type { MemoryKind, MemoryPlace } from "../../lib/types";
 
 export type Role = "owner" | "editor" | "viewer" | "keeper";
 export type Mentions = "anyone" | "me" | "off";
@@ -19,8 +20,19 @@ export interface ConnPath { direct: boolean; rttMs: number; relay?: string | nul
 export interface MemberView { id: string; name: string; role: Role; me: boolean; online: boolean; file: string | null; typing: boolean; path: ConnPath | null }
 export interface Invite { token: string; role: Role; createdAt: number; expiresAt: number; used: boolean }
 export interface RoomSettings { name: string; agentEdits: boolean }
-/** `codingAgents`: this user's Claude Code, Codex… (devcat mcp) and DevCat Agent chats may use the room. */
-export interface Prefs { agentProvider?: string | null; mentions: Mentions; codingAgents?: boolean }
+/** How much of a linked project's memory the room agent gets: the list and memory_search / memory_read, or the list only. */
+export type MemoryReach = "search" | "brief";
+/** `codingAgents`: this user's Claude Code, Codex… (devcat mcp) and DevCat Agent chats may use the room.
+ *  `folder` / `project`: the project on this computer the room is about (this user's own link, never shared):
+ *  the room agent works with its memory. */
+export interface Prefs {
+  agentProvider?: string | null; mentions: Mentions; codingAgents?: boolean;
+  folder?: string | null; project?: string | null; memoryReach?: MemoryReach;
+}
+/** The project linked to the room: `place` none when it doesn't work any more (`problem` says why). */
+export interface LinkedView { label: string; place: MemoryPlace | null; problem: string | null }
+/** An entry the room agent proposes for this user's memory: saved only if they save it. */
+export interface MemoryProposal { id: string; name: string; description: string; kind: MemoryKind; body: string; place: MemoryPlace; at: number; message?: string }
 export interface RoomView {
   summary: RoomSummary;
   settings: RoomSettings;
@@ -34,6 +46,8 @@ export interface RoomView {
   invites: Invite[];
   prefs: Prefs;
   agentRunning: boolean;
+  linked: LinkedView | null;
+  memoryProposals: MemoryProposal[];
 }
 
 /** `via`: the coding agent that acted for the person from outside the room (Claude Code, Codex…). */
@@ -140,6 +154,8 @@ export const rooms = {
   keeperAdd: (room: string, keeper: string, name?: string) => invoke<void>("room_keeper_add", { room, keeper, name: name ?? null }),
   focus: (room: string, file: string | null, typing: boolean) => invoke<void>("room_focus", { room, file, typing }),
   agentStop: (room: string) => invoke<void>("room_agent_stop", { room }),
+  /** A memory proposal the user saved (with api.memorySave) or dismissed: it's gone. */
+  memoryProposalDone: (room: string, id: string) => invoke<void>("room_memory_proposal_done", { room, id }),
 };
 
 /** base64url ↔ bytes (the backend's encoding for Loro updates). */

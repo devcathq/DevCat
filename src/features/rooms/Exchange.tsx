@@ -10,13 +10,13 @@ import { AlertTriangle, Brain, GitCompare, NotebookPen, Sparkles, Users } from "
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { create } from "zustand";
-import { Badge, Button, Dialog, Empty, Field, Input, Select, Spinner } from "../../components/ui";
+import { Badge, Button, Dialog, Empty, Field, Input, Select, Spinner, Textarea } from "../../components/ui";
 import { api, errMsg } from "../../lib/api";
 import type { Memory, MemoryKind, MemoryPlace, Note } from "../../lib/types";
 import { useConnections, useFocusProject } from "../../store/connections";
 import { confirmDialog } from "../connections/dialogs";
 import { noteTitle, useNotes } from "../notes/store";
-import { rooms, type FileInfo, type SkillInfo } from "./api";
+import { rooms, type FileInfo, type MemoryProposal, type SkillInfo } from "./api";
 import { openRoom, useRooms } from "./store";
 
 // ---------------------------------------------------------------- formats
@@ -311,6 +311,72 @@ export function SaveMemoryDialog({ room, path, text, onClose }: { room: string; 
           </Select>
         </Field>
         <pre className="max-h-56 overflow-auto rounded border border-line bg-app p-2 text-[11.5px] whitespace-pre-wrap">{body}</pre>
+      </div>
+    </Dialog>
+  );
+}
+
+/** What the room agent proposed for your memory of the project linked to the room
+ *  (rooms_memory.rs): nothing is saved until you look at each one and save it. */
+export function MemoryProposalsDialog({ room, proposals, placeLabel, onClose, onDone }: {
+  room: string; proposals: MemoryProposal[]; placeLabel: string; onClose: () => void; onDone: () => void;
+}) {
+  const [index, setIndex] = useState(0);
+  const at = Math.min(index, proposals.length - 1);
+  const p = proposals[at];
+  useEffect(() => { if (proposals.length === 0) onClose(); }, [proposals.length, onClose]);
+  if (!p) return null;
+  // keyed by the proposal: the room refreshing (anyone typing) keeps what the user edited
+  return <ProposalForm key={p.id} room={room} p={p} n={at + 1} of={proposals.length} placeLabel={placeLabel}
+    onNext={() => setIndex((i) => (i + 1) % proposals.length)} onClose={onClose} onDone={onDone} />;
+}
+
+function ProposalForm({ room, p, n, of, placeLabel, onNext, onClose, onDone }: {
+  room: string; p: MemoryProposal; n: number; of: number; placeLabel: string; onNext: () => void; onClose: () => void; onDone: () => void;
+}) {
+  const [name, setName] = useState(p.name);
+  const [description, setDescription] = useState(p.description);
+  const [kind, setKind] = useState<MemoryKind>(p.kind);
+  const [body, setBody] = useState(p.body);
+  const [busy, setBusy] = useState(false);
+  const finish = async (save: boolean) => {
+    setBusy(true);
+    try {
+      if (save) await api.memorySave({ place: p.place, name: name.trim(), description: description.trim(), kind, body });
+      await rooms.memoryProposalDone(room, p.id);
+      if (save) toast.success(`Saved ${name.trim()} to your memory of ${placeLabel}`);
+      onDone();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog open onClose={onClose} title={`Your agent proposes for your memory${of > 1 ? ` (${n} of ${of})` : ""}`} width={620}
+      footer={<>
+        {of > 1 && <Button className="mr-auto" onClick={onNext}>Next</Button>}
+        <Button loading={busy} onClick={() => void finish(false)}>Dismiss</Button>
+        <Button variant="primary" loading={busy} disabled={!name.trim() || !description.trim() || !body.trim()} onClick={() => void finish(true)}><Brain className="size-3.5" />Save to my memory</Button>
+      </>}>
+      <div className="space-y-3">
+        <div className="flex gap-2 rounded-md border border-warn/40 bg-warn/10 p-2.5 text-[12px] text-fg">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" />
+          <span>Your agent wrote this from the room, where other people write. Your coding agents read your memory of <b>{placeLabel}</b>: check it says what you want them to follow.</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="Kind">
+            <Select value={kind} onChange={(e) => setKind(e.target.value as MemoryKind)}>
+              <option value="project">Project</option><option value="reference">Reference</option><option value="feedback">Feedback</option><option value="user">User</option>
+            </Select>
+          </Field>
+        </div>
+        <Field label="Description"><Input value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
+        <Field label="Memory">
+          <Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={8} className="w-full" />
+        </Field>
+        <p className="text-[11px] text-faint">Proposed {new Date(p.at).toLocaleString()}. It goes to {placeLabel}, the project you linked to this room.</p>
       </div>
     </Dialog>
   );
