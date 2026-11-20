@@ -12,7 +12,9 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
-- **DevCat Agent: long turns hold up**: a helper that reaches its 60 steps now answers with what it found instead
+## 0.33.2 - 2026-11-20
+
+- **DevCat Agent: long turns hold up** (#223): a helper that reaches its 60 steps now answers with what it found instead
   of failing, so the agent no longer asks the same helper again from the start. A summary of the conversation that
   comes back empty is asked for again, and one that fails no longer ends the turn. A small context window isn't
   summarized after every step anymore, a conversation the provider refuses as too long is summarized and the step
@@ -23,6 +25,8 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
   the step limit, "continue" carries on instead of starting over. A command that times out or is stopped takes what
   it started with it (a build, an install), so the next command doesn't wait on its locks. The chat
   points out an MCP server whose tools weigh on every request (hundreds of tools can be half the context window).
+- **Terminal: shows through window glass** (#221): with window glass on, terminals were solid black and **Work area
+  opacity** didn't change them. They now show the glass like the rest of the work area. Without glass nothing changes.
 
 ## 0.33.1 - 2026-11-20
 
