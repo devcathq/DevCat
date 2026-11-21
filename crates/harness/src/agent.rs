@@ -860,11 +860,63 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
             let mut usage = Usage::default();
             let mut took_ms = Vec::new();
             let mut images = Vec::new();
-            for (id, name, input) in calls {
+            // Calls that only look (read, glob, grep, read-only git) and stand next to each other
+            // run at the same time: one after the other, a step that reads ten files waits for
+            // each. They go through approval and the hooks one by one as ever, and their results
+            // are in call order.
+            // (Not with PostToolUse hooks: one that stops the agent must find the calls after it
+            // not run yet, and a hook may not expect to run twice at once.)
+            let hooked = self.hooks.has("PostToolUse") || self.hooks.has("PostToolUseFailure");
+            let together: Vec<bool> = calls
+                .iter()
+                .map(|(id, name, input)| !hooked && !repeated.contains(id) && input.get(UNPARSED).is_none() && self.tools.get(name).is_some_and(|t| t.concurrent(input, &ctx)))
+                .collect();
+            let mut calls = calls.into_iter().enumerate().peekable();
+            while let Some((n, (id, name, input))) = calls.next() {
                 if let Some((out, used, took)) = helped.remove(&id) {
                     usage += used;
                     took_ms.push(took);
                     results.push(Block::ToolResult { tool_use_id: id, content: out.content, is_error: out.is_error });
+                    continue;
+                }
+                if together[n] && calls.peek().is_some_and(|(m, _)| together[*m]) {
+                    let mut batch = vec![(id, name, input)];
+                    while let Some((_, call)) = calls.next_if(|(m, _)| together[*m]) {
+                        batch.push(call);
+                    }
+                    let mut prepared = Vec::new();
+                    for (id, name, input) in batch {
+                        let p = if cancel.is_cancelled() {
+                            Prepared::Done(ToolOutput::err("Not run: stopped by the user."))
+                        } else if self.halt.is_some() {
+                            Prepared::Done(ToolOutput::err("Not run: a hook stopped the agent."))
+                        } else {
+                            self.prepare(session, &ctx, &id, &name, input, cancel, on).await?
+                        };
+                        prepared.push((id, p));
+                    }
+                    let (this, shared, ctx) = (&*self, &*session, &ctx);
+                    let runs = prepared.into_iter().map(|(id, p)| async move {
+                        let started = std::time::Instant::now();
+                        // (`on` is the loop's: what the hooks say is passed on once all are done)
+                        let mut said = Vec::new();
+                        let (out, halt) = match p {
+                            Prepared::Done(out) => (out, None),
+                            Prepared::Run(_) if cancel.is_cancelled() => (ToolOutput::err("Not run: stopped by the user."), None),
+                            Prepared::Run(ready) => this.execute(shared, ctx, ready, cancel, &mut |e| said.push(e)).await,
+                        };
+                        (id, out, halt, said, started.elapsed().as_millis() as u64)
+                    });
+                    for (id, out, halt, said, took) in futures::future::join_all(runs).await {
+                        said.into_iter().for_each(&mut *on);
+                        if halt.is_some() && self.halt.is_none() {
+                            self.halt = halt;
+                        }
+                        took_ms.push(took);
+                        on(AgentEvent::ToolResult { id: id.clone(), content: out.content.clone(), is_error: out.is_error });
+                        results.push(Block::ToolResult { tool_use_id: id, content: out.content, is_error: out.is_error });
+                        images.extend(out.images);
+                    }
                     continue;
                 }
                 let started = std::time::Instant::now();
@@ -1075,16 +1127,33 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         })
     }
 
-    /// The tool pipeline for one call.
+    /// The tool pipeline for one call: [`Agent::prepare`], then [`Agent::execute`].
     #[allow(clippy::too_many_arguments)]
     async fn call(&mut self, session: &mut Session, ctx: &ToolCtx, id: &str, name: &str, input: Value, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<ToolOutput> {
+        Ok(match self.prepare(session, ctx, id, name, input, cancel, on).await? {
+            Prepared::Done(out) => out,
+            Prepared::Run(ready) => {
+                let (out, halt) = self.execute(session, ctx, ready, cancel, on).await;
+                if halt.is_some() {
+                    self.halt = halt;
+                }
+                out
+            }
+        })
+    }
+
+    /// The first half of the pipeline, which runs one call at a time: PreToolUse hooks, the
+    /// policy and the user's approval. Ends with the call ready to run (and the chat told it
+    /// runs), or with its result when it won't.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare(&mut self, session: &mut Session, ctx: &ToolCtx, id: &str, name: &str, input: Value, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<Prepared> {
         let Some(tool) = self.tools.get(name) else {
-            return Ok(ToolOutput::err(format!("There is no tool named `{name}`.")));
+            return Ok(Prepared::Done(ToolOutput::err(format!("There is no tool named `{name}`."))));
         };
         if let Some(raw) = input.get(UNPARSED) {
             // its start is enough to recognise the call; all of it would fill the context again
             let raw = raw.as_str().map(String::from).unwrap_or_else(|| raw.to_string());
-            return Ok(ToolOutput::err(format!("The arguments weren't valid JSON: {}", clip(&raw, 600))));
+            return Ok(Prepared::Done(ToolOutput::err(format!("The arguments weren't valid JSON: {}", clip(&raw, 600)))));
         }
         let mut input = input;
         let mut kind = tool.kind(&input, ctx);
@@ -1096,12 +1165,12 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
             on(AgentEvent::ToolCall { id: id.to_string(), name: name.to_string(), summary, input: input.clone() });
             let answer = tokio::select! {
                 a = self.approver.ask(&q) => a,
-                _ = cancel.cancelled() => return Ok(ToolOutput::err("Not answered: stopped by the user.")),
+                _ = cancel.cancelled() => return Ok(Prepared::Done(ToolOutput::err("Not answered: stopped by the user."))),
             };
-            return Ok(match answer {
+            return Ok(Prepared::Done(match answer {
                 Some(a) if !a.trim().is_empty() => ToolOutput::ok(format!("The user answered: {}", a.trim())),
                 _ => ToolOutput::err("Nobody can answer questions right now. Decide yourself, and say what you assumed."),
-            });
+            }));
         }
         // 0. PreToolUse hooks: they may block the call, rewrite it, allow it or make it ask
         let names = hooks::tool_names(name);
@@ -1111,14 +1180,14 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         };
         let pre = self.hook(session, "PreToolUse", Some(&names), foreign(&input), cancel, on).await;
         if cancel.is_cancelled() {
-            return Ok(ToolOutput::err("Not run: stopped by the user."));
+            return Ok(Prepared::Done(ToolOutput::err("Not run: stopped by the user.")));
         }
         if let Some(why) = pre.stop {
             self.halt = Some(format!("A PreToolUse hook stopped the agent: {why}"));
-            return Ok(ToolOutput::err(format!("Not run: a PreToolUse hook stopped the agent. {why}")));
+            return Ok(Prepared::Done(ToolOutput::err(format!("Not run: a PreToolUse hook stopped the agent. {why}"))));
         }
         if let Some(why) = pre.block {
-            return Ok(ToolOutput::err(format!("Not run: a PreToolUse hook blocked it. {why}")));
+            return Ok(Prepared::Done(ToolOutput::err(format!("Not run: a PreToolUse hook blocked it. {why}"))));
         }
         if let Some(updated) = &pre.updated_input {
             match hooks::native_input(name, &input, updated) {
@@ -1135,10 +1204,10 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         let confirm = tool.confirm(&input);
         // 1. helpers and plan mode: nothing that changes something runs, not even with a yes
         if self.helper.is_some() && (confirm.is_some() || matches!(kind, Kind::Edit | Kind::EditOutside | Kind::Exec)) {
-            return Ok(ToolOutput::err("Not run: a helper only looks; it doesn't change files or run commands. If this needs doing, say so in your answer."));
+            return Ok(Prepared::Done(ToolOutput::err("Not run: a helper only looks; it doesn't change files or run commands. If this needs doing, say so in your answer.")));
         }
         if self.policy.refuses(kind) {
-            return Ok(ToolOutput::err("Not run: plan mode is on, so nothing is changed or run yet. Look around as much as you need, then answer with your plan; the user starts it."));
+            return Ok(Prepared::Done(ToolOutput::err("Not run: plan mode is on, so nothing is changed or run yet. Look around as much as you need, then answer with your plan; the user starts it.")));
         }
         // 2. approval (fail closed); a hook can allow it or make it ask, PermissionRequest hooks
         // can answer for the user, and a helper can't ask. A call with `confirm` always asks the
@@ -1151,29 +1220,29 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                 session.append(SessionEvent::Approval { tool_use_id: id.to_string(), tool: name.to_string(), allowed: o.block.is_none(), by: "hook".into() }).await?;
             }
             if let Some(why) = o.block {
-                return Ok(ToolOutput::err(format!("Not run: a PermissionRequest hook declined it. {why}")));
+                return Ok(Prepared::Done(ToolOutput::err(format!("Not run: a PermissionRequest hook declined it. {why}"))));
             }
             ask = !allow;
         }
         if ask {
             if self.helper.is_some() {
-                return Ok(ToolOutput::err("Not run: this needs the user's OK, and a helper can't ask. If you need it, say so in your answer."));
+                return Ok(Prepared::Done(ToolOutput::err("Not run: this needs the user's OK, and a helper can't ask. If you need it, say so in your answer.")));
             }
             let req = ApprovalRequest { tool_use_id: id.to_string(), tool: name.to_string(), kind, summary: summary.clone(), input: input.clone(), confirm: confirm.clone() };
             let (decision, by) = tokio::select! {
                 d = self.approver.decide(&req) => d,
-                _ = cancel.cancelled() => return Ok(ToolOutput::err("Not run: stopped by the user.")),
+                _ = cancel.cancelled() => return Ok(Prepared::Done(ToolOutput::err("Not run: stopped by the user."))),
             };
             let allowed = decision.allows(confirm.as_deref());
             session.append(SessionEvent::Approval { tool_use_id: id.to_string(), tool: name.to_string(), allowed, by }).await?;
             match decision {
                 Decision::Deny { reason } => {
                     let why = reason.filter(|r| !r.trim().is_empty()).map(|r| format!(" Reason: {r}")).unwrap_or_default();
-                    return Ok(ToolOutput::err(format!("The user declined this call.{why}")));
+                    return Ok(Prepared::Done(ToolOutput::err(format!("The user declined this call.{why}"))));
                 }
                 _ if !allowed => {
                     let want = confirm.unwrap_or_default();
-                    return Ok(ToolOutput::err(format!("Not run: this can't be undone, so it runs only when the user types \"{want}\" to confirm it in DevCat, and they didn't.")));
+                    return Ok(Prepared::Done(ToolOutput::err(format!("Not run: this can't be undone, so it runs only when the user types \"{want}\" to confirm it in DevCat, and they didn't."))));
                 }
                 Decision::AllowForSession if confirm.is_none() => {
                     self.allowed.insert(name.to_string());
@@ -1182,6 +1251,21 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
             }
         }
         on(AgentEvent::ToolCall { id: id.to_string(), name: name.to_string(), summary, input: input.clone() });
+        Ok(Prepared::Run(Ready { id: id.to_string(), name: name.to_string(), tool, input, context: pre.context }))
+    }
+
+    /// The second half: run the call (with its time limit), PostToolUse hooks, truncation. It
+    /// only reads the agent, so calls that only look can run side by side (see
+    /// [`Tool::concurrent`](crate::tools::Tool::concurrent)). Returns the result, and why the turn
+    /// ends after this step when a hook stopped it.
+    async fn execute(&self, session: &Session, ctx: &ToolCtx, ready: Ready, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> (ToolOutput, Option<String>) {
+        let Ready { id, name, tool, input, context } = ready;
+        let (id, name) = (id.as_str(), name.as_str());
+        let names = hooks::tool_names(name);
+        let foreign = |input: &Value| {
+            let (tool_name, tool_input) = hooks::foreign_tool(name, input, &ctx.cwd);
+            json!({ "tool_name": tool_name, "tool_input": tool_input, "tool_use_id": id })
+        };
         // 3. timeout
         let limit = tool.timeout(&input);
         let after = foreign(&input);
@@ -1208,19 +1292,34 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         }
         let post = self.hook(session, event, Some(&names), fields, cancel, on).await;
         // it ran: its result stands, and the turn ends after this step
-        if let Some(why) = post.stop {
-            self.halt = Some(format!("A {event} hook stopped the agent: {why}"));
-        }
+        let halt = post.stop.map(|why| format!("A {event} hook stopped the agent: {why}"));
         if let Some(replaced) = post.updated_output {
             out.content = replaced;
         }
         // 5. truncation; the hooks' context goes after it, so it's never cut
         let mut out = fit(session, id, name, out).await;
-        for c in pre.context.iter().chain(&post.context) {
+        for c in context.iter().chain(&post.context) {
             out.content.push_str(&format!("\n\n{}", crate::session::hook_context(c)));
         }
-        Ok(out)
+        (out, halt)
     }
+}
+
+/// A call through the first half of the pipeline ([`Agent::prepare`]).
+enum Prepared {
+    /// It won't run (a hook or the user said no, plan mode, a helper): its result.
+    Done(ToolOutput),
+    /// Allowed: what [`Agent::execute`] needs to run it.
+    Run(Ready),
+}
+
+struct Ready {
+    id: String,
+    name: String,
+    tool: Arc<dyn crate::tools::Tool>,
+    input: Value,
+    /// What PreToolUse hooks added for the model; it goes after the result.
+    context: Vec<String>,
 }
 
 /// Output over [`MAX_OUTPUT`]: the model gets its start and end, and the whole of it is saved next

@@ -509,8 +509,9 @@ async fn long_output_is_cut_for_the_model_and_kept_whole_in_a_file() {
     let big = &results[0];
     assert!(big.len() < 31_000 && big.starts_with("START") && big.contains("characters, about"), "{}", &big[..200]);
     assert!(big.ends_with(&format!("[The whole output ({} characters) is saved in {}. Read parts of it with `read` (offset / limit) or search it with `grep`.]", whole.len(), saved.display())), "{}", &big[big.len() - 300..]);
-    // read's own output is cut but not saved again: its file is there to page through
-    assert!(results[1].contains("characters, about") && !results[1].contains("is saved in"));
+    // read's own output stops on a whole line and says where to go on; nothing is saved: its
+    // file is there to page through
+    assert!(results[1].contains("use offset") && !results[1].contains("is saved in") && results[1].len() < 31_000, "{}", &results[1][results[1].len() - 200..]);
     assert!(!session.path().with_extension("out").join("r1.txt").exists());
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1577,5 +1578,88 @@ async fn compaction_keeps_what_the_user_wrote_word_for_word() {
     assert!(summary.len() < 3_000, "{}", summary.len());
     // a summary asked for between turns doesn't tell the model to carry on by itself
     assert!(!summary.contains("go on now with what is still open"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A tool that only looks and takes `ms` to do it; `order` records when each call starts and ends.
+struct Slow(Arc<Mutex<Vec<String>>>);
+
+#[async_trait]
+impl Tool for Slow {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "slow_look".into(), description: "looks, slowly".into(), input_schema: json!({ "type": "object" }) }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, input: &Value) -> String {
+        input["n"].to_string()
+    }
+    fn concurrent(&self, _: &Value, _: &ToolCtx) -> bool {
+        true
+    }
+    async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        let n = input["n"].as_u64().unwrap();
+        self.0.lock().unwrap().push(format!("start {n}"));
+        // the later calls finish first: the results must still come back in call order
+        tokio::time::sleep(Duration::from_millis(300 - n * 50)).await;
+        self.0.lock().unwrap().push(format!("end {n}"));
+        ToolOutput::ok(format!("looked {n}"))
+    }
+}
+
+#[tokio::test]
+async fn calls_that_only_look_run_side_by_side_and_answer_in_order() {
+    let (dir, mut session) = project().await;
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let model = Scripted::new(vec![
+        vec![
+            tool("a", "slow_look", json!({ "n": 1 })),
+            tool("b", "slow_look", json!({ "n": 2 })),
+            tool("c", "slow_look", json!({ "n": 3 })),
+            // not one that only looks: it runs on its own, after them
+            tool("d", "write", json!({ "path": "out.txt", "content": "x" })),
+            tool("e", "read", json!({ "path": "out.txt" })),
+        ],
+        vec![text("Done.")],
+    ]);
+    let mut tools = Registry::standard();
+    tools.add(Slow(order.clone()));
+    let mut agent = Agent::new(model, tools, Policy::Bypass, Arc::new(DenyAll), "system".into());
+    let started = std::time::Instant::now();
+    let mut results = Vec::new();
+    agent.turn(&mut session, "look", &Cancel::default(), &mut |e| if let AgentEvent::ToolResult { id, .. } = e { results.push(id) }).await.unwrap();
+    // all three started before any ended, and it took about the longest, not the sum (750 ms)
+    let o = order.lock().unwrap().clone();
+    assert_eq!(&o[..3], ["start 1", "start 2", "start 3"], "{o:?}");
+    assert!(started.elapsed() < Duration::from_millis(600), "{:?}", started.elapsed());
+    assert_eq!(results, ["a", "b", "c", "d", "e"]);
+    // the read after the write saw what it wrote
+    let SessionEvent::ToolResults { results, took_ms, .. } = session.events().iter().rev().find(|e| matches!(e, SessionEvent::ToolResults { .. })).unwrap() else { unreachable!() };
+    let texts: Vec<&str> = results.iter().map(|b| match b { Block::ToolResult { content, .. } => content.as_str(), _ => "" }).collect();
+    assert!(texts[0] == "looked 1" && texts[2] == "looked 3" && texts[4].contains("\tx"), "{texts:?}");
+    assert_eq!(took_ms.len(), 5);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn stopping_stops_calls_that_run_side_by_side() {
+    let (dir, mut session) = project().await;
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let model = Scripted::new(vec![vec![tool("a", "slow_look", json!({ "n": 1 })), tool("b", "slow_look", json!({ "n": 2 }))], vec![text("Done.")]]);
+    let mut tools = Registry::standard();
+    tools.add(Slow(order.clone()));
+    let cancel = Cancel::default();
+    let mut agent = Agent::new(model, tools, Policy::Bypass, Arc::new(DenyAll), "system".into());
+    let c = cancel.clone();
+    let stop = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        c.cancel();
+    });
+    let res = agent.turn(&mut session, "look", &cancel, &mut |_| {}).await;
+    stop.await.unwrap();
+    assert!(matches!(res, Err(Error::Cancelled)));
+    let SessionEvent::ToolResults { results, .. } = session.events().iter().rev().find(|e| matches!(e, SessionEvent::ToolResults { .. })).unwrap() else { unreachable!() };
+    assert!(results.iter().all(|b| matches!(b, Block::ToolResult { is_error: true, content, .. } if content.contains("Stopped by the user"))), "{results:?}");
     let _ = std::fs::remove_dir_all(dir);
 }

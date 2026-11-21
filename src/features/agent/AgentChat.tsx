@@ -14,7 +14,7 @@ import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { GHOST_SUGGESTIONS, HARNESS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, focusSuggestions, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, retryLabel, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { GHOST_SUGGESTIONS, HARNESS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, focusSuggestions, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editChanges, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, retryLabel, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { fmtCost } from "../claude/util";
 import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
 import { useClaude } from "../claude/store";
@@ -356,7 +356,7 @@ function ToolDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
   if (item.name === SUBAGENT) return <HelperDetails item={item} cwd={cwd} />;
   return (
     <div className="mt-1 ml-5 flex flex-col gap-1.5">
-      {item.name === "edit" && <Diff before={str(i.old_string)} after={str(i.new_string)} />}
+      {item.name === "edit" && editChanges(i).map((c, n) => <Diff key={n} before={c.before} after={c.after} />)}
       {item.name === "write" && <Diff before="" after={str(i.content)} max={60} />}
       {item.name === "shell" && <Code>{`$ ${str(i.command)}`}</Code>}
       {item.output && !(item.name === "write" || item.name === "edit") && <Code muted={item.status !== "error"} danger={item.status === "error"}>{item.output}</Code>}
@@ -442,7 +442,7 @@ function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
       {item.name === "shell" && <Code>{str(i.command)}</Code>}
       {item.name === "db_query" && <Code>{str(i.query)}</Code>}
       {item.name === "devcat_note_write" && <Code>{str(i.body)}</Code>}
-      {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
+      {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div>{editChanges(i).map((c, n) => <Diff key={n} before={c.before} after={c.after} />)}</>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
       {!["shell", "edit", "write", "db_query", "devcat_note_write"].includes(item.name) && <Code>{req.summary}</Code>}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">

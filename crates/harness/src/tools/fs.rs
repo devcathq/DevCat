@@ -1,4 +1,4 @@
-//! File tools: read, write, edit (exact string replacement), glob and grep. Searches respect
+//! File tools: read, write, edit (string replacement, see [`super::edit`]), glob and grep. Searches respect
 //! `.gitignore` and skip hidden folders like `.git`.
 use super::{Tool, ToolCtx, ToolOutput, inside, resolve, str_arg};
 use crate::approval::Kind;
@@ -10,6 +10,9 @@ use std::path::Path;
 const READ_LINES: usize = 2000;
 const LINE_CHARS: usize = 2000;
 const MAX_HITS: usize = 200;
+/// Characters one `read` returns at most, a little under the output limit ([`super::MAX_OUTPUT`]),
+/// so it ends on a whole line and says where to go on.
+const READ_BUDGET: usize = super::MAX_OUTPUT - 1_000;
 
 fn edit_kind(input: &Value, ctx: &ToolCtx) -> Kind {
     match input.get("path").and_then(Value::as_str) {
@@ -50,7 +53,7 @@ impl Tool for Read {
         ToolSpec {
             name: "read".into(),
             description: format!(
-                "Read a text file. Returns numbered lines (`  12\\tcode`). Reads up to {READ_LINES} lines; use `offset` (1-based first line) and `limit` for more. On a folder, lists its entries."
+                "Read a text file. Returns numbered lines (`  12\\tcode`). Reads up to {READ_LINES} lines (fewer when they're long; it says where it stopped); use `offset` (1-based first line) and `limit` for more. On a folder, lists its entries."
             ),
             input_schema: json!({
                 "type": "object",
@@ -65,6 +68,9 @@ impl Tool for Read {
     }
     fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
         Kind::Read
+    }
+    fn concurrent(&self, _: &Value, _: &ToolCtx) -> bool {
+        true
     }
     fn summary(&self, input: &Value) -> String {
         path_summary(input)
@@ -95,14 +101,24 @@ impl Tool for Read {
             return ToolOutput::err(format!("The file has only {total} lines."));
         }
         let mut out = String::new();
+        let mut last = offset - 1;
+        // whole lines up to the budget: the model learns exactly where to go on, instead of
+        // getting the middle of the file cut out by the general truncation
+        let mut full = false;
         for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
             let line = line.strip_suffix('\r').unwrap_or(line);
             let line: String = if line.chars().count() > LINE_CHARS { format!("{}…", line.chars().take(LINE_CHARS).collect::<String>()) } else { line.to_string() };
-            out.push_str(&format!("{:>6}\t{line}\n", i + 1));
+            let numbered = format!("{:>6}\t{line}\n", i + 1);
+            if out.len() + numbered.len() > READ_BUDGET && i + 1 > offset {
+                full = true;
+                break;
+            }
+            out.push_str(&numbered);
+            last = i + 1;
         }
-        let last = (offset - 1 + limit).min(total);
         if last < total {
-            out.push_str(&format!("\n(showing lines {offset}-{last} of {total}; use offset {} to continue)", last + 1));
+            let why = if full { format!("that's as much as one read returns (about {} KB)", READ_BUDGET / 1000) } else { format!("{} lines asked for", last + 1 - offset) };
+            out.push_str(&format!("\n(showing lines {offset}-{last} of {total}: {why}; use offset {} to continue)", last + 1));
         }
         ToolOutput::ok(out)
     }
@@ -165,21 +181,57 @@ impl Tool for Write {
 
 pub struct Edit;
 
+/// The changes an `edit` call asks for: `edits`, or the one `old_string` / `new_string`.
+fn changes(input: &Value) -> Result<Vec<super::edit::Change<'_>>, ToolOutput> {
+    use super::edit::Change;
+    let all = |v: &Value| v.get("replace_all").and_then(Value::as_bool).unwrap_or(false);
+    if let Some(list) = input.get("edits").filter(|e| !e.is_null()) {
+        let Some(list) = list.as_array().filter(|l| !l.is_empty()) else {
+            return Err(ToolOutput::err("`edits` must be a non-empty list of {old_string, new_string}."));
+        };
+        return list
+            .iter()
+            .enumerate()
+            .map(|(i, e)| match (e.get("old_string").and_then(Value::as_str), e.get("new_string").and_then(Value::as_str)) {
+                (Some(old), Some(new)) => Ok(Change { old, new, all: all(e) }),
+                _ => Err(ToolOutput::err(format!("edits[{i}] needs `old_string` and `new_string` (strings)."))),
+            })
+            .collect();
+    }
+    match (str_arg(input, "old_string"), str_arg(input, "new_string")) {
+        (Ok(old), Ok(new)) => Ok(vec![Change { old, new, all: all(input) }]),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    }
+}
+
 #[async_trait]
 impl Tool for Edit {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "edit".into(),
-            description: "Replace an exact piece of text in a file. `old_string` must appear exactly once (include enough surrounding lines to make it unique), unless `replace_all` is true. Read the file first; match its indentation exactly.".into(),
+            description: "Replace text in a file. `old_string` must appear exactly once (include enough surrounding lines to make it unique), unless `replace_all` is true. Read the file first and copy the text with its indentation. To make several changes to one file, pass them as `edits` instead: each is matched against the file as it is now, they must not overlap, and either all are made or none. Keep each `old_string` short: just the lines that change and enough around them to be unique.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "old_string": { "type": "string" },
-                    "new_string": { "type": "string" },
-                    "replace_all": { "type": "boolean" }
+                    "old_string": { "type": "string", "description": "The text to replace (one change)" },
+                    "new_string": { "type": "string", "description": "What to put in its place" },
+                    "replace_all": { "type": "boolean", "description": "Replace every occurrence of `old_string`" },
+                    "edits": {
+                        "type": "array",
+                        "description": "Several changes to this file, instead of `old_string` / `new_string`",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": { "type": "string" },
+                                "new_string": { "type": "string" },
+                                "replace_all": { "type": "boolean" }
+                            },
+                            "required": ["old_string", "new_string"]
+                        }
+                    }
                 },
-                "required": ["path", "old_string", "new_string"]
+                "required": ["path"]
             }),
         }
     }
@@ -190,34 +242,33 @@ impl Tool for Edit {
         path_summary(input)
     }
     async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
-        let (path, old, new) = match (str_arg(&input, "path"), str_arg(&input, "old_string"), str_arg(&input, "new_string")) {
-            (Ok(p), Ok(o), Ok(n)) => (resolve(ctx, p), o, n),
-            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return e,
+        let path = match str_arg(&input, "path") {
+            Ok(p) => resolve(ctx, p),
+            Err(e) => return e,
         };
-        if old.is_empty() {
-            return ToolOutput::err("`old_string` is empty. Use `write` to create a file.");
-        }
-        if old == new {
-            return ToolOutput::err("`old_string` and `new_string` are the same.");
-        }
+        let changes = match changes(&input) {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
         let text = match tokio::fs::read_to_string(&path).await {
             Ok(t) => t,
             Err(e) => return ToolOutput::err(format!("Can't read {}: {e}", path.display())),
         };
-        // Models write \n; keep a CRLF file CRLF.
-        let crlf = text.contains("\r\n");
-        let (old, new) = if crlf && !old.contains("\r\n") { (old.replace('\n', "\r\n"), new.replace('\n', "\r\n")) } else { (old.to_string(), new.to_string()) };
-        let count = text.matches(&old).count();
-        let replace_all = input.get("replace_all").and_then(Value::as_bool).unwrap_or(false);
-        let updated = match (count, replace_all) {
-            (0, _) => return ToolOutput::err(format!("`old_string` was not found in {}. Read the file again and copy the text exactly, including whitespace.", path.display())),
-            (1, _) | (_, true) => text.replace(&old, &new),
-            (n, false) => return ToolOutput::err(format!("`old_string` appears {n} times in {}. Add surrounding lines to make it unique, or set `replace_all`.", path.display())),
+        let many = input.get("edits").is_some_and(Value::is_array);
+        let label = |i: usize| if many { format!("edits[{i}]") } else { "`old_string`".to_string() };
+        let applied = match super::edit::apply(&text, &changes, label) {
+            Ok(a) => a,
+            Err(why) => return ToolOutput::err(format!("{} (in {}). Nothing was changed.", why.trim_end_matches('.'), path.display())),
         };
-        match tokio::fs::write(&path, updated).await {
-            Ok(()) => ToolOutput::ok(format!("Edited {} ({count} replacement{}).", path.display(), if count == 1 { "" } else { "s" })),
-            Err(e) => ToolOutput::err(format!("Can't write {}: {e}", path.display())),
+        if let Err(e) = tokio::fs::write(&path, &applied.text).await {
+            return ToolOutput::err(format!("Can't write {}: {e}", path.display()));
         }
+        let n = applied.replacements;
+        let mut out = format!("Edited {} ({n} replacement{}).", path.display(), if n == 1 { "" } else { "s" });
+        if applied.fuzzy > 0 {
+            out.push_str(" Some of the text matched only after ignoring trailing whitespace and the difference between typographic and plain quotes, dashes or spaces; the lines you replaced now have exactly your `new_string`.");
+        }
+        ToolOutput::ok(out)
     }
 }
 
@@ -257,6 +308,9 @@ impl Tool for Glob {
     }
     fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
         Kind::Read
+    }
+    fn concurrent(&self, _: &Value, _: &ToolCtx) -> bool {
+        true
     }
     fn summary(&self, input: &Value) -> String {
         input.get("pattern").and_then(Value::as_str).unwrap_or("?").to_string()
@@ -317,6 +371,9 @@ impl Tool for Grep {
     }
     fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
         Kind::Read
+    }
+    fn concurrent(&self, _: &Value, _: &ToolCtx) -> bool {
+        true
     }
     fn summary(&self, input: &Value) -> String {
         input.get("pattern").and_then(Value::as_str).unwrap_or("?").to_string()
@@ -415,11 +472,43 @@ mod tests {
         assert!(!all.is_error);
         let missing = Edit.run(json!({ "path": "src/lib.rs", "old_string": "nope", "new_string": "x" }), &ctx).await;
         assert!(missing.is_error && missing.content.contains("not found"));
+        // several changes in one call; one that's wrong leaves the file as it was
+        std::fs::write(dir.join("src/lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        let bad = Edit.run(json!({ "path": "src/lib.rs", "edits": [{ "old_string": "fn a", "new_string": "fn x" }, { "old_string": "fn zz", "new_string": "fn y" }] }), &ctx).await;
+        assert!(bad.is_error && bad.content.contains("edits[1] was not found") && bad.content.contains("Nothing was changed"), "{}", bad.content);
+        assert_eq!(std::fs::read_to_string(dir.join("src/lib.rs")).unwrap(), "fn a() {}\nfn b() {}\n");
+        let two = Edit.run(json!({ "path": "src/lib.rs", "edits": [{ "old_string": "fn a", "new_string": "fn x" }, { "old_string": "fn b", "new_string": "fn y" }] }), &ctx).await;
+        assert!(!two.is_error && two.content.contains("2 replacements"), "{}", two.content);
+        assert_eq!(std::fs::read_to_string(dir.join("src/lib.rs")).unwrap(), "fn x() {}\nfn y() {}\n");
+        assert!(Edit.run(json!({ "path": "src/lib.rs", "edits": [] }), &ctx).await.is_error);
+        // a curly quote the model typed straight
+        std::fs::write(dir.join("src/q.rs"), "let s = \u{201C}hi\u{201D};\n").unwrap();
+        let q = Edit.run(json!({ "path": "src/q.rs", "old_string": "let s = \"hi\";", "new_string": "let s = \"hello\";" }), &ctx).await;
+        assert!(!q.is_error && q.content.contains("ignoring trailing whitespace"), "{}", q.content);
+        assert_eq!(std::fs::read_to_string(dir.join("src/q.rs")).unwrap(), "let s = \"hello\";\n");
 
         let w = Write.run(json!({ "path": "docs/new/readme.md", "content": "# Hi\n" }), &ctx).await;
         assert!(w.content.starts_with("Created"), "{}", w.content);
         assert_eq!(Write.kind(&json!({ "path": "../elsewhere.txt" }), &ctx), Kind::EditOutside);
         assert_eq!(Write.kind(&json!({ "path": "a.txt" }), &ctx), Kind::Edit);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_read_of_long_lines_stops_on_a_whole_line_and_says_where() {
+        let (dir, ctx) = project();
+        let line = "x".repeat(1_500);
+        std::fs::write(dir.join("big.txt"), format!("{line}\n").repeat(100)).unwrap();
+        let r = Read.run(json!({ "path": "big.txt" }), &ctx).await;
+        assert!(r.content.len() <= crate::tools::MAX_OUTPUT, "{}", r.content.len());
+        let shown = r.content.lines().filter(|l| l.contains('\t')).count();
+        assert!(shown > 10 && shown < 100);
+        assert!(r.content.ends_with(&format!("use offset {} to continue)", shown + 1)), "{}", &r.content[r.content.len() - 200..]);
+        let next = Read.run(json!({ "path": "big.txt", "offset": shown + 1 }), &ctx).await;
+        assert!(next.content.starts_with(&format!("{:>6}\t", shown + 1)));
+        // a limit that's reached first says so
+        let few = Read.run(json!({ "path": "big.txt", "limit": 2 }), &ctx).await;
+        assert!(few.content.ends_with("(showing lines 1-2 of 100: 2 lines asked for; use offset 3 to continue)"), "{}", few.content);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -1,5 +1,6 @@
 //! The tools the agent can call, and the registry that holds them. The agent runs every call
 //! through the same pipeline (see [`crate::agent`]): approval, timeout, output truncation, event.
+mod edit;
 mod fs;
 mod git;
 mod shell;
@@ -149,6 +150,13 @@ pub trait Tool: Send + Sync {
     /// [`Decision::Confirm`](crate::approval::Decision::Confirm) with that text runs it.
     fn confirm(&self, _input: &Value) -> Option<String> {
         None
+    }
+    /// Whether this call may run at the same time as the calls next to it in a step that may too:
+    /// it only reads, asks nobody and depends on nothing they do (read, glob, grep, read-only
+    /// git). Off by default; a tool turns it on only when that holds for every input it says yes
+    /// to.
+    fn concurrent(&self, _input: &Value, _ctx: &ToolCtx) -> bool {
+        false
     }
     async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput;
 }
