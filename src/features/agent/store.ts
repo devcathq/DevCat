@@ -25,10 +25,33 @@ export interface Chat extends ChatView {
   attachments: string[];
   /** Run its commands in the OS sandbox (where there is one: see `useSandbox`). */
   sandbox: boolean;
+  /** How hard the model thinks (see `EFFORTS`). */
+  effort: Effort;
 }
+
+/** How hard the model thinks: `auto` leaves it to the provider (nothing is sent). */
+export type Effort = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORTS: { id: Effort; label: string; hint: string }[] = [
+  { id: "auto", label: "Auto", hint: "the model's own default" },
+  { id: "low", label: "Low", hint: "quick answers, little reasoning" },
+  { id: "medium", label: "Medium", hint: "some reasoning" },
+  { id: "high", label: "High", hint: "careful reasoning" },
+  { id: "xhigh", label: "Extra high", hint: "more reasoning (Claude 4.7 and later; High elsewhere)" },
+  { id: "max", label: "Max", hint: "as much as it takes (slow, costs more)" },
+];
 
 const KEY_POLICY = "devcat.agent.policy";
 const KEY_SANDBOX = "devcat.agent.sandbox";
+const KEY_EFFORT = "devcat.agent.effort";
+
+const savedEffort = (): Effort => {
+  try {
+    const e = localStorage.getItem(KEY_EFFORT);
+    return EFFORTS.some((x) => x.id === e) ? (e as Effort) : "auto";
+  } catch {
+    return "auto";
+  }
+};
 
 const savedSandbox = () => {
   try {
@@ -56,7 +79,7 @@ function savedPolicy(): AgentPolicy {
   }
 }
 
-const emptyChat = (): Chat => ({ sessionId: null, providerId: "", title: "", model: "", providerName: "", busy: false, opening: true, error: null, items: [], usage: ZERO, policy: savedPolicy(), context: null, attachments: [], contextTokens: 0, sandbox: savedSandbox() });
+const emptyChat = (): Chat => ({ sessionId: null, providerId: "", title: "", model: "", providerName: "", busy: false, opening: true, error: null, items: [], usage: ZERO, policy: savedPolicy(), context: null, attachments: [], contextTokens: 0, sandbox: savedSandbox(), effort: savedEffort() });
 
 export const useAgent = create<{ chats: Record<string, Chat> }>(() => ({ chats: {} }));
 
@@ -162,7 +185,7 @@ export async function send(tabId: string, text: string): Promise<boolean> {
     const models = provider ? await connectionModels(provider) : [];
     // where there's no sandbox, a saved "on" doesn't stop the chat
     const sandbox = c.sandbox && useSandbox.getState().available === true;
-    const sendIt = () => api.agentSend(c.sessionId!, text.trim(), c.policy, c.model || null, c.attachments, contextWindow(c.model, models).tokens, sandbox);
+    const sendIt = () => api.agentSend(c.sessionId!, text.trim(), c.policy, c.model || null, c.attachments, contextWindow(c.model, models).tokens, sandbox, c.effort);
     try {
       await sendIt();
     } catch (e) {
@@ -197,6 +220,11 @@ export async function answer(tabId: string, toolUseId: string, decision: AgentDe
 export function setSandbox(tabId: string, sandbox: boolean) {
   try { localStorage.setItem(KEY_SANDBOX, sandbox ? "1" : "0"); } catch { /* private mode */ }
   patch(tabId, () => ({ sandbox }));
+}
+
+export function setEffort(tabId: string, effort: Effort) {
+  try { localStorage.setItem(KEY_EFFORT, effort); } catch { /* private mode */ }
+  patch(tabId, () => ({ effort }));
 }
 
 export function setPolicy(tabId: string, policy: AgentPolicy) {

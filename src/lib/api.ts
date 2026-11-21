@@ -211,8 +211,9 @@ export const api = {
   agentOpen: (cwd: string, providerId: string, sessionId: string | null, connectionId: string | null = null, ghostWindow: string | null = null) =>
     invoke<AgentOpened>("agent_open", { cwd, providerId, sessionId, connectionId, ghostWindow }),
   /** `sandbox`: run its commands in the OS sandbox from this message on (null = as the chat was). */
-  agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[], contextWindow: number | null, sandbox: boolean | null = null) =>
-    invoke<void>("agent_send", { sessionId, text, policy, model, attachments, contextWindow, sandbox }),
+  /** `effort`: how hard the model thinks from this message on (`auto`: the provider's default; null = as the chat was). */
+  agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[], contextWindow: number | null, sandbox: boolean | null = null, effort: string | null = null) =>
+    invoke<void>("agent_send", { sessionId, text, policy, model, attachments, contextWindow, sandbox, effort }),
   /** Whether this computer can run the agent's commands in the OS sandbox (macOS, Linux). */
   agentSandbox: () => invoke<{ available: boolean; reason: string | null }>("agent_sandbox"),
   agentAnswer: (sessionId: string, toolUseId: string, answer: string) => invoke<void>("agent_answer", { sessionId, toolUseId, answer }),

@@ -69,7 +69,7 @@ async fn openai_compatible_streams_a_tool_call_after_a_retry() {
     ]) + "data: [DONE]\n\n";
     // first a 503 (retried), then the stream
     let (base, seen) = server(vec![(503, r#"{"error":{"message":"overloaded"}}"#.into()), (200, stream)]).await;
-    let llm = Llm::new(LlmConfig { protocol: Protocol::OpenaiChat, base_url: format!("{base}/v1"), api_key: Some("sk-test".into()), model: "qwen3".into(), max_tokens: 1000 });
+    let llm = Llm::new(LlmConfig { protocol: Protocol::OpenaiChat, base_url: format!("{base}/v1"), api_key: Some("sk-test".into()), model: "qwen3".into(), max_tokens: 1000, effort: None });
     let msgs = [Message::user_text("what's in a.txt?")];
     let mut text = String::new();
     let reply = llm
@@ -104,7 +104,7 @@ async fn anthropic_streams_and_reports_errors() {
         json!({ "type": "message_stop" }),
     ]);
     let (base, seen) = server(vec![(200, stream), (401, r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#.into())]).await;
-    let llm = Llm::new(LlmConfig { protocol: Protocol::Anthropic, base_url: base, api_key: Some("ant-key".into()), model: "claude-x".into(), max_tokens: 500 });
+    let llm = Llm::new(LlmConfig { protocol: Protocol::Anthropic, base_url: base, api_key: Some("ant-key".into()), model: "claude-x".into(), max_tokens: 500, effort: None });
     let msgs = [Message::user_text("hi")];
     let reply = llm.step(&Request { system: "s", messages: &msgs, tools: &tools(), cache_key: None }, &mut |_| {}).await.unwrap();
     assert_eq!(reply.content, vec![Block::Text { text: "Héllo ✓".into() }]);
@@ -134,7 +134,7 @@ async fn openai_responses_streams_a_tool_call_after_a_retry() {
         json!({ "type": "response.completed", "response": { "status": "completed", "usage": { "input_tokens": 42, "output_tokens": 7, "input_tokens_details": { "cached_tokens": 30 } } } }),
     ]);
     let (base, seen) = server(vec![(429, r#"{"error":{"message":"rate limited"}}"#.into()), (200, stream)]).await;
-    let llm = Llm::new(LlmConfig { protocol: Protocol::OpenaiResponses, base_url: format!("{base}/v1"), api_key: Some("sk-test".into()), model: "gpt-5-codex".into(), max_tokens: 1000 });
+    let llm = Llm::new(LlmConfig { protocol: Protocol::OpenaiResponses, base_url: format!("{base}/v1"), api_key: Some("sk-test".into()), model: "gpt-5-codex".into(), max_tokens: 1000, effort: None });
     let msgs = [Message::user_text("what's in a.txt?")];
     let mut text = String::new();
     let reply = llm
@@ -166,7 +166,7 @@ use std::time::Duration;
 
 fn quick(protocol: Protocol, base: String) -> Llm {
     let base_url = if protocol == Protocol::Anthropic { base } else { format!("{base}/v1") };
-    Llm::new(LlmConfig { protocol, base_url, api_key: None, model: "m".into(), max_tokens: 1000 }).with_backoff(Duration::from_millis(5))
+    Llm::new(LlmConfig { protocol, base_url, api_key: None, model: "m".into(), max_tokens: 1000, effort: None }).with_backoff(Duration::from_millis(5))
 }
 
 /// A whole Chat Completions answer: some text and a `read` call.

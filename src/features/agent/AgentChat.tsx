@@ -16,7 +16,7 @@ import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
 import { GHOST_SUGGESTIONS, HARNESS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, focusSuggestions, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editChanges, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, retryLabel, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { fmtCost } from "../claude/util";
-import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, editMessage, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
+import { EFFORTS, answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, editMessage, loadSandbox, openChat, send, setEffort, setModel, setPolicy, setSandbox, type Effort, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
 import { useClaude } from "../claude/store";
 import { historyFor, remember } from "./history";
 
@@ -378,6 +378,23 @@ function ToolDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
       {item.output && !(item.name === "write" || item.name === "edit") && <Code muted={item.status !== "error"} danger={item.status === "error"}>{item.output}</Code>}
       {item.output && (item.name === "write" || item.name === "edit") && (item.status === "error" || item.status === "denied") && <Code danger>{item.output}</Code>}
     </div>
+  );
+}
+
+/** How hard the model thinks before it answers, for the next messages. */
+function EffortPicker({ tabId }: { tabId: string }) {
+  const effort = useAgent((s) => s.chats[tabId]?.effort ?? "auto");
+  const e = EFFORTS.find((x) => x.id === effort) ?? EFFORTS[0];
+  return (
+    <label title={`Thinking: ${e.label}, ${e.hint}. For the next messages; providers that don't reason may refuse anything but Auto.`}
+      className={clsx("relative flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-[12px] transition-colors", effort === "auto" ? "border-line text-muted hover:border-faint hover:text-fg" : "border-accent/40 bg-accent/10 text-accent")}>
+      <Brain className="size-3.5" />
+      {effort === "auto" ? "Thinking" : e.label}
+      <ChevronDown className="size-3 opacity-60" />
+      <select value={effort} onChange={(ev) => setEffort(tabId, ev.target.value as Effort)} className="absolute inset-0 cursor-pointer opacity-0" aria-label="Thinking effort">
+        {EFFORTS.map((x) => <option key={x.id} value={x.id}>{x.label}: {x.hint}</option>)}
+      </select>
+    </label>
   );
 }
 
@@ -836,6 +853,7 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
             </select>
           </label>
           <SandboxChip tabId={tabId} />
+          <EffortPicker tabId={tabId} />
           <label className="relative flex h-7 max-w-[240px] cursor-pointer items-center gap-1.5 rounded-full bg-hover/70 px-2.5 text-[12px] text-muted hover:text-fg"
             title={models.length ? `Model for the next messages (${chat.providerName})` : `${chat.providerName}: ${chat.model}`}>
             <Cpu className="size-3.5 shrink-0" /><span className="truncate">{chat.model}</span>

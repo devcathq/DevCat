@@ -34,6 +34,48 @@ pub struct LlmConfig {
     pub model: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// How hard the model thinks, when the user chose (None: the provider's default, and nothing
+    /// about it is sent). Each adapter says it the way its API does (see [`Effort`]).
+    #[serde(default)]
+    pub effort: Option<Effort>,
+}
+
+/// How much the model reasons before it answers. Anthropic: adaptive thinking with
+/// `output_config.effort` on Claude 4.6 and later, a thinking budget on other models; OpenAI:
+/// `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses), where the top
+/// levels are `high`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Effort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+    /// The level from its name (`low` … `max`); None for anything else (`auto`).
+    pub fn parse(s: &str) -> Option<Effort> {
+        serde_json::from_value(serde_json::Value::String(s.trim().to_lowercase())).ok()
+    }
+    /// OpenAI's levels stop at `high`.
+    pub(crate) fn openai(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            _ => "high",
+        }
+    }
 }
 
 fn default_max_tokens() -> u32 {

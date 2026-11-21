@@ -31,6 +31,10 @@ pub(super) fn body(cfg: &LlmConfig, req: &Request<'_>) -> Value {
     if let Some(key) = req.cache_key.filter(|_| cfg.base_url.contains("api.openai.com")) {
         b["prompt_cache_key"] = Value::String(key.to_string());
     }
+    // only when the user chose: servers that don't reason may refuse the field
+    if let Some(e) = cfg.effort {
+        b["reasoning_effort"] = json!(e.openai());
+    }
     if !req.tools.is_empty() {
         b["tools"] = req
             .tools
@@ -363,7 +367,7 @@ mod tests {
             Message { role: Role::Assistant, content: vec![Block::ToolUse { id: "c1".into(), name: "read".into(), input: json!({ "path": "a" }) }] },
             Message { role: Role::User, content: vec![Block::ToolResult { tool_use_id: "c1".into(), content: "no such file".into(), is_error: true }] },
         ];
-        let cfg = LlmConfig { protocol: super::super::Protocol::OpenaiChat, base_url: "x".into(), api_key: None, model: "m".into(), max_tokens: 100 };
+        let cfg = LlmConfig { protocol: super::super::Protocol::OpenaiChat, base_url: "x".into(), api_key: None, model: "m".into(), max_tokens: 100, effort: None };
         let b = body(&cfg, &Request { system: "sys", messages: &msgs, tools: &[], cache_key: None });
         assert_eq!(b["messages"][1]["tool_calls"][0]["function"]["arguments"], "{\"path\":\"a\"}");
         assert_eq!(b["messages"][2], json!({ "role": "tool", "tool_call_id": "c1", "content": "Error: no such file" }));
@@ -376,7 +380,7 @@ mod tests {
             Message { role: Role::Assistant, content: vec![Block::ToolUse { id: "c1".into(), name: "read".into(), input: json!({ "path": "a.png" }) }] },
             Message { role: Role::User, content: vec![Block::ToolResult { tool_use_id: "c1".into(), content: "a.png".into(), is_error: false }, Block::Image { media_type: "image/png".into(), data: "AAAA".into() }] },
         ];
-        let cfg = LlmConfig { protocol: super::super::Protocol::OpenaiChat, base_url: "x".into(), api_key: None, model: "m".into(), max_tokens: 100 };
+        let cfg = LlmConfig { protocol: super::super::Protocol::OpenaiChat, base_url: "x".into(), api_key: None, model: "m".into(), max_tokens: 100, effort: None };
         let b = body(&cfg, &Request { system: "sys", messages: &msgs, tools: &[], cache_key: None });
         assert_eq!(b["messages"][2], json!({ "role": "tool", "tool_call_id": "c1", "content": "a.png" }));
         assert_eq!(b["messages"][3]["role"], "user");

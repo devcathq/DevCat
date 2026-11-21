@@ -57,7 +57,7 @@ async fn main() {
             _ => prompt.push(a),
         }
     }
-    let llm = Llm::new(LlmConfig { protocol, base_url: base, api_key: key, model, max_tokens: 8192 });
+    let llm = Llm::new(LlmConfig { protocol, base_url: base, api_key: key, model, max_tokens: 8192, effort: None });
     let mut session = match resume {
         Some(p) => Session::open(&p).await.expect("open session"),
         None => Session::create(&cwd.join(".devcat-sessions"), &cwd.to_string_lossy()).await.expect("create session"),

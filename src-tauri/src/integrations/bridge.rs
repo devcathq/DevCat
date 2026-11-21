@@ -279,7 +279,7 @@ async fn request(t: &Arc<dyn Transport>, l: &Link, body: &str) {
         set_session(&l.id, Some(session.clone()));
     }
     let policy = if l.perms.auto_edit { Policy::AutoEdit } else { Policy::Ask };
-    match agent::agent_send(session, body.to_string(), policy, None, None, None, None).await {
+    match agent::agent_send(session, body.to_string(), policy, None, None, None, None, None).await {
         Ok(()) => {
             let _ = t.send(&l.chat_id, &Outgoing::text("⏳ On it.")).await;
         }

@@ -306,7 +306,7 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
                 }
             }
             // the sandbox is chosen on the computer: the chat keeps it
-            out(crate::agent::agent_send(session_id, a!("text"), a!("policy"), arg(args, "model").unwrap_or(None), Some(attachments), arg(args, "contextWindow").unwrap_or(None), None).await)
+            out(crate::agent::agent_send(session_id, a!("text"), a!("policy"), arg(args, "model").unwrap_or(None), Some(attachments), arg(args, "contextWindow").unwrap_or(None), None, arg(args, "effort").unwrap_or(None)).await)
         }
         "agent_attach" => out(crate::agent::agent_attach(a!("sessionId"), a!("name"), a!("data")).await),
         "agent_stop" => out(crate::agent::agent_stop(a!("sessionId")).await),

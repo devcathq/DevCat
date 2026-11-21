@@ -36,6 +36,9 @@ pub(super) fn body(cfg: &LlmConfig, req: &Request<'_>) -> Value {
     });
     if reasons(&cfg.model) {
         b["reasoning"] = json!({ "summary": "auto" });
+        if let Some(e) = cfg.effort {
+            b["reasoning"]["effort"] = json!(e.openai());
+        }
     }
     if let Some(key) = req.cache_key.filter(|_| cfg.base_url.contains("api.openai.com")) {
         b["prompt_cache_key"] = Value::String(key.to_string());
@@ -250,7 +253,7 @@ mod tests {
     }
 
     fn cfg(model: &str, base: &str) -> LlmConfig {
-        LlmConfig { protocol: super::super::Protocol::OpenaiResponses, base_url: base.into(), api_key: None, model: model.into(), max_tokens: 1000 }
+        LlmConfig { protocol: super::super::Protocol::OpenaiResponses, base_url: base.into(), api_key: None, model: model.into(), max_tokens: 1000, effort: None }
     }
 
     #[test]

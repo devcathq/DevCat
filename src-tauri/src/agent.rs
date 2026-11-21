@@ -182,6 +182,8 @@ struct Run {
     mcp: Mutex<Vec<Arc<Server>>>,
     /// A ghost chat: the label of the window it's open in (see [`ghost_dir`]).
     ghost: Option<String>,
+    /// How hard the model thinks, as the chat last chose (None: the provider's default).
+    effort: Mutex<Option<devcat_harness::Effort>>,
 }
 
 /// Rules, skills and MCP servers the agent found for the folder.
@@ -637,6 +639,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         context: Mutex::new(context),
         mcp: Mutex::default(),
         ghost: ghost.map(String::from),
+        effort: Mutex::new(None),
     });
     // MCP servers start in the background: the chat opens right away and gets their tools when
     // they're ready (between turns, never in the middle of one).
@@ -1005,8 +1008,12 @@ pub async fn agent_answer(session_id: String, tool_use_id: String, answer: Strin
 /// file paths: images are shown to the model, every file is listed with its path.
 #[cfg_attr(feature = "gui", tauri::command)]
 /// `sandbox` turns the OS sandbox for its commands on or off from this message on (None = as it was).
-pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>, sandbox: Option<bool>) -> AppResult<()> {
-    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window, sandbox, true).await.map(|_| ())
+/// `effort`: how hard the model thinks from this message on, `low` … `max`, or `auto` for the
+/// provider's default (None = as it was).
+#[allow(clippy::too_many_arguments)]
+pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>, sandbox: Option<bool>, effort: Option<String>) -> AppResult<()> {
+    let effort = effort.map(|e| devcat_harness::Effort::parse(&e));
+    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window, sandbox, effort, true).await.map(|_| ())
 }
 
 /// Whether this computer can run the agent's commands in the OS sandbox (and why not).
@@ -1026,7 +1033,7 @@ pub async fn agent_sandbox() -> AppResult<SandboxInfo> {
 /// Send a message the way the chat does, and wait for the turn to end: (how it ended, the error).
 /// For scheduled jobs (agent_jobs.rs).
 pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_window: Option<u64>, sandbox: bool) -> AppResult<(String, Option<String>)> {
-    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window, Some(sandbox), false)
+    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window, Some(sandbox), None, false)
         .await?
         .ok_or_else(|| AppError::msg("The agent is still working. Stop it or wait for it to finish."))?;
     let (end, error) = done.await.map_err(|e| AppError::msg(e.to_string()))?;
@@ -1035,7 +1042,8 @@ pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_wind
 
 /// Start a turn in the background; the handle gives how it ended. While one runs, the message is
 /// queued for it instead (`queue`, the chat's messages: no handle then), or refused (a job's).
-async fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>, sandbox: Option<bool>, queue: bool) -> AppResult<Option<tokio::task::JoinHandle<(Value, Option<String>)>>> {
+#[allow(clippy::too_many_arguments)]
+async fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>, sandbox: Option<bool>, effort: Option<Option<devcat_harness::Effort>>, queue: bool) -> AppResult<Option<tokio::task::JoinHandle<(Value, Option<String>)>>> {
     let run = run_of(session_id)?;
     if text.trim().is_empty() && attachments.is_empty() {
         return Err(AppError::msg("Type a message first"));
@@ -1080,8 +1088,12 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
         let mut g = run.turn.lock().await;
         let (agent, session) = &mut *g;
         agent.policy = policy;
-        if let Some(m) = model.filter(|m| !m.trim().is_empty() && *m != agent.model.name()) {
-            agent.model = Arc::new(Llm::new(devcat_harness::LlmConfig { model: m, ..run.cfg.clone() }));
+        // a new model or effort from this message on (the same connection and key)
+        let want = model.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| agent.model.name());
+        let effort = effort.unwrap_or(*run.effort.lock());
+        if want != agent.model.name() || effort != *run.effort.lock() {
+            agent.model = Arc::new(Llm::new(devcat_harness::LlmConfig { model: want, effort, ..run.cfg.clone() }));
+            *run.effort.lock() = effort;
         }
         agent.context_window = context_window.filter(|&w| w > 0);
         agent.max_steps = crate::ai::agent_max_steps(&run.provider_id);
