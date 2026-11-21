@@ -1736,3 +1736,68 @@ async fn a_slash_command_goes_to_the_model_and_the_log_keeps_what_was_typed() {
     assert_eq!(session.title(), "/bump notes.txt");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// An MCP server's tool with a long definition: enough of them are left out of the requests.
+struct Heavy(&'static str);
+
+#[async_trait]
+impl Tool for Heavy {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: self.0.into(), description: format!("{} {}", self.0.replace('_', " "), "x".repeat(40_000)), input_schema: json!({ "type": "object" }) }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, _: &Value) -> String {
+        String::new()
+    }
+    fn deferrable(&self) -> bool {
+        true
+    }
+    async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::ok(format!("{} ran", self.0))
+    }
+}
+
+/// Records the tool names of every request.
+struct Tools(Mutex<Vec<Vec<String>>>, Mutex<Vec<Vec<Block>>>);
+
+#[async_trait]
+impl Model for Tools {
+    fn name(&self) -> String {
+        "tools".into()
+    }
+    async fn step(&self, req: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
+        self.0.lock().unwrap().push(req.tools.iter().map(|t| t.name.clone()).collect());
+        Ok(Reply { content: self.1.lock().unwrap().remove(0), usage: Usage::default(), truncated: false })
+    }
+}
+
+#[tokio::test]
+async fn many_mcp_tools_are_found_with_tool_search_and_stay_once_found() {
+    let (dir, mut session) = project().await;
+    let model = Arc::new(Tools(Mutex::default(), Mutex::new(vec![
+        vec![tool("s1", "tool_search", json!({ "query": "open an issue" }))],
+        vec![tool("c1", "mcp__gh__open_issue", json!({}))],
+        vec![text("Opened.")],
+        vec![text("Still here.")],
+    ])));
+    let mut tools = Registry::standard();
+    tools.add(Heavy("mcp__gh__open_issue"));
+    tools.add(Heavy("mcp__gh__merge_pull"));
+    let mut agent = Agent::new(model.clone(), tools, Policy::Bypass, Arc::new(DenyAll), "system".into());
+    let mut results = Vec::new();
+    agent.turn(&mut session, "open an issue", &Cancel::default(), &mut |e| if let AgentEvent::ToolResult { content, .. } = e { results.push(content) }).await.unwrap();
+    assert!(results[0].starts_with("Tools now available: mcp__gh__open_issue"), "{}", results[0]);
+    assert_eq!(results[1], "mcp__gh__open_issue ran");
+    let seen = model.0.lock().unwrap().clone();
+    let has = |n: usize, t: &str| seen[n].iter().any(|x| x == t);
+    // first only the search, then the tool it found (never the other one)
+    assert!(has(0, "tool_search") && !has(0, "mcp__gh__open_issue"));
+    assert!(has(1, "mcp__gh__open_issue") && has(2, "mcp__gh__open_issue") && !seen.iter().flatten().any(|t| t == "mcp__gh__merge_pull"));
+    // a chat opened again still has it
+    let mut again = Session::open(session.path()).await.unwrap();
+    agent.turn(&mut again, "and now?", &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert!(model.0.lock().unwrap().last().unwrap().iter().any(|t| t == "mcp__gh__open_issue"));
+    let _ = std::fs::remove_dir_all(dir);
+}

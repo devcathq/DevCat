@@ -381,6 +381,9 @@ impl Tool for McpTool {
     fn timeout(&self, _: &Value) -> Duration {
         CALL_TIMEOUT + Duration::from_secs(5)
     }
+    fn deferrable(&self) -> bool {
+        true
+    }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
         self.server.call(&self.tool, input).await
     }

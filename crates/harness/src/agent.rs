@@ -6,7 +6,7 @@ use crate::hooks::{self, Hooks, Outcome};
 use crate::llm::{Delta, Llm, Reply, Request, UNPARSED, is_overflow};
 use crate::message::{Block, Message, Role, ToolSpec, Usage};
 use crate::session::{Session, SessionEvent};
-use crate::tools::{ASK_USER, MAX_OUTPUT, Registry, SUBAGENT, TODO_WRITE, ToolCtx, ToolOutput, truncate};
+use crate::tools::{ASK_USER, FOUND, MAX_OUTPUT, Registry, SUBAGENT, TODO_WRITE, TOOL_SEARCH, ToolCtx, ToolOutput, truncate};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -189,6 +189,41 @@ fn files_of(session: &Session) -> (Vec<String>, Vec<String>) {
     }
     read.retain(|p| !changed.contains(p));
     (changed, read)
+}
+
+/// The tools the conversation found with `tool_search` or used: when the MCP tools are left out
+/// of the requests ([`Registry::declared`]), these go with them from then on. Read from the log, so
+/// a chat opened again has them too.
+pub fn active_tools(session: &Session) -> HashSet<String> {
+    let mut active = HashSet::new();
+    let mut searches = HashSet::new();
+    for e in session.events() {
+        match e {
+            SessionEvent::Assistant { content, .. } => {
+                for b in content {
+                    if let Block::ToolUse { id, name, .. } = b {
+                        if name == TOOL_SEARCH {
+                            searches.insert(id.clone());
+                        } else {
+                            active.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            SessionEvent::ToolResults { results, .. } => {
+                for b in results {
+                    if let Block::ToolResult { tool_use_id, content, is_error: false } = b
+                        && searches.contains(tool_use_id)
+                        && let Some(list) = content.lines().next().and_then(|l| l.strip_prefix(FOUND))
+                    {
+                        active.extend(list.split(", ").map(|n| n.trim().to_string()).filter(|n| !n.is_empty()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    active
 }
 
 /// The answer a conversation ends with: the text of the last step that said something, and of the
@@ -529,7 +564,8 @@ impl Agent {
         }
         let tokens_before = session.context_tokens();
         on(AgentEvent::Compacting { tokens_before });
-        let (mut summary, usage) = match self.summarize(&session.id, &messages, focus, session.last_summary().is_some(), cancel).await {
+        let specs = self.tools.declared(&active_tools(session));
+        let (mut summary, usage) = match self.summarize(&session.id, &messages, &specs, focus, session.last_summary().is_some(), cancel).await {
             Ok(s) => s,
             Err(e) => {
                 on(AgentEvent::CompactFailed { message: e.to_string() });
@@ -585,11 +621,11 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
     /// conversation is too long even for this request, it's cut down step by step ([`shrink`])
     /// until it fits: a summary of most of it beats a chat that can't go on.
     /// `update`: the conversation starts with an earlier summary, which the new one carries on.
-    async fn summarize(&self, key: &str, messages: &[Message], focus: Option<&str>, update: bool, cancel: &Cancel) -> Result<(String, Usage)> {
-        // Same system prompt and tools as every step, so the provider's cache still applies.
-        let specs = self.tools.specs();
+    #[allow(clippy::too_many_arguments)]
+    async fn summarize(&self, key: &str, messages: &[Message], specs: &[ToolSpec], focus: Option<&str>, update: bool, cancel: &Cancel) -> Result<(String, Usage)> {
+        // Same system prompt and tools as every step (`specs`), so the provider's cache still applies.
         let system = self.system_now();
-        let overhead = system.len() + specs_chars(&specs);
+        let overhead = system.len() + specs_chars(specs);
         let mut usage = Usage::default();
         let mut level = 0;
         // what can be told ahead: with a known window, don't send what can't fit
@@ -615,7 +651,7 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                 Some(m) if m.role == Role::User => m.content.push(Block::Text { text: ask }),
                 _ => messages.push(Message { role: Role::User, content: vec![Block::Text { text: ask }] }),
             }
-            let req = Request { system: &system, messages: &messages, tools: &specs, cache_key: Some(key) };
+            let req = Request { system: &system, messages: &messages, tools: specs, cache_key: Some(key) };
             let mut ignore = |_| {};
             let reply = tokio::select! {
                 r = self.model.step(&req, &mut ignore) => r,
@@ -729,13 +765,11 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
     }
 
     async fn run(&mut self, session: &mut Session, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<TurnEnd> {
-        let specs: Vec<ToolSpec> = self.tools.specs();
         let ctx = ToolCtx { cwd: session.cwd.clone().into(), sandbox: self.sandbox };
         // the last call and how many times in a row it was made (repeat guard)
         let mut last: Option<(String, Value)> = None;
         let mut same = 0;
         let system = self.system_now();
-        let overhead = system.len() + specs_chars(&specs);
         // a Stop hook already sent the agent back to work this turn
         let mut stop_hook_active = false;
         let mut steps = 0u32;
@@ -751,6 +785,10 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         // the model had answered, and came back only for messages sent meanwhile
         let mut answered = false;
         loop {
+            // the tools this step declares: with many MCP tools, the ones found so far (see
+            // `Registry::declared`)
+            let specs = self.tools.declared(&active_tools(session));
+            let overhead = system.len() + specs_chars(&specs);
             if self.max_steps > 0 && steps >= self.max_steps {
                 // A helper's answer is all its caller gets: at the limit it's asked for what it
                 // found, instead of throwing its work away.
@@ -1215,6 +1253,19 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
     /// runs), or with its result when it won't.
     #[allow(clippy::too_many_arguments)]
     async fn prepare(&mut self, session: &mut Session, ctx: &ToolCtx, id: &str, name: &str, input: Value, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<Prepared> {
+        // the MCP tools left out of the requests: found here, declared from the next step on
+        if name == TOOL_SEARCH {
+            let query = input.get("query").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            on(AgentEvent::ToolCall { id: id.to_string(), name: name.to_string(), summary: query.clone(), input: input.clone() });
+            let found = self.tools.search(&query, 8);
+            return Ok(Prepared::Done(if found.is_empty() {
+                ToolOutput::ok(format!("No tools match \"{query}\". Try other words, or do without."))
+            } else {
+                let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
+                let list: Vec<String> = found.iter().map(|s| format!("- {}: {}", s.name, clip(s.description.lines().next().unwrap_or(""), 200))).collect();
+                ToolOutput::ok(format!("{FOUND}{}\n\nThey're in your tools from your next message on:\n{}", names.join(", "), list.join("\n")))
+            }));
+        }
         let Some(tool) = self.tools.get(name) else {
             return Ok(Prepared::Done(ToolOutput::err(format!("There is no tool named `{name}`."))));
         };

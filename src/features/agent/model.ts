@@ -359,6 +359,7 @@ export function describe(name: string, input: Record<string, unknown> | null, st
     case "edit": { const c = editChanges(i); return { icon: FilePen, verb: done ? "Edited" : "Editing", target: rel(str(i.path), cwd), plus: c.reduce((n, e) => n + lines(e.after), 0), minus: c.reduce((n, e) => n + lines(e.before), 0) }; }
     case "glob": return { icon: FolderSearch, verb: done ? "Found files" : "Finding files", target: str(i.pattern) };
     case "grep": return { icon: Search, verb: done ? "Searched" : "Searching", target: str(i.pattern) };
+    case "tool_search": return { icon: Search, verb: done ? "Looked for tools" : "Looking for tools", target: str(i.query) };
     case "shell": return { icon: SquareTerminal, verb: done ? "Ran" : "Running", target: str(i.command) };
     case "git": return { icon: GitBranch, verb: done ? "Ran" : "Running", target: `git ${gitArgs(i).map((a) => (/^$|\s/.test(a) ? `"${a}"` : a)).join(" ")}` };
     case "ask_user": return { icon: MessageCircleQuestion, verb: done ? "Asked" : "Asking", target: str(i.question) };

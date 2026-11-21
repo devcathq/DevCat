@@ -537,9 +537,15 @@ const HEAVY_TOOLS: usize = 15_000;
 /// What to tell the user about an MCP server with `tools` tools whose definitions have `chars`
 /// characters, when that's a lot: every step of the chat sends them, so answers get slower and
 /// dearer and the context window fills sooner (with a few hundred tools, in a few dozen steps).
-fn heavy_tools_notice(name: &str, tools: usize, chars: usize) -> Option<String> {
+fn heavy_tools_notice(name: &str, tools: usize, chars: usize, deferred: bool) -> Option<String> {
     let tokens = chars / 4;
     (tokens > HEAVY_TOOLS).then(|| {
+        if deferred {
+            return format!(
+                "MCP server \"{name}\" has {tools} tools, about {}k tokens: too many to send with every request, so the agent looks up the ones it needs (tool_search) and only those go along.",
+                (tokens + 500) / 1000
+            );
+        }
         format!(
             "MCP server \"{name}\" adds {tools} tools, about {}k tokens, to every request of this chat: each step is slower and costs more, and the context window fills that much sooner. If you don't need it here, turn it off where it's configured (\"disabled\": true in its entry).",
             (tokens + 500) / 1000
@@ -655,14 +661,18 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
             {
                 use devcat_harness::tools::Tool;
                 let mut g = run.turn.lock().await;
+                let mut sizes = Vec::new();
                 for s in &servers {
                     let tools = McpTool::all(s);
                     let chars: usize = tools.iter().map(|t| t.spec()).map(|s| s.name.len() + s.description.len() + s.input_schema.to_string().len()).sum();
-                    heavy.extend(heavy_tools_notice(&s.name, tools.len(), chars));
+                    sizes.push((s.name.clone(), tools.len(), chars));
                     for t in tools {
                         g.0.tools.add(t);
                     }
                 }
+                // with this many, they're looked up when needed instead (Registry::declared)
+                let deferred = g.0.tools.defers();
+                heavy.extend(sizes.into_iter().filter_map(|(name, n, chars)| heavy_tools_notice(&name, n, chars, deferred)));
             }
             let ctx = {
                 let mut c = run.context.lock();
@@ -1340,10 +1350,12 @@ mod tests {
     #[test]
     fn an_mcp_server_with_a_great_many_tools_is_pointed_out() {
         // a usual server: nothing to say
-        assert_eq!(heavy_tools_notice("github", 40, 30_000), None);
+        assert_eq!(heavy_tools_notice("github", 40, 30_000, false), None);
         // 263 tools in 369,000 characters (measured: REA's server) is 92k tokens with every request
-        let note = heavy_tools_notice("rea", 263, 368_913).unwrap();
+        let note = heavy_tools_notice("rea", 263, 368_913, false).unwrap();
         assert!(note.contains("\"rea\" adds 263 tools, about 92k tokens, to every request"), "{note}");
+        // unless they're looked up when needed
+        assert!(heavy_tools_notice("rea", 263, 368_913, true).unwrap().contains("looks up the ones it needs"));
     }
 
     #[test]
