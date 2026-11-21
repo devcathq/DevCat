@@ -443,11 +443,9 @@ impl Tool for Edit {
         FILE_TIMEOUT * 2 + Duration::from_secs(5)
     }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
-        let s = |k: &str| input.get(k).and_then(Value::as_str);
-        let (path, old, new) = match (path_arg(&input), s("old_string"), s("new_string")) {
-            (Ok(p), Some(o), Some(n)) => (self.0.path(p), o, n),
-            (Err(e), _, _) => return e,
-            _ => return ToolOutput::err("Missing required string parameters `old_string` and `new_string`."),
+        let (path, changes) = match (path_arg(&input), fs::changes(&input)) {
+            (Ok(p), Ok(c)) => (self.0.path(p), c),
+            (Err(e), _) | (_, Err(e)) => return e,
         };
         let text = match fetch(&self.0, &path, MAX_FILE + 1).await {
             Err(e) => return e,
@@ -458,12 +456,12 @@ impl Tool for Edit {
                 Err(_) => return ToolOutput::err(format!("Can't edit {path}: it isn't UTF-8 text.")),
             },
         };
-        let (updated, count) = match fs::replaced(&text, old, new, input.get("replace_all").and_then(Value::as_bool).unwrap_or(false), &path) {
+        let (updated, done) = match fs::edited(&text, &changes, &input, &path) {
             Ok(r) => r,
             Err(e) => return e,
         };
         match put(&self.0, &path, &updated).await {
-            Ok(_) => ToolOutput::ok(format!("Edited {path} ({count} replacement{}).", if count == 1 { "" } else { "s" })),
+            Ok(_) => ToolOutput::ok(format!("Edited {path}{done}")),
             Err(e) => e,
         }
     }

@@ -6,7 +6,7 @@ use crate::hooks::{self, Hooks, Outcome};
 use crate::llm::{Delta, Llm, Reply, Request, UNPARSED, is_overflow};
 use crate::message::{Block, Message, Role, ToolSpec, Usage};
 use crate::session::{Session, SessionEvent};
-use crate::tools::{ASK_USER, MAX_OUTPUT, Registry, SUBAGENT, TODO_WRITE, ToolCtx, ToolOutput, truncate};
+use crate::tools::{ASK_USER, FOUND, MAX_OUTPUT, Registry, SUBAGENT, TODO_WRITE, TOOL_SEARCH, ToolCtx, ToolOutput, truncate};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -65,6 +65,18 @@ const KEPT_MESSAGE: usize = 2_000;
 /// the agent worked) stay as they are after it, up to this many characters in all, and no more
 /// than a quarter of a known window: more is left to the summary, or it would be what doesn't fit.
 const KEPT_UNANSWERED: usize = 32_000;
+
+/// The newest steps stay word for word after a summary ([`SessionEvent::Compacted`]'s `tail`) in
+/// up to this share of a known window, and no more than [`TAIL_CHARS`] characters: what the model
+/// just read or saw, so it doesn't look again.
+const TAIL_SHARE: f64 = 0.1;
+const TAIL_CHARS: usize = 80_000;
+
+/// Files listed with a summary (see [`files_of`]): this many changed and this many read, newest first.
+const LISTED_FILES: usize = 30;
+
+/// Added to the summary request when the conversation already starts with a summary.
+const UPDATE_SUMMARY: &str = "\n\nThe conversation starts with the summary made the last time it was cut. Write the new summary as an update of it: carry over what still matters (the request, decisions, errors and fixes, what's left to do), change what's different now, and don't leave something out only because it's old.";
 
 /// What marks a message the harness wrote to the model itself, in the user's place: in the
 /// session log (`User::hook`) and in the chat ([`AgentEvent::Hook`]).
@@ -151,6 +163,67 @@ fn user_words(session: &Session) -> Option<String> {
     }
     kept.reverse();
     Some(kept.iter().enumerate().map(|(n, m)| format!("{}. {m}", n + 1)).collect::<Vec<_>>().join("\n\n"))
+}
+
+/// The files the conversation changed (`edit`, `write`) and read (`read`), each newest first and
+/// at most [`LISTED_FILES`], relative to the project when inside it. From the tool calls in the
+/// whole log, so a summary can't lose track of them, also across several summaries.
+fn files_of(session: &Session) -> (Vec<String>, Vec<String>) {
+    let (mut changed, mut read) = (Vec::<String>::new(), Vec::<String>::new());
+    let cwd = Path::new(&session.cwd);
+    for e in session.events().iter().rev() {
+        let SessionEvent::Assistant { content, .. } = e else { continue };
+        for b in content.iter().rev() {
+            let Block::ToolUse { name, input, .. } = b else { continue };
+            let Some(path) = input.get("path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()) else { continue };
+            let path = Path::new(path).strip_prefix(cwd).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_string());
+            let list = match name.as_str() {
+                "edit" | "write" => &mut changed,
+                "read" => &mut read,
+                _ => continue,
+            };
+            if list.len() < LISTED_FILES && !list.contains(&path) {
+                list.push(path);
+            }
+        }
+    }
+    read.retain(|p| !changed.contains(p));
+    (changed, read)
+}
+
+/// The tools the conversation found with `tool_search` or used: when the MCP tools are left out
+/// of the requests ([`Registry::declared`]), these go with them from then on. Read from the log, so
+/// a chat opened again has them too.
+pub fn active_tools(session: &Session) -> HashSet<String> {
+    let mut active = HashSet::new();
+    let mut searches = HashSet::new();
+    for e in session.events() {
+        match e {
+            SessionEvent::Assistant { content, .. } => {
+                for b in content {
+                    if let Block::ToolUse { id, name, .. } = b {
+                        if name == TOOL_SEARCH {
+                            searches.insert(id.clone());
+                        } else {
+                            active.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            SessionEvent::ToolResults { results, .. } => {
+                for b in results {
+                    if let Block::ToolResult { tool_use_id, content, is_error: false } = b
+                        && searches.contains(tool_use_id)
+                        && let Some(list) = content.lines().next().and_then(|l| l.strip_prefix(FOUND))
+                    {
+                        active.extend(list.split(", ").map(|n| n.trim().to_string()).filter(|n| !n.is_empty()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    active
 }
 
 /// The answer a conversation ends with: the text of the last step that said something, and of the
@@ -346,13 +419,18 @@ pub enum AgentEvent {
 #[derive(Clone, Default)]
 pub struct Inbox(Arc<std::sync::Mutex<Vec<Queued>>>);
 
-/// A queued message: its text and any images.
-pub type Queued = (String, Vec<Block>);
+/// A queued message: its text, any images, and context for the model only (what a slash command
+/// asks for, see [`Agent::turn_with`]).
+pub type Queued = (String, Vec<Block>, Vec<String>);
 
 impl Inbox {
     /// Queue a message (with any images) for the running turn.
     pub fn push(&self, text: String, images: Vec<Block>) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).push((text, images));
+        self.push_with(text, images, vec![]);
+    }
+    /// [`Inbox::push`] with context for the model only (the log keeps `text` as it is).
+    pub fn push_with(&self, text: String, images: Vec<Block>, context: Vec<String>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push((text, images, context));
     }
     /// Everything queued, oldest first; the inbox is empty afterwards.
     pub fn take(&self) -> Vec<Queued> {
@@ -491,7 +569,8 @@ impl Agent {
         }
         let tokens_before = session.context_tokens();
         on(AgentEvent::Compacting { tokens_before });
-        let (mut summary, usage) = match self.summarize(&session.id, &messages, focus, cancel).await {
+        let specs = self.tools.declared(&active_tools(session));
+        let (mut summary, usage) = match self.summarize(&session.id, &messages, &specs, focus, session.last_summary().is_some(), cancel).await {
             Ok(s) => s,
             Err(e) => {
                 on(AgentEvent::CompactFailed { message: e.to_string() });
@@ -503,6 +582,16 @@ impl Agent {
         // replaces), so the model goes on with the same task and the same plan.
         if let Some(said) = user_words(session) {
             summary.push_str(&format!("\n\n## What the user wrote, word for word (oldest first)\n{said}"));
+        }
+        let (changed, read) = files_of(session);
+        if !changed.is_empty() || !read.is_empty() {
+            summary.push_str("\n\n## Files in this conversation (newest first)");
+            if !changed.is_empty() {
+                summary.push_str(&format!("\nChanged: {}", changed.join(", ")));
+            }
+            if !read.is_empty() {
+                summary.push_str(&format!("\nRead: {}", read.join(", ")));
+            }
         }
         if let Some(list) = open_todos(session) {
             summary.push_str(&format!("
@@ -517,10 +606,16 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         }
         // The message that started this turn (or came while it ran) isn't history yet: it stays,
         // with its images, instead of being read by the model as a paraphrase of itself.
+        // The newest steps stay as they were, when they're small enough: what the model just read
+        // or ran is what it needs next (a tail takes the unanswered messages in too).
+        let tail = match self.context_window {
+            Some(w) if keep => session.tail_within(((w as f64 * TAIL_SHARE) as usize * 4).min(TAIL_CHARS)),
+            _ => 0,
+        };
         let unanswered = session.unanswered();
         let fits = unanswered.iter().sum::<usize>() <= self.context_window.map_or(KEPT_UNANSWERED, |w| KEPT_UNANSWERED.min(w as usize));
-        let kept = if keep && fits { unanswered.len() } else { 0 };
-        session.append(SessionEvent::Compacted { summary: summary.clone(), model: self.model.name(), usage, tokens_before, kept }).await?;
+        let kept = if keep && fits && tail == 0 { unanswered.len() } else { 0 };
+        session.append(SessionEvent::Compacted { summary: summary.clone(), model: self.model.name(), usage, tokens_before, kept, tail }).await?;
         on(AgentEvent::Compacted { summary, tokens_before, usage });
         self.hook(session, "PostCompact", Some(&[trigger]), json!({ "trigger": trigger }), cancel, on).await;
         Ok(true)
@@ -530,11 +625,12 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
     /// reply without text (a tool call instead, or nothing) is asked for once more. When the
     /// conversation is too long even for this request, it's cut down step by step ([`shrink`])
     /// until it fits: a summary of most of it beats a chat that can't go on.
-    async fn summarize(&self, key: &str, messages: &[Message], focus: Option<&str>, cancel: &Cancel) -> Result<(String, Usage)> {
-        // Same system prompt and tools as every step, so the provider's cache still applies.
-        let specs = self.tools.specs();
+    /// `update`: the conversation starts with an earlier summary, which the new one carries on.
+    #[allow(clippy::too_many_arguments)]
+    async fn summarize(&self, key: &str, messages: &[Message], specs: &[ToolSpec], focus: Option<&str>, update: bool, cancel: &Cancel) -> Result<(String, Usage)> {
+        // Same system prompt and tools as every step (`specs`), so the provider's cache still applies.
         let system = self.system_now();
-        let overhead = system.len() + specs_chars(&specs);
+        let overhead = system.len() + specs_chars(specs);
         let mut usage = Usage::default();
         let mut level = 0;
         // what can be told ahead: with a known window, don't send what can't fit
@@ -546,6 +642,9 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         let mut again = false;
         loop {
             let mut ask = COMPACT_PROMPT.to_string();
+            if update {
+                ask.push_str(UPDATE_SUMMARY);
+            }
             if let Some(f) = focus.map(str::trim).filter(|f| !f.is_empty()) {
                 ask.push_str(&format!("\n\nThe user wants the summary to focus on: {f}"));
             }
@@ -557,7 +656,7 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                 Some(m) if m.role == Role::User => m.content.push(Block::Text { text: ask }),
                 _ => messages.push(Message { role: Role::User, content: vec![Block::Text { text: ask }] }),
             }
-            let req = Request { system: &system, messages: &messages, tools: &specs, cache_key: Some(key) };
+            let req = Request { system: &system, messages: &messages, tools: specs, cache_key: Some(key) };
             let mut ignore = |_| {};
             let reply = tokio::select! {
                 r = self.model.step(&req, &mut ignore) => r,
@@ -635,10 +734,18 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
 
     /// A turn whose message carries images (`Block::Image`).
     pub async fn turn_with_images(&mut self, session: &mut Session, user_text: &str, images: Vec<Block>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<TurnEnd> {
+        self.turn_with(session, user_text, images, vec![], cancel, on).await
+    }
+
+    /// A turn whose message comes with `extra` for the model only (what one of the user's slash
+    /// commands asks for, see [`crate::commands`]): the log and the chat keep the message as
+    /// typed, the model gets both.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn turn_with(&mut self, session: &mut Session, user_text: &str, images: Vec<Block>, extra: Vec<String>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<TurnEnd> {
         // hooks on the user's messages (not a helper's prompt): SessionStart on the first turn, then
         // UserPromptSubmit; both may add context, and the second may block the message (it's not
         // recorded then)
-        let mut context = Vec::new();
+        let mut context = extra;
         if self.helper.is_none() {
             if !self.started {
                 let source = if session.events().iter().any(|e| matches!(e, SessionEvent::User { .. })) { "resume" } else { "startup" };
@@ -663,13 +770,11 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
     }
 
     async fn run(&mut self, session: &mut Session, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<TurnEnd> {
-        let specs: Vec<ToolSpec> = self.tools.specs();
         let ctx = ToolCtx { cwd: session.cwd.clone().into(), sandbox: self.sandbox };
         // the last call and how many times in a row it was made (repeat guard)
         let mut last: Option<(String, Value)> = None;
         let mut same = 0;
         let system = self.system_now();
-        let overhead = system.len() + specs_chars(&specs);
         // a Stop hook already sent the agent back to work this turn
         let mut stop_hook_active = false;
         let mut steps = 0u32;
@@ -685,6 +790,10 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         // the model had answered, and came back only for messages sent meanwhile
         let mut answered = false;
         loop {
+            // the tools this step declares: with many MCP tools, the ones found so far (see
+            // `Registry::declared`)
+            let specs = self.tools.declared(&active_tools(session));
+            let overhead = system.len() + specs_chars(&specs);
             if self.max_steps > 0 && steps >= self.max_steps {
                 // A helper's answer is all its caller gets: at the limit it's asked for what it
                 // found, instead of throwing its work away.
@@ -698,14 +807,14 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
             // the UserPromptSubmit hooks like a message that starts a turn
             let mut queued = self.inbox.take().into_iter();
             let mut read = 0;
-            while let Some((text, images)) = queued.next() {
+            while let Some((text, images, extra)) = queued.next() {
                 let o = self.hook(session, "UserPromptSubmit", None, json!({ "prompt": text }), cancel, on).await;
                 if cancel.is_cancelled() {
                     // stopped before its hooks said yes: this one and the rest stay unread (the app
                     // gives them back to the chat box), in the order they were sent
                     let later = self.inbox.take();
-                    for (t, i) in std::iter::once((text, images)).chain(queued).chain(later) {
-                        self.inbox.push(t, i);
+                    for (t, i, c) in std::iter::once((text, images, extra)).chain(queued).chain(later) {
+                        self.inbox.push_with(t, i, c);
                     }
                     return Err(Error::Cancelled);
                 }
@@ -714,7 +823,7 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                     on(AgentEvent::UserMessage { text, blocked: true });
                     continue;
                 }
-                session.append(SessionEvent::User { text: text.clone(), images, context: o.context, hook: None }).await?;
+                session.append(SessionEvent::User { text: text.clone(), images, context: extra.into_iter().chain(o.context).collect(), hook: None }).await?;
                 on(AgentEvent::UserMessage { text, blocked: false });
                 read += 1;
             }
@@ -765,7 +874,9 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                             return Err(too_small(&e));
                         }
                         true
-                    } else if session.last_summary().is_some() && !session.unanswered().is_empty() {
+                    } else if session.last_summary().is_some() && (!session.unanswered().is_empty() || session.last_tail() > 0) {
+                        // what the summary kept as it was (the newest steps, the user's
+                        // messages) goes into a summary too
                         false
                     } else if session.last_summary().is_some() {
                         return Err(too_small(&e));
@@ -860,11 +971,63 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
             let mut usage = Usage::default();
             let mut took_ms = Vec::new();
             let mut images = Vec::new();
-            for (id, name, input) in calls {
+            // Calls that only look (read, glob, grep, read-only git) and stand next to each other
+            // run at the same time: one after the other, a step that reads ten files waits for
+            // each. They go through approval and the hooks one by one as ever, and their results
+            // are in call order.
+            // (Not with PostToolUse hooks: one that stops the agent must find the calls after it
+            // not run yet, and a hook may not expect to run twice at once.)
+            let hooked = self.hooks.has("PostToolUse") || self.hooks.has("PostToolUseFailure");
+            let together: Vec<bool> = calls
+                .iter()
+                .map(|(id, name, input)| !hooked && !repeated.contains(id) && input.get(UNPARSED).is_none() && self.tools.get(name).is_some_and(|t| t.concurrent(input, &ctx)))
+                .collect();
+            let mut calls = calls.into_iter().enumerate().peekable();
+            while let Some((n, (id, name, input))) = calls.next() {
                 if let Some((out, used, took)) = helped.remove(&id) {
                     usage += used;
                     took_ms.push(took);
                     results.push(Block::ToolResult { tool_use_id: id, content: out.content, is_error: out.is_error });
+                    continue;
+                }
+                if together[n] && calls.peek().is_some_and(|(m, _)| together[*m]) {
+                    let mut batch = vec![(id, name, input)];
+                    while let Some((_, call)) = calls.next_if(|(m, _)| together[*m]) {
+                        batch.push(call);
+                    }
+                    let mut prepared = Vec::new();
+                    for (id, name, input) in batch {
+                        let p = if cancel.is_cancelled() {
+                            Prepared::Done(ToolOutput::err("Not run: stopped by the user."))
+                        } else if self.halt.is_some() {
+                            Prepared::Done(ToolOutput::err("Not run: a hook stopped the agent."))
+                        } else {
+                            self.prepare(session, &ctx, &id, &name, input, cancel, on).await?
+                        };
+                        prepared.push((id, p));
+                    }
+                    let (this, shared, ctx) = (&*self, &*session, &ctx);
+                    let runs = prepared.into_iter().map(|(id, p)| async move {
+                        let started = std::time::Instant::now();
+                        // (`on` is the loop's: what the hooks say is passed on once all are done)
+                        let mut said = Vec::new();
+                        let (out, halt) = match p {
+                            Prepared::Done(out) => (out, None),
+                            Prepared::Run(_) if cancel.is_cancelled() => (ToolOutput::err("Not run: stopped by the user."), None),
+                            Prepared::Run(ready) => this.execute(shared, ctx, ready, cancel, &mut |e| said.push(e)).await,
+                        };
+                        (id, out, halt, said, started.elapsed().as_millis() as u64)
+                    });
+                    for (id, out, halt, said, took) in futures::future::join_all(runs).await {
+                        said.into_iter().for_each(&mut *on);
+                        if halt.is_some() && self.halt.is_none() {
+                            self.halt = halt;
+                        }
+                        took_ms.push(took);
+                        on(AgentEvent::ToolResult { id: id.clone(), content: out.content.clone(), is_error: out.is_error });
+                        results.push(Block::ToolResult { tool_use_id: id, content: out.content, is_error: out.is_error });
+                        images.extend(out.images);
+                    }
                     continue;
                 }
                 let started = std::time::Instant::now();
@@ -1075,16 +1238,46 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         })
     }
 
-    /// The tool pipeline for one call.
+    /// The tool pipeline for one call: [`Agent::prepare`], then [`Agent::execute`].
     #[allow(clippy::too_many_arguments)]
     async fn call(&mut self, session: &mut Session, ctx: &ToolCtx, id: &str, name: &str, input: Value, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<ToolOutput> {
+        Ok(match self.prepare(session, ctx, id, name, input, cancel, on).await? {
+            Prepared::Done(out) => out,
+            Prepared::Run(ready) => {
+                let (out, halt) = self.execute(session, ctx, ready, cancel, on).await;
+                if halt.is_some() {
+                    self.halt = halt;
+                }
+                out
+            }
+        })
+    }
+
+    /// The first half of the pipeline, which runs one call at a time: PreToolUse hooks, the
+    /// policy and the user's approval. Ends with the call ready to run (and the chat told it
+    /// runs), or with its result when it won't.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare(&mut self, session: &mut Session, ctx: &ToolCtx, id: &str, name: &str, input: Value, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<Prepared> {
+        // the MCP tools left out of the requests: found here, declared from the next step on
+        if name == TOOL_SEARCH {
+            let query = input.get("query").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            on(AgentEvent::ToolCall { id: id.to_string(), name: name.to_string(), summary: query.clone(), input: input.clone() });
+            let found = self.tools.search(&query, 8);
+            return Ok(Prepared::Done(if found.is_empty() {
+                ToolOutput::ok(format!("No tools match \"{query}\". Try other words, or do without."))
+            } else {
+                let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
+                let list: Vec<String> = found.iter().map(|s| format!("- {}: {}", s.name, clip(s.description.lines().next().unwrap_or(""), 200))).collect();
+                ToolOutput::ok(format!("{FOUND}{}\n\nThey're in your tools from your next message on:\n{}", names.join(", "), list.join("\n")))
+            }));
+        }
         let Some(tool) = self.tools.get(name) else {
-            return Ok(ToolOutput::err(format!("There is no tool named `{name}`.")));
+            return Ok(Prepared::Done(ToolOutput::err(format!("There is no tool named `{name}`."))));
         };
         if let Some(raw) = input.get(UNPARSED) {
             // its start is enough to recognise the call; all of it would fill the context again
             let raw = raw.as_str().map(String::from).unwrap_or_else(|| raw.to_string());
-            return Ok(ToolOutput::err(format!("The arguments weren't valid JSON: {}", clip(&raw, 600))));
+            return Ok(Prepared::Done(ToolOutput::err(format!("The arguments weren't valid JSON: {}", clip(&raw, 600)))));
         }
         let mut input = input;
         let mut kind = tool.kind(&input, ctx);
@@ -1096,12 +1289,12 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
             on(AgentEvent::ToolCall { id: id.to_string(), name: name.to_string(), summary, input: input.clone() });
             let answer = tokio::select! {
                 a = self.approver.ask(&q) => a,
-                _ = cancel.cancelled() => return Ok(ToolOutput::err("Not answered: stopped by the user.")),
+                _ = cancel.cancelled() => return Ok(Prepared::Done(ToolOutput::err("Not answered: stopped by the user."))),
             };
-            return Ok(match answer {
+            return Ok(Prepared::Done(match answer {
                 Some(a) if !a.trim().is_empty() => ToolOutput::ok(format!("The user answered: {}", a.trim())),
                 _ => ToolOutput::err("Nobody can answer questions right now. Decide yourself, and say what you assumed."),
-            });
+            }));
         }
         // 0. PreToolUse hooks: they may block the call, rewrite it, allow it or make it ask
         let names = hooks::tool_names(name);
@@ -1111,14 +1304,14 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         };
         let pre = self.hook(session, "PreToolUse", Some(&names), foreign(&input), cancel, on).await;
         if cancel.is_cancelled() {
-            return Ok(ToolOutput::err("Not run: stopped by the user."));
+            return Ok(Prepared::Done(ToolOutput::err("Not run: stopped by the user.")));
         }
         if let Some(why) = pre.stop {
             self.halt = Some(format!("A PreToolUse hook stopped the agent: {why}"));
-            return Ok(ToolOutput::err(format!("Not run: a PreToolUse hook stopped the agent. {why}")));
+            return Ok(Prepared::Done(ToolOutput::err(format!("Not run: a PreToolUse hook stopped the agent. {why}"))));
         }
         if let Some(why) = pre.block {
-            return Ok(ToolOutput::err(format!("Not run: a PreToolUse hook blocked it. {why}")));
+            return Ok(Prepared::Done(ToolOutput::err(format!("Not run: a PreToolUse hook blocked it. {why}"))));
         }
         if let Some(updated) = &pre.updated_input {
             match hooks::native_input(name, &input, updated) {
@@ -1135,10 +1328,10 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         let confirm = tool.confirm(&input);
         // 1. helpers and plan mode: nothing that changes something runs, not even with a yes
         if self.helper.is_some() && (confirm.is_some() || matches!(kind, Kind::Edit | Kind::EditOutside | Kind::Exec)) {
-            return Ok(ToolOutput::err("Not run: a helper only looks; it doesn't change files or run commands. If this needs doing, say so in your answer."));
+            return Ok(Prepared::Done(ToolOutput::err("Not run: a helper only looks; it doesn't change files or run commands. If this needs doing, say so in your answer.")));
         }
         if self.policy.refuses(kind) {
-            return Ok(ToolOutput::err("Not run: plan mode is on, so nothing is changed or run yet. Look around as much as you need, then answer with your plan; the user starts it."));
+            return Ok(Prepared::Done(ToolOutput::err("Not run: plan mode is on, so nothing is changed or run yet. Look around as much as you need, then answer with your plan; the user starts it.")));
         }
         // 2. approval (fail closed); a hook can allow it or make it ask, PermissionRequest hooks
         // can answer for the user, and a helper can't ask. A call with `confirm` always asks the
@@ -1151,29 +1344,29 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                 session.append(SessionEvent::Approval { tool_use_id: id.to_string(), tool: name.to_string(), allowed: o.block.is_none(), by: "hook".into() }).await?;
             }
             if let Some(why) = o.block {
-                return Ok(ToolOutput::err(format!("Not run: a PermissionRequest hook declined it. {why}")));
+                return Ok(Prepared::Done(ToolOutput::err(format!("Not run: a PermissionRequest hook declined it. {why}"))));
             }
             ask = !allow;
         }
         if ask {
             if self.helper.is_some() {
-                return Ok(ToolOutput::err("Not run: this needs the user's OK, and a helper can't ask. If you need it, say so in your answer."));
+                return Ok(Prepared::Done(ToolOutput::err("Not run: this needs the user's OK, and a helper can't ask. If you need it, say so in your answer.")));
             }
             let req = ApprovalRequest { tool_use_id: id.to_string(), tool: name.to_string(), kind, summary: summary.clone(), input: input.clone(), confirm: confirm.clone() };
             let (decision, by) = tokio::select! {
                 d = self.approver.decide(&req) => d,
-                _ = cancel.cancelled() => return Ok(ToolOutput::err("Not run: stopped by the user.")),
+                _ = cancel.cancelled() => return Ok(Prepared::Done(ToolOutput::err("Not run: stopped by the user."))),
             };
             let allowed = decision.allows(confirm.as_deref());
             session.append(SessionEvent::Approval { tool_use_id: id.to_string(), tool: name.to_string(), allowed, by }).await?;
             match decision {
                 Decision::Deny { reason } => {
                     let why = reason.filter(|r| !r.trim().is_empty()).map(|r| format!(" Reason: {r}")).unwrap_or_default();
-                    return Ok(ToolOutput::err(format!("The user declined this call.{why}")));
+                    return Ok(Prepared::Done(ToolOutput::err(format!("The user declined this call.{why}"))));
                 }
                 _ if !allowed => {
                     let want = confirm.unwrap_or_default();
-                    return Ok(ToolOutput::err(format!("Not run: this can't be undone, so it runs only when the user types \"{want}\" to confirm it in DevCat, and they didn't.")));
+                    return Ok(Prepared::Done(ToolOutput::err(format!("Not run: this can't be undone, so it runs only when the user types \"{want}\" to confirm it in DevCat, and they didn't."))));
                 }
                 Decision::AllowForSession if confirm.is_none() => {
                     self.allowed.insert(name.to_string());
@@ -1182,6 +1375,21 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
             }
         }
         on(AgentEvent::ToolCall { id: id.to_string(), name: name.to_string(), summary, input: input.clone() });
+        Ok(Prepared::Run(Ready { id: id.to_string(), name: name.to_string(), tool, input, context: pre.context }))
+    }
+
+    /// The second half: run the call (with its time limit), PostToolUse hooks, truncation. It
+    /// only reads the agent, so calls that only look can run side by side (see
+    /// [`Tool::concurrent`](crate::tools::Tool::concurrent)). Returns the result, and why the turn
+    /// ends after this step when a hook stopped it.
+    async fn execute(&self, session: &Session, ctx: &ToolCtx, ready: Ready, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> (ToolOutput, Option<String>) {
+        let Ready { id, name, tool, input, context } = ready;
+        let (id, name) = (id.as_str(), name.as_str());
+        let names = hooks::tool_names(name);
+        let foreign = |input: &Value| {
+            let (tool_name, tool_input) = hooks::foreign_tool(name, input, &ctx.cwd);
+            json!({ "tool_name": tool_name, "tool_input": tool_input, "tool_use_id": id })
+        };
         // 3. timeout
         let limit = tool.timeout(&input);
         let after = foreign(&input);
@@ -1208,19 +1416,34 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         }
         let post = self.hook(session, event, Some(&names), fields, cancel, on).await;
         // it ran: its result stands, and the turn ends after this step
-        if let Some(why) = post.stop {
-            self.halt = Some(format!("A {event} hook stopped the agent: {why}"));
-        }
+        let halt = post.stop.map(|why| format!("A {event} hook stopped the agent: {why}"));
         if let Some(replaced) = post.updated_output {
             out.content = replaced;
         }
         // 5. truncation; the hooks' context goes after it, so it's never cut
         let mut out = fit(session, id, name, out).await;
-        for c in pre.context.iter().chain(&post.context) {
+        for c in context.iter().chain(&post.context) {
             out.content.push_str(&format!("\n\n{}", crate::session::hook_context(c)));
         }
-        Ok(out)
+        (out, halt)
     }
+}
+
+/// A call through the first half of the pipeline ([`Agent::prepare`]).
+enum Prepared {
+    /// It won't run (a hook or the user said no, plan mode, a helper): its result.
+    Done(ToolOutput),
+    /// Allowed: what [`Agent::execute`] needs to run it.
+    Run(Ready),
+}
+
+struct Ready {
+    id: String,
+    name: String,
+    tool: Arc<dyn crate::tools::Tool>,
+    input: Value,
+    /// What PreToolUse hooks added for the model; it goes after the result.
+    context: Vec<String>,
 }
 
 /// Output over [`MAX_OUTPUT`]: the model gets its start and end, and the whole of it is saved next

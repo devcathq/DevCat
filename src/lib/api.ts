@@ -211,9 +211,12 @@ export const api = {
   agentOpen: (cwd: string, providerId: string, sessionId: string | null, connectionId: string | null = null, ghostWindow: string | null = null) =>
     invoke<AgentOpened>("agent_open", { cwd, providerId, sessionId, connectionId, ghostWindow }),
   /** `sandbox`: run its commands in the OS sandbox from this message on (null = as the chat was). */
-  agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[], contextWindow: number | null, sandbox: boolean | null = null) =>
-    invoke<void>("agent_send", { sessionId, text, policy, model, attachments, contextWindow, sandbox }),
+  /** `effort`: how hard the model thinks from this message on (`auto`: the provider's default; null = as the chat was). */
+  agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[], contextWindow: number | null, sandbox: boolean | null = null, effort: string | null = null) =>
+    invoke<void>("agent_send", { sessionId, text, policy, model, attachments, contextWindow, sandbox, effort }),
   /** Whether this computer can run the agent's commands in the OS sandbox (macOS, Linux). */
+  /** The slash commands of a chat in `cwd`: the user's command templates and skills. */
+  agentCommands: (cwd: string) => invoke<{ name: string; description: string; argumentHint: string; path: string; skill: boolean }[]>("agent_commands", { cwd }),
   agentSandbox: () => invoke<{ available: boolean; reason: string | null }>("agent_sandbox"),
   agentAnswer: (sessionId: string, toolUseId: string, answer: string) => invoke<void>("agent_answer", { sessionId, toolUseId, answer }),
   /** Save a dropped / pasted file (base64) for the chat; returns its path. */
@@ -223,6 +226,8 @@ export const api = {
   agentClose: (sessionId: string) => invoke<void>("agent_close", { sessionId }),
   /** Rename a saved DevCat Agent chat. */
   agentRename: (sessionId: string, title: string) => invoke<void>("agent_rename", { sessionId, title }),
+  /** A new chat with the conversation before the user's message `text` (the `nth` with that text). */
+  agentFork: (sessionId: string, text: string, nth: number) => invoke<string>("agent_fork", { sessionId, text, nth }),
   /** Allow the hooks of a chat's folder as they are now (they run commands on this computer). */
   /** `digest`: the review the user saw; nothing is allowed if the hooks changed since. */
   agentTrustHooks: (sessionId: string, digest: string) => invoke<void>("agent_trust_hooks", { sessionId, digest }),

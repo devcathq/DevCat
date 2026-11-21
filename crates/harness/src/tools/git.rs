@@ -35,6 +35,10 @@ impl Tool for Git {
             _ => Kind::Exec,
         }
     }
+    fn concurrent(&self, input: &Value, ctx: &ToolCtx) -> bool {
+        // reads take no lock (GIT_OPTIONAL_LOCKS=0), so two at once can't trip over each other
+        self.kind(input, ctx) == Kind::Read
+    }
     fn summary(&self, input: &Value) -> String {
         let a = args(input).unwrap_or_default();
         let quoted: Vec<String> = a.iter().map(|s| if s.is_empty() || s.contains(char::is_whitespace) { format!("\"{s}\"") } else { s.clone() }).collect();

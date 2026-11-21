@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  POLICIES, SUBAGENT, SUGGESTIONS, ZERO, allowAllLabel, applyAll, approvalTitle, basename, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, itemsFromLog, lastContext, retryLabel, str, summarize, toBlocks,
+  POLICIES, SUBAGENT, SUGGESTIONS, ZERO, allowAllLabel, applyAll, approvalTitle, basename, contextWindow, describe, diffRows, editChanges, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, itemsFromLog, lastContext, retryLabel, str, summarize, toBlocks,
   type ChatView, type Item, type ToolItem, type ToolStatus,
 } from "../../../src/features/agent/model";
 import type { AgentDecision, AgentLiveEvent, AgentModel, AgentOpened, AgentPolicy } from "../../../src/lib/types";
@@ -517,7 +517,7 @@ function ToolDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
   if (item.name === SUBAGENT) return <HelperDetails item={item} cwd={cwd} />;
   return (
     <div className="mt-1 ml-5 flex flex-col gap-1.5">
-      {item.name === "edit" && <Diff before={str(i.old_string)} after={str(i.new_string)} />}
+      {item.name === "edit" && editChanges(i).map((c, n) => <Diff key={n} before={c.before} after={c.after} />)}
       {item.name === "write" && <Diff before="" after={str(i.content)} max={60} />}
       {item.name === "shell" && <Code>{`$ ${str(i.command)}`}</Code>}
       {item.output && !file && <Code tone={item.status === "error" ? "danger" : "muted"}>{item.output}</Code>}
@@ -578,7 +578,7 @@ function ApprovalCard({ item, ctx }: { item: ToolItem; ctx: ItemCtx }) {
     <div data-needs className="rounded-xl border border-accent/40 bg-accent/5 p-3">
       <div className="mb-2 flex items-center gap-2 text-[14px] font-semibold"><ShieldAlert className="size-4 text-accent" />{title}</div>
       {item.name === "shell" && <Code>{str(i.command)}</Code>}
-      {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
+      {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div>{editChanges(i).map((c, n) => <Diff key={n} before={c.before} after={c.after} />)}</>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] break-all text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
       {item.name === "db_query" && <Code>{str(i.query)}</Code>}
       {item.name === "devcat_note_write" && <Code>{str(i.body)}</Code>}

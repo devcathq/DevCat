@@ -4,19 +4,20 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, Ghost, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Server, Square, Webhook, X,
+  ArrowUp, Ban, Ghost, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Pencil, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Server, Square, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
 import type { AgentModel, AgentPolicy, AiProvider } from "../../lib/types";
+import { api } from "../../lib/api";
 import { useTabs } from "../../store/tabs";
 import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
 import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-import { GHOST_SUGGESTIONS, HARNESS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, focusSuggestions, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, retryLabel, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
+import { GHOST_SUGGESTIONS, HARNESS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, focusSuggestions, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editChanges, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, retryLabel, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { fmtCost } from "../claude/util";
-import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
+import { EFFORTS, answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, editMessage, loadSandbox, openChat, send, setEffort, setModel, setPolicy, setSandbox, type Effort, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
 import { useClaude } from "../claude/store";
 import { isRemote } from "../../lib/remotePath";
 import { historyFor, remember } from "./history";
@@ -183,16 +184,32 @@ function Working({ items }: { items: Item[] }) {
   return <div className="flex items-center gap-2 text-[12px] text-muted"><Spinner className="size-3.5" />Working…</div>;
 }
 
+/** A message the user sent. "Edit" goes back to it: a new chat with the conversation before it
+ *  and the message in the chat box to change (this chat stays as it is, in Sessions). */
+function UserMessage({ item, tabId }: { item: Extract<Item, { kind: "user" }>; tabId: string }) {
+  const canEdit = useAgent((s) => {
+    const c = s.chats[tabId];
+    return !!c?.sessionId && !c.busy && !c.context?.ghost && !item.queued;
+  });
+  return (
+    <div className="group flex flex-col items-end gap-1.5">
+      {item.attachments.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">{item.attachments.map((p) => <AttachmentChip key={p} path={p} />)}</div>}
+      {item.text && <div className={clsx("max-w-[85%] rounded-2xl rounded-br-md bg-raised px-3.5 py-2 text-[13px] whitespace-pre-wrap text-fg", item.queued && "opacity-60")}>{item.text}</div>}
+      {item.queued && <span className="text-[11px] text-faint">Sent while it works: it reads this after its current step</span>}
+      {canEdit && (
+        <button onClick={() => void editMessage(tabId, item.key)} title="Go back to this message and write it again, in a new chat (this one stays as it is)"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-faint opacity-0 transition-opacity group-hover:opacity-100 hover:text-fg focus-visible:opacity-100">
+          <Pencil className="size-3" />Edit
+        </button>
+      )}
+    </div>
+  );
+}
+
 const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: Item; tabId: string; cwd: string; working: boolean }) {
   switch (item.kind) {
     case "user":
-      return (
-        <div className="flex flex-col items-end gap-1.5">
-          {item.attachments.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">{item.attachments.map((p) => <AttachmentChip key={p} path={p} />)}</div>}
-          {item.text && <div className={clsx("max-w-[85%] rounded-2xl rounded-br-md bg-raised px-3.5 py-2 text-[13px] whitespace-pre-wrap text-fg", item.queued && "opacity-60")}>{item.text}</div>}
-          {item.queued && <span className="text-[11px] text-faint">Sent while it works: it reads this after its current step</span>}
-        </div>
-      );
+      return <UserMessage item={item} tabId={tabId} />;
     case "answer":
       return <Answer item={item} cwd={cwd} />;
     case "tool":
@@ -358,12 +375,29 @@ function ToolDetails({ item, cwd }: { item: ToolItem; cwd: string }) {
   if (item.name === SUBAGENT) return <HelperDetails item={item} cwd={cwd} />;
   return (
     <div className="mt-1 ml-5 flex flex-col gap-1.5">
-      {item.name === "edit" && <Diff before={str(i.old_string)} after={str(i.new_string)} />}
+      {item.name === "edit" && editChanges(i).map((c, n) => <Diff key={n} before={c.before} after={c.after} />)}
       {item.name === "write" && <Diff before="" after={str(i.content)} max={60} />}
       {item.name === "shell" && <Code>{`$ ${str(i.command)}`}</Code>}
       {item.output && !(item.name === "write" || item.name === "edit") && <Code muted={item.status !== "error"} danger={item.status === "error"}>{item.output}</Code>}
       {item.output && (item.name === "write" || item.name === "edit") && (item.status === "error" || item.status === "denied") && <Code danger>{item.output}</Code>}
     </div>
+  );
+}
+
+/** How hard the model thinks before it answers, for the next messages. */
+function EffortPicker({ tabId }: { tabId: string }) {
+  const effort = useAgent((s) => s.chats[tabId]?.effort ?? "auto");
+  const e = EFFORTS.find((x) => x.id === effort) ?? EFFORTS[0];
+  return (
+    <label title={`Thinking: ${e.label}, ${e.hint}. For the next messages; providers that don't reason may refuse anything but Auto.`}
+      className={clsx("relative flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-[12px] transition-colors", effort === "auto" ? "border-line text-muted hover:border-faint hover:text-fg" : "border-accent/40 bg-accent/10 text-accent")}>
+      <Brain className="size-3.5" />
+      {effort === "auto" ? "Thinking" : e.label}
+      <ChevronDown className="size-3 opacity-60" />
+      <select value={effort} onChange={(ev) => setEffort(tabId, ev.target.value as Effort)} className="absolute inset-0 cursor-pointer opacity-0" aria-label="Thinking effort">
+        {EFFORTS.map((x) => <option key={x.id} value={x.id}>{x.label}: {x.hint}</option>)}
+      </select>
+    </label>
   );
 }
 
@@ -444,7 +478,7 @@ function ApprovalCard({ item, tabId }: { item: ToolItem; tabId: string }) {
       {item.name === "shell" && <Code>{str(i.command)}</Code>}
       {item.name === "db_query" && <Code>{str(i.query)}</Code>}
       {item.name === "devcat_note_write" && <Code>{str(i.body)}</Code>}
-      {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before={str(i.old_string)} after={str(i.new_string)} /></>}
+      {item.name === "edit" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div>{editChanges(i).map((c, n) => <Diff key={n} before={c.before} after={c.after} />)}</>}
       {item.name === "write" && <><div className="mb-1 font-mono text-[11.5px] text-muted">{str(i.path)}</div><Diff before="" after={str(i.content)} max={40} /></>}
       {!["shell", "edit", "write", "db_query", "devcat_note_write"].includes(item.name) && <Code>{req.summary}</Code>}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
@@ -685,6 +719,9 @@ function ContextMeter({ tabId, models }: { tabId: string; models: AgentModel[] }
   );
 }
 
+type SlashCommand = { name: string; description: string; argumentHint: string; skill: boolean };
+const COMPACT: SlashCommand = { name: "compact", description: "Summarize the conversation now, to free the context window", argumentHint: "[what to keep]", skill: false };
+
 function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: string; visible: boolean; provider: AiProvider }) {
   const chat = useAgent((s) => s.chats[tabId])!;
   const [text, setText] = useState("");
@@ -693,6 +730,25 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
   const [models, setModels] = useState<AgentModel[]>([]);
   useEffect(() => { void connectionModels(provider).then(setModels); }, [provider]);
   const box = useRef<HTMLTextAreaElement>(null);
+  // `/…`: the folder's commands and skills to pick from (a ghost chat has none)
+  const ghost = !!chat.context?.ghost;
+  const [commands, setCommands] = useState<SlashCommand[]>([]);
+  useEffect(() => {
+    if (ghost) return void setCommands([]);
+    let live = true;
+    void api.agentCommands(cwd).then((c) => { if (live) setCommands(c); }, () => {});
+    return () => { live = false; };
+  }, [cwd, ghost]);
+  const [pick, setPick] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const slash = /^\/(\S*)$/.exec(text);
+  // (not while stepping through what was sent: ↑ / ↓ keep doing that)
+  const matches = slash && dismissed !== text && !recall ? [COMPACT, ...commands].filter((c) => c.name.startsWith(slash[1])).slice(0, 8) : [];
+  const complete = (c: SlashCommand) => {
+    setText(`/${c.name} `);
+    setPick(0);
+    box.current?.focus();
+  };
 
   useEffect(() => { if (visible) box.current?.focus({ preventScroll: true }); }, [visible]);
   // grow with the text, up to about ten lines
@@ -741,6 +797,26 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
   };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
+    // the command list: ↑ / ↓ choose, Tab or Enter take it, Esc closes it
+    if (matches.length) {
+      const at = Math.min(pick, matches.length - 1);
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setPick((at + (e.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDismissed(text);
+        return;
+      }
+      // Enter on a name typed out in full sends it (also one that starts another's name)
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !matches.some((m) => text === `/${m.name}`))) {
+        e.preventDefault();
+        complete(matches[at]);
+        return;
+      }
+    }
     // ↑ on the first line goes back through what you sent here, ↓ on the last line forward
     if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       const el = e.currentTarget;
@@ -791,17 +867,29 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
             {chat.attachments.map((p) => <AttachmentChip key={p} path={p} onRemove={() => unattach(tabId, p)} />)}
           </div>
         )}
+        {matches.length > 0 && (
+          <div role="listbox" aria-label="Commands" className="flex flex-col gap-0.5 border-b border-line px-1.5 py-1.5">
+            {matches.map((c, n) => (
+              <button key={c.name} role="option" aria-selected={n === Math.min(pick, matches.length - 1)} onMouseDown={(e) => { e.preventDefault(); complete(c); }}
+                className={clsx("flex min-w-0 items-baseline gap-2 rounded-md px-2 py-1 text-left text-[12.5px]", n === Math.min(pick, matches.length - 1) ? "bg-hover text-fg" : "text-muted hover:bg-hover/60")}>
+                <span className="shrink-0 font-mono text-fg">/{c.name}</span>
+                {c.argumentHint && <span className="shrink-0 font-mono text-[11.5px] text-faint">{c.argumentHint}</span>}
+                <span className="min-w-0 truncate">{c.skill ? `Skill · ${c.description}` : c.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
           ref={box}
           rows={2}
           value={text}
-          onChange={(e) => { setText(e.target.value); setRecall(null); }}
+          onChange={(e) => { setText(e.target.value); setRecall(null); setPick(0); }}
           onKeyDown={onKey}
           onPaste={(e) => {
             const files = [...e.clipboardData.files];
             if (files.length) { e.preventDefault(); void attach(tabId, files); }
           }}
-          placeholder={chat.busy ? "Working… send a message and it reads it after its current step" : "Ask DevCat Agent to build, fix or explain something  ·  Ctrl+Enter for a new line  ·  /compact"}
+          placeholder={chat.busy ? "Working… send a message and it reads it after its current step" : "Ask DevCat Agent to build, fix or explain something  ·  Ctrl+Enter for a new line  ·  / for commands"}
           className="block max-h-[240px] min-h-[52px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[13.5px] leading-relaxed text-fg outline-none placeholder:text-faint focus-visible:outline-none"
           // the composer's border shows focus; no second outline around the text box
           style={{ outline: "none", boxShadow: "none" }}
@@ -824,6 +912,7 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
             </select>
           </label>
           {!isRemote(cwd) && <SandboxChip tabId={tabId} />}
+          <EffortPicker tabId={tabId} />
           <label className="relative flex h-7 max-w-[240px] cursor-pointer items-center gap-1.5 rounded-full bg-hover/70 px-2.5 text-[12px] text-muted hover:text-fg"
             title={models.length ? `Model for the next messages (${chat.providerName})` : `${chat.providerName}: ${chat.model}`}>
             <Cpu className="size-3.5 shrink-0" /><span className="truncate">{chat.model}</span>

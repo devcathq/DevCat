@@ -328,7 +328,8 @@ mod tests {
         assert_eq!(run.input_schema["required"], json!(["session", "command"]));
         assert!(run.input_schema["properties"].get("folder").is_some());
         let edit = SshTool { scope: scope.clone(), op: Op::Edit }.spec();
-        assert_eq!(edit.input_schema["required"], json!(["session", "path", "old_string", "new_string"]));
+        assert_eq!(edit.input_schema["required"], json!(["session", "path"]));
+        assert!(["old_string", "new_string", "edits"].iter().all(|k| edit.input_schema["properties"].get(k).is_some()));
         let t = SshTool { scope, op: Op::Write };
         assert_eq!(t.kind(&json!({}), &ToolCtx::at("/p")), Kind::EditOutside);
         assert_eq!(t.summary(&json!({ "session": "edge", "path": "/etc/x" })), "edge: /etc/x");

@@ -298,7 +298,7 @@ pub fn agent_config(provider_id: &str) -> AppResult<(AiProvider, devcat_harness:
     let st = store()?;
     let p = st.get(provider_id)?;
     let a = p.agent.clone().filter(|_| p.kind == AiKind::Agent).ok_or_else(|| AppError::msg(format!("{} is not a DevCat Agent connection", p.name)))?;
-    let cfg = devcat_harness::LlmConfig { protocol: a.protocol, base_url: a.base_url, api_key: st.api_key(&p.id), model: a.model, max_tokens: 16_000 };
+    let cfg = devcat_harness::LlmConfig { protocol: a.protocol, base_url: a.base_url, api_key: st.api_key(&p.id), model: a.model, max_tokens: 16_000, effort: None };
     Ok((p, cfg))
 }
 
@@ -318,7 +318,7 @@ pub fn agent_max_steps(provider_id: &str) -> u32 {
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn ai_agent_models(settings: AgentSettings, provider_id: Option<String>, api_key: Option<String>) -> AppResult<Vec<devcat_harness::llm::ModelInfo>> {
     let key = api_key.filter(|k| !k.trim().is_empty()).map(|k| k.trim().to_string()).or_else(|| provider_id.and_then(|id| store().ok()?.api_key(&id)));
-    let cfg = devcat_harness::LlmConfig { protocol: settings.protocol, base_url: settings.base_url.trim().to_string(), api_key: key, model: String::new(), max_tokens: 0 };
+    let cfg = devcat_harness::LlmConfig { protocol: settings.protocol, base_url: settings.base_url.trim().to_string(), api_key: key, model: String::new(), max_tokens: 0, effort: None };
     let mut models = devcat_harness::llm::list_models(&cfg).await.map_err(|e| AppError::msg(e.to_string()))?;
     // Many providers (Z.ai, OpenAI, DeepSeek) don't say how much context a model takes or what it
     // costs: look the name up in OpenRouter's public catalog (its list price: an estimate).

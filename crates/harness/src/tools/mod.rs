@@ -1,5 +1,6 @@
 //! The tools the agent can call, and the registry that holds them. The agent runs every call
 //! through the same pipeline (see [`crate::agent`]): approval, timeout, output truncation, event.
+pub mod edit;
 pub mod fs;
 pub mod git;
 pub mod shell;
@@ -150,6 +151,19 @@ pub trait Tool: Send + Sync {
     fn confirm(&self, _input: &Value) -> Option<String> {
         None
     }
+    /// Whether this call may run at the same time as the calls next to it in a step that may too:
+    /// it only reads, asks nobody and depends on nothing they do (read, glob, grep, read-only
+    /// git). Off by default; a tool turns it on only when that holds for every input it says yes
+    /// to.
+    fn concurrent(&self, _input: &Value, _ctx: &ToolCtx) -> bool {
+        false
+    }
+    /// Whether this tool may be left out of the requests until the model looks for it with
+    /// `tool_search` (see [`Registry::declared`]): an MCP server's, of which there can be
+    /// hundreds. The built-in tools are always there.
+    fn deferrable(&self) -> bool {
+        false
+    }
     async fn run(&self, input: Value, ctx: &ToolCtx) -> ToolOutput;
 }
 
@@ -195,6 +209,102 @@ impl Registry {
 
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.iter().map(|t| t.spec()).collect()
+    }
+
+    /// Whether the tools that can wait ([`Tool::deferrable`]) are too many to send with every
+    /// request: then they're found with `tool_search` instead (see [`Registry::declared`]).
+    pub fn defers(&self) -> bool {
+        self.tools.iter().filter(|t| t.deferrable()).map(|t| spec_chars(&t.spec())).sum::<usize>() > DEFER_ABOVE
+    }
+
+    /// The tools a request declares: all of them, or, when the ones that can wait are too many
+    /// ([`Registry::defers`]), the others, `tool_search`, and the ones in `active` (found or used
+    /// before in the conversation). Always in the registry's order, so a request differs from
+    /// the one before only when a tool was found.
+    pub fn declared(&self, active: &std::collections::HashSet<String>) -> Vec<ToolSpec> {
+        if !self.defers() {
+            return self.specs();
+        }
+        let mut out: Vec<ToolSpec> = self.tools.iter().filter(|t| !t.deferrable()).map(|t| t.spec()).collect();
+        // which servers there are to look in (`mcp__<server>__<tool>`), with how many tools each
+        let mut servers: Vec<(String, usize)> = Vec::new();
+        for t in self.tools.iter().filter(|t| t.deferrable()) {
+            let name = t.spec().name;
+            let server = name.strip_prefix("mcp__").and_then(|n| n.split_once("__")).map_or(name.as_str(), |(s, _)| s).to_string();
+            match servers.iter_mut().find(|(s, _)| *s == server) {
+                Some((_, n)) => *n += 1,
+                None => servers.push((server, 1)),
+            }
+        }
+        let mut search = ToolSearch.spec();
+        search.description.push_str(&format!(" Servers: {}.", servers.iter().map(|(s, n)| format!("{s} ({n} tools)")).collect::<Vec<_>>().join(", ")));
+        out.push(search);
+        out.extend(self.tools.iter().filter(|t| t.deferrable()).map(|t| t.spec()).filter(|s| active.contains(&s.name)));
+        out
+    }
+
+    /// The tools that can wait that best match `query` (words, or exact names), best first, at
+    /// most `max`.
+    pub fn search(&self, query: &str, max: usize) -> Vec<ToolSpec> {
+        let q = query.to_lowercase();
+        let words: Vec<&str> = q.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.len() > 1).collect();
+        let mut scored: Vec<(usize, ToolSpec)> = self
+            .tools
+            .iter()
+            .filter(|t| t.deferrable())
+            .map(|t| t.spec())
+            .filter_map(|s| {
+                let (name, desc) = (s.name.to_lowercase(), s.description.to_lowercase());
+                // a name asked for by itself beats any number of words
+                let named = q.split([',', ' ']).any(|n| n.trim() == name || name.ends_with(&format!("__{}", n.trim())));
+                let score = if named { 1_000 } else { words.iter().map(|w| if name.contains(w) { 3 } else if desc.contains(w) { 1 } else { 0 }).sum() };
+                (score > 0).then_some((score, s))
+            })
+            .collect();
+        scored.sort_by_key(|s| std::cmp::Reverse(s.0));
+        scored.into_iter().take(max).map(|(_, s)| s).collect()
+    }
+}
+
+/// Characters of the tools that can wait above which they're found with `tool_search` instead of
+/// going with every request: about 15,000 tokens (what DevCat points out as a heavy MCP server).
+pub const DEFER_ABOVE: usize = 60_000;
+
+fn spec_chars(s: &ToolSpec) -> usize {
+    s.name.len() + s.description.len() + s.input_schema.to_string().len()
+}
+
+/// Name of the tool that finds the tools left out of the requests; the agent runs it itself.
+pub const TOOL_SEARCH: &str = "tool_search";
+
+/// How a `tool_search` result starts: the tools it makes available (the conversation's log is
+/// where the agent reads them back, see `agent::active_tools`).
+pub const FOUND: &str = "Tools now available: ";
+
+/// `tool_search`: the MCP tools aren't all in the request (there are too many); this finds them.
+pub struct ToolSearch;
+
+#[async_trait]
+impl Tool for ToolSearch {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_SEARCH.into(),
+            description: "Find tools from the user's MCP servers. There are too many to list here, so they're left out until you look for them: describe what you need (\"create a github issue\", \"query postgres\") or give tool names. The tools found can be called from your next message on, and stay available.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "query": { "type": "string", "description": "What the tool should do, or tool names separated by commas" } },
+                "required": ["query"]
+            }),
+        }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, input: &Value) -> String {
+        input.get("query").and_then(Value::as_str).unwrap_or("?").to_string()
+    }
+    async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::err("tool_search is answered by the agent, not run.")
     }
 }
 
@@ -267,6 +377,52 @@ mod tests {
         assert!(inside(&ctx, &resolve(&ctx, "./a/../b.txt")));
         assert!(!inside(&ctx, &resolve(&ctx, "../other/x")));
         assert!(!inside(&ctx, &resolve(&ctx, if cfg!(windows) { "C:\\projX\\a" } else { "/projX/a" })));
+    }
+
+    /// An MCP server's tool, `size` characters of description.
+    struct Mcp(&'static str, usize);
+
+    #[async_trait]
+    impl Tool for Mcp {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: self.0.into(), description: format!("{} {}", self.0.replace("__", " "), "x".repeat(self.1)), input_schema: serde_json::json!({ "type": "object" }) }
+        }
+        fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+            Kind::Exec
+        }
+        fn summary(&self, _: &Value) -> String {
+            String::new()
+        }
+        fn deferrable(&self) -> bool {
+            true
+        }
+        async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+            ToolOutput::ok("")
+        }
+    }
+
+    #[test]
+    fn many_mcp_tools_wait_until_they_are_looked_for() {
+        let names = |s: &[ToolSpec]| s.iter().map(|s| s.name.clone()).collect::<Vec<_>>();
+        let mut r = Registry::default();
+        r.add(Read);
+        r.add(Mcp("mcp__github__create_issue", 100));
+        // a few: all of them go with every request
+        assert!(!r.defers());
+        assert_eq!(names(&r.declared(&Default::default())), ["read", "mcp__github__create_issue"]);
+        r.add(Mcp("mcp__github__list_pulls", DEFER_ABOVE));
+        r.add(Mcp("mcp__pg__query", 100));
+        assert!(r.defers());
+        let d = r.declared(&Default::default());
+        assert_eq!(names(&d), ["read", TOOL_SEARCH]);
+        assert!(d[1].description.ends_with("Servers: github (2 tools), pg (1 tools)."), "{}", d[1].description);
+        // found ones go along, in the registry's order
+        let active = ["mcp__pg__query".to_string(), "mcp__github__create_issue".to_string()].into();
+        assert_eq!(names(&r.declared(&active)), ["read", TOOL_SEARCH, "mcp__github__create_issue", "mcp__pg__query"]);
+        assert_eq!(names(&r.search("create an issue", 8)), ["mcp__github__create_issue"]);
+        assert_eq!(names(&r.search("query", 8)), ["mcp__pg__query"]);
+        assert_eq!(names(&r.search("list_pulls, create_issue", 8)), ["mcp__github__create_issue", "mcp__github__list_pulls"]);
+        assert!(r.search("zzz", 8).is_empty());
     }
 
     #[test]

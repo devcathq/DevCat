@@ -14,6 +14,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod commands;
 pub mod hooks;
 pub mod llm;
 pub mod mcp;
@@ -25,7 +26,7 @@ pub mod tools;
 
 pub use agent::{Agent, AgentEvent, Cancel, Inbox, MAX_STEPS, Model, TurnEnd, answer_of};
 pub use approval::{Approver, Decision, Policy};
-pub use llm::{Llm, LlmConfig, Protocol};
+pub use llm::{Effort, Llm, LlmConfig, Protocol};
 pub use message::{Block, Message, Role, Usage};
 pub use session::{Session, SessionEvent};
 

@@ -765,6 +765,8 @@ pub fn foreign_tool(name: &str, input: &Value, cwd: &Path) -> (String, Value) {
             match name {
                 "read" => "Read",
                 "write" => "Write",
+                // several changes at once: Claude Code's MultiEdit has the same `edits` shape
+                _ if v.get("edits").is_some_and(Value::is_array) => "MultiEdit",
                 _ => "Edit",
             }
         }

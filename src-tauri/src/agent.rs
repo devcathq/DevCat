@@ -182,6 +182,8 @@ struct Run {
     mcp: Mutex<Vec<Arc<Server>>>,
     /// A ghost chat: the label of the window it's open in (see [`ghost_dir`]).
     ghost: Option<String>,
+    /// How hard the model thinks, as the chat last chose (None: the provider's default).
+    effort: Mutex<Option<devcat_harness::Effort>>,
     /// A chat in a folder on an SSH host: the host its tools work on (`agent_ssh.rs`).
     remote: Option<Arc<crate::agent_ssh::Host>>,
     /// It has the `ssh_*` tools for the user's SSH sessions (`agent_tools/ssh.rs`).
@@ -563,9 +565,15 @@ const HEAVY_TOOLS: usize = 15_000;
 /// What to tell the user about an MCP server with `tools` tools whose definitions have `chars`
 /// characters, when that's a lot: every step of the chat sends them, so answers get slower and
 /// dearer and the context window fills sooner (with a few hundred tools, in a few dozen steps).
-fn heavy_tools_notice(name: &str, tools: usize, chars: usize) -> Option<String> {
+fn heavy_tools_notice(name: &str, tools: usize, chars: usize, deferred: bool) -> Option<String> {
     let tokens = chars / 4;
     (tokens > HEAVY_TOOLS).then(|| {
+        if deferred {
+            return format!(
+                "MCP server \"{name}\" has {tools} tools, about {}k tokens: too many to send with every request, so the agent looks up the ones it needs (tool_search) and only those go along.",
+                (tokens + 500) / 1000
+            );
+        }
         format!(
             "MCP server \"{name}\" adds {tools} tools, about {}k tokens, to every request of this chat: each step is slower and costs more, and the context window fills that much sooner. If you don't need it here, turn it off where it's configured (\"disabled\": true in its entry).",
             (tokens + 500) / 1000
@@ -704,6 +712,7 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         context: Mutex::new(context),
         mcp: Mutex::default(),
         ghost: ghost.map(String::from),
+        effort: Mutex::new(None),
         remote,
         ssh_tools,
     });
@@ -721,14 +730,18 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
             {
                 use devcat_harness::tools::Tool;
                 let mut g = run.turn.lock().await;
+                let mut sizes = Vec::new();
                 for s in &servers {
                     let tools = McpTool::all(s);
                     let chars: usize = tools.iter().map(|t| t.spec()).map(|s| s.name.len() + s.description.len() + s.input_schema.to_string().len()).sum();
-                    heavy.extend(heavy_tools_notice(&s.name, tools.len(), chars));
+                    sizes.push((s.name.clone(), tools.len(), chars));
                     for t in tools {
                         g.0.tools.add(t);
                     }
                 }
+                // with this many, they're looked up when needed instead (Registry::declared)
+                let deferred = g.0.tools.defers();
+                heavy.extend(sizes.into_iter().filter_map(|(name, n, chars)| heavy_tools_notice(&name, n, chars, deferred)));
             }
             let ctx = {
                 let mut c = run.context.lock();
@@ -917,6 +930,58 @@ pub async fn agent_rename(session_id: String, title: String) -> AppResult<()> {
     Ok(())
 }
 
+/// Go back to one of the user's messages (`text`, the `nth` with that text, from 0) to say
+/// something else: a new chat with the conversation before it, which this returns the id of. The
+/// chat it came from stays as it was. Not for a ghost chat (it keeps nothing, and a copy would
+/// be kept), nor while the agent works (stop it first: the log is still being written).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_fork(session_id: String, text: String, nth: usize) -> AppResult<String> {
+    if !valid_id(&session_id) {
+        return Err(AppError::msg("Not a DevCat Agent chat"));
+    }
+    if is_ghost(&session_id) {
+        return Err(AppError::msg("A ghost chat keeps nothing, so it can't be copied from an earlier message. Edit the message in a new ghost chat instead."));
+    }
+    let fork = |session: &Session| {
+        let at = session.user_message(&text, nth).ok_or_else(|| AppError::msg("That message isn't in the chat's log (it may not have been sent yet)."))?;
+        let title = format!("{} (edited)", session.title().trim_end_matches(" (edited)"));
+        Ok::<_, AppError>((at, title))
+    };
+    let open = RUNS.lock().get(&session_id).cloned();
+    let new = match open {
+        Some(run) => {
+            if run.busy.load(Ordering::SeqCst) {
+                return Err(AppError::msg("The agent is working: stop it first, then edit the message."));
+            }
+            let g = run.turn.try_lock().map_err(|_| AppError::msg("The agent is working: stop it first, then edit the message."))?;
+            let (at, title) = fork(&g.1)?;
+            g.1.fork(dir()?, at, &title).await
+        }
+        None => {
+            let path = dir()?.join(format!("{session_id}.jsonl"));
+            if !path.exists() {
+                return Err(AppError::msg("That chat isn't saved yet: send a message first"));
+            }
+            let session = Session::open(&path).await.map_err(|e| AppError::msg(e.to_string()))?;
+            let (at, title) = fork(&session)?;
+            session.fork(dir()?, at, &title).await
+        }
+    }
+    .map_err(|e| AppError::msg(e.to_string()))?;
+    // what goes with the log: the helpers' logs (for the trace) and the sandbox setting
+    let (from, to) = (dir()?.join(format!("{session_id}.agents")), new.path().with_extension("agents"));
+    if let Ok(mut rd) = tokio::fs::read_dir(&from).await {
+        let _ = tokio::fs::create_dir_all(&to).await;
+        while let Ok(Some(e)) = rd.next_entry().await {
+            let _ = tokio::fs::copy(e.path(), to.join(e.file_name())).await;
+        }
+    }
+    if sandbox_saved(&session_id) {
+        let _ = sandbox_save(&new.id, true);
+    }
+    Ok(new.id)
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
@@ -1034,8 +1099,24 @@ pub async fn agent_answer(session_id: String, tool_use_id: String, answer: Strin
 /// file paths: images are shown to the model, every file is listed with its path.
 #[cfg_attr(feature = "gui", tauri::command)]
 /// `sandbox` turns the OS sandbox for its commands on or off from this message on (None = as it was).
-pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>, sandbox: Option<bool>) -> AppResult<()> {
-    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window, sandbox, true).await.map(|_| ())
+/// `effort`: how hard the model thinks from this message on, `low` … `max`, or `auto` for the
+/// provider's default (None = as it was).
+#[allow(clippy::too_many_arguments)]
+pub async fn agent_send(session_id: String, text: String, policy: Policy, model: Option<String>, attachments: Option<Vec<String>>, context_window: Option<u64>, sandbox: Option<bool>, effort: Option<String>) -> AppResult<()> {
+    let effort = effort.map(|e| devcat_harness::Effort::parse(&e));
+    start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window, sandbox, effort, true).await.map(|_| ())
+}
+
+/// The slash commands a chat in `cwd` has: the user's command templates and skills (see
+/// `devcat_harness::commands`), for the chat box's list. None in a folder on an SSH host: skills
+/// and commands belong to this computer (see `start_turn`).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_commands(cwd: String) -> AppResult<Vec<devcat_harness::commands::Command>> {
+    if cwd.starts_with("ssh://") {
+        return Ok(Vec::new());
+    }
+    let home = home_dir();
+    Ok(tokio::task::spawn_blocking(move || devcat_harness::commands::commands(std::path::Path::new(&cwd), home.as_deref())).await.unwrap_or_default())
 }
 
 /// Whether this computer can run the agent's commands in the OS sandbox (and why not).
@@ -1055,7 +1136,7 @@ pub async fn agent_sandbox() -> AppResult<SandboxInfo> {
 /// Send a message the way the chat does, and wait for the turn to end: (how it ended, the error).
 /// For scheduled jobs (agent_jobs.rs).
 pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_window: Option<u64>, sandbox: bool) -> AppResult<(String, Option<String>)> {
-    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window, Some(sandbox), false)
+    let done = start_turn(session_id, text.to_string(), policy, None, vec![], context_window, Some(sandbox), None, false)
         .await?
         .ok_or_else(|| AppError::msg("The agent is still working. Stop it or wait for it to finish."))?;
     let (end, error) = done.await.map_err(|e| AppError::msg(e.to_string()))?;
@@ -1064,7 +1145,8 @@ pub async fn run_turn(session_id: &str, text: &str, policy: Policy, context_wind
 
 /// Start a turn in the background; the handle gives how it ended. While one runs, the message is
 /// queued for it instead (`queue`, the chat's messages: no handle then), or refused (a job's).
-async fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>, sandbox: Option<bool>, queue: bool) -> AppResult<Option<tokio::task::JoinHandle<(Value, Option<String>)>>> {
+#[allow(clippy::too_many_arguments)]
+async fn start_turn(session_id: &str, text: String, policy: Policy, model: Option<String>, attachments: Vec<String>, context_window: Option<u64>, sandbox: Option<bool>, effort: Option<Option<devcat_harness::Effort>>, queue: bool) -> AppResult<Option<tokio::task::JoinHandle<(Value, Option<String>)>>> {
     let run = run_of(session_id)?;
     if text.trim().is_empty() && attachments.is_empty() {
         return Err(AppError::msg("Type a message first"));
@@ -1080,6 +1162,13 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
     // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
     let compact = text.trim().strip_prefix("/compact").filter(|rest| attachments.is_empty() && (rest.is_empty() || rest.starts_with(char::is_whitespace))).map(str::to_string);
     let (message, images) = with_attachments(&text, &attachments, run.remote.as_deref()).await;
+    // `/name args`: one of the user's commands (or skills) from the chat's folder; the model gets
+    // what it says with the message (a ghost chat has none: it starts from nothing, and a chat on
+    // an SSH host has no skills: they belong to this computer)
+    let command = match (&compact, &run.ghost, &run.remote) {
+        (None, None, None) => devcat_harness::commands::expand(&text, std::path::Path::new(&run.cwd), home_dir().as_deref()).map(|(_, ask)| ask),
+        _ => None,
+    };
     // While it works, a message from the chat goes in before its next step, as in Claude Code: no
     // need to stop it first (a job's is refused). Decided under `live`, where a turn also ends, so
     // a message is either read by the turn or starts the next one.
@@ -1092,7 +1181,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
             if compact.is_some() {
                 return Err(AppError::msg("The agent is working: send /compact when it's done."));
             }
-            run.inbox.push(message, images);
+            run.inbox.push_with(message, images, command.into_iter().collect());
             run.approver.send_with(&mut live, json!({ "type": "queued", "text": text, "attachments": attachments }));
             drop(live);
             chat_changed(&run.id);
@@ -1112,8 +1201,12 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
         let mut g = run.turn.lock().await;
         let (agent, session) = &mut *g;
         agent.policy = policy;
-        if let Some(m) = model.filter(|m| !m.trim().is_empty() && *m != agent.model.name()) {
-            agent.model = Arc::new(Llm::new(devcat_harness::LlmConfig { model: m, ..run.cfg.clone() }));
+        // a new model or effort from this message on (the same connection and key)
+        let want = model.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| agent.model.name());
+        let effort = effort.unwrap_or(*run.effort.lock());
+        if want != agent.model.name() || effort != *run.effort.lock() {
+            agent.model = Arc::new(Llm::new(devcat_harness::LlmConfig { model: want, effort, ..run.cfg.clone() }));
+            *run.effort.lock() = effort;
         }
         agent.context_window = context_window.filter(|&w| w > 0);
         agent.max_steps = crate::ai::agent_max_steps(&run.provider_id);
@@ -1126,7 +1219,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
         let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
         let mut res = match compact {
             Some(focus) => agent.compact(session, Some(&focus), &cancel, &mut on).await.map(|_| devcat_harness::TurnEnd::Answered),
-            None => agent.turn_with_images(session, &message, images, &cancel, &mut on).await,
+            None => agent.turn_with(session, &message, images, command.into_iter().collect(), &cancel, &mut on).await,
         };
         let (end, error) = loop {
             let (end, error) = match &res {
@@ -1145,7 +1238,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
                 if res.is_ok() && !queued.is_empty() && !cancel.is_cancelled() {
                     Some(queued.remove(0)).map(|first| (first, queued))
                 } else {
-                    let unsent: Vec<String> = queued.into_iter().map(|(t, _)| t).collect();
+                    let unsent: Vec<String> = queued.into_iter().map(|(t, _, _)| t).collect();
                     let (usage, title) = (snap.usage.clone(), snap.title.clone());
                     *run.log.lock() = snap;
                     ap.send_with(&mut live, json!({ "type": "turnEnd", "end": end, "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64, "unsent": unsent }));
@@ -1155,13 +1248,13 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
                     None
                 }
             };
-            let Some(((first, first_images), rest)) = next else { break (end, error) };
+            let Some(((first, first_images, first_context), rest)) = next else { break (end, error) };
             // the others are read at its first step
-            for (t, i) in rest {
-                agent.inbox.push(t, i);
+            for (t, i, c) in rest {
+                agent.inbox.push_with(t, i, c);
             }
             ap.send(json!({ "type": "userMessage", "text": first, "blocked": false }));
-            res = agent.turn_with_images(session, &first, first_images, &cancel, &mut on).await;
+            res = agent.turn_with(session, &first, first_images, first_context, &cancel, &mut on).await;
         };
         drop(g);
         (end, error)
@@ -1196,7 +1289,7 @@ async fn crashed(run: &Arc<Run>, started: std::time::Instant, why: String) -> (V
         Ok(g) => Snapshot::of(&g.0, &g.1),
         Err(_) => run.log.lock().clone(),
     };
-    let unsent: Vec<String> = run.inbox.take().into_iter().map(|(t, _)| t).collect();
+    let unsent: Vec<String> = run.inbox.take().into_iter().map(|(t, _, _)| t).collect();
     let (usage, title) = (snap.usage, snap.title.clone());
     *run.log.lock() = snap;
     ap.send_with(&mut live, json!({ "type": "turnEnd", "end": "error", "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64, "unsent": unsent }));
@@ -1345,10 +1438,12 @@ mod tests {
     #[test]
     fn an_mcp_server_with_a_great_many_tools_is_pointed_out() {
         // a usual server: nothing to say
-        assert_eq!(heavy_tools_notice("github", 40, 30_000), None);
+        assert_eq!(heavy_tools_notice("github", 40, 30_000, false), None);
         // 263 tools in 369,000 characters (measured: REA's server) is 92k tokens with every request
-        let note = heavy_tools_notice("rea", 263, 368_913).unwrap();
+        let note = heavy_tools_notice("rea", 263, 368_913, false).unwrap();
         assert!(note.contains("\"rea\" adds 263 tools, about 92k tokens, to every request"), "{note}");
+        // unless they're looked up when needed
+        assert!(heavy_tools_notice("rea", 263, 368_913, true).unwrap().contains("looks up the ones it needs"));
     }
 
     #[test]

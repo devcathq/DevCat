@@ -509,8 +509,9 @@ async fn long_output_is_cut_for_the_model_and_kept_whole_in_a_file() {
     let big = &results[0];
     assert!(big.len() < 31_000 && big.starts_with("START") && big.contains("characters, about"), "{}", &big[..200]);
     assert!(big.ends_with(&format!("[The whole output ({} characters) is saved in {}. Read parts of it with `read` (offset / limit) or search it with `grep`.]", whole.len(), saved.display())), "{}", &big[big.len() - 300..]);
-    // read's own output is cut but not saved again: its file is there to page through
-    assert!(results[1].contains("characters, about") && !results[1].contains("is saved in"));
+    // read's own output stops on a whole line and says where to go on; nothing is saved: its
+    // file is there to page through
+    assert!(results[1].contains("use offset") && !results[1].contains("is saved in") && results[1].len() < 31_000, "{}", &results[1][results[1].len() - 200..]);
     assert!(!session.path().with_extension("out").join("r1.txt").exists());
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1577,5 +1578,226 @@ async fn compaction_keeps_what_the_user_wrote_word_for_word() {
     assert!(summary.len() < 3_000, "{}", summary.len());
     // a summary asked for between turns doesn't tell the model to carry on by itself
     assert!(!summary.contains("go on now with what is still open"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A tool that only looks and takes `ms` to do it; `order` records when each call starts and ends.
+struct Slow(Arc<Mutex<Vec<String>>>);
+
+#[async_trait]
+impl Tool for Slow {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "slow_look".into(), description: "looks, slowly".into(), input_schema: json!({ "type": "object" }) }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, input: &Value) -> String {
+        input["n"].to_string()
+    }
+    fn concurrent(&self, _: &Value, _: &ToolCtx) -> bool {
+        true
+    }
+    async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        let n = input["n"].as_u64().unwrap();
+        self.0.lock().unwrap().push(format!("start {n}"));
+        // the later calls finish first: the results must still come back in call order
+        tokio::time::sleep(Duration::from_millis(300 - n * 50)).await;
+        self.0.lock().unwrap().push(format!("end {n}"));
+        ToolOutput::ok(format!("looked {n}"))
+    }
+}
+
+#[tokio::test]
+async fn calls_that_only_look_run_side_by_side_and_answer_in_order() {
+    let (dir, mut session) = project().await;
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let model = Scripted::new(vec![
+        vec![
+            tool("a", "slow_look", json!({ "n": 1 })),
+            tool("b", "slow_look", json!({ "n": 2 })),
+            tool("c", "slow_look", json!({ "n": 3 })),
+            // not one that only looks: it runs on its own, after them
+            tool("d", "write", json!({ "path": "out.txt", "content": "x" })),
+            tool("e", "read", json!({ "path": "out.txt" })),
+        ],
+        vec![text("Done.")],
+    ]);
+    let mut tools = Registry::standard();
+    tools.add(Slow(order.clone()));
+    let mut agent = Agent::new(model, tools, Policy::Bypass, Arc::new(DenyAll), "system".into());
+    let started = std::time::Instant::now();
+    let mut results = Vec::new();
+    agent.turn(&mut session, "look", &Cancel::default(), &mut |e| if let AgentEvent::ToolResult { id, .. } = e { results.push(id) }).await.unwrap();
+    // all three started before any ended, and it took about the longest, not the sum (750 ms)
+    let o = order.lock().unwrap().clone();
+    assert_eq!(&o[..3], ["start 1", "start 2", "start 3"], "{o:?}");
+    assert!(started.elapsed() < Duration::from_millis(600), "{:?}", started.elapsed());
+    assert_eq!(results, ["a", "b", "c", "d", "e"]);
+    // the read after the write saw what it wrote
+    let SessionEvent::ToolResults { results, took_ms, .. } = session.events().iter().rev().find(|e| matches!(e, SessionEvent::ToolResults { .. })).unwrap() else { unreachable!() };
+    let texts: Vec<&str> = results.iter().map(|b| match b { Block::ToolResult { content, .. } => content.as_str(), _ => "" }).collect();
+    assert!(texts[0] == "looked 1" && texts[2] == "looked 3" && texts[4].contains("\tx"), "{texts:?}");
+    assert_eq!(took_ms.len(), 5);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn stopping_stops_calls_that_run_side_by_side() {
+    let (dir, mut session) = project().await;
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let model = Scripted::new(vec![vec![tool("a", "slow_look", json!({ "n": 1 })), tool("b", "slow_look", json!({ "n": 2 }))], vec![text("Done.")]]);
+    let mut tools = Registry::standard();
+    tools.add(Slow(order.clone()));
+    let cancel = Cancel::default();
+    let mut agent = Agent::new(model, tools, Policy::Bypass, Arc::new(DenyAll), "system".into());
+    let c = cancel.clone();
+    let stop = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        c.cancel();
+    });
+    let res = agent.turn(&mut session, "look", &cancel, &mut |_| {}).await;
+    stop.await.unwrap();
+    assert!(matches!(res, Err(Error::Cancelled)));
+    let SessionEvent::ToolResults { results, .. } = session.events().iter().rev().find(|e| matches!(e, SessionEvent::ToolResults { .. })).unwrap() else { unreachable!() };
+    assert!(results.iter().all(|b| matches!(b, Block::ToolResult { is_error: true, content, .. } if content.contains("Stopped by the user"))), "{results:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_summary_keeps_the_newest_steps_and_lists_the_files_and_the_next_one_updates_it() {
+    let (dir, mut session) = project().await;
+    // a 10,000-token window: the second step's 9,000 tokens make it summarize before the third
+    let model = Script::new(vec![
+        say(vec![tool("r1", "read", json!({ "path": "notes.txt" }))]),
+        Say { input: 9_000, ..say(vec![tool("w1", "write", json!({ "path": "new.txt", "content": "hello" }))]) },
+        say(vec![text("1. Request: the task.")]),
+        say(vec![text("Done.")]),
+        say(vec![text("1. Request: the task, done.")]),
+    ]);
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Bypass, Arc::new(DenyAll), "system".into());
+    agent.context_window = Some(10_000);
+    let mut events = Vec::new();
+    agent.turn(&mut session, "the task", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(compactions(&events), 1);
+    // the step after the summary sees the summary, then the newest step as it was: the write and its result
+    let after = model.requests.lock().unwrap()[3].clone();
+    assert_eq!(after.len(), 3, "{after:?}");
+    let summary = after[0].text();
+    assert!(summary.contains("1. Request: the task.") && summary.contains("Changed: new.txt") && summary.contains("Read: notes.txt"), "{summary}");
+    assert!(after[1].tool_uses().any(|(id, name, _)| id == "w1" && name == "write"));
+    assert!(matches!(&after[2].content[0], Block::ToolResult { tool_use_id, is_error: false, .. } if tool_use_id == "w1"));
+    // the one before it, and the first message, are only in the summary
+    assert!(!after.iter().any(|m| m.tool_uses().any(|(id, _, _)| id == "r1")));
+    // summarized again: asked to update the summary it starts with
+    agent.compact(&mut session, None, &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert!(model.last_text(4).contains("update of it"), "{}", model.last_text(4));
+    assert!(!model.last_text(2).contains("update of it"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_tail_too_big_for_the_window_is_summarized_too() {
+    let (dir, mut session) = project().await;
+    // the provider takes 4,000 characters at most: the newest step alone is more
+    let model = Script::tight(vec![
+        say(vec![tool("r1", "read", json!({ "path": "notes.txt" }))]),
+        say(vec![tool("g1", "glob", json!({ "pattern": "*" }))]),
+        say(vec![tool("w1", "write", json!({ "path": "big.txt", "content": "x".repeat(5_000) }))]),
+        say(vec![text("Summary one.")]),
+        say(vec![text("Summary two.")]),
+        say(vec![text("Done.")]),
+    ], 4_000);
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Bypass, Arc::new(DenyAll), "system".into());
+    agent.context_window = Some(1_000_000);
+    let mut events = Vec::new();
+    agent.turn(&mut session, "the task", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    // refused as too long: summarized keeping the newest step, refused again, summarized without it
+    assert_eq!(compactions(&events), 2, "{events:?}");
+    let tails: Vec<usize> = session.events().iter().filter_map(|e| if let SessionEvent::Compacted { tail, .. } = e { Some(*tail) } else { None }).collect();
+    // (the glob and the write with their results: all after the first step)
+    assert_eq!(tails, [4, 0]);
+    assert_eq!(model.left(), 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_slash_command_goes_to_the_model_and_the_log_keeps_what_was_typed() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join(".claude/commands")).unwrap();
+    std::fs::write(proj.join(".claude/commands/bump.md"), "Bump the version in $1 by one.").unwrap();
+    let (_, ask) = devcat_harness::commands::expand("/bump notes.txt", &proj, None).unwrap();
+    let model = Script::new(vec![say(vec![text("Bumped.")])]);
+    let mut agent = agent_with(model.clone());
+    agent.turn_with(&mut session, "/bump notes.txt", vec![], vec![ask], &Cancel::default(), &mut |_| {}).await.unwrap();
+    let sent = model.requests.lock().unwrap()[0][0].text();
+    assert!(sent.starts_with("/bump notes.txt") && sent.contains("Bump the version in notes.txt by one."), "{sent}");
+    assert_eq!(session.title(), "/bump notes.txt");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An MCP server's tool with a long definition: enough of them are left out of the requests.
+struct Heavy(&'static str);
+
+#[async_trait]
+impl Tool for Heavy {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: self.0.into(), description: format!("{} {}", self.0.replace('_', " "), "x".repeat(40_000)), input_schema: json!({ "type": "object" }) }
+    }
+    fn kind(&self, _: &Value, _: &ToolCtx) -> Kind {
+        Kind::Read
+    }
+    fn summary(&self, _: &Value) -> String {
+        String::new()
+    }
+    fn deferrable(&self) -> bool {
+        true
+    }
+    async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::ok(format!("{} ran", self.0))
+    }
+}
+
+/// Records the tool names of every request.
+struct Tools(Mutex<Vec<Vec<String>>>, Mutex<Vec<Vec<Block>>>);
+
+#[async_trait]
+impl Model for Tools {
+    fn name(&self) -> String {
+        "tools".into()
+    }
+    async fn step(&self, req: &Request<'_>, _: &mut (dyn FnMut(Delta) + Send)) -> devcat_harness::Result<Reply> {
+        self.0.lock().unwrap().push(req.tools.iter().map(|t| t.name.clone()).collect());
+        Ok(Reply { content: self.1.lock().unwrap().remove(0), usage: Usage::default(), truncated: false })
+    }
+}
+
+#[tokio::test]
+async fn many_mcp_tools_are_found_with_tool_search_and_stay_once_found() {
+    let (dir, mut session) = project().await;
+    let model = Arc::new(Tools(Mutex::default(), Mutex::new(vec![
+        vec![tool("s1", "tool_search", json!({ "query": "open an issue" }))],
+        vec![tool("c1", "mcp__gh__open_issue", json!({}))],
+        vec![text("Opened.")],
+        vec![text("Still here.")],
+    ])));
+    let mut tools = Registry::standard();
+    tools.add(Heavy("mcp__gh__open_issue"));
+    tools.add(Heavy("mcp__gh__merge_pull"));
+    let mut agent = Agent::new(model.clone(), tools, Policy::Bypass, Arc::new(DenyAll), "system".into());
+    let mut results = Vec::new();
+    agent.turn(&mut session, "open an issue", &Cancel::default(), &mut |e| if let AgentEvent::ToolResult { content, .. } = e { results.push(content) }).await.unwrap();
+    assert!(results[0].starts_with("Tools now available: mcp__gh__open_issue"), "{}", results[0]);
+    assert_eq!(results[1], "mcp__gh__open_issue ran");
+    let seen = model.0.lock().unwrap().clone();
+    let has = |n: usize, t: &str| seen[n].iter().any(|x| x == t);
+    // first only the search, then the tool it found (never the other one)
+    assert!(has(0, "tool_search") && !has(0, "mcp__gh__open_issue"));
+    assert!(has(1, "mcp__gh__open_issue") && has(2, "mcp__gh__open_issue") && !seen.iter().flatten().any(|t| t == "mcp__gh__merge_pull"));
+    // a chat opened again still has it
+    let mut again = Session::open(session.path()).await.unwrap();
+    agent.turn(&mut again, "and now?", &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert!(model.0.lock().unwrap().last().unwrap().iter().any(|t| t == "mcp__gh__open_issue"));
     let _ = std::fs::remove_dir_all(dir);
 }

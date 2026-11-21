@@ -1,6 +1,6 @@
 //! Anthropic Messages API (`POST {base}/v1/messages`, streamed).
 use super::sse::Sse;
-use super::{Broken, Delta, LlmConfig, Reply, Request, Retry, UNPARSED, http_error, transient, transport, url};
+use super::{Effort, Broken, Delta, LlmConfig, Reply, Request, Retry, UNPARSED, http_error, transient, transport, url};
 use crate::message::{Block, Message, Role, Usage};
 use crate::{Error, Result};
 use serde_json::{Value, json};
@@ -35,7 +35,44 @@ pub(super) fn body(cfg: &LlmConfig, req: &Request<'_>) -> Value {
     if !req.tools.is_empty() {
         b["tools"] = req.tools.iter().map(|t| json!({ "name": t.name, "description": t.description, "input_schema": t.input_schema })).collect();
     }
+    if let Some(e) = cfg.effort {
+        match claude_version(&cfg.model) {
+            // adaptive thinking, its depth set by effort (`xhigh` came with 4.7)
+            Some(v) if v >= (4, 6) => {
+                b["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
+                let e = if v < (4, 7) && e == Effort::Xhigh { Effort::High } else { e };
+                b["output_config"] = json!({ "effort": e.as_str() });
+            }
+            // older Claude models and servers that speak the protocol: a thinking budget, which
+            // must be at least 1,024 tokens and leave room for the answer
+            _ => {
+                let want: u32 = match e {
+                    Effort::Low => 2_048,
+                    Effort::Medium => 4_096,
+                    Effort::High => 8_192,
+                    Effort::Xhigh | Effort::Max => 10_000,
+                };
+                let budget = want.min(cfg.max_tokens.saturating_sub(2_048));
+                if budget >= 1_024 {
+                    b["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+                }
+            }
+        }
+    }
     b
+}
+
+/// The (major, minor) version of a Claude model id (`claude-opus-4-6`, `claude-sonnet-4-20250514`,
+/// `anthropic/claude-opus-4.6`); Fable and Mythos models count as the newest. None for others.
+fn claude_version(model: &str) -> Option<(u32, u32)> {
+    let m = model.to_lowercase();
+    if m.contains("claude") && (m.contains("fable") || m.contains("mythos")) {
+        return Some((99, 0));
+    }
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"claude-(?:opus|sonnet|haiku)-(\d+)(?:[-.](\d{1,2})(?:\D|$))?").expect("valid regex"));
+    let c = re.captures(&m)?;
+    Some((c[1].parse().ok()?, c.get(2).and_then(|n| n.as_str().parse().ok()).unwrap_or(0)))
 }
 
 fn wire_message(m: &Message) -> Value {
@@ -281,7 +318,7 @@ mod tests {
                 Block::ToolUse { id: "t".into(), name: "read".into(), input: json!({}) },
             ],
         }];
-        let cfg = LlmConfig { protocol: super::super::Protocol::Anthropic, base_url: "x".into(), api_key: None, model: "m".into(), max_tokens: 10 };
+        let cfg = LlmConfig { protocol: super::super::Protocol::Anthropic, base_url: "x".into(), api_key: None, model: "m".into(), max_tokens: 10, effort: None };
         let b = body(&cfg, &Request { system: "s", messages: &msgs, tools: &[], cache_key: None });
         let c = b["messages"][0]["content"].as_array().unwrap();
         assert_eq!(c.len(), 2);
@@ -290,5 +327,34 @@ mod tests {
         // the newest block carries the rolling cache breakpoint
         assert_eq!(c[1]["cache_control"]["type"], "ephemeral");
         assert!(c[0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn effort_is_said_the_way_each_claude_model_takes_it() {
+        assert_eq!(claude_version("claude-opus-4-6"), Some((4, 6)));
+        assert_eq!(claude_version("claude-sonnet-4-20250514"), Some((4, 0)));
+        assert_eq!(claude_version("claude-opus-4-5-20251101"), Some((4, 5)));
+        assert_eq!(claude_version("anthropic/claude-opus-4.7"), Some((4, 7)));
+        assert_eq!(claude_version("claude-haiku-5-5"), Some((5, 5)));
+        assert_eq!(claude_version("claude-fable-5-2"), Some((99, 0)));
+        assert_eq!((claude_version("claude-3-7-sonnet-latest"), claude_version("glm-5")), (None, None));
+        let body = |model: &str, effort: Option<Effort>| {
+            let cfg = LlmConfig { protocol: super::super::Protocol::Anthropic, base_url: "x".into(), api_key: None, model: model.into(), max_tokens: 16_000, effort };
+            super::body(&cfg, &Request { system: "s", messages: &[Message::user_text("hi")], tools: &[], cache_key: None })
+        };
+        // not chosen: nothing is sent about it
+        let b = body("claude-opus-5-5", None);
+        assert!(b.get("thinking").is_none() && b.get("output_config").is_none());
+        let b = body("claude-opus-5-5", Some(Effort::Xhigh));
+        assert_eq!((b["thinking"]["type"].as_str(), b["output_config"]["effort"].as_str()), (Some("adaptive"), Some("xhigh")));
+        // 4.6 has no xhigh
+        assert_eq!(body("claude-sonnet-4-6", Some(Effort::Xhigh))["output_config"]["effort"], "high");
+        // older models and other servers: a budget under max_tokens
+        let b = body("claude-haiku-4-5", Some(Effort::Max));
+        assert_eq!((b["thinking"]["type"].as_str(), b["thinking"]["budget_tokens"].as_u64()), (Some("enabled"), Some(10_000)));
+        assert!(b.get("output_config").is_none());
+        assert_eq!(body("kimi-k3", Some(Effort::Low))["thinking"]["budget_tokens"], 2_048);
+        assert_eq!(Effort::parse("XHigh"), Some(Effort::Xhigh));
+        assert_eq!(Effort::parse("auto"), None);
     }
 }
