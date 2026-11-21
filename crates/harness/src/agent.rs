@@ -66,6 +66,18 @@ const KEPT_MESSAGE: usize = 2_000;
 /// than a quarter of a known window: more is left to the summary, or it would be what doesn't fit.
 const KEPT_UNANSWERED: usize = 32_000;
 
+/// The newest steps stay word for word after a summary ([`SessionEvent::Compacted`]'s `tail`) in
+/// up to this share of a known window, and no more than [`TAIL_CHARS`] characters: what the model
+/// just read or saw, so it doesn't look again.
+const TAIL_SHARE: f64 = 0.1;
+const TAIL_CHARS: usize = 80_000;
+
+/// Files listed with a summary (see [`files_of`]): this many changed and this many read, newest first.
+const LISTED_FILES: usize = 30;
+
+/// Added to the summary request when the conversation already starts with a summary.
+const UPDATE_SUMMARY: &str = "\n\nThe conversation starts with the summary made the last time it was cut. Write the new summary as an update of it: carry over what still matters (the request, decisions, errors and fixes, what's left to do), change what's different now, and don't leave something out only because it's old.";
+
 /// What marks a message the harness wrote to the model itself, in the user's place: in the
 /// session log (`User::hook`) and in the chat ([`AgentEvent::Hook`]).
 pub const NOTE: &str = "DevCat";
@@ -151,6 +163,32 @@ fn user_words(session: &Session) -> Option<String> {
     }
     kept.reverse();
     Some(kept.iter().enumerate().map(|(n, m)| format!("{}. {m}", n + 1)).collect::<Vec<_>>().join("\n\n"))
+}
+
+/// The files the conversation changed (`edit`, `write`) and read (`read`), each newest first and
+/// at most [`LISTED_FILES`], relative to the project when inside it. From the tool calls in the
+/// whole log, so a summary can't lose track of them, also across several summaries.
+fn files_of(session: &Session) -> (Vec<String>, Vec<String>) {
+    let (mut changed, mut read) = (Vec::<String>::new(), Vec::<String>::new());
+    let cwd = Path::new(&session.cwd);
+    for e in session.events().iter().rev() {
+        let SessionEvent::Assistant { content, .. } = e else { continue };
+        for b in content.iter().rev() {
+            let Block::ToolUse { name, input, .. } = b else { continue };
+            let Some(path) = input.get("path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()) else { continue };
+            let path = Path::new(path).strip_prefix(cwd).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_string());
+            let list = match name.as_str() {
+                "edit" | "write" => &mut changed,
+                "read" => &mut read,
+                _ => continue,
+            };
+            if list.len() < LISTED_FILES && !list.contains(&path) {
+                list.push(path);
+            }
+        }
+    }
+    read.retain(|p| !changed.contains(p));
+    (changed, read)
 }
 
 /// The answer a conversation ends with: the text of the last step that said something, and of the
@@ -491,7 +529,7 @@ impl Agent {
         }
         let tokens_before = session.context_tokens();
         on(AgentEvent::Compacting { tokens_before });
-        let (mut summary, usage) = match self.summarize(&session.id, &messages, focus, cancel).await {
+        let (mut summary, usage) = match self.summarize(&session.id, &messages, focus, session.last_summary().is_some(), cancel).await {
             Ok(s) => s,
             Err(e) => {
                 on(AgentEvent::CompactFailed { message: e.to_string() });
@@ -503,6 +541,16 @@ impl Agent {
         // replaces), so the model goes on with the same task and the same plan.
         if let Some(said) = user_words(session) {
             summary.push_str(&format!("\n\n## What the user wrote, word for word (oldest first)\n{said}"));
+        }
+        let (changed, read) = files_of(session);
+        if !changed.is_empty() || !read.is_empty() {
+            summary.push_str("\n\n## Files in this conversation (newest first)");
+            if !changed.is_empty() {
+                summary.push_str(&format!("\nChanged: {}", changed.join(", ")));
+            }
+            if !read.is_empty() {
+                summary.push_str(&format!("\nRead: {}", read.join(", ")));
+            }
         }
         if let Some(list) = open_todos(session) {
             summary.push_str(&format!("
@@ -517,10 +565,16 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         }
         // The message that started this turn (or came while it ran) isn't history yet: it stays,
         // with its images, instead of being read by the model as a paraphrase of itself.
+        // The newest steps stay as they were, when they're small enough: what the model just read
+        // or ran is what it needs next (a tail takes the unanswered messages in too).
+        let tail = match self.context_window {
+            Some(w) if keep => session.tail_within(((w as f64 * TAIL_SHARE) as usize * 4).min(TAIL_CHARS)),
+            _ => 0,
+        };
         let unanswered = session.unanswered();
         let fits = unanswered.iter().sum::<usize>() <= self.context_window.map_or(KEPT_UNANSWERED, |w| KEPT_UNANSWERED.min(w as usize));
-        let kept = if keep && fits { unanswered.len() } else { 0 };
-        session.append(SessionEvent::Compacted { summary: summary.clone(), model: self.model.name(), usage, tokens_before, kept }).await?;
+        let kept = if keep && fits && tail == 0 { unanswered.len() } else { 0 };
+        session.append(SessionEvent::Compacted { summary: summary.clone(), model: self.model.name(), usage, tokens_before, kept, tail }).await?;
         on(AgentEvent::Compacted { summary, tokens_before, usage });
         self.hook(session, "PostCompact", Some(&[trigger]), json!({ "trigger": trigger }), cancel, on).await;
         Ok(true)
@@ -530,7 +584,8 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
     /// reply without text (a tool call instead, or nothing) is asked for once more. When the
     /// conversation is too long even for this request, it's cut down step by step ([`shrink`])
     /// until it fits: a summary of most of it beats a chat that can't go on.
-    async fn summarize(&self, key: &str, messages: &[Message], focus: Option<&str>, cancel: &Cancel) -> Result<(String, Usage)> {
+    /// `update`: the conversation starts with an earlier summary, which the new one carries on.
+    async fn summarize(&self, key: &str, messages: &[Message], focus: Option<&str>, update: bool, cancel: &Cancel) -> Result<(String, Usage)> {
         // Same system prompt and tools as every step, so the provider's cache still applies.
         let specs = self.tools.specs();
         let system = self.system_now();
@@ -546,6 +601,9 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
         let mut again = false;
         loop {
             let mut ask = COMPACT_PROMPT.to_string();
+            if update {
+                ask.push_str(UPDATE_SUMMARY);
+            }
             if let Some(f) = focus.map(str::trim).filter(|f| !f.is_empty()) {
                 ask.push_str(&format!("\n\nThe user wants the summary to focus on: {f}"));
             }
@@ -765,7 +823,9 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                             return Err(too_small(&e));
                         }
                         true
-                    } else if session.last_summary().is_some() && !session.unanswered().is_empty() {
+                    } else if session.last_summary().is_some() && (!session.unanswered().is_empty() || session.last_tail() > 0) {
+                        // what the summary kept as it was (the newest steps, the user's
+                        // messages) goes into a summary too
                         false
                     } else if session.last_summary().is_some() {
                         return Err(too_small(&e));

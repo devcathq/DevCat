@@ -61,6 +61,12 @@ pub enum SessionEvent {
         /// started it.
         #[serde(default, skip_serializing_if = "is_none")]
         kept: usize,
+        /// The last `tail` events before this one stay in the conversation after the summary, word
+        /// for word: the newest steps (the file just read, the error just seen), so the model goes
+        /// on without looking again. They start with one of the model's steps, are all since the
+        /// compaction before, and take in the messages `kept` would keep (it's 0 then).
+        #[serde(default, skip_serializing_if = "is_none")]
+        tail: usize,
     },
 }
 
@@ -221,45 +227,62 @@ impl Session {
     /// said nothing is left out, because they reject an empty message too. A message that follows
     /// a turn that didn't finish says so first ([`interrupted_note`]).
     pub fn messages(&self) -> Vec<Message> {
-        let mut out: Vec<Message> = Vec::new();
-        // how the turn before the next user message ended, if it ended early
-        let mut cut: Option<&str> = None;
-        // the user's messages since the model's last step: a compaction may keep them
-        let mut unanswered: Vec<Vec<Block>> = Vec::new();
-        for e in &self.events {
+        let mut p = Projection::default();
+        for (i, e) in self.events.iter().enumerate() {
             match e {
-                SessionEvent::Compacted { summary, kept, .. } => {
-                    out.clear();
-                    cut = None;
-                    push(&mut out, Role::User, vec![Block::Text { text: summary_message(summary) }]);
-                    unanswered.drain(..unanswered.len().saturating_sub(*kept));
-                    for content in &unanswered {
-                        push(&mut out, Role::User, content.clone());
+                SessionEvent::Compacted { summary, kept, tail, .. } => {
+                    p.out.clear();
+                    p.cut = None;
+                    push(&mut p.out, Role::User, vec![Block::Text { text: summary_message(summary) }]);
+                    if *tail > 0 {
+                        // the newest steps again, as they were (with the messages nothing
+                        // answered yet: they're the last of them)
+                        p.unanswered.clear();
+                        for e in &self.events[i.saturating_sub(*tail)..i] {
+                            p.add(e);
+                        }
+                    } else {
+                        p.unanswered.drain(..p.unanswered.len().saturating_sub(*kept));
+                        for content in &p.unanswered {
+                            push(&mut p.out, Role::User, content.clone());
+                        }
                     }
                 }
-                SessionEvent::User { text, images, context, .. } => {
-                    close_dangling(&mut out);
-                    let mut content = Vec::new();
-                    if let Some(reason) = cut.take() {
-                        content.push(Block::Text { text: interrupted_note(reason) });
-                    }
-                    content.push(Block::Text { text: text.clone() });
-                    content.extend(context.iter().map(|c| Block::Text { text: hook_context(c) }));
-                    content.extend(images.iter().cloned());
-                    unanswered.push(content.clone());
-                    push(&mut out, Role::User, content);
-                }
-                SessionEvent::Assistant { content, .. } if says_something(content) => {
-                    unanswered.clear();
-                    push(&mut out, Role::Assistant, content.clone());
-                }
-                SessionEvent::ToolResults { results, .. } => push(&mut out, Role::User, results.clone()),
-                SessionEvent::Interrupted { reason } => cut = Some(reason),
-                _ => {}
+                e => p.add(e),
             }
         }
-        close_dangling(&mut out);
-        out
+        close_dangling(&mut p.out);
+        p.out
+    }
+
+    /// How many of the events at the end of the log could stay word for word after a summary, in
+    /// about `chars` characters: from one of the model's steps on (so every tool call has its
+    /// result, and the user's message before it is in the summary), all since the last
+    /// compaction, and leaving at least one step before them for the summary. 0 when not even
+    /// the newest step fits.
+    pub fn tail_within(&self, chars: usize) -> usize {
+        let from = self.events.iter().rposition(|e| matches!(e, SessionEvent::Compacted { .. })).map_or(0, |i| i + 1);
+        let first_step = self.events[from..].iter().position(|e| matches!(e, SessionEvent::Assistant { content, .. } if says_something(content))).map(|i| from + i);
+        let mut size = 0;
+        let mut tail = 0;
+        for i in (from..self.events.len()).rev() {
+            size += event_chars(&self.events[i]);
+            if size > chars {
+                break;
+            }
+            if Some(i) > first_step && matches!(&self.events[i], SessionEvent::Assistant { content, .. } if says_something(content)) {
+                tail = self.events.len() - i;
+            }
+        }
+        tail
+    }
+
+    /// The `tail` of the last compaction (see [`SessionEvent::Compacted`]); 0 without one.
+    pub fn last_tail(&self) -> usize {
+        self.events.iter().rev().find_map(|e| match e {
+            SessionEvent::Compacted { tail, .. } => Some(*tail),
+            _ => None,
+        }).unwrap_or(0)
     }
 
     /// Tokens used by the whole session.
@@ -281,7 +304,7 @@ impl Session {
         let mut w = Weight { counted: None, chars: 0 };
         // the size of each of the user's messages since the model's last step (see `unanswered`)
         let mut unanswered: Vec<usize> = Vec::new();
-        for e in &self.events {
+        for (i, e) in self.events.iter().enumerate() {
             match e {
                 SessionEvent::Assistant { usage, content, .. } => {
                     if says_something(content) {
@@ -292,6 +315,10 @@ impl Session {
                     } else {
                         w.chars += content.iter().map(block_chars).sum::<usize>();
                     }
+                }
+                SessionEvent::Compacted { summary, tail, .. } if *tail > 0 => {
+                    // (the messages nothing answered yet are in the tail, and stay unanswered)
+                    w = Weight { counted: None, chars: summary.len() + self.events[i.saturating_sub(*tail)..i].iter().map(event_chars).sum::<usize>() };
                 }
                 SessionEvent::Compacted { summary, kept, .. } => {
                     unanswered.drain(..unanswered.len().saturating_sub(*kept));
@@ -317,6 +344,8 @@ impl Session {
         for e in &self.events {
             match e {
                 SessionEvent::Assistant { content, .. } if says_something(content) => out.clear(),
+                // a tail keeps them all (they're its last events)
+                SessionEvent::Compacted { tail, .. } if *tail > 0 => {}
                 SessionEvent::Compacted { kept, .. } => {
                     out.drain(..out.len().saturating_sub(*kept));
                 }
@@ -411,6 +440,52 @@ pub(crate) fn block_chars(b: &Block) -> usize {
     }
 }
 
+/// What the events add to the conversation sent to the model ([`Session::messages`]).
+#[derive(Default)]
+struct Projection<'a> {
+    out: Vec<Message>,
+    /// How the turn before the next user message ended, if it ended early.
+    cut: Option<&'a str>,
+    /// The user's messages since the model's last step: a compaction may keep them.
+    unanswered: Vec<Vec<Block>>,
+}
+
+impl<'a> Projection<'a> {
+    fn add(&mut self, e: &'a SessionEvent) {
+        match e {
+            SessionEvent::User { text, images, context, .. } => {
+                close_dangling(&mut self.out);
+                let mut content = Vec::new();
+                if let Some(reason) = self.cut.take() {
+                    content.push(Block::Text { text: interrupted_note(reason) });
+                }
+                content.push(Block::Text { text: text.clone() });
+                content.extend(context.iter().map(|c| Block::Text { text: hook_context(c) }));
+                content.extend(images.iter().cloned());
+                self.unanswered.push(content.clone());
+                push(&mut self.out, Role::User, content);
+            }
+            SessionEvent::Assistant { content, .. } if says_something(content) => {
+                self.unanswered.clear();
+                push(&mut self.out, Role::Assistant, content.clone());
+            }
+            SessionEvent::ToolResults { results, .. } => push(&mut self.out, Role::User, results.clone()),
+            SessionEvent::Interrupted { reason } => self.cut = Some(reason),
+            _ => {}
+        }
+    }
+}
+
+/// About how many characters an event adds to the conversation.
+fn event_chars(e: &SessionEvent) -> usize {
+    match e {
+        SessionEvent::User { text, images, context, .. } => user_chars(text, images, context),
+        SessionEvent::Assistant { content, .. } => content.iter().map(block_chars).sum(),
+        SessionEvent::ToolResults { results, .. } => results.iter().map(block_chars).sum(),
+        _ => 0,
+    }
+}
+
 /// Merge into the previous message when the role repeats (providers want alternating roles).
 fn push(out: &mut Vec<Message>, role: Role, content: Vec<Block>) {
     match out.last_mut() {
@@ -485,7 +560,7 @@ mod tests {
         assert_eq!((s.context_tokens(), s.steps_since_compaction(), s.compacted_base()), (325, 2, None));
         // after a summary: its characters, until the next step is counted
         // (the message sent since the last step isn't kept here: the summary stands for it)
-        s.append(SessionEvent::Compacted { summary: "s".repeat(120), model: "m".into(), usage: Usage::default(), tokens_before: 325, kept: 0 }).await.unwrap();
+        s.append(SessionEvent::Compacted { summary: "s".repeat(120), model: "m".into(), usage: Usage::default(), tokens_before: 325, kept: 0, tail: 0 }).await.unwrap();
         assert_eq!((s.context_tokens(), s.steps_since_compaction(), s.compacted_base()), (30, 0, None));
         assert!(s.unanswered().is_empty());
         s.append(step("go on", 90)).await.unwrap();
@@ -505,7 +580,7 @@ mod tests {
         s.append(SessionEvent::User { text: "what's wrong in this screenshot?".into(), images: vec![image.clone()], context: vec!["branch: main".into()], hook: None }).await.unwrap();
         assert_eq!(s.unanswered(), vec![13, 32 + 12 + 6_000]);
         // summarized as the turn starts, keeping the newest message: it's there whole, after the summary
-        s.append(SessionEvent::Compacted { summary: "S".into(), model: "m".into(), usage: Usage::default(), tokens_before: 9, kept: 1 }).await.unwrap();
+        s.append(SessionEvent::Compacted { summary: "S".into(), model: "m".into(), usage: Usage::default(), tokens_before: 9, kept: 1, tail: 0 }).await.unwrap();
         let m = s.messages();
         assert_eq!(m.len(), 1);
         assert!(m[0].content[0] == Block::Text { text: summary_message("S") } && m[0].content[1] == Block::Text { text: "what's wrong in this screenshot?".into() }, "{:?}", m[0].content);
@@ -519,14 +594,55 @@ mod tests {
         let old: SessionEvent = serde_json::from_str(r#"{"event":"compacted","summary":"S","model":"m","usage":{"input_tokens":1,"output_tokens":1},"tokens_before":9}"#).unwrap();
         assert!(matches!(old, SessionEvent::Compacted { kept: 0, .. }));
         // summarized once more without keeping it (it didn't fit): only the summary is left
-        s.append(SessionEvent::Compacted { summary: "T".into(), model: "m".into(), usage: Usage::default(), tokens_before: 9, kept: 0 }).await.unwrap();
+        s.append(SessionEvent::Compacted { summary: "T".into(), model: "m".into(), usage: Usage::default(), tokens_before: 9, kept: 0, tail: 0 }).await.unwrap();
         assert_eq!(s.messages()[0].content, vec![Block::Text { text: summary_message("T") }]);
         assert!(s.unanswered().is_empty());
         // once the model answered, a later summary has nothing of it to keep
         s.append(SessionEvent::user("next", vec![])).await.unwrap();
         s.append(SessionEvent::Assistant { content: vec![Block::Text { text: "OK.".into() }], model: "m".into(), usage: Usage::default() }).await.unwrap();
-        s.append(SessionEvent::Compacted { summary: "U".into(), model: "m".into(), usage: Usage::default(), tokens_before: 9, kept: 3 }).await.unwrap();
+        s.append(SessionEvent::Compacted { summary: "U".into(), model: "m".into(), usage: Usage::default(), tokens_before: 9, kept: 3, tail: 0 }).await.unwrap();
         assert_eq!(s.messages()[0].content, vec![Block::Text { text: summary_message("U") }]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_summary_can_keep_the_newest_steps_word_for_word() {
+        let dir = tmp();
+        let mut s = Session::create(&dir, "/proj").await.unwrap();
+        let step = |id: &str| SessionEvent::Assistant { content: vec![Block::ToolUse { id: id.into(), name: "read".into(), input: json!({ "path": id }) }], model: "m".into(), usage: Usage { input_tokens: 50, output_tokens: 5, cache_read_tokens: 0 } };
+        let done = |id: &str, out: &str| SessionEvent::ToolResults { results: vec![Block::ToolResult { tool_use_id: id.into(), content: out.into(), is_error: false }], usage: Usage::default(), took_ms: vec![] };
+        s.append(SessionEvent::user("the task", vec![])).await.unwrap();
+        // nothing but the first step: there'd be nothing left to summarize
+        s.append(step("a")).await.unwrap();
+        s.append(done("a", &"A".repeat(1_000))).await.unwrap();
+        assert_eq!(s.tail_within(100_000), 0);
+        s.append(step("b")).await.unwrap();
+        s.append(done("b", "B")).await.unwrap();
+        s.append(SessionEvent::user("also this", vec![])).await.unwrap();
+        // the newest step, its result and the message after it; with more room, no further back
+        // than after the first step
+        assert_eq!(s.tail_within(10), 0);
+        assert_eq!(s.tail_within(500), 3);
+        assert_eq!(s.tail_within(100_000), 3);
+        s.append(SessionEvent::Compacted { summary: "S".into(), model: "m".into(), usage: Usage::default(), tokens_before: 9, kept: 0, tail: 3 }).await.unwrap();
+        let m = s.messages();
+        assert_eq!(m.iter().map(|m| m.role).collect::<Vec<_>>(), vec![Role::User, Role::Assistant, Role::User]);
+        assert_eq!(m[0].text(), summary_message("S"));
+        assert!(m[1].tool_uses().any(|(id, _, _)| id == "b"));
+        assert!(matches!(&m[2].content[0], Block::ToolResult { tool_use_id, .. } if tool_use_id == "b"));
+        assert_eq!(m[2].content[1], Block::Text { text: "also this".into() });
+        assert!(!m.iter().any(|m| m.tool_uses().any(|(id, _, _)| id == "a")));
+        // the message is still unanswered, and the tail is weighed
+        assert_eq!(s.unanswered(), vec![9]);
+        assert_eq!(s.weight(), Weight { counted: None, chars: 1 + event_chars(&step("b")) + 1 + 9 });
+        assert_eq!((s.last_tail(), s.steps_since_compaction()), (3, 0));
+        // read back the same; an older log's line has no tail
+        assert_eq!(Session::open(s.path()).await.unwrap().messages(), m);
+        let old: SessionEvent = serde_json::from_str(r#"{"event":"compacted","summary":"S","model":"m","usage":{"input_tokens":1,"output_tokens":1},"tokens_before":9,"kept":1}"#).unwrap();
+        assert!(matches!(old, SessionEvent::Compacted { tail: 0, kept: 1, .. }));
+        // the next summary's tail is taken from after this one only
+        s.append(SessionEvent::Assistant { content: vec![Block::Text { text: "ok".into() }], model: "m".into(), usage: Usage::default() }).await.unwrap();
+        assert_eq!(s.tail_within(100_000), 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 

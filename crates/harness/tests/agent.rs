@@ -1663,3 +1663,60 @@ async fn stopping_stops_calls_that_run_side_by_side() {
     assert!(results.iter().all(|b| matches!(b, Block::ToolResult { is_error: true, content, .. } if content.contains("Stopped by the user"))), "{results:?}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn a_summary_keeps_the_newest_steps_and_lists_the_files_and_the_next_one_updates_it() {
+    let (dir, mut session) = project().await;
+    // a 10,000-token window: the second step's 9,000 tokens make it summarize before the third
+    let model = Script::new(vec![
+        say(vec![tool("r1", "read", json!({ "path": "notes.txt" }))]),
+        Say { input: 9_000, ..say(vec![tool("w1", "write", json!({ "path": "new.txt", "content": "hello" }))]) },
+        say(vec![text("1. Request: the task.")]),
+        say(vec![text("Done.")]),
+        say(vec![text("1. Request: the task, done.")]),
+    ]);
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Bypass, Arc::new(DenyAll), "system".into());
+    agent.context_window = Some(10_000);
+    let mut events = Vec::new();
+    agent.turn(&mut session, "the task", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    assert_eq!(compactions(&events), 1);
+    // the step after the summary sees the summary, then the newest step as it was: the write and its result
+    let after = model.requests.lock().unwrap()[3].clone();
+    assert_eq!(after.len(), 3, "{after:?}");
+    let summary = after[0].text();
+    assert!(summary.contains("1. Request: the task.") && summary.contains("Changed: new.txt") && summary.contains("Read: notes.txt"), "{summary}");
+    assert!(after[1].tool_uses().any(|(id, name, _)| id == "w1" && name == "write"));
+    assert!(matches!(&after[2].content[0], Block::ToolResult { tool_use_id, is_error: false, .. } if tool_use_id == "w1"));
+    // the one before it, and the first message, are only in the summary
+    assert!(!after.iter().any(|m| m.tool_uses().any(|(id, _, _)| id == "r1")));
+    // summarized again: asked to update the summary it starts with
+    agent.compact(&mut session, None, &Cancel::default(), &mut |_| {}).await.unwrap();
+    assert!(model.last_text(4).contains("update of it"), "{}", model.last_text(4));
+    assert!(!model.last_text(2).contains("update of it"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_tail_too_big_for_the_window_is_summarized_too() {
+    let (dir, mut session) = project().await;
+    // the provider takes 4,000 characters at most: the newest step alone is more
+    let model = Script::tight(vec![
+        say(vec![tool("r1", "read", json!({ "path": "notes.txt" }))]),
+        say(vec![tool("g1", "glob", json!({ "pattern": "*" }))]),
+        say(vec![tool("w1", "write", json!({ "path": "big.txt", "content": "x".repeat(5_000) }))]),
+        say(vec![text("Summary one.")]),
+        say(vec![text("Summary two.")]),
+        say(vec![text("Done.")]),
+    ], 4_000);
+    let mut agent = Agent::new(model.clone(), Registry::standard(), Policy::Bypass, Arc::new(DenyAll), "system".into());
+    agent.context_window = Some(1_000_000);
+    let mut events = Vec::new();
+    agent.turn(&mut session, "the task", &Cancel::default(), &mut |e| events.push(e)).await.unwrap();
+    // refused as too long: summarized keeping the newest step, refused again, summarized without it
+    assert_eq!(compactions(&events), 2, "{events:?}");
+    let tails: Vec<usize> = session.events().iter().filter_map(|e| if let SessionEvent::Compacted { tail, .. } = e { Some(*tail) } else { None }).collect();
+    // (the glob and the write with their results: all after the first step)
+    assert_eq!(tails, [4, 0]);
+    assert_eq!(model.left(), 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
