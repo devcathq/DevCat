@@ -1092,8 +1092,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
             if compact.is_some() {
                 return Err(AppError::msg("The agent is working: send /compact when it's done."));
             }
-            // (a queued message has no separate context: what the command asks for goes with it)
-            run.inbox.push(command.map(|ask| format!("{message}\n\n{ask}")).unwrap_or(message), images);
+            run.inbox.push_with(message, images, command.into_iter().collect());
             run.approver.send_with(&mut live, json!({ "type": "queued", "text": text, "attachments": attachments }));
             drop(live);
             chat_changed(&run.id);
@@ -1150,7 +1149,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
                 if res.is_ok() && !queued.is_empty() && !cancel.is_cancelled() {
                     Some(queued.remove(0)).map(|first| (first, queued))
                 } else {
-                    let unsent: Vec<String> = queued.into_iter().map(|(t, _)| t).collect();
+                    let unsent: Vec<String> = queued.into_iter().map(|(t, _, _)| t).collect();
                     let (usage, title) = (snap.usage.clone(), snap.title.clone());
                     *run.log.lock() = snap;
                     ap.send_with(&mut live, json!({ "type": "turnEnd", "end": end, "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64, "unsent": unsent }));
@@ -1160,13 +1159,13 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
                     None
                 }
             };
-            let Some(((first, first_images), rest)) = next else { break (end, error) };
+            let Some(((first, first_images, first_context), rest)) = next else { break (end, error) };
             // the others are read at its first step
-            for (t, i) in rest {
-                agent.inbox.push(t, i);
+            for (t, i, c) in rest {
+                agent.inbox.push_with(t, i, c);
             }
             ap.send(json!({ "type": "userMessage", "text": first, "blocked": false }));
-            res = agent.turn_with_images(session, &first, first_images, &cancel, &mut on).await;
+            res = agent.turn_with(session, &first, first_images, first_context, &cancel, &mut on).await;
         };
         drop(g);
         (end, error)
@@ -1201,7 +1200,7 @@ async fn crashed(run: &Arc<Run>, started: std::time::Instant, why: String) -> (V
         Ok(g) => Snapshot::of(&g.0, &g.1),
         Err(_) => run.log.lock().clone(),
     };
-    let unsent: Vec<String> = run.inbox.take().into_iter().map(|(t, _)| t).collect();
+    let unsent: Vec<String> = run.inbox.take().into_iter().map(|(t, _, _)| t).collect();
     let (usage, title) = (snap.usage, snap.title.clone());
     *run.log.lock() = snap;
     ap.send_with(&mut live, json!({ "type": "turnEnd", "end": "error", "error": error, "usage": usage, "title": title, "elapsedMs": started.elapsed().as_millis() as u64, "unsent": unsent }));

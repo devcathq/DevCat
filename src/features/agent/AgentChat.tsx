@@ -738,7 +738,8 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
   const [pick, setPick] = useState(0);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const slash = /^\/(\S*)$/.exec(text);
-  const matches = slash && dismissed !== text ? [COMPACT, ...commands].filter((c) => c.name.startsWith(slash[1])).slice(0, 8) : [];
+  // (not while stepping through what was sent: ↑ / ↓ keep doing that)
+  const matches = slash && dismissed !== text && !recall ? [COMPACT, ...commands].filter((c) => c.name.startsWith(slash[1])).slice(0, 8) : [];
   const complete = (c: SlashCommand) => {
     setText(`/${c.name} `);
     setPick(0);
@@ -805,8 +806,8 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
         setDismissed(text);
         return;
       }
-      // Enter on a name typed out in full sends it
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && text !== `/${matches[at].name}`)) {
+      // Enter on a name typed out in full sends it (also one that starts another's name)
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !matches.some((m) => text === `/${m.name}`))) {
         e.preventDefault();
         complete(matches[at]);
         return;

@@ -110,7 +110,16 @@ pub fn apply(text: &str, changes: &[Change], label: impl Fn(usize) -> String) ->
                 Vec::new()
             } else {
                 let n = norm.get_or_insert_with(|| Norm::new(text));
-                let hits: Vec<(usize, usize)> = n.text.match_indices(&wanted).map(|(s, m)| (n.original(s), n.original(s + m.len()))).collect();
+                // `old_string` ending in whitespace (often the next line's indentation) matches
+                // only up to the end of a line: otherwise its whitespace, gone after normalizing,
+                // would let it end in the middle of a word or before indentation it doesn't replace
+                let open_end = c.old.split('\n').next_back().is_some_and(|l| l.ends_with(|c: char| plain(c).is_whitespace()));
+                let hits: Vec<(usize, usize)> = n
+                    .text
+                    .match_indices(&wanted)
+                    .filter(|(s, m)| !open_end || n.text[s + m.len()..].starts_with('\n') || s + m.len() == n.text.len())
+                    .map(|(s, m)| (n.original(s), n.original(s + m.len())))
+                    .collect();
                 if !hits.is_empty() {
                     fuzzy += 1;
                 }
@@ -190,6 +199,16 @@ mod tests {
         // a match that ends mid-line keeps that line's rest, trailing spaces included
         let a = one("one \u{2014} two   \nthree\n", "one - two", "1 - 2").unwrap();
         assert_eq!(a.text, "1 - 2   \nthree\n");
+    }
+
+    #[test]
+    fn whitespace_at_the_end_of_old_string_isnt_dropped_into_a_match() {
+        // the next line's indentation at the end: not a match that ends before that indentation
+        assert!(one("a = \u{201C}x\u{201D}\n    b\n", "a = \"x\"\n    ", "a = 'y'\n    ").unwrap_err().contains("not found"));
+        // nor a match that ends in the middle of a word
+        assert!(one("ab\n", "a ", "Z").unwrap_err().contains("not found"));
+        // at the end of a line it still matches (the file has no trailing space there)
+        assert_eq!(one("a = \u{201C}x\u{201D}\nb\n", "a = \"x\"  ", "a = 1").unwrap().text, "a = 1\nb\n");
     }
 
     #[test]

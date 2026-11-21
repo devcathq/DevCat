@@ -419,13 +419,18 @@ pub enum AgentEvent {
 #[derive(Clone, Default)]
 pub struct Inbox(Arc<std::sync::Mutex<Vec<Queued>>>);
 
-/// A queued message: its text and any images.
-pub type Queued = (String, Vec<Block>);
+/// A queued message: its text, any images, and context for the model only (what a slash command
+/// asks for, see [`Agent::turn_with`]).
+pub type Queued = (String, Vec<Block>, Vec<String>);
 
 impl Inbox {
     /// Queue a message (with any images) for the running turn.
     pub fn push(&self, text: String, images: Vec<Block>) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).push((text, images));
+        self.push_with(text, images, vec![]);
+    }
+    /// [`Inbox::push`] with context for the model only (the log keeps `text` as it is).
+    pub fn push_with(&self, text: String, images: Vec<Block>, context: Vec<String>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push((text, images, context));
     }
     /// Everything queued, oldest first; the inbox is empty afterwards.
     pub fn take(&self) -> Vec<Queued> {
@@ -802,14 +807,14 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
             // the UserPromptSubmit hooks like a message that starts a turn
             let mut queued = self.inbox.take().into_iter();
             let mut read = 0;
-            while let Some((text, images)) = queued.next() {
+            while let Some((text, images, extra)) = queued.next() {
                 let o = self.hook(session, "UserPromptSubmit", None, json!({ "prompt": text }), cancel, on).await;
                 if cancel.is_cancelled() {
                     // stopped before its hooks said yes: this one and the rest stay unread (the app
                     // gives them back to the chat box), in the order they were sent
                     let later = self.inbox.take();
-                    for (t, i) in std::iter::once((text, images)).chain(queued).chain(later) {
-                        self.inbox.push(t, i);
+                    for (t, i, c) in std::iter::once((text, images, extra)).chain(queued).chain(later) {
+                        self.inbox.push_with(t, i, c);
                     }
                     return Err(Error::Cancelled);
                 }
@@ -818,7 +823,7 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
                     on(AgentEvent::UserMessage { text, blocked: true });
                     continue;
                 }
-                session.append(SessionEvent::User { text: text.clone(), images, context: o.context, hook: None }).await?;
+                session.append(SessionEvent::User { text: text.clone(), images, context: extra.into_iter().chain(o.context).collect(), hook: None }).await?;
                 on(AgentEvent::UserMessage { text, blocked: false });
                 read += 1;
             }

@@ -323,7 +323,8 @@ export async function editMessage(tabId: string, key: string) {
     const id = await api.agentFork(c.sessionId, it.text, nth);
     const old = c.sessionId;
     // the tab's chat changes (AgentChat opens it); what was written comes back to the chat box
-    patch(tabId, () => ({ draft: it.text, attachments: it.attachments }));
+    // (no session until the new one is open: a message sent meanwhile mustn't go to the old one)
+    patch(tabId, () => ({ draft: it.text, attachments: it.attachments, sessionId: null, opening: true }));
     useTabs.getState().update(tabId, { sessionId: id } as never);
     lastSeq.delete(old);
     await api.agentClose(old).catch(() => {});

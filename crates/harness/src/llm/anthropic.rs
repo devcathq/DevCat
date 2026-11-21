@@ -50,7 +50,7 @@ pub(super) fn body(cfg: &LlmConfig, req: &Request<'_>) -> Value {
                     Effort::Low => 2_048,
                     Effort::Medium => 4_096,
                     Effort::High => 8_192,
-                    Effort::Xhigh | Effort::Max => 12_000,
+                    Effort::Xhigh | Effort::Max => 10_000,
                 };
                 let budget = want.min(cfg.max_tokens.saturating_sub(2_048));
                 if budget >= 1_024 {
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(body("claude-sonnet-4-6", Some(Effort::Xhigh))["output_config"]["effort"], "high");
         // older models and other servers: a budget under max_tokens
         let b = body("claude-haiku-4-5", Some(Effort::Max));
-        assert_eq!((b["thinking"]["type"].as_str(), b["thinking"]["budget_tokens"].as_u64()), (Some("enabled"), Some(12_000)));
+        assert_eq!((b["thinking"]["type"].as_str(), b["thinking"]["budget_tokens"].as_u64()), (Some("enabled"), Some(10_000)));
         assert!(b.get("output_config").is_none());
         assert_eq!(body("kimi-k3", Some(Effort::Low))["thinking"]["budget_tokens"], 2_048);
         assert_eq!(Effort::parse("XHigh"), Some(Effort::Xhigh));
