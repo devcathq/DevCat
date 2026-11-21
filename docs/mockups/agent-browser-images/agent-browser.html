@@ -1,0 +1,205 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+:root{--app:#0f1114;--panel:#14161a;--raised:#1a1d22;--hover:#232730;--line:#2a2f39;--fg:#e6e8ec;--muted:#8b93a3;--faint:#5c6370;--accent:#f5a524;--ok:#4ade80;--warn:#fbbf24;--blue:#60a5fa}
+*{box-sizing:border-box}
+body{margin:0;background:#07080a;font:13px/1.45 "Segoe UI",Inter,system-ui,sans-serif;color:var(--fg);padding:24px}
+.shot{width:1120px;margin:0 0 40px;padding:20px;background:#07080a}
+.cap{font-size:15px;font-weight:600;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 12px;font-size:12.5px}
+.win{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--app);position:relative}
+.tabs{display:flex;gap:2px;background:var(--panel);border-bottom:1px solid var(--line);padding:6px 8px 0}
+.tab{padding:6px 12px;border-radius:6px 6px 0 0;color:var(--muted);font-size:12px;display:flex;gap:6px;align-items:center}
+.tab.on{background:var(--app);color:var(--fg);border:1px solid var(--line);border-bottom-color:var(--app);margin-bottom:-1px}
+.tb{display:flex;align-items:center;gap:6px;height:38px;padding:0 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+.btn{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:6px;border:1px solid var(--line);background:var(--raised);color:var(--fg);font-size:12px;white-space:nowrap}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a1205;font-weight:600}
+.btn.seg{border-radius:0}.segs{display:flex}.segs .btn:first-child{border-radius:6px 0 0 6px}.segs .btn:last-child{border-radius:0 6px 6px 0}
+.btn.sel{background:var(--hover)}
+.ico{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;color:var(--muted)}
+.url{flex:1;height:26px;border:1px solid var(--line);border-radius:6px;background:var(--app);font:12px Consolas,monospace;display:flex;align-items:center;padding:0 8px}
+.new{outline:2px solid var(--accent);outline-offset:3px;border-radius:7px;position:relative}
+.badge{position:absolute;background:var(--accent);color:#1a1205;font-weight:700;font-size:11px;border-radius:999px;padding:2px 8px;white-space:nowrap;z-index:5;box-shadow:0 2px 10px #0008}
+.chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:999px;border:1px solid #f5a52466;background:#f5a5241a;color:var(--accent);font-size:12px;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block}
+.term{padding:14px 16px;font:12.5px/1.6 Consolas,monospace;height:300px;color:#cfd3da}
+.term .me{color:var(--fg)}.term .dim{color:var(--faint)}.term .acc{color:var(--accent)}.term .ok{color:var(--ok)}.term .tool{color:var(--blue)}
+.body{display:flex;height:400px}
+.page{flex:1;background:#f6f7fb;position:relative;color:#1b1f29;overflow:hidden}
+.side{width:300px;border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column}
+.sh{height:32px;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);color:var(--muted);font-weight:600;font-size:12px}
+.note{display:flex;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line)}
+.num{width:20px;height:20px;border-radius:50%;background:var(--accent);color:#1a1205;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sel{font:11px Consolas,monospace;color:var(--muted)}
+.sent{font-size:11px;color:var(--ok);margin-top:2px}.wait{font-size:11px;color:var(--warn);margin-top:2px}
+.menu{position:absolute;background:var(--raised);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 30px #000a;padding:4px;min-width:250px;z-index:4;font-size:12.5px}
+.mi{padding:6px 10px;border-radius:5px;display:flex;align-items:center;gap:8px}.mi.h{background:var(--hover)}
+.mh{padding:6px 10px 3px;color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.sep{height:1px;background:var(--line);margin:4px 0}
+.k{color:var(--faint);margin-left:auto;font-size:11px}
+.dlg{position:absolute;left:50%;top:100px;transform:translateX(-50%);width:440px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 20px 50px #000c;z-index:6}
+.dlg .hd{padding:12px 16px;border-bottom:1px solid var(--line);font-weight:600;display:flex}
+.dlg .bd{padding:14px 16px;color:var(--muted);font-size:12px}
+.dlg .in{margin-top:6px;height:30px;border:1px solid var(--line);border-radius:6px;background:var(--app);display:flex;align-items:center;padding:0 10px;font:12.5px Consolas,monospace;color:var(--fg)}
+.dlg .ft{padding:10px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;align-items:center}
+.scrim{position:absolute;inset:76px 0 0;background:#0009;z-index:5}
+/* fake page */
+.nav{height:56px;background:#fff;border-bottom:1px solid #e3e6ee;display:flex;align-items:center;padding:0 22px;gap:18px}
+.logo{font-weight:800;font-size:17px;color:#4338ca}.lnk{color:#5b6374;font-size:13px}
+.su{margin-left:6px;background:#4338ca;color:#fff;border-radius:7px;padding:7px 14px;font-weight:600;position:relative}
+.hero{padding:40px 40px 0}.hero h1{font-size:30px;margin:0 0 8px}.hero p{color:#5b6374;margin:0 0 18px;max-width:440px}
+.cta{display:inline-block;background:#111827;color:#fff;border-radius:8px;padding:10px 18px;font-weight:600;position:relative}
+.pin{position:absolute;top:-10px;right:-10px;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#1a1205;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px #fff}
+.hl{outline:2px dashed var(--accent);outline-offset:3px}
+.cbox{position:absolute;background:#fff;border:1px solid #d6dae3;border-radius:8px;box-shadow:0 8px 24px #0002;width:250px;padding:10px;font-size:12.5px;color:#1b1f29}
+.cbox .ta{border:1px solid #c9ced9;border-radius:6px;padding:6px 8px;min-height:44px}
+.status{font-size:11px;color:var(--muted);white-space:nowrap}
+.foot{position:absolute;bottom:0;left:0;right:0;height:46px;background:#fff;border-top:1px solid #e3e6ee;display:flex;align-items:center;padding:0 22px;gap:16px;color:#5b6374;font-size:12px}
+.chat{padding:14px 18px;height:400px;display:flex;flex-direction:column;gap:10px;font-size:13px}
+.bub{background:var(--raised);border:1px solid var(--line);border-radius:10px;padding:9px 12px;max-width:640px}
+.bub.user{align-self:flex-end;background:#f5a52414;border-color:#f5a52444}
+.tc{font:12px Consolas,monospace;border:1px solid var(--line);border-radius:7px;padding:6px 10px;background:var(--panel);color:var(--muted);max-width:640px}
+.tc b{color:var(--blue);font-weight:600}
+.ap{border:1px solid #fbbf2466;background:#fbbf2410;border-radius:8px;padding:9px 12px;max-width:640px}
+.legend{display:flex;gap:18px;margin-top:10px;color:var(--muted);font-size:12px}
+.legend span b{color:var(--accent)}
+.trow{display:flex;align-items:center;gap:8px;padding:2px 4px;font-size:12.5px;max-width:760px}
+.trow .v{color:var(--fg)}.trow .t{font:12px Consolas,monospace;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trow .r{margin-left:auto;color:var(--ok)}
+.trow .res{color:var(--faint);font:11.5px Consolas,monospace}
+.chat2{padding:16px 20px;display:flex;flex-direction:column;gap:10px;font-size:13px}
+.ans{max-width:760px;line-height:1.55}.ans code{font:12px Consolas,monospace;background:var(--raised);padding:1px 5px;border-radius:4px}
+.thumb{margin:4px 0 4px 22px;width:360px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.thumb .pg{height:225px;background:#f6f7fb;position:relative;overflow:hidden;color:#1b1f29}
+.thumb .lab{padding:5px 9px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line);display:flex;gap:6px;align-items:center}
+.thumb .lab b{color:var(--ok);font-weight:500}
+.lg{position:absolute;left:50%;top:28px;transform:translateX(-50%);width:200px;background:#fff;border:1px solid #d6dae3;border-radius:8px;box-shadow:0 6px 18px #0002;padding:12px;font-size:9px;color:#1b1f29}
+.lg h4{margin:0 0 8px;font-size:12px}.lg .f{border:1px solid #c9ced9;border-radius:4px;height:18px;margin-bottom:6px;padding:3px 5px;color:#8a91a0}
+.lg .sb{position:absolute;left:62px;top:96px;background:#4338ca;color:#fff;border-radius:4px;padding:4px 14px;font-weight:700;font-size:10px;box-shadow:0 0 0 2px #fff}
+.before{color:var(--faint);text-decoration:line-through;font:11.5px Consolas,monospace;margin-left:22px}
+.drawer{border-top:1px solid var(--line);background:var(--panel);height:150px;position:relative}
+.dtabs{display:flex;gap:2px;padding:0 10px;border-bottom:1px solid var(--line);height:28px;align-items:flex-end}
+.dtab{padding:5px 12px;font-size:12px;color:var(--muted)}.dtab.on{color:var(--fg);border-bottom:2px solid var(--accent)}
+.cl{font:12px/1.5 Consolas,monospace;padding:4px 14px;display:flex;gap:10px;border-bottom:1px solid #20242b}
+.cl .tm{color:var(--faint)}.cl.err{color:#f87171;background:#f8717112}.cl.wrn{color:var(--warn);background:#fbbf2410}.cl.log{color:#cfd3da}.cl .src{margin-left:auto;color:var(--faint)}
+.apc{border:1px solid #f5a52466;background:#f5a5240d;border-radius:8px;padding:12px;max-width:760px}
+.apc .ti{font-size:13px;font-weight:500;margin-bottom:8px;display:flex;gap:8px;align-items:center}
+.code{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:6px 10px;font:11.5px/1.6 Consolas,monospace;color:var(--fg)}
+.kbd{opacity:.6;margin-left:4px;font-size:11px}
+.gh{background:#fff;color:#1f2328;padding:24px;font:14px/1.5 "Segoe UI",system-ui,sans-serif;border-radius:10px}
+.cm{border:1px solid #d1d9e0;border-radius:8px;max-width:820px;margin:0 auto}
+.cm .h{background:#f6f8fa;border-bottom:1px solid #d1d9e0;padding:8px 14px;display:flex;gap:8px;align-items:center;border-radius:8px 8px 0 0;font-size:13px;color:#59636e}
+.av{width:22px;height:22px;border-radius:50%;background:#8b5cf6;color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;font-weight:700}
+.cm .b{padding:14px 16px}.cm .b p{margin:0 0 10px}
+.shotimg{width:480px;height:300px;border:1px solid #d1d9e0;border-radius:6px;background:#f6f7fb;position:relative;overflow:hidden}
+.cap2{font-size:12px;color:#59636e;margin-top:6px}.cap2 code{font:11.5px Consolas,monospace;background:#eff1f3;padding:1px 5px;border-radius:5px}
+.ttl{max-width:820px;margin:0 auto 14px;font-size:22px;font-weight:400}.ttl span{color:#59636e}
+</style></head><body>
+<!-- 1 -->
+<div class="shot" id="s1">
+<p class="cap">1 · Issue A: images from MCP tools reach the model and show in the chat</p>
+<p class="sub">The agent calls a screenshot tool from an MCP server. The image is shown under the tool row, and the model sees it.</p>
+<div class="win">
+  <div class="tabs"><div class="tab on">◆ DevCat Agent · site</div><div class="tab">⌖ Review · localhost:5173</div></div>
+  <div class="tb"><div class="segs"><span class="btn seg sel">Chat</span><span class="btn seg">Diff</span><span class="btn seg">Trace</span></div></div>
+  <div class="chat2" style="height:480px">
+    <div class="bub user">Check the login page at 1280 px, something looks off.</div>
+    <div class="trow"><span>🌐</span><span class="v">Called</span><span class="t">mcp__chrome-devtools__take_screenshot</span><span class="r">✓</span></div>
+    <div class="new" style="margin:18px 0 0 18px;width:384px;position:relative">
+      <span class="badge" style="top:-26px;left:0">New: images from MCP tools reach the model and show here</span>
+      <div class="thumb" style="margin:0;width:380px"><div class="pg"><div class="lg"><h4>Sign in</h4><div class="f">Email</div><div class="f">Password</div><div class="f" style="opacity:0;margin:0"></div><span class="sb">Sign in</span></div></div><div class="lab"><b>▣</b> Image · 1280×800 · shown to the model</div></div>
+    </div>
+    <div class="before">before: [image content]</div>
+    <div class="ans">The <b>Sign in</b> button overlaps the password field at 1280 px. It sits about 12 px too high, so it covers the lower half of the input. I'll check the button's margin in <code>src/pages/Login.css</code>.</div>
+  </div>
+</div>
+</div>
+
+<!-- 2 -->
+<div class="shot" id="s2">
+<p class="cap">2 · Issue B: the Review tab gets a Console · Network drawer</p>
+<p class="sub">While you review a page, you can see its console and network. The agent can read both.</p>
+<div class="win">
+  <div class="tabs"><div class="tab">◆ DevCat Agent · site</div><div class="tab on">⌖ Review · localhost:5173/login</div></div>
+  <div class="tb">
+    <span class="ico">←</span><span class="ico">⟳</span>
+    <div class="url">http://localhost:5173/login</div>
+    <span class="status" style="color:var(--ok)">Agent read the console (3 entries)</span>
+    <span class="btn" style="color:var(--accent)">⌖ Inspect</span>
+    <span class="chip"><span class="dot"></span>DevCat Agent · site ▾</span>
+    <span class="ico">⋯</span><span class="btn primary">Finish review</span>
+  </div>
+  <div class="page" style="height:290px;position:relative"><div class="lg" style="top:30px;width:260px;font-size:11px"><h4 style="font-size:14px">Sign in</h4><div class="f">Email</div><div class="f">Password</div><div class="f" style="opacity:0;margin:0"></div><span class="sb" style="left:80px;top:112px;font-size:12px">Sign in</span></div></div>
+  <div style="padding:26px 8px 8px">
+  <div class="drawer new" style="outline-offset:2px">
+    <span class="badge" style="top:-26px;right:12px">New: the agent reads console and network</span>
+    <div class="dtabs"><span class="dtab on">Console <span style="color:#f87171">· 3</span></span><span class="dtab">Network · 14</span><span style="margin-left:auto;color:var(--faint);font-size:11px;padding-bottom:6px">Clear</span></div>
+    <div class="cl err"><span class="tm">12:04:31</span><span>✖ TypeError: Cannot read properties of undefined (reading 'token')</span><span class="src">auth.ts:42</span></div>
+    <div class="cl wrn"><span class="tm">12:04:31</span><span>⚠ Deprecated: session cookie without SameSite</span><span class="src">auth.ts:17</span></div>
+    <div class="cl log"><span class="tm">12:04:30</span><span>POST /api/login → submitting form</span><span class="src">Login.tsx:28</span></div>
+  </div>
+  </div>
+</div>
+</div>
+
+<!-- 3 -->
+<div class="shot" id="s3">
+<p class="cap">3 · Issue B: the agent side, new review tools</p>
+<p class="sub">The agent reads the console and network of the page you are reviewing, takes a screenshot, and finds the cause.</p>
+<div class="win">
+  <div class="tabs"><div class="tab on">◆ DevCat Agent · site</div><div class="tab">⌖ Review · localhost:5173/login</div></div>
+  <div class="tb"><div class="segs"><span class="btn seg sel">Chat</span><span class="btn seg">Diff</span></div><span style="flex:1"></span><span class="chip"><span class="dot"></span>Review · localhost:5173/login</span></div>
+  <div class="chat2" style="height:520px">
+    <div class="bub user">Login doesn't work on the page I'm reviewing.</div>
+    <div class="new" style="display:flex;flex-direction:column;gap:2px;margin:14px 0 0 6px;padding:8px 10px;max-width:790px">
+      <span class="badge" style="top:-12px;right:10px">New review tools</span>
+      <div class="trow"><span>▤</span><span class="v">Read console</span><span class="t">review_console {level: "error"}</span><span class="r">✓</span></div>
+      <div class="trow" style="padding-left:26px"><span class="res">1 error: TypeError: Cannot read properties of undefined (reading 'token') · auth.ts:42</span></div>
+      <div class="trow"><span>⇅</span><span class="v">Read network</span><span class="t">review_network {failed: true}</span><span class="r">✓</span></div>
+      <div class="trow" style="padding-left:26px"><span class="res">POST /api/login 500 · 182 ms · 1.2 KB</span></div>
+      <div class="trow"><span>▣</span><span class="v">Screenshot</span><span class="t">review_screenshot</span><span class="r">✓</span></div>
+      <div class="thumb" style="width:300px"><div class="pg" style="height:170px"><div class="lg" style="top:14px;width:170px;font-size:8px"><h4 style="font-size:10px">Sign in</h4><div class="f" style="height:14px">Email</div><div class="f" style="height:14px">Password</div><div class="f" style="opacity:0;margin:0;height:8px"></div><span class="sb" style="left:50px;top:76px;font-size:9px">Sign in</span></div></div><div class="lab"><b>▣</b> Image · 1280×800 · shown to the model</div></div>
+    </div>
+    <div class="ans">The login fails because <code>/api/login</code> returns 500 and <code>auth.ts</code> reads <code>res.data.token</code> without a check. Fixing…</div>
+    <div class="trow"><span>✎</span><span class="v">Edit</span><span class="t">src/auth.ts</span><span class="res"><span style="color:var(--ok)">+3</span> <span style="color:#f87171">−1</span></span><span class="r">✓</span></div>
+  </div>
+</div>
+</div>
+
+<!-- 4 -->
+<div class="shot" id="s4">
+<p class="cap">4 · Issue C: attaching a screenshot to a GitHub issue asks first</p>
+<p class="sub">The file is committed to a side branch of the repo, not to your code branches.</p>
+<div class="win">
+  <div class="tabs"><div class="tab on">◆ DevCat Agent · site</div><div class="tab">⌖ Review · localhost:5173/login</div></div>
+  <div class="tb"><div class="segs"><span class="btn seg sel">Chat</span><span class="btn seg">Diff</span></div></div>
+  <div class="chat2" style="height:300px">
+    <div class="bub user">Add the screenshot to issue #212.</div>
+    <div class="new" style="max-width:790px;margin:18px 0 0 6px;padding:8px">
+      <span class="badge" style="top:-12px;right:12px">New: github_attach_image (asks first)</span>
+      <div class="apc">
+        <div class="ti"><span style="color:var(--accent)">🛡</span>Attach image to Catlyn-Lab/DevCat #212?</div>
+        <div class="code">file&nbsp;&nbsp;&nbsp;&nbsp;login-500.png · 184 KB<br>target&nbsp; commits to branch <b>devcat-assets</b>, path <b>issues/212/2026-11-21-login-500.png</b></div>
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:center"><span class="btn primary">Allow<span class="kbd">↵</span></span><span class="btn">Always allow github_attach_image in this chat</span><span class="btn ghost">Deny<span class="kbd">Esc</span></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- 5 -->
+<div class="shot" id="s5">
+<p class="cap">5 · Issue C: the result on the GitHub issue</p>
+<p class="sub">The comment shows the image. The link uses the raw form, so it renders in the comment.</p>
+<div class="gh">
+  <div class="ttl">Login returns 500 after token refresh <span>#212</span></div>
+  <div class="cm">
+    <div class="h"><span class="av">A</span><b style="color:#1f2328">akbar</b> commented just now</div>
+    <div class="b">
+      <p>Login returns 500 after the token refresh. Screenshot:</p>
+      <div class="shotimg"><div class="lg" style="top:40px;width:260px;font-size:11px"><h4 style="font-size:14px">Sign in</h4><div class="f">Email</div><div class="f">Password</div><div class="f" style="opacity:0;margin:0"></div><span class="sb" style="left:80px;top:112px;font-size:12px">Sign in</span></div></div>
+      <div class="cap2"><code>blob/devcat-assets/issues/212/2026-11-21-login-500.png?raw=true</code></div>
+    </div>
+  </div>
+</div>
+</div>
+</body></html>
