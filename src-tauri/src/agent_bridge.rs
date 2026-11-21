@@ -169,7 +169,9 @@ async fn serve(stream: TcpStream, token: &str) {
 
 async fn run(call: Call) -> Reply {
     // a room run is unattended too, whatever the call says
-    let scope = Scope { project: call.project, folder: call.folder, mcp: true, unattended: call.unattended || call.room.is_some(), room: call.room };
+    // `devcat mcp` for an agent on this computer: its SSH tools too, unless it's unattended
+    let unattended = call.unattended || call.room.is_some();
+    let scope = Scope { project: call.project, folder: call.folder, mcp: true, unattended, room: call.room, ssh: !unattended };
     let tool = crate::mcp_server::tools_for(&scope, &call.client, true).into_iter().find(|t| t.spec().name == call.tool);
     let Some(tool) = tool else { return Reply { content: String::new(), is_error: false, unknown: true } };
     let ctx = ToolCtx::at(call.cwd);

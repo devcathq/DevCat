@@ -267,6 +267,9 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
         // DevCat Agent chats (src-tauri/src/agent.rs): the phone gets `agent-event`s of the chats it opened.
         "agent_open" => {
             let session_id: Option<String> = arg(args, "sessionId").unwrap_or(None);
+            if session_id.as_deref().is_some_and(crate::agent::on_ssh_host) {
+                return Err(json!(SSH_CHAT));
+            }
             // this phone's ghost chat: nothing kept, ends when the phone leaves it (agent.rs)
             let ghost = arg::<bool>(args, "ghost").unwrap_or(false).then(|| crate::agent::phone_ghost(&client.device.id));
             if client.readonly() && (ghost.is_some() || !session_id.as_deref().is_some_and(crate::agent::exists)) {
@@ -278,7 +281,7 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             if let Some(id) = &session_id {
                 client.attach(id);
             }
-            let cwd = if ghost.is_some() { String::new() } else { expand_home(&arg::<String>(args, "cwd")?) };
+            let cwd = if ghost.is_some() { String::new() } else { local_folder(expand_home(&arg::<String>(args, "cwd")?))? };
             let opened = match crate::agent::open(cwd, a!("providerId"), session_id.clone(), &origin, &client.device.id, None, ghost.as_deref(), ghost.is_none()).await {
                 Ok(o) => o,
                 Err(e) => {
@@ -295,6 +298,7 @@ pub async fn call(client: &Arc<Client>, cmd: &str, args: &Value) -> CallResult {
             client.detach(&arg::<String>(args, "sessionId")?);
             Ok(Value::Null)
         }
+        "agent_send" | "agent_attach" | "agent_approve" | "agent_answer" if arg::<String>(args, "sessionId").is_ok_and(|id| crate::agent::on_ssh_host(&id)) => Err(json!(SSH_CHAT)),
         "agent_send" => {
             let session_id: String = a!("sessionId");
             let attachments: Vec<String> = arg(args, "attachments").unwrap_or_default();
@@ -466,6 +470,10 @@ fn expand_home(p: &str) -> String {
         _ => p.to_string(),
     }
 }
+
+/// A DevCat Agent chat in a folder on an SSH host: its agent logs in there with the session's saved
+/// password, so it's used from the computer only (AGENTS.md).
+const SSH_CHAT: &str = "This chat works on an SSH host: use it in DevCat on your computer.";
 
 /// `cwd`, unless it's a folder on an SSH host (`ssh://…`): those stay on the computer.
 fn local_folder(cwd: String) -> Result<String, Value> {

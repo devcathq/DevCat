@@ -15,7 +15,7 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long the command may run: `timeout_secs`, at most [`MAX_TIMEOUT`]. Models often write
 /// `timeout` instead (other agents' shell tools call it that, some in milliseconds); ignoring it
 /// stops a build the model gave five minutes after two.
-fn limit_of(input: &Value) -> Duration {
+pub fn limit_of(input: &Value) -> Duration {
     let secs = input.get("timeout_secs").and_then(Value::as_u64).or_else(|| {
         // nobody means more than an hour: that's milliseconds
         input.get("timeout").and_then(Value::as_u64).map(|t| if t > 3_600 { t / 1_000 } else { t })
@@ -127,7 +127,7 @@ pub(super) async fn run_process(mut cmd: tokio::process::Command, ctx: &ToolCtx,
 }
 
 /// The output of a finished process for the model: an error unless it exited with 0.
-pub(super) fn exit_output(text: String, code: Option<i32>) -> ToolOutput {
+pub fn exit_output(text: String, code: Option<i32>) -> ToolOutput {
     match code {
         Some(0) => ToolOutput::ok(if text.is_empty() { "(no output)".into() } else { text }),
         Some(c) => ToolOutput::err(format!("{text}\n(exit code {c})").trim_start().to_string()),

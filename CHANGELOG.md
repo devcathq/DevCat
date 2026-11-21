@@ -12,6 +12,18 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **DevCat Agent in folders on SSH hosts**: a chat opened in a folder of an SSH session (or any `ssh://` folder) now
+  works on that server. Reading, writing, editing, searching, commands and git all run there over the session's own
+  login (key, jump host, saved password), with nothing installed on the server. The agent knows the server's OS and
+  shell, reads the project's AGENTS.md / CLAUDE.md there, and files you attach are copied to the server for it. The
+  chat says which server it works on. Hooks, skills and the sandbox stay off in such a chat: they belong to this
+  computer. Linux and macOS servers. Searching is faster where the server has ripgrep.
+- **SSH sessions for agents**: an SSH session's **AI / MCP access** (Edit connection → Advanced) lets agents on this
+  computer work on that server. With **Read**, they read and search files there. With **Full**, they also run
+  commands and change files. This gives the DevCat Agent and Claude Code, Codex, Cursor or Gemini (through Sync MCP)
+  the `ssh_read`, `ssh_glob`, `ssh_grep`, `ssh_run`, `ssh_write` and `ssh_edit` tools. It's **Off** until you turn it
+  on, since agents log in as you. Agents never get these tools from a phone, a chat app or a ticket run, and files
+  that hold secrets (keys, `.env`) aren't read for them.
 - **DevCat Agent: a sharper harness**: edits that differ from the file only in trailing spaces or curly quotes and
   dashes now go through (the rest of the file keeps its bytes), and one `edit` can make several changes, all or none.
   A long `read` ends on a whole line and says where to go on. Reads, searches and read-only git calls in one step run

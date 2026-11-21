@@ -42,11 +42,35 @@ Why the phone can't simply reuse the desktop flow:
 What the phone side does today: `list_connections` leaves SSH sessions out, and `pty_open` refuses
 an SSH-session folder (`ssh://devcat-…`). Keep it that way unless the work above is done.
 
+### Agents on SSH hosts
+
+Two ways an agent works on a server, both desktop-only, nothing installed on the host:
+
+- **A DevCat Agent chat in an `ssh://` folder** (`agent_ssh.rs`): `read`, `write`, `edit`, `glob`, `grep`, `shell` and
+  `git` are swapped for versions with the same names and inputs that run one small POSIX sh script per call over
+  the system `ssh` (`remote::exec`). The logic stays the harness's (`tools::fs::numbered` / `replaced`, `tools::git`'s
+  `read_only` / `harmless_with`, with the repository's config read on the host): only the I/O moves. The chat probes
+  the host once (`agent_ssh::probe`: its real folder, home, OS, shell, ripgrep, `timeout`, git, and the project's rule
+  files) for `prompt::system_prompt_remote`. Hooks, skills and the OS sandbox are off there (they're this computer's),
+  attachments are copied to the host (`agent_ssh::stage`), and DevCat's own tools that write files (`db_dump`,
+  `db_export`) never treat the `ssh://` folder as a local one (`agent_tools::on_ssh_host`). The phone dispatcher
+  refuses these chats (`agent::on_ssh_host`).
+- **`ssh_*` tools for SSH sessions** (`agent_tools/ssh.rs`, the same tools with a `session` input): only for a session
+  whose AI access the user set (`ssh::access`: **Off** when unset, unlike other connections), only where
+  `Scope::ssh` (a desktop chat, `devcat mcp` and its bridge calls; never a phone's, a chat app's, a delegate's or a job's
+  chat, nor `unattended` / room runs), over MCP changing ones need **Full**, and `ssh_read` / `ssh_grep` refuse
+  secret-like files (`integrations::text::secret_like`). SSH sessions stay out of `agent_tools::visible`: no database,
+  connection-editing or brief tool sees them. A chat that has these tools (or works on a host) is refused to a phone
+  too, and a chat app gets no approval or question buttons for it (`integrations::bridge`, `press` checks again):
+  it's answered on the computer. `ssh_grep` also drops hits in secret-like files, and `ssh_read` checks what a link
+  points to on the host (`Host::real_path`).
+
 ## Connections over MCP
 
 Agents get what DevCat manages through the tools in `src-tauri/src/agent_tools/` (one file per area: `mod.rs`
 connections, schema, query, dump, export, drop, k8s get / logs, `brief`; `db.rs`, `k8s.rs`, `docker.rs`,
-`rabbitmq.rs`, `network.rs` VPNs and tunnels, `workspace.rs` adding connections, history, scheduled jobs, tickets):
+`rabbitmq.rs`, `network.rs` VPNs and tunnels, `ssh.rs` SSH sessions (see above), `workspace.rs` adding connections,
+history, scheduled jobs, tickets):
 built into the DevCat Agent, and served to other agents by `devcat mcp` (`mcp_server.rs`, `tools_for`), which Sync
 MCP (`mcp_sync.rs`) writes into Claude Code / Codex / Cursor / Gemini configs. Keep one implementation: a new tool
 goes in `agent_tools/` and both get it. `for_scope` only offers tools for what the folder has (no Docker tools

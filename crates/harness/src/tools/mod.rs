@@ -1,9 +1,9 @@
 //! The tools the agent can call, and the registry that holds them. The agent runs every call
 //! through the same pipeline (see [`crate::agent`]): approval, timeout, output truncation, event.
-mod edit;
-mod fs;
-mod git;
-mod shell;
+pub mod edit;
+pub mod fs;
+pub mod git;
+pub mod shell;
 mod todo;
 mod web;
 

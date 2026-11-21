@@ -7,9 +7,10 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::Path;
 
-const READ_LINES: usize = 2000;
+pub const READ_LINES: usize = 2000;
 const LINE_CHARS: usize = 2000;
-const MAX_HITS: usize = 200;
+/// Most files `glob` lists and matches `grep` shows.
+pub const MAX_HITS: usize = 200;
 /// Characters one `read` returns at most, a little under the output limit ([`super::MAX_OUTPUT`]),
 /// so it ends on a whole line and says where to go on.
 const READ_BUDGET: usize = super::MAX_OUTPUT - 1_000;
@@ -25,12 +26,13 @@ fn path_summary(input: &Value) -> String {
     input.get("path").and_then(Value::as_str).unwrap_or("?").to_string()
 }
 
-fn looks_binary(bytes: &[u8]) -> bool {
+/// Whether a file's start looks binary (a NUL byte): `read` and `grep` skip it.
+pub fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|b| *b == 0)
 }
 
 /// What to do with a file `read` can't show: write a small extraction script, like a person would.
-fn binary_hint(path: &Path, size: usize) -> String {
+pub fn binary_hint(path: &Path, size: usize) -> String {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let how = match ext.as_str() {
         "pdf" => "Extract its text with a script, e.g. `python -c \"import pypdf,sys; print('\n'.join(p.extract_text() or '' for p in pypdf.PdfReader(sys.argv[1]).pages))\" FILE` or `pdftotext FILE -`.",
@@ -90,38 +92,43 @@ impl Tool for Read {
         if looks_binary(&bytes) {
             return ToolOutput::err(binary_hint(&path, bytes.len()));
         }
-        let text = String::from_utf8_lossy(&bytes);
-        let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-        let limit = input.get("limit").and_then(Value::as_u64).map(|l| l as usize).unwrap_or(READ_LINES);
-        let total = text.lines().count();
-        if total == 0 {
-            return ToolOutput::ok("(empty file)");
-        }
-        if offset > total {
-            return ToolOutput::err(format!("The file has only {total} lines."));
-        }
-        let mut out = String::new();
-        let mut last = offset - 1;
-        // whole lines up to the budget: the model learns exactly where to go on, instead of
-        // getting the middle of the file cut out by the general truncation
-        let mut full = false;
-        for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
-            let line = line.strip_suffix('\r').unwrap_or(line);
-            let line: String = if line.chars().count() > LINE_CHARS { format!("{}…", line.chars().take(LINE_CHARS).collect::<String>()) } else { line.to_string() };
-            let numbered = format!("{:>6}\t{line}\n", i + 1);
-            if out.len() + numbered.len() > READ_BUDGET && i + 1 > offset {
-                full = true;
-                break;
-            }
-            out.push_str(&numbered);
-            last = i + 1;
-        }
-        if last < total {
-            let why = if full { format!("that's as much as one read returns (about {} KB)", READ_BUDGET / 1000) } else { format!("{} lines asked for", last + 1 - offset) };
-            out.push_str(&format!("\n(showing lines {offset}-{last} of {total}: {why}; use offset {} to continue)", last + 1));
-        }
-        ToolOutput::ok(out)
+        numbered(&String::from_utf8_lossy(&bytes), &input)
     }
+}
+
+/// What `read` shows of a text file: numbered lines from `offset` (1-based), at most `limit`
+/// (both from the call's input), with a note when there's more.
+pub fn numbered(text: &str, input: &Value) -> ToolOutput {
+    let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+    let limit = input.get("limit").and_then(Value::as_u64).map(|l| l as usize).unwrap_or(READ_LINES);
+    let total = text.lines().count();
+    if total == 0 {
+        return ToolOutput::ok("(empty file)");
+    }
+    if offset > total {
+        return ToolOutput::err(format!("The file has only {total} lines."));
+    }
+    let mut out = String::new();
+    let mut last = offset - 1;
+    // whole lines up to the budget: the model learns exactly where to go on, instead of
+    // getting the middle of the file cut out by the general truncation
+    let mut full = false;
+    for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let line: String = if line.chars().count() > LINE_CHARS { format!("{}…", line.chars().take(LINE_CHARS).collect::<String>()) } else { line.to_string() };
+        let numbered = format!("{:>6}\t{line}\n", i + 1);
+        if out.len() + numbered.len() > READ_BUDGET && i + 1 > offset {
+            full = true;
+            break;
+        }
+        out.push_str(&numbered);
+        last = i + 1;
+    }
+    if last < total {
+        let why = if full { format!("that's as much as one read returns (about {} KB)", READ_BUDGET / 1000) } else { format!("{} lines asked for", last + 1 - offset) };
+        out.push_str(&format!("\n(showing lines {offset}-{last} of {total}: {why}; use offset {} to continue)", last + 1));
+    }
+    ToolOutput::ok(out)
 }
 
 async fn list_dir(path: &Path) -> ToolOutput {
@@ -182,7 +189,7 @@ impl Tool for Write {
 pub struct Edit;
 
 /// The changes an `edit` call asks for: `edits`, or the one `old_string` / `new_string`.
-fn changes(input: &Value) -> Result<Vec<super::edit::Change<'_>>, ToolOutput> {
+pub fn changes(input: &Value) -> Result<Vec<super::edit::Change<'_>>, ToolOutput> {
     use super::edit::Change;
     let all = |v: &Value| v.get("replace_all").and_then(Value::as_bool).unwrap_or(false);
     if let Some(list) = input.get("edits").filter(|e| !e.is_null()) {
@@ -254,22 +261,30 @@ impl Tool for Edit {
             Ok(t) => t,
             Err(e) => return ToolOutput::err(format!("Can't read {}: {e}", path.display())),
         };
-        let many = input.get("edits").is_some_and(Value::is_array);
-        let label = |i: usize| if many { format!("edits[{i}]") } else { "`old_string`".to_string() };
-        let applied = match super::edit::apply(&text, &changes, label) {
-            Ok(a) => a,
-            Err(why) => return ToolOutput::err(format!("{} (in {}). Nothing was changed.", why.trim_end_matches('.'), path.display())),
+        let (updated, done) = match edited(&text, &changes, &input, &path.display().to_string()) {
+            Ok(r) => r,
+            Err(e) => return e,
         };
-        if let Err(e) = tokio::fs::write(&path, &applied.text).await {
-            return ToolOutput::err(format!("Can't write {}: {e}", path.display()));
+        match tokio::fs::write(&path, &updated).await {
+            Ok(()) => ToolOutput::ok(format!("Edited {}{done}", path.display())),
+            Err(e) => ToolOutput::err(format!("Can't write {}: {e}", path.display())),
         }
-        let n = applied.replacements;
-        let mut out = format!("Edited {} ({n} replacement{}).", path.display(), if n == 1 { "" } else { "s" });
-        if applied.fuzzy > 0 {
-            out.push_str(" Some of the text matched only after ignoring trailing whitespace and the difference between typographic and plain quotes, dashes or spaces; the lines you replaced now have exactly your `new_string`.");
-        }
-        ToolOutput::ok(out)
     }
+}
+
+/// `text` with an `edit` call's `changes` made (see [`super::edit::apply`]). Returns the new
+/// text and the rest of the success message after the file's name (" (2 replacements)." and a
+/// note when matching had to be forgiving); `shown` names the file in errors.
+pub fn edited(text: &str, changes: &[super::edit::Change], input: &Value, shown: &str) -> Result<(String, String), ToolOutput> {
+    let many = input.get("edits").is_some_and(Value::is_array);
+    let label = |i: usize| if many { format!("edits[{i}]") } else { "`old_string`".to_string() };
+    let applied = super::edit::apply(text, changes, label).map_err(|why| ToolOutput::err(format!("{} (in {shown}). Nothing was changed.", why.trim_end_matches('.'))))?;
+    let n = applied.replacements;
+    let mut done = format!(" ({n} replacement{}).", if n == 1 { "" } else { "s" });
+    if applied.fuzzy > 0 {
+        done.push_str(" Some of the text matched only after ignoring trailing whitespace and the difference between typographic and plain quotes, dashes or spaces; the lines you replaced now have exactly your `new_string`.");
+    }
+    Ok((applied.text, done))
 }
 
 /// Files under `root` (respecting .gitignore), with their path relative to `root`.
@@ -321,15 +336,13 @@ impl Tool for Glob {
             Err(e) => return e,
         };
         let root = input.get("path").and_then(Value::as_str).map(|p| resolve(ctx, p)).unwrap_or_else(|| ctx.cwd.clone());
-        let matcher = match globset::GlobBuilder::new(&pattern).literal_separator(false).build() {
-            Ok(g) => g.compile_matcher(),
-            Err(e) => return ToolOutput::err(format!("Bad pattern: {e}")),
+        let matches = match name_matcher(&pattern) {
+            Ok(m) => m,
+            Err(e) => return e,
         };
-        // a bare "*.rs" means anywhere, like most tools
-        let anywhere = (!pattern.contains('/')).then(|| globset::Glob::new(&format!("**/{pattern}")).ok()).flatten().map(|g| g.compile_matcher());
         let hits = tokio::task::spawn_blocking(move || {
             let mut hits: Vec<(std::time::SystemTime, String)> = walk(&root)
-                .filter(|(_, rel)| matcher.is_match(rel) || anywhere.as_ref().is_some_and(|m| m.is_match(rel)))
+                .filter(|(_, rel)| matches(rel))
                 .map(|(p, rel)| (std::fs::metadata(&p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), rel))
                 .collect();
             hits.sort_by_key(|h| std::cmp::Reverse(h.0));
@@ -347,6 +360,26 @@ impl Tool for Glob {
         }
         ToolOutput::ok(out)
     }
+}
+
+/// `glob`'s pattern as a test on a relative path (`/`-separated): a bare `*.rs` matches anywhere.
+pub fn name_matcher(pattern: &str) -> Result<impl Fn(&str) -> bool + Send + Sync + 'static, ToolOutput> {
+    let matcher = globset::GlobBuilder::new(pattern).literal_separator(false).build().map_err(|e| ToolOutput::err(format!("Bad pattern: {e}")))?.compile_matcher();
+    // a bare "*.rs" means anywhere, like most tools
+    let anywhere = (!pattern.contains('/')).then(|| globset::Glob::new(&format!("**/{pattern}")).ok()).flatten().map(|g| g.compile_matcher());
+    Ok(move |rel: &str| matcher.is_match(rel) || anywhere.as_ref().is_some_and(|m| m.is_match(rel)))
+}
+
+/// `grep`'s `glob` filter (`*.ts` anywhere, or a path pattern with `/`).
+pub fn file_filter(glob: &str) -> Result<globset::GlobMatcher, ToolOutput> {
+    globset::Glob::new(&if glob.contains('/') { glob.to_string() } else { format!("**/{glob}") }).map(|g| g.compile_matcher()).map_err(|e| ToolOutput::err(format!("Bad glob: {e}")))
+}
+
+/// One `grep` hit as the model sees it: `path:line: text`, long lines cut.
+pub fn hit(rel: &str, line_no: usize, line: &str) -> String {
+    let line = line.trim_end();
+    let line: String = if line.chars().count() > 300 { format!("{}…", line.chars().take(300).collect::<String>()) } else { line.to_string() };
+    format!("{rel}:{line_no}: {line}")
 }
 
 pub struct Grep;
@@ -388,12 +421,9 @@ impl Tool for Grep {
             Ok(r) => r,
             Err(e) => return ToolOutput::err(format!("Bad regex: {e}")),
         };
-        let filter = match input.get("glob").and_then(Value::as_str) {
-            Some(g) => match globset::Glob::new(&if g.contains('/') { g.to_string() } else { format!("**/{g}") }) {
-                Ok(g) => Some(g.compile_matcher()),
-                Err(e) => return ToolOutput::err(format!("Bad glob: {e}")),
-            },
-            None => None,
+        let filter = match input.get("glob").and_then(Value::as_str).map(file_filter).transpose() {
+            Ok(f) => f,
+            Err(e) => return e,
         };
         let root = input.get("path").and_then(Value::as_str).map(|p| resolve(ctx, p)).unwrap_or_else(|| ctx.cwd.clone());
         let hits = tokio::task::spawn_blocking(move || {
@@ -417,9 +447,7 @@ impl Tool for Grep {
                     if re.is_match(line) {
                         total += 1;
                         if hits.len() < MAX_HITS {
-                            let line = line.trim_end();
-                            let line: String = if line.chars().count() > 300 { format!("{}…", line.chars().take(300).collect::<String>()) } else { line.to_string() };
-                            hits.push(format!("{rel}:{}: {line}", i + 1));
+                            hits.push(hit(&rel, i + 1, line));
                         }
                     }
                 }
