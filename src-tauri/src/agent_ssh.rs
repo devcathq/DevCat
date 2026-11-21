@@ -108,14 +108,22 @@ impl Host {
     /// `stdin` if any.
     async fn run(&self, script: &str, args: &[String], stdin: Option<&[u8]>, timeout: Duration) -> Result<Out, ToolOutput> {
         let t = self.target()?;
-        // the script's first byte says it started: an exit code 255 without it is ssh's own
-        let script = format!("printf '\\001'\n{script}");
+        // the script says it started: an exit code 255 without that is ssh's own. A login script
+        // may print before it (a banner in .bashrc): that's dropped.
+        let script = format!("printf '%s' {}\n{script}", q(MARK));
         let out = remote::exec(&t, &script, args, stdin, timeout).await.map_err(|e| ToolOutput::err(e.to_string()))?;
-        match out.stdout.split_first() {
-            Some((1, rest)) => Ok(Out { code: out.code, stdout: rest.to_vec(), stderr: out.stderr }),
-            _ if out.code == 255 => Err(ToolOutput::err(remote::connect_error(&t, out.stderr.trim()).to_string())),
-            _ => Err(ToolOutput::err(format!("{} didn't run the command: {}", self.label, out.stderr.trim()))),
+        match find(&out.stdout, MARK.as_bytes()) {
+            Some(i) => Ok(Out { code: out.code, stdout: out.stdout[i + MARK.len()..].to_vec(), stderr: out.stderr }),
+            None if out.code == 255 => Err(ToolOutput::err(remote::connect_error(&t, out.stderr.trim()).to_string())),
+            None => Err(ToolOutput::err(format!("{} didn't run the command: {}", self.label, out.stderr.trim()))),
         }
+    }
+
+    /// `path` on the host with symlinks resolved (None if it doesn't exist or can't be told).
+    pub async fn real_path(&self, path: &str) -> Option<String> {
+        let out = self.run(r#"cd "$(dirname -- "$1")" 2>/dev/null && d=$(pwd -P) && b=$(basename -- "$1") && if [ -L "$b" ]; then readlink -f -- "$b" 2>/dev/null || realpath -- "$b"; else printf '%s/%s' "$d" "$b"; fi"#, &[p(path)], None, FILE_TIMEOUT).await.ok()?;
+        let r = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.code == 0 && r.starts_with('/')).then(|| normalize(&r))
     }
 }
 
@@ -127,6 +135,13 @@ fn p(path: &str) -> String {
 /// Any other argument, as it is.
 fn q(s: &str) -> String {
     sh_quote(s)
+}
+
+/// What a script prints first (see [`Host::run`]).
+const MARK: &str = "\u{1}DEVCAT-RUN\u{1}";
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 struct Out {
@@ -361,12 +376,18 @@ impl Tool for Read {
     }
 }
 
-/// $1 = the path. Creates missing folders; prints `C` (created) or `R` (replaced), then writes stdin.
+/// $1 = the path. Creates missing folders; takes all of stdin into a file next to it first (a
+/// dropped connection leaves the file as it was), then copies it in place, so the file keeps its
+/// mode, owner and links. Prints `C` (created) or `R` (replaced).
 const WRITE: &str = r#"f=$1
 [ -d "$f" ] && { echo "It's a folder" >&2; exit 3; }
 mkdir -p -- "$(dirname -- "$f")" || exit 3
+t="$f.devcat-$$"
+cat > "$t" || { rm -f -- "$t"; exit 3; }
 if [ -e "$f" ]; then printf R; else printf C; fi
-cat > "$f""#;
+cat -- "$t" > "$f"; r=$?
+rm -f -- "$t"
+exit $r"#;
 
 async fn put(host: &Host, path: &str, content: &str) -> Result<bool, ToolOutput> {
     let out = host.run(WRITE, &[p(path)], Some(content.as_bytes()), FILE_TIMEOUT).await?;
@@ -559,7 +580,8 @@ impl Tool for Grep {
         fs::Grep.summary(input)
     }
     fn timeout(&self, _: &Value) -> Duration {
-        SEARCH_TIMEOUT * 2 + Duration::from_secs(5)
+        // the file-or-folder check, the file list, then the search
+        FILE_TIMEOUT + SEARCH_TIMEOUT * 2 + Duration::from_secs(10)
     }
     async fn run(&self, input: Value, _: &ToolCtx) -> ToolOutput {
         let Some(pattern) = input.get("pattern").and_then(Value::as_str) else { return ToolOutput::err("Missing required string parameter `pattern`.") };
@@ -673,7 +695,10 @@ impl Tool for Shell {
         let sh = if self.0.shell == "sh" { "sh" } else { "bash" };
         let out = match self.0.run(SHELL, &[p(&normalize(&self.0.root)), q(&secs), q(sh), q(command)], None, limit + Duration::from_secs(10)).await {
             Ok(o) => o,
-            Err(e) if e.content.contains("didn't answer in time") => return ToolOutput::err(format!("Timed out after {} s and was stopped.", limit.as_secs())),
+            Err(e) if e.content.contains("didn't answer in time") => {
+                let more = if self.0.timeout { String::new() } else { format!(" {} has no `timeout` command, so it may still be running there.", self.0.label) };
+                return ToolOutput::err(format!("Timed out after {} s.{more}", limit.as_secs()));
+            }
             Err(e) => return e,
         };
         let text = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
@@ -849,6 +874,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("docs/new dir/it's.md")).unwrap(), tricky);
         let w = Write(h.clone()).run(json!({ "path": "docs/new dir/it's.md", "content": "x" }), &ctx).await;
         assert!(w.content.starts_with("Replaced"), "{}", w.content);
+
+        // a write keeps the file's mode, and writes through a link, leaving nothing behind
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(dir.join("run.sh"), "old").unwrap();
+        std::fs::set_permissions(dir.join("run.sh"), std::fs::Permissions::from_mode(0o750)).unwrap();
+        std::os::unix::fs::symlink("run.sh", dir.join("link.sh")).unwrap();
+        assert!(!Write(h.clone()).run(json!({ "path": "link.sh", "content": "new" }), &ctx).await.is_error);
+        assert_eq!(std::fs::read_to_string(dir.join("run.sh")).unwrap(), "new");
+        assert_eq!(std::fs::metadata(dir.join("run.sh")).unwrap().permissions().mode() & 0o777, 0o750);
+        assert!(std::fs::symlink_metadata(dir.join("link.sh")).unwrap().file_type().is_symlink());
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".devcat-")));
+
+        // what a link points to, on the host (`ssh_read` checks it for secrets)
+        std::os::unix::fs::symlink(".hidden/x.rs", dir.join("notes.txt")).unwrap();
+        assert_eq!(h.real_path(&h.path("notes.txt")).await.as_deref(), Some(format!("{}/.hidden/x.rs", h.root).as_str()));
+        assert_eq!(h.real_path(&h.path("src/lib.rs")).await.as_deref(), Some(format!("{}/src/lib.rs", h.root).as_str()));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -931,7 +972,8 @@ mod tests {
         assert_eq!(ok(Glob(h.clone()).run(json!({ "pattern": "**/*.rs" }), &ctx).await).lines().count(), 2);
         let g = ok(Grep(h.clone()).run(json!({ "pattern": "fn \\w+ee", "glob": "*.rs" }), &ctx).await);
         assert_eq!(g, "src/lib.rs:2: pub fn bee() {}");
-        assert_eq!(ok(Shell(h.clone()).run(json!({ "command": "cd src && ls | wc -l" }), &ctx).await).trim(), "2");
+        // (a login shell: what the account's profile prints comes first, as in a terminal)
+        assert_eq!(ok(Shell(h.clone()).run(json!({ "command": "cd src && ls | wc -l" }), &ctx).await).lines().last().unwrap().trim(), "2");
         let slow = Shell(h.clone()).run(json!({ "command": "sleep 30", "timeout_secs": 2 }), &ctx).await;
         assert!(slow.is_error && slow.content.contains("Timed out"), "{}", slow.content);
         let code = Shell(h.clone()).run(json!({ "command": "exit 255" }), &ctx).await;

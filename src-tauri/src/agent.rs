@@ -792,8 +792,6 @@ pub async fn open(cwd: String, provider_id: String, session_id: Option<String>, 
         }
         (None, Some(id)) if valid_id(&id) && dir()?.join(format!("{id}.jsonl")).exists() => {
             let session = Session::open(&dir()?.join(format!("{id}.jsonl"))).await.map_err(|e| AppError::msg(e.to_string()))?;
-            // its tools work in the session's folder: the chat is set up for that one
-            let cwd = session.cwd.clone();
             build(&cwd, &provider_id, session, origin, owner, focus, None, connections).await?
         }
         _ => build(&cwd, &provider_id, Session::create(dir()?, &cwd).await.map_err(|e| AppError::msg(e.to_string()))?, origin, owner, focus, None, connections).await?,

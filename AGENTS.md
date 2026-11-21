@@ -60,7 +60,10 @@ Two ways an agent works on a server, both desktop-only, nothing installed on the
   `Scope::ssh` (a desktop chat, `devcat mcp` and its bridge calls; never a phone's, a chat app's, a delegate's or a job's
   chat, nor `unattended` / room runs), over MCP changing ones need **Full**, and `ssh_read` / `ssh_grep` refuse
   secret-like files (`integrations::text::secret_like`). SSH sessions stay out of `agent_tools::visible`: no database,
-  connection-editing or brief tool sees them. A chat that has these tools is refused to a phone too.
+  connection-editing or brief tool sees them. A chat that has these tools (or works on a host) is refused to a phone
+  too, and a chat app gets no approval or question buttons for it (`integrations::bridge`, `press` checks again):
+  it's answered on the computer. `ssh_grep` also drops hits in secret-like files, and `ssh_read` checks what a link
+  points to on the host (`Host::real_path`).
 
 ## Connections over MCP
 

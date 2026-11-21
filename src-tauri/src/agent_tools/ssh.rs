@@ -189,9 +189,40 @@ impl SshTool {
     }
 }
 
-/// A file that holds secrets, by its path on the host.
+/// A file that holds secrets, by its path on the host (any case: macOS hosts don't mind), or
+/// what the host's processes hold (`/proc`: their environment, memory).
 fn secret(path: &str) -> bool {
-    crate::integrations::text::secret_like(std::path::Path::new(path))
+    let lower = path.to_lowercase();
+    lower == "/proc" || lower.starts_with("/proc/") || crate::integrations::text::secret_like(std::path::Path::new(&lower))
+}
+
+/// Why `path` (from the model) isn't read for agents, if it isn't: by its name, and by what it
+/// links to on the host.
+async fn refused(host: &Host, path: &str) -> Option<String> {
+    let full = host.path(path);
+    let real = host.real_path(&full).await;
+    [Some(full), real].iter().flatten().any(|p| secret(p)).then(|| format!("{path} looks like it holds secrets (a key, .env, credentials or /proc): DevCat doesn't read it for agents."))
+}
+
+/// `ssh_grep`'s output without the lines of secret files (`path:line: text`, paths relative to
+/// `root`).
+fn without_secrets(out: ToolOutput, host: &Host, root: &str) -> ToolOutput {
+    if out.is_error {
+        return out;
+    }
+    let base = host.path(root);
+    let kept: Vec<&str> = out
+        .content
+        .lines()
+        .filter(|l| match l.split_once(':') {
+            Some((rel, _)) if !l.starts_with('(') => !secret(&format!("{base}/{rel}")) && !secret(rel),
+            _ => true,
+        })
+        .collect();
+    if kept.iter().all(|l| l.starts_with('(')) {
+        return ToolOutput::ok("No matches.");
+    }
+    ToolOutput { content: kept.join("\n"), ..out }
 }
 
 #[async_trait]
@@ -234,10 +265,9 @@ impl Tool for SshTool {
             Err(e) => return e,
         };
         if matches!(self.op, Op::Read | Op::Grep)
-            && let Some(p) = arg(&input, "path")
-            && secret(&host.path(&p))
+            && let Some(why) = refused(&host, &arg(&input, "path").unwrap_or_else(|| ".".into())).await
         {
-            return ToolOutput::err(format!("{p} looks like it holds secrets (a key, .env or credentials): DevCat doesn't read it for agents."));
+            return ToolOutput::err(why);
         }
         if self.op == Op::Run
             && let Some(f) = arg(&input, "folder")
@@ -251,7 +281,10 @@ impl Tool for SshTool {
             m.remove("session");
             m.remove("folder");
         }
-        self.op.inner(host).run(inner_input, ctx).await
+        let root = arg(&input, "path").unwrap_or_else(|| ".".into());
+        let out = self.op.inner(host.clone()).run(inner_input, ctx).await;
+        // a search over a folder doesn't show what's in its secret files either
+        if self.op == Op::Grep { without_secrets(out, &host, &root) } else { out }
     }
 }
 
@@ -304,7 +337,12 @@ mod tests {
     #[test]
     fn secrets_on_the_host_are_not_read() {
         assert!(secret("/home/me/.ssh/id_ed25519") && secret("/srv/app/.env") && secret("/srv/app/certs/server.key"));
-        assert!(!secret("/srv/app/src/main.py") && !secret("/etc/nginx/nginx.conf"));
+        assert!(secret("/srv/app/.GIT/config") && secret("/proc/1/environ") && secret("/proc"));
+        assert!(!secret("/srv/app/src/main.py") && !secret("/etc/nginx/nginx.conf") && !secret("/process/x"));
+        let h = placeholder();
+        let hits = ToolOutput::ok("src/a.py:3: key = 1\ncerts/server.key:1: -----BEGIN\n(more than 200 matches; showing the first 200)");
+        assert_eq!(without_secrets(hits, &h, ".").content, "src/a.py:3: key = 1\n(more than 200 matches; showing the first 200)");
+        assert_eq!(without_secrets(ToolOutput::ok("id_rsa:1: x"), &h, "~/.ssh").content, "No matches.");
     }
 
     /// Phones, chat apps and unattended runs never get them, whatever the sessions say.
