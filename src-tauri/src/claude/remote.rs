@@ -245,7 +245,7 @@ pub fn sh_quote(s: &str) -> String {
 }
 
 /// A path for the remote shell: `~` / `~/x` expand there, the rest is quoted.
-fn sh_path(p: &str) -> String {
+pub(crate) fn sh_path(p: &str) -> String {
     if p == "~" {
         "\"$HOME\"".into()
     } else if let Some(rest) = p.strip_prefix("~/") {
@@ -603,6 +603,16 @@ async fn run_quoted(t: &Target, script: &str, args: &[String], stdin: Option<&[u
 /// `script` on the host, its exit code and output as they are (ssh's own failure, exit 255, is an
 /// error). `args` are quoted for the remote shell already.
 async fn run_raw(t: &Target, script: &str, args: &[String], stdin: Option<&[u8]>, timeout: Duration) -> AppResult<super::git::GitOut> {
+    let out = exec(t, script, args, stdin, timeout).await?;
+    if out.code == 255 {
+        return Err(connect_error(t, out.stderr.trim()));
+    }
+    Ok(out)
+}
+
+/// `run_raw` that leaves exit code 255 to the caller: a program on the host may exit with it too
+/// (the agent's `shell` tells the two apart with a marker, see `agent_ssh.rs`).
+pub(crate) async fn exec(t: &Target, script: &str, args: &[String], stdin: Option<&[u8]>, timeout: Duration) -> AppResult<super::git::GitOut> {
     t.ready().await?;
     let (mut cmd, _askpass) = ssh_command_quoted(t, script, args);
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -616,9 +626,6 @@ async fn run_raw(t: &Target, script: &str, args: &[String], stdin: Option<&[u8]>
         .map_err(|_| AppError::msg(format!("{} didn't answer in time", t.label())))?
         .map_err(|e| AppError::msg(format!("ssh: {e}")))?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    if out.status.code() == Some(255) {
-        return Err(connect_error(t, stderr.trim()));
-    }
     Ok(super::git::GitOut { code: out.status.code().unwrap_or(-1), stdout: out.stdout, stderr })
 }
 

@@ -7,9 +7,10 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::Path;
 
-const READ_LINES: usize = 2000;
+pub const READ_LINES: usize = 2000;
 const LINE_CHARS: usize = 2000;
-const MAX_HITS: usize = 200;
+/// Most files `glob` lists and matches `grep` shows.
+pub const MAX_HITS: usize = 200;
 
 fn edit_kind(input: &Value, ctx: &ToolCtx) -> Kind {
     match input.get("path").and_then(Value::as_str) {
@@ -22,12 +23,13 @@ fn path_summary(input: &Value) -> String {
     input.get("path").and_then(Value::as_str).unwrap_or("?").to_string()
 }
 
-fn looks_binary(bytes: &[u8]) -> bool {
+/// Whether a file's start looks binary (a NUL byte): `read` and `grep` skip it.
+pub fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|b| *b == 0)
 }
 
 /// What to do with a file `read` can't show: write a small extraction script, like a person would.
-fn binary_hint(path: &Path, size: usize) -> String {
+pub fn binary_hint(path: &Path, size: usize) -> String {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let how = match ext.as_str() {
         "pdf" => "Extract its text with a script, e.g. `python -c \"import pypdf,sys; print('\n'.join(p.extract_text() or '' for p in pypdf.PdfReader(sys.argv[1]).pages))\" FILE` or `pdftotext FILE -`.",
@@ -84,28 +86,33 @@ impl Tool for Read {
         if looks_binary(&bytes) {
             return ToolOutput::err(binary_hint(&path, bytes.len()));
         }
-        let text = String::from_utf8_lossy(&bytes);
-        let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-        let limit = input.get("limit").and_then(Value::as_u64).map(|l| l as usize).unwrap_or(READ_LINES);
-        let total = text.lines().count();
-        if total == 0 {
-            return ToolOutput::ok("(empty file)");
-        }
-        if offset > total {
-            return ToolOutput::err(format!("The file has only {total} lines."));
-        }
-        let mut out = String::new();
-        for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
-            let line = line.strip_suffix('\r').unwrap_or(line);
-            let line: String = if line.chars().count() > LINE_CHARS { format!("{}…", line.chars().take(LINE_CHARS).collect::<String>()) } else { line.to_string() };
-            out.push_str(&format!("{:>6}\t{line}\n", i + 1));
-        }
-        let last = (offset - 1 + limit).min(total);
-        if last < total {
-            out.push_str(&format!("\n(showing lines {offset}-{last} of {total}; use offset {} to continue)", last + 1));
-        }
-        ToolOutput::ok(out)
+        numbered(&String::from_utf8_lossy(&bytes), &input)
     }
+}
+
+/// What `read` shows of a text file: numbered lines from `offset` (1-based), at most `limit`
+/// (both from the call's input), with a note when there's more.
+pub fn numbered(text: &str, input: &Value) -> ToolOutput {
+    let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+    let limit = input.get("limit").and_then(Value::as_u64).map(|l| l as usize).unwrap_or(READ_LINES);
+    let total = text.lines().count();
+    if total == 0 {
+        return ToolOutput::ok("(empty file)");
+    }
+    if offset > total {
+        return ToolOutput::err(format!("The file has only {total} lines."));
+    }
+    let mut out = String::new();
+    for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let line: String = if line.chars().count() > LINE_CHARS { format!("{}…", line.chars().take(LINE_CHARS).collect::<String>()) } else { line.to_string() };
+        out.push_str(&format!("{:>6}\t{line}\n", i + 1));
+    }
+    let last = (offset - 1 + limit).min(total);
+    if last < total {
+        out.push_str(&format!("\n(showing lines {offset}-{last} of {total}; use offset {} to continue)", last + 1));
+    }
+    ToolOutput::ok(out)
 }
 
 async fn list_dir(path: &Path) -> ToolOutput {
@@ -194,30 +201,39 @@ impl Tool for Edit {
             (Ok(p), Ok(o), Ok(n)) => (resolve(ctx, p), o, n),
             (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return e,
         };
-        if old.is_empty() {
-            return ToolOutput::err("`old_string` is empty. Use `write` to create a file.");
-        }
-        if old == new {
-            return ToolOutput::err("`old_string` and `new_string` are the same.");
-        }
         let text = match tokio::fs::read_to_string(&path).await {
             Ok(t) => t,
             Err(e) => return ToolOutput::err(format!("Can't read {}: {e}", path.display())),
         };
-        // Models write \n; keep a CRLF file CRLF.
-        let crlf = text.contains("\r\n");
-        let (old, new) = if crlf && !old.contains("\r\n") { (old.replace('\n', "\r\n"), new.replace('\n', "\r\n")) } else { (old.to_string(), new.to_string()) };
-        let count = text.matches(&old).count();
-        let replace_all = input.get("replace_all").and_then(Value::as_bool).unwrap_or(false);
-        let updated = match (count, replace_all) {
-            (0, _) => return ToolOutput::err(format!("`old_string` was not found in {}. Read the file again and copy the text exactly, including whitespace.", path.display())),
-            (1, _) | (_, true) => text.replace(&old, &new),
-            (n, false) => return ToolOutput::err(format!("`old_string` appears {n} times in {}. Add surrounding lines to make it unique, or set `replace_all`.", path.display())),
+        let (updated, count) = match replaced(&text, old, new, input.get("replace_all").and_then(Value::as_bool).unwrap_or(false), &path.display().to_string()) {
+            Ok(r) => r,
+            Err(e) => return e,
         };
         match tokio::fs::write(&path, updated).await {
             Ok(()) => ToolOutput::ok(format!("Edited {} ({count} replacement{}).", path.display(), if count == 1 { "" } else { "s" })),
             Err(e) => ToolOutput::err(format!("Can't write {}: {e}", path.display())),
         }
+    }
+}
+
+/// `text` with `old` replaced by `new` (`edit`): once, where it must appear exactly once, or
+/// everywhere with `replace_all`. A CRLF file stays CRLF. Returns the new text and how many were
+/// replaced; `shown` names the file in errors.
+pub fn replaced(text: &str, old: &str, new: &str, replace_all: bool, shown: &str) -> Result<(String, usize), ToolOutput> {
+    if old.is_empty() {
+        return Err(ToolOutput::err("`old_string` is empty. Use `write` to create a file."));
+    }
+    if old == new {
+        return Err(ToolOutput::err("`old_string` and `new_string` are the same."));
+    }
+    // Models write \n; keep a CRLF file CRLF.
+    let crlf = text.contains("\r\n");
+    let (old, new) = if crlf && !old.contains("\r\n") { (old.replace('\n', "\r\n"), new.replace('\n', "\r\n")) } else { (old.to_string(), new.to_string()) };
+    let count = text.matches(&old).count();
+    match (count, replace_all) {
+        (0, _) => Err(ToolOutput::err(format!("`old_string` was not found in {shown}. Read the file again and copy the text exactly, including whitespace."))),
+        (1, _) | (_, true) => Ok((text.replace(&old, &new), count)),
+        (n, false) => Err(ToolOutput::err(format!("`old_string` appears {n} times in {shown}. Add surrounding lines to make it unique, or set `replace_all`."))),
     }
 }
 
@@ -267,15 +283,13 @@ impl Tool for Glob {
             Err(e) => return e,
         };
         let root = input.get("path").and_then(Value::as_str).map(|p| resolve(ctx, p)).unwrap_or_else(|| ctx.cwd.clone());
-        let matcher = match globset::GlobBuilder::new(&pattern).literal_separator(false).build() {
-            Ok(g) => g.compile_matcher(),
-            Err(e) => return ToolOutput::err(format!("Bad pattern: {e}")),
+        let matches = match name_matcher(&pattern) {
+            Ok(m) => m,
+            Err(e) => return e,
         };
-        // a bare "*.rs" means anywhere, like most tools
-        let anywhere = (!pattern.contains('/')).then(|| globset::Glob::new(&format!("**/{pattern}")).ok()).flatten().map(|g| g.compile_matcher());
         let hits = tokio::task::spawn_blocking(move || {
             let mut hits: Vec<(std::time::SystemTime, String)> = walk(&root)
-                .filter(|(_, rel)| matcher.is_match(rel) || anywhere.as_ref().is_some_and(|m| m.is_match(rel)))
+                .filter(|(_, rel)| matches(rel))
                 .map(|(p, rel)| (std::fs::metadata(&p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), rel))
                 .collect();
             hits.sort_by_key(|h| std::cmp::Reverse(h.0));
@@ -293,6 +307,26 @@ impl Tool for Glob {
         }
         ToolOutput::ok(out)
     }
+}
+
+/// `glob`'s pattern as a test on a relative path (`/`-separated): a bare `*.rs` matches anywhere.
+pub fn name_matcher(pattern: &str) -> Result<impl Fn(&str) -> bool + Send + Sync + 'static, ToolOutput> {
+    let matcher = globset::GlobBuilder::new(pattern).literal_separator(false).build().map_err(|e| ToolOutput::err(format!("Bad pattern: {e}")))?.compile_matcher();
+    // a bare "*.rs" means anywhere, like most tools
+    let anywhere = (!pattern.contains('/')).then(|| globset::Glob::new(&format!("**/{pattern}")).ok()).flatten().map(|g| g.compile_matcher());
+    Ok(move |rel: &str| matcher.is_match(rel) || anywhere.as_ref().is_some_and(|m| m.is_match(rel)))
+}
+
+/// `grep`'s `glob` filter (`*.ts` anywhere, or a path pattern with `/`).
+pub fn file_filter(glob: &str) -> Result<globset::GlobMatcher, ToolOutput> {
+    globset::Glob::new(&if glob.contains('/') { glob.to_string() } else { format!("**/{glob}") }).map(|g| g.compile_matcher()).map_err(|e| ToolOutput::err(format!("Bad glob: {e}")))
+}
+
+/// One `grep` hit as the model sees it: `path:line: text`, long lines cut.
+pub fn hit(rel: &str, line_no: usize, line: &str) -> String {
+    let line = line.trim_end();
+    let line: String = if line.chars().count() > 300 { format!("{}…", line.chars().take(300).collect::<String>()) } else { line.to_string() };
+    format!("{rel}:{line_no}: {line}")
 }
 
 pub struct Grep;
@@ -331,12 +365,9 @@ impl Tool for Grep {
             Ok(r) => r,
             Err(e) => return ToolOutput::err(format!("Bad regex: {e}")),
         };
-        let filter = match input.get("glob").and_then(Value::as_str) {
-            Some(g) => match globset::Glob::new(&if g.contains('/') { g.to_string() } else { format!("**/{g}") }) {
-                Ok(g) => Some(g.compile_matcher()),
-                Err(e) => return ToolOutput::err(format!("Bad glob: {e}")),
-            },
-            None => None,
+        let filter = match input.get("glob").and_then(Value::as_str).map(file_filter).transpose() {
+            Ok(f) => f,
+            Err(e) => return e,
         };
         let root = input.get("path").and_then(Value::as_str).map(|p| resolve(ctx, p)).unwrap_or_else(|| ctx.cwd.clone());
         let hits = tokio::task::spawn_blocking(move || {
@@ -360,9 +391,7 @@ impl Tool for Grep {
                     if re.is_match(line) {
                         total += 1;
                         if hits.len() < MAX_HITS {
-                            let line = line.trim_end();
-                            let line: String = if line.chars().count() > 300 { format!("{}…", line.chars().take(300).collect::<String>()) } else { line.to_string() };
-                            hits.push(format!("{rel}:{}: {line}", i + 1));
+                            hits.push(hit(&rel, i + 1, line));
                         }
                     }
                 }

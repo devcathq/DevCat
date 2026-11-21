@@ -13,8 +13,9 @@
 //!
 //! Which connections an agent sees depends on the folder it works in ([`Scope`]): a project with
 //! code folders keeps its connections to those folders; connections in no project, or in a
-//! project without folders, are everyone's. SSH sessions are never offered (see AGENTS.md), nor
-//! connections whose AI access is off ([`McpAccess`]). Over MCP, changing data needs `Full`.
+//! project without folders, are everyone's. SSH sessions aren't connections for these tools: only
+//! the `ssh_*` tools reach them, and only those the user turned AI access on for (`ssh.rs`, see
+//! AGENTS.md). Nor are connections whose AI access is off ([`McpAccess`]). Over MCP, changing data needs `Full`.
 //! Network profiles have the same AI access (see `network.rs`); ticket boards and notes follow
 //! the same folder rule. The DevCat Agent asks the user before anything that changes something.
 //!
@@ -26,7 +27,9 @@ mod docker;
 mod k8s;
 mod network;
 mod rabbitmq;
+mod ssh;
 mod workspace;
+pub use ssh::lines as ssh_lines;
 pub use workspace::OpenedQuery;
 
 use crate::db::{ExecOptions, QueryResult, TableRef};
@@ -66,6 +69,10 @@ pub struct Scope {
     /// `rooms_agent.rs`): it gets that room's agent tools and nothing else of DevCat's (no
     /// connections, memory, notes, boards or jobs). Always with `unattended` too.
     pub room: Option<String>,
+    /// It may use the user's SSH sessions whose AI access they turned on (`ssh.rs`): the DevCat
+    /// Agent in a chat on this computer's window, and `devcat mcp` for agents on this computer.
+    /// Never a phone's or a chat app's chat, nor an unattended run (AGENTS.md).
+    pub ssh: bool,
 }
 
 impl Scope {
@@ -200,6 +207,7 @@ pub fn for_scope(scope: &Scope) -> Vec<Arc<dyn Tool>> {
     if has(ConnectionKind::Rabbitmq) {
         rabbitmq::add(&mut out, &s);
     }
+    ssh::add(&mut out, &s);
     out
 }
 
@@ -241,12 +249,24 @@ fn may_change(scope: &Scope, c: &ConnectionConfig) -> Result<(), ToolOutput> {
 
 /// A path the model gave, for the app: relative ones start in the agent's folder (over MCP the
 /// tool may run in DevCat, whose own folder is elsewhere); `~` stays for the callee to expand.
+/// A chat in a folder on an SSH host has no folder on this computer: they start in the home folder.
 fn local_path(ctx: &ToolCtx, p: &str) -> String {
     let path = Path::new(p);
     if path.is_absolute() || p.starts_with('~') || ctx.cwd.as_os_str().is_empty() {
         return p.to_string();
     }
+    if on_ssh_host(ctx)
+        && let Some(h) = dirs::home_dir()
+    {
+        return h.join(path).to_string_lossy().into_owned();
+    }
     ctx.cwd.join(path).to_string_lossy().into_owned()
+}
+
+/// The chat works in a folder on an SSH host (`ssh://…`, see `agent_ssh.rs`): its folder isn't on
+/// this computer, where these tools read and write files.
+fn on_ssh_host(ctx: &ToolCtx) -> bool {
+    ctx.cwd.to_string_lossy().starts_with(crate::claude::remote::SCHEME)
 }
 
 /// A pretty JSON value, for tools that show an object as it is.
@@ -382,12 +402,17 @@ impl Tool for Connections {
     }
     async fn run(&self, _: Value, _: &ToolCtx) -> ToolOutput {
         let v = view(&self.0);
-        if v.connections.is_empty() {
+        let ssh = ssh::lines(&self.0);
+        if v.connections.is_empty() && ssh.is_empty() {
             return ToolOutput::ok("The user has no DevCat connections for this folder (`devcat_connection_save` adds one).");
         }
         let mut lines: Vec<String> = v.connections.iter().map(|c| v.line(c, self.0.mcp)).collect();
         if let Some(p) = &v.project {
             lines.insert(0, format!("Project {} (its connections, then the ones every folder gets):", p.name));
+        }
+        if !ssh.is_empty() {
+            lines.push("SSH sessions (servers; use the `ssh_*` tools with `session`):".into());
+            lines.extend(ssh);
         }
         ToolOutput::ok(lines.join("\n"))
     }
@@ -644,9 +669,13 @@ fn slug(name: &str) -> String {
 }
 
 /// Where a dump or export goes: `path` (`~/` for the home folder, relative to the chat's folder),
-/// else `default` in the Downloads folder.
+/// else `default` in the Downloads folder. A chat on an SSH host has no folder here: a relative
+/// `path` is in the Downloads folder too.
 fn out_path(input: &Value, cwd: &Path, default: &str) -> PathBuf {
     let home = dirs::home_dir();
+    let downloads = || dirs::download_dir().or(home.clone()).unwrap_or_else(|| cwd.to_path_buf());
+    let cwd = if cwd.to_string_lossy().starts_with(crate::claude::remote::SCHEME) { downloads() } else { cwd.to_path_buf() };
+    let cwd = cwd.as_path();
     match str_arg(input, "path") {
         Some(p) => match (p.strip_prefix("~/").or(p.strip_prefix("~\\")), &home) {
             (Some(rest), Some(h)) => h.join(rest),
@@ -657,9 +686,10 @@ fn out_path(input: &Value, cwd: &Path, default: &str) -> PathBuf {
     }
 }
 
-/// Writing a file in the chat's folder is an edit; anywhere else (Downloads) it asks.
+/// Writing a file in the chat's folder is an edit; anywhere else (Downloads, or anywhere for a
+/// chat on an SSH host) it asks.
 fn file_kind(path: &Path, ctx: &ToolCtx) -> Kind {
-    if path.starts_with(&ctx.cwd) { Kind::Edit } else { Kind::EditOutside }
+    if !on_ssh_host(ctx) && path.starts_with(&ctx.cwd) { Kind::Edit } else { Kind::EditOutside }
 }
 
 fn stamp() -> String {
@@ -1290,6 +1320,15 @@ mod tests {
         assert_eq!(file_kind(&default, &ctx), Kind::EditOutside);
         assert_eq!(slug("public.orders 2026"), "public.orders-2026");
         assert_eq!(slug("../.."), "export");
+
+        // a chat on an SSH host has no folder on this computer: a relative path is in Downloads,
+        // and writing anywhere asks
+        let ssh = Path::new("ssh://devcat-abc/srv/app");
+        let rel = out_path(&json!({ "path": "out/db.sql" }), ssh, "x.sql");
+        assert!(rel.ends_with("out/db.sql") && !rel.to_string_lossy().starts_with("ssh:"), "{}", rel.display());
+        let ctx = ToolCtx::at(ssh);
+        assert_eq!(file_kind(&Path::new("ssh://devcat-abc/srv/app").join("x.sql"), &ctx), Kind::EditOutside);
+        assert!(!local_path(&ctx, "data.csv").starts_with("ssh:"));
     }
 
     #[test]

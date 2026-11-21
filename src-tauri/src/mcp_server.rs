@@ -45,7 +45,8 @@ and Gemini.
 ";
 
 pub fn main(args: &[String]) -> i32 {
-    let mut scope = Scope { mcp: true, ..Scope::default() };
+    // an agent on this computer: SSH sessions the user opened to agents too (not when unattended)
+    let mut scope = Scope { mcp: true, ssh: true, ..Scope::default() };
     let (mut project, mut folder, mut data_dir) = (None::<String>, None::<PathBuf>, None::<PathBuf>);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -489,6 +490,13 @@ fn connections(scope: &Scope) -> String {
         s.push_str("\n\nConnections:\n");
         s.push_str(&v.connections.iter().map(|c| v.line(c, true)).collect::<Vec<_>>().join("\n"));
     }
+    let ssh = agent_tools::ssh_lines(scope);
+    if !ssh.is_empty() {
+        s.push_str("\n\nSSH sessions (servers the user saved in DevCat). To work on one, use `ssh_read`, `ssh_glob`, `ssh_grep`, and where allowed `ssh_run`, `ssh_write`, `ssh_edit`, \
+             with `session`: DevCat logs in as the session does (key, jump host, saved password), so don't run `ssh` yourself or ask for its password. \
+             Paths are on the server.\n");
+        s.push_str(&ssh.join("\n"));
+    }
     s
 }
 
@@ -558,6 +566,10 @@ mod tests {
             db("access-rw", json!({ "mcpAccess": "full" })),
             db("access-off", json!({ "mcpAccess": "off" })),
             db("access-locked", json!({ "mcpAccess": "full", "readOnly": true })),
+            // SSH sessions: off unless the user turned AI access on
+            json!({ "id": "box-off", "name": "box-off", "kind": "ssh", "host": "box.invalid" }),
+            json!({ "id": "box-ro", "name": "box-ro", "kind": "ssh", "host": "box.invalid", "user": "me", "mcpAccess": "read" }),
+            json!({ "id": "box-rw", "name": "box-rw", "kind": "ssh", "host": "box.invalid", "mcpAccess": "full" }),
         ]);
         std::fs::write(data.join("connections.json"), conns.to_string()).unwrap();
         crate::state::init(data.clone());
@@ -581,6 +593,25 @@ mod tests {
         let listed = text(&call("devcat_connections", json!({})).await.unwrap());
         assert!(listed.contains("access-rw (sqlite) id access-rw (agents may change data)") && listed.contains("access-ro (sqlite) id access-ro (agents read only)"), "{listed}");
         assert!(!listed.contains("access-off"), "{listed}");
+        // SSH sessions only where the scope allows them (a ticket's or a phone's run doesn't)
+        assert!(!listed.contains("box-"), "{listed}");
+        let names = |tools: &Value| tools["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str().map(String::from)).collect::<Vec<_>>();
+        assert!(!names(&handle(&server, json!({ "id": 5, "method": "tools/list" })).await.unwrap()).iter().any(|n| n.starts_with("ssh_")));
+
+        let ssh = Server::new(Scope { mcp: true, ssh: true, ..Scope::default() }, None);
+        handle(&ssh, json!({ "id": 0, "method": "initialize", "params": { "clientInfo": { "name": "claude-code" } } })).await.unwrap();
+        let tools = names(&handle(&ssh, json!({ "id": 6, "method": "tools/list" })).await.unwrap());
+        for t in ["ssh_read", "ssh_glob", "ssh_grep", "ssh_run", "ssh_write", "ssh_edit"] {
+            assert!(tools.iter().any(|n| n == t), "{t}: {tools:?}");
+        }
+        let on = |name: &str, args: Value| handle(&ssh, json!({ "id": 7, "method": "tools/call", "params": { "name": name, "arguments": args } }));
+        let listed = text(&on("devcat_connections", json!({})).await.unwrap());
+        assert!(listed.contains("box-ro (ssh me@box.invalid; read and search files only)") && listed.contains("box-rw (ssh box.invalid; read, run commands and change files)"), "{listed}");
+        assert!(!listed.contains("box-off"), "{listed}");
+        let off = on("ssh_read", json!({ "session": "box-off", "path": "x" })).await.unwrap();
+        assert!(text(&off).contains("No SSH session agents may use"), "{off}");
+        let ro = on("ssh_run", json!({ "session": "box-ro", "command": "touch x" })).await.unwrap();
+        assert!(text(&ro).contains("only lets agents read files on box-ro"), "{ro}");
 
         // resources: the connections, and each database's schema
         let res = handle(&server, json!({ "id": 2, "method": "resources/list" })).await.unwrap();

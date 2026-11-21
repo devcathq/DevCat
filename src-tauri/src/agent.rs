@@ -182,6 +182,10 @@ struct Run {
     mcp: Mutex<Vec<Arc<Server>>>,
     /// A ghost chat: the label of the window it's open in (see [`ghost_dir`]).
     ghost: Option<String>,
+    /// A chat in a folder on an SSH host: the host its tools work on (`agent_ssh.rs`).
+    remote: Option<Arc<crate::agent_ssh::Host>>,
+    /// It has the `ssh_*` tools for the user's SSH sessions (`agent_tools/ssh.rs`).
+    ssh_tools: bool,
 }
 
 /// Rules, skills and MCP servers the agent found for the folder.
@@ -208,6 +212,11 @@ pub struct AgentContext {
     /// Hooks the user hasn't allowed for this folder yet (or that changed since): they don't run
     /// until the user allows them on the computer.
     pub hooks_review: Option<HooksReview>,
+    /// The folder is on an SSH host (its name): the agent's files and commands are there.
+    pub host: Option<String>,
+    /// That folder as the host resolved it (`ssh://…/home/me/app` for `ssh://…/~/app`): what the
+    /// paths the agent writes are relative to.
+    pub host_folder: Option<String>,
 }
 
 /// Hooks waiting for the user's OK: what they'd run.
@@ -395,6 +404,22 @@ pub fn exists(session_id: &str) -> bool {
     RUNS.lock().contains_key(session_id) || (valid_id(session_id) && dir().is_ok_and(|d| d.join(format!("{session_id}.jsonl")).exists()))
 }
 
+/// Whether a chat reaches an SSH host: it works in a folder on one (open, or saved: its session's
+/// folder), or it has the `ssh_*` tools. A paired phone doesn't use these: the agent would log in
+/// to the host with the session's saved password (AGENTS.md, "the SSH workbench is desktop-only").
+pub fn on_ssh_host(session_id: &str) -> bool {
+    if let Some(run) = RUNS.lock().get(session_id) {
+        return run.remote.is_some() || run.ssh_tools || crate::agent_ssh::is_remote(&run.cwd);
+    }
+    if !valid_id(session_id) {
+        return false;
+    }
+    let Ok(file) = dir().map(|d| d.join(format!("{session_id}.jsonl"))) else { return false };
+    // the first line is the session's meta, with its folder
+    let first = std::fs::File::open(file).ok().and_then(|f| std::io::BufRead::lines(std::io::BufReader::new(f)).next()).and_then(Result::ok);
+    first.and_then(|l| serde_json::from_str::<Value>(&l).ok()).and_then(|m| m["cwd"].as_str().map(crate::agent_ssh::is_remote)).unwrap_or(false)
+}
+
 /// Tell phones a chat started or stopped working or waiting.
 fn chat_changed(session_id: &str) {
     let run = RUNS.lock().get(session_id).cloned().filter(|r| r.ghost.is_none());
@@ -498,6 +523,9 @@ fn hooks_for(cwd: &str) -> (devcat_harness::hooks::Hooks, Vec<String>, Option<Ho
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn agent_trust_hooks(session_id: String, digest: String) -> AppResult<()> {
     let run = run_of(&session_id)?;
+    if run.remote.is_some() {
+        return Err(AppError::msg("Hooks don't run in a folder on an SSH host."));
+    }
     let found = devcat_harness::hooks::load(std::path::Path::new(&run.cwd), home_dir().as_deref());
     let same = !found.digest.is_empty() && found.digest == digest;
     if same {
@@ -552,19 +580,31 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     let approver = Arc::new(UiApprover { session_id: id.clone(), pending: Mutex::default(), questions: Mutex::default(), live: Mutex::default() });
     let dir = std::path::Path::new(cwd);
     let home = home_dir();
+    // a folder on an SSH host: the agent's files and commands are there (agent_ssh.rs)
+    let remote = if ghost.is_none() && crate::agent_ssh::is_remote(cwd) { Some(Arc::new(crate::agent_ssh::probe(cwd).await?)) } else { None };
     let shell = if cfg!(windows) { "PowerShell" } else { "bash" };
     // a ghost chat starts from nothing: no rule files or skills (the user's or a project's)
     let env = Environment { cwd: dir, os: std::env::consts::OS, shell, date: &today() };
-    let mut system = if ghost.is_some() { devcat_harness::prompt::system_prompt_with_home(&env, None) } else { system_prompt(&env) };
+    let mut system = match &remote {
+        Some(h) => devcat_harness::prompt::system_prompt_remote(
+            &devcat_harness::prompt::RemoteEnvironment { host: &h.label, folder: &h.root, os: &h.os, shell: &h.shell, date: &today(), rules: &h.rules },
+            home.as_deref(),
+        ),
+        None if ghost.is_some() => devcat_harness::prompt::system_prompt_with_home(&env, None),
+        None => system_prompt(&env),
+    };
     // opened from a connection: the chat sees that connection's project, and knows what's in it
     let focus = match focus {
         Some(id) => Some(focused(id)?),
         None => None,
     };
-    let scope = match &focus {
+    let mut scope = match &focus {
         Some(c) => crate::agent_tools::Scope { project: c.project_id.clone(), folder: Some(dir.to_path_buf()), ..Default::default() },
         None => crate::agent_tools::Scope::folder(dir),
     };
+    // the user's SSH sessions they opened to agents (`ssh_*`): in a chat of this computer's window
+    // only, never a phone's or a chat app's (AGENTS.md)
+    scope.ssh = origin == "desktop" && ghost.is_none() && connections;
     if let Some(c) = &focus {
         system.push_str("\n\n");
         system.push_str(&crate::agent_tools::brief(&scope, c).await);
@@ -584,12 +624,29 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
     if let Some(h) = &home {
         context.rules.extend(USER_RULES.iter().filter(|r| h.join(r).exists()).map(|r| format!("~/{r}")));
     }
-    context.rules.extend(PROJECT_RULES.iter().filter(|r| dir.join(r).exists()).map(|r| r.to_string()));
-    context.skills = skills(dir, home.as_deref()).into_iter().map(|s| s.name).collect();
+    match &remote {
+        // read on the host; no skills (their files are on this computer, `read` works on the host)
+        Some(h) => context.rules.extend(h.rules.iter().map(|(name, _)| name.clone())),
+        None => {
+            context.rules.extend(PROJECT_RULES.iter().filter(|r| dir.join(r).exists()).map(|r| r.to_string()));
+            context.skills = skills(dir, home.as_deref()).into_iter().map(|s| s.name).collect();
+        }
+    }
+    // the user's own MCP servers run on this computer, in an SSH folder too (a project's
+    // .mcp.json is on the host: not read)
     let configured = ghost.is_none() && !devcat_harness::mcp::configured(dir, home.as_deref()).0.is_empty();
     context.mcp_loading = configured;
     // the user's DevCat connections (databases, Redis, MongoDB, clusters) and notes
-    let mut tools = Registry::standard();
+    let mut tools = match &remote {
+        Some(h) => {
+            let mut t = Registry::standard().without(crate::agent_ssh::REPLACED);
+            for tool in crate::agent_ssh::tools(h.clone()) {
+                t.add_arc(tool);
+            }
+            t
+        }
+        None => Registry::standard(),
+    };
     if ghost.is_none() {
         for t in crate::memory::tools::for_scope(&scope, "devcat-agent") {
             tools.add_arc(t);
@@ -608,14 +665,24 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         }
     }
     context.connections = if ghost.is_none() && connections { crate::agent_tools::names(&scope) } else { vec![] };
+    let ssh_tools = tools.specs().iter().any(|t| t.name.starts_with("ssh_"));
     context.focus_kind = focus.as_ref().map(|c| crate::agent_tools::kind_name(c.kind).to_string());
     context.focus = focus.map(|c| c.name);
     context.ghost = ghost.is_some();
-    let (hooks, hook_files, review) = if ghost.is_none() { hooks_for(cwd) } else { Default::default() };
+    // hooks are commands on this computer, for a folder that's here: none in an SSH folder
+    let (hooks, hook_files, review) = if ghost.is_none() && remote.is_none() { hooks_for(cwd) } else { Default::default() };
     (context.hooks, context.hooks_review) = (hook_files, review);
+    if let Some(h) = &remote {
+        context.host = Some(h.label.clone());
+        context.host_folder = crate::claude::remote::Target::parse(cwd).filter(|_| h.root.starts_with('/')).map(|t| t.uri(&h.root));
+        if let Some(why) = &h.unreachable {
+            context.notices.push(format!("Can't work on {} yet: {why} The agent tries again with each file or command.", h.label));
+        }
+    }
     let mut agent = Agent::new(Arc::new(Llm::new(cfg.clone())), tools, Policy::Ask, approver.clone(), system);
     agent.hooks = Arc::new(hooks);
-    agent.sandbox = ghost.is_none() && sandbox_saved(&session.id);
+    // the OS sandbox guards this computer: commands on an SSH host don't run in it
+    agent.sandbox = ghost.is_none() && remote.is_none() && sandbox_saved(&session.id);
     let log = Snapshot::of(&agent, &session);
     let inbox = agent.inbox.clone();
     let run = Arc::new(Run {
@@ -637,6 +704,8 @@ async fn build(cwd: &str, provider_id: &str, session: Session, origin: &str, own
         context: Mutex::new(context),
         mcp: Mutex::default(),
         ghost: ghost.map(String::from),
+        remote,
+        ssh_tools,
     });
     // MCP servers start in the background: the chat opens right away and gets their tools when
     // they're ready (between turns, never in the middle of one).
@@ -901,11 +970,17 @@ pub fn attachments_dir(session_id: &str) -> AppResult<PathBuf> {
 }
 
 /// The message as the model gets it: the text, a list of the attached files, and the images.
-async fn with_attachments(text: &str, paths: &[String]) -> (String, Vec<Block>) {
+/// `host`: the chat works on an SSH host, so the files are copied there and listed with their
+/// paths on it (attached images are also shown to the model, as anywhere).
+async fn with_attachments(text: &str, paths: &[String], host: Option<&crate::agent_ssh::Host>) -> (String, Vec<Block>) {
     if paths.is_empty() {
         return (text.to_string(), vec![]);
     }
     use base64::Engine;
+    let staged: HashMap<String, Result<String, String>> = match host {
+        Some(h) => crate::agent_ssh::stage(&h.uri, paths).await.into_iter().collect(),
+        None => HashMap::new(),
+    };
     let mut images = Vec::new();
     let mut lines = Vec::new();
     for p in paths {
@@ -924,7 +999,13 @@ async fn with_attachments(text: &str, paths: &[String]) -> (String, Vec<Block>) 
                 note = ", too large to show: inspect it with a script if needed".into();
             }
         }
-        lines.push(format!("- {p} ({}{note})", human_size(size)));
+        let shown = match (host, staged.get(p)) {
+            (Some(h), Some(Ok(there))) => format!("{there} (on {}, copied from the user's computer", h.label),
+            (Some(h), Some(Err(why))) => format!("{} (on the user's computer only: it couldn't be copied to {}: {why}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), h.label),
+            _ => format!("{p} ("),
+        };
+        let sep = if shown.ends_with('(') { "" } else { ", " };
+        lines.push(format!("- {shown}{sep}{}{note})", human_size(size)));
     }
     let text = if text.trim().is_empty() { "See the attached files." } else { text };
     (format!("{text}\n\nAttached files:\n{}", lines.join("\n")), images)
@@ -988,6 +1069,9 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
     if text.trim().is_empty() && attachments.is_empty() {
         return Err(AppError::msg("Type a message first"));
     }
+    if sandbox == Some(true) && run.remote.is_some() {
+        return Err(AppError::msg("Commands on an SSH host don't run in the sandbox: it guards this computer. Turn it off for this chat."));
+    }
     if sandbox == Some(true)
         && let Err(why) = devcat_harness::sandbox::available()
     {
@@ -995,7 +1079,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
     }
     // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
     let compact = text.trim().strip_prefix("/compact").filter(|rest| attachments.is_empty() && (rest.is_empty() || rest.starts_with(char::is_whitespace))).map(str::to_string);
-    let (message, images) = with_attachments(&text, &attachments).await;
+    let (message, images) = with_attachments(&text, &attachments, run.remote.as_deref()).await;
     // While it works, a message from the chat goes in before its next step, as in Claude Code: no
     // need to stop it first (a job's is refused). Decided under `live`, where a turn also ends, so
     // a message is either read by the turn or starts the next one.
@@ -1033,7 +1117,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
         }
         agent.context_window = context_window.filter(|&w| w > 0);
         agent.max_steps = crate::ai::agent_max_steps(&run.provider_id);
-        if let Some(s) = sandbox {
+        if let Some(s) = sandbox.filter(|_| run.remote.is_none()) {
             agent.sandbox = s;
             if run.ghost.is_none() {
                 let _ = sandbox_save(&run.id, s);

@@ -14,6 +14,7 @@ import { useProviders } from "../claude/providers";
 import { openRun, scheduleText, useJobs, whenNext } from "./schedule";
 import { POLICIES } from "./model";
 import { loadSandbox, useSandbox } from "./store";
+import { isRemote } from "../../lib/remotePath";
 
 export function AgentJobs({ cwd, providerId }: { cwd: string; providerId: string }) {
   const version = useJobs((s) => s.version);
@@ -164,7 +165,7 @@ function JobDialog({ job, onClose, onSave }: { job: AgentJob; onClose: () => voi
           Jobs run while DevCat is open; one that was due while it was closed runs once when it opens. When a run needs your OK,
           it waits in its chat (and on your phone), and you get a toast, or a phone notification if they're on.
         </p>
-        {sandboxHere && <Checkbox label="Run its commands in the sandbox (they can write only in this folder)" checked={!!j.sandbox} onChange={(v) => set({ sandbox: v })} />}
+        {sandboxHere && !isRemote(j.cwd) && <Checkbox label="Run its commands in the sandbox (they can write only in this folder)" checked={!!j.sandbox} onChange={(v) => set({ sandbox: v })} />}
         <Checkbox label="On" checked={j.enabled} onChange={(v) => set({ enabled: v })} />
       </div>
     </Dialog>

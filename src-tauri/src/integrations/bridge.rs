@@ -147,6 +147,10 @@ pub async fn handle(bot_id: &str, t: Arc<dyn Transport>, inbound: Inbound) {
 async fn press(t: &Arc<dyn Transport>, l: &Link, from: &Sender, ack: &Ack, token: &str, action: Action) {
     match action {
         Action::Approve { session, tool_use_id, allow } => {
+            if agent::on_ssh_host(&session) {
+                let _ = t.ack(ack, "(This chat works on an SSH host: answer it in DevCat on the computer.)").await;
+                return;
+            }
             if !l.perms.approve {
                 let _ = t.ack(ack, "(This chat can't answer approvals anymore.)").await;
                 return;
@@ -161,7 +165,7 @@ async fn press(t: &Arc<dyn Transport>, l: &Link, from: &Sender, ack: &Ack, token
             let _ = t.ack(ack, &done).await;
         }
         Action::Answer { session, tool_use_id, answer } => {
-            if !l.perms.approve {
+            if !l.perms.approve || agent::on_ssh_host(&session) {
                 return;
             }
             QUESTIONS.lock().remove(&l.id);
@@ -369,10 +373,13 @@ async fn on_agent(session: &str, event: &Value) {
     let notify = crate::notify::load();
     // a scheduled job's chat notifies through agent_jobs.rs (`notify::job`): not twice
     let away = (!notify.only_when_away || !crate::notify::app_focused()) && m.owner != agent::SCHEDULE;
+    // a chat that reaches an SSH host (its folder, or `ssh_*` tools) is answered on the computer
+    // only: a chat app's button would let someone log in there with the saved password (AGENTS.md)
+    let ssh = agent::on_ssh_host(session);
     match event["type"].as_str() {
         Some("approval") => {
             let req = &event["request"];
-            let approvers: Vec<&Link> = own.iter().chain(in_folder.iter()).filter(|l| l.perms.approve).collect();
+            let approvers: Vec<&Link> = own.iter().chain(in_folder.iter()).filter(|l| l.perms.approve && !ssh).collect();
             for l in &approvers {
                 ask_approval(l, session, &name, req, url.as_deref()).await;
             }
@@ -392,7 +399,7 @@ async fn on_agent(session: &str, event: &Value) {
         }
         Some("question") => {
             let q = &event["question"];
-            let askers: Vec<&Link> = own.iter().chain(in_folder.iter()).filter(|l| l.perms.approve).collect();
+            let askers: Vec<&Link> = own.iter().chain(in_folder.iter()).filter(|l| l.perms.approve && !ssh).collect();
             for l in &askers {
                 ask_question(l, session, &name, q).await;
             }
