@@ -693,10 +693,18 @@ Go on from the step marked [>] and keep the list up to date with `todo_write`.")
 
     /// A turn whose message carries images (`Block::Image`).
     pub async fn turn_with_images(&mut self, session: &mut Session, user_text: &str, images: Vec<Block>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<TurnEnd> {
+        self.turn_with(session, user_text, images, vec![], cancel, on).await
+    }
+
+    /// A turn whose message comes with `extra` for the model only (what one of the user's slash
+    /// commands asks for, see [`crate::commands`]): the log and the chat keep the message as
+    /// typed, the model gets both.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn turn_with(&mut self, session: &mut Session, user_text: &str, images: Vec<Block>, extra: Vec<String>, cancel: &Cancel, on: &mut (dyn FnMut(AgentEvent) + Send)) -> Result<TurnEnd> {
         // hooks on the user's messages (not a helper's prompt): SessionStart on the first turn, then
         // UserPromptSubmit; both may add context, and the second may block the message (it's not
         // recorded then)
-        let mut context = Vec::new();
+        let mut context = extra;
         if self.helper.is_none() {
             if !self.started {
                 let source = if session.events().iter().any(|e| matches!(e, SessionEvent::User { .. })) { "resume" } else { "startup" };

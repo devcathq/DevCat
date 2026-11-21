@@ -14,6 +14,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod commands;
 pub mod hooks;
 pub mod llm;
 pub mod mcp;

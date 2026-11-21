@@ -9,6 +9,7 @@ import {
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
 import type { AgentModel, AgentPolicy, AiProvider } from "../../lib/types";
+import { api } from "../../lib/api";
 import { useTabs } from "../../store/tabs";
 import { Markdown } from "../claude/Markdown";
 import { openManageProviders } from "../claude/providers";
@@ -714,6 +715,9 @@ function ContextMeter({ tabId, models }: { tabId: string; models: AgentModel[] }
   );
 }
 
+type SlashCommand = { name: string; description: string; argumentHint: string; skill: boolean };
+const COMPACT: SlashCommand = { name: "compact", description: "Summarize the conversation now, to free the context window", argumentHint: "[what to keep]", skill: false };
+
 function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: string; visible: boolean; provider: AiProvider }) {
   const chat = useAgent((s) => s.chats[tabId])!;
   const [text, setText] = useState("");
@@ -722,6 +726,24 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
   const [models, setModels] = useState<AgentModel[]>([]);
   useEffect(() => { void connectionModels(provider).then(setModels); }, [provider]);
   const box = useRef<HTMLTextAreaElement>(null);
+  // `/…`: the folder's commands and skills to pick from (a ghost chat has none)
+  const ghost = !!chat.context?.ghost;
+  const [commands, setCommands] = useState<SlashCommand[]>([]);
+  useEffect(() => {
+    if (ghost) return void setCommands([]);
+    let live = true;
+    void api.agentCommands(cwd).then((c) => { if (live) setCommands(c); }, () => {});
+    return () => { live = false; };
+  }, [cwd, ghost]);
+  const [pick, setPick] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const slash = /^\/(\S*)$/.exec(text);
+  const matches = slash && dismissed !== text ? [COMPACT, ...commands].filter((c) => c.name.startsWith(slash[1])).slice(0, 8) : [];
+  const complete = (c: SlashCommand) => {
+    setText(`/${c.name} `);
+    setPick(0);
+    box.current?.focus();
+  };
 
   useEffect(() => { if (visible) box.current?.focus({ preventScroll: true }); }, [visible]);
   // grow with the text, up to about ten lines
@@ -770,6 +792,26 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
   };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
+    // the command list: ↑ / ↓ choose, Tab or Enter take it, Esc closes it
+    if (matches.length) {
+      const at = Math.min(pick, matches.length - 1);
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setPick((at + (e.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDismissed(text);
+        return;
+      }
+      // Enter on a name typed out in full sends it
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && text !== `/${matches[at].name}`)) {
+        e.preventDefault();
+        complete(matches[at]);
+        return;
+      }
+    }
     // ↑ on the first line goes back through what you sent here, ↓ on the last line forward
     if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       const el = e.currentTarget;
@@ -820,17 +862,29 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
             {chat.attachments.map((p) => <AttachmentChip key={p} path={p} onRemove={() => unattach(tabId, p)} />)}
           </div>
         )}
+        {matches.length > 0 && (
+          <div role="listbox" aria-label="Commands" className="flex flex-col gap-0.5 border-b border-line px-1.5 py-1.5">
+            {matches.map((c, n) => (
+              <button key={c.name} role="option" aria-selected={n === Math.min(pick, matches.length - 1)} onMouseDown={(e) => { e.preventDefault(); complete(c); }}
+                className={clsx("flex min-w-0 items-baseline gap-2 rounded-md px-2 py-1 text-left text-[12.5px]", n === Math.min(pick, matches.length - 1) ? "bg-hover text-fg" : "text-muted hover:bg-hover/60")}>
+                <span className="shrink-0 font-mono text-fg">/{c.name}</span>
+                {c.argumentHint && <span className="shrink-0 font-mono text-[11.5px] text-faint">{c.argumentHint}</span>}
+                <span className="min-w-0 truncate">{c.skill ? `Skill · ${c.description}` : c.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
           ref={box}
           rows={2}
           value={text}
-          onChange={(e) => { setText(e.target.value); setRecall(null); }}
+          onChange={(e) => { setText(e.target.value); setRecall(null); setPick(0); }}
           onKeyDown={onKey}
           onPaste={(e) => {
             const files = [...e.clipboardData.files];
             if (files.length) { e.preventDefault(); void attach(tabId, files); }
           }}
-          placeholder={chat.busy ? "Working… send a message and it reads it after its current step" : "Ask DevCat Agent to build, fix or explain something  ·  Ctrl+Enter for a new line  ·  /compact"}
+          placeholder={chat.busy ? "Working… send a message and it reads it after its current step" : "Ask DevCat Agent to build, fix or explain something  ·  Ctrl+Enter for a new line  ·  / for commands"}
           className="block max-h-[240px] min-h-[52px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[13.5px] leading-relaxed text-fg outline-none placeholder:text-faint focus-visible:outline-none"
           // the composer's border shows focus; no second outline around the text box
           style={{ outline: "none", boxShadow: "none" }}

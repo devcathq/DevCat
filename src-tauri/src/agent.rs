@@ -1016,6 +1016,14 @@ pub async fn agent_send(session_id: String, text: String, policy: Policy, model:
     start_turn(&session_id, text, policy, model, attachments.unwrap_or_default(), context_window, sandbox, effort, true).await.map(|_| ())
 }
 
+/// The slash commands a chat in `cwd` has: the user's command templates and skills (see
+/// `devcat_harness::commands`), for the chat box's list.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_commands(cwd: String) -> AppResult<Vec<devcat_harness::commands::Command>> {
+    let home = home_dir();
+    Ok(tokio::task::spawn_blocking(move || devcat_harness::commands::commands(std::path::Path::new(&cwd), home.as_deref())).await.unwrap_or_default())
+}
+
 /// Whether this computer can run the agent's commands in the OS sandbox (and why not).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1056,6 +1064,12 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
     // `/compact [what to keep]`: summarize the conversation now instead of sending a message.
     let compact = text.trim().strip_prefix("/compact").filter(|rest| attachments.is_empty() && (rest.is_empty() || rest.starts_with(char::is_whitespace))).map(str::to_string);
     let (message, images) = with_attachments(&text, &attachments).await;
+    // `/name args`: one of the user's commands (or skills) from the chat's folder; the model gets
+    // what it says with the message (a ghost chat has none: it starts from nothing)
+    let command = match (&compact, &run.ghost) {
+        (None, None) => devcat_harness::commands::expand(&text, std::path::Path::new(&run.cwd), home_dir().as_deref()).map(|(_, ask)| ask),
+        _ => None,
+    };
     // While it works, a message from the chat goes in before its next step, as in Claude Code: no
     // need to stop it first (a job's is refused). Decided under `live`, where a turn also ends, so
     // a message is either read by the turn or starts the next one.
@@ -1068,7 +1082,8 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
             if compact.is_some() {
                 return Err(AppError::msg("The agent is working: send /compact when it's done."));
             }
-            run.inbox.push(message, images);
+            // (a queued message has no separate context: what the command asks for goes with it)
+            run.inbox.push(command.map(|ask| format!("{message}\n\n{ask}")).unwrap_or(message), images);
             run.approver.send_with(&mut live, json!({ "type": "queued", "text": text, "attachments": attachments }));
             drop(live);
             chat_changed(&run.id);
@@ -1106,7 +1121,7 @@ async fn start_turn(session_id: &str, text: String, policy: Policy, model: Optio
         let mut on = |e: AgentEvent| ap.send(serde_json::to_value(&e).unwrap_or(Value::Null));
         let mut res = match compact {
             Some(focus) => agent.compact(session, Some(&focus), &cancel, &mut on).await.map(|_| devcat_harness::TurnEnd::Answered),
-            None => agent.turn_with_images(session, &message, images, &cancel, &mut on).await,
+            None => agent.turn_with(session, &message, images, command.into_iter().collect(), &cancel, &mut on).await,
         };
         let (end, error) = loop {
             let (end, error) = match &res {

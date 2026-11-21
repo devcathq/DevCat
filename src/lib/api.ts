@@ -215,6 +215,8 @@ export const api = {
   agentSend: (sessionId: string, text: string, policy: AgentPolicy, model: string | null, attachments: string[], contextWindow: number | null, sandbox: boolean | null = null, effort: string | null = null) =>
     invoke<void>("agent_send", { sessionId, text, policy, model, attachments, contextWindow, sandbox, effort }),
   /** Whether this computer can run the agent's commands in the OS sandbox (macOS, Linux). */
+  /** The slash commands of a chat in `cwd`: the user's command templates and skills. */
+  agentCommands: (cwd: string) => invoke<{ name: string; description: string; argumentHint: string; path: string; skill: boolean }[]>("agent_commands", { cwd }),
   agentSandbox: () => invoke<{ available: boolean; reason: string | null }>("agent_sandbox"),
   agentAnswer: (sessionId: string, toolUseId: string, answer: string) => invoke<void>("agent_answer", { sessionId, toolUseId, answer }),
   /** Save a dropped / pasted file (base64) for the chat; returns its path. */

@@ -166,7 +166,7 @@ fn skills_section(cwd: &Path, home: Option<&Path>) -> Option<String> {
 }
 
 /// `key: value` pairs of a `---` front matter block (single-line values, quotes removed).
-fn front_matter(text: &str) -> Vec<(String, String)> {
+pub(crate) fn front_matter(text: &str) -> Vec<(String, String)> {
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some("---") {
         return vec![];
@@ -178,7 +178,7 @@ fn front_matter(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn strip_front_matter(text: &str) -> &str {
+pub(crate) fn strip_front_matter(text: &str) -> &str {
     let t = text.trim_start();
     if let Some(rest) = t.strip_prefix("---")
         && let Some(end) = rest.find("\n---")
@@ -204,7 +204,7 @@ fn rel(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
 }
 
-fn cut(s: &str, max: usize) -> &str {
+pub(crate) fn cut(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }

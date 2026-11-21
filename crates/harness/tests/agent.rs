@@ -1720,3 +1720,19 @@ async fn a_tail_too_big_for_the_window_is_summarized_too() {
     assert_eq!(model.left(), 0);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn a_slash_command_goes_to_the_model_and_the_log_keeps_what_was_typed() {
+    let (dir, mut session) = project().await;
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join(".claude/commands")).unwrap();
+    std::fs::write(proj.join(".claude/commands/bump.md"), "Bump the version in $1 by one.").unwrap();
+    let (_, ask) = devcat_harness::commands::expand("/bump notes.txt", &proj, None).unwrap();
+    let model = Script::new(vec![say(vec![text("Bumped.")])]);
+    let mut agent = agent_with(model.clone());
+    agent.turn_with(&mut session, "/bump notes.txt", vec![], vec![ask], &Cancel::default(), &mut |_| {}).await.unwrap();
+    let sent = model.requests.lock().unwrap()[0][0].text();
+    assert!(sent.starts_with("/bump notes.txt") && sent.contains("Bump the version in notes.txt by one."), "{sent}");
+    assert_eq!(session.title(), "/bump notes.txt");
+    let _ = std::fs::remove_dir_all(dir);
+}
