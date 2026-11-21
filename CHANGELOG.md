@@ -12,6 +12,16 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **DevCat Agent: a sharper harness**: edits that differ from the file only in trailing spaces or curly quotes and
+  dashes now go through (the rest of the file keeps its bytes), and one `edit` can make several changes, all or none.
+  A long `read` ends on a whole line and says where to go on. Reads, searches and read-only git calls in one step run
+  at the same time. A summary of the conversation keeps the newest steps word for word, lists the files read and
+  changed, and the next summary updates it instead of starting again. **Edit** under one of your messages opens a copy
+  of the chat from just before it, with the message back in the box (the original chat stays). A **Thinking** picker
+  sets how hard the model reasons (adaptive thinking and effort on Claude, `reasoning_effort` on OpenAI); Auto
+  sends nothing, as before. Type `/` for your commands from `.claude/commands` and your skills. With very many MCP
+  tools, the agent looks up the ones it needs (`tool_search`) instead of sending them all with every request.
+
 ## 0.33.2 - 2026-11-20
 
 - **DevCat Agent: long turns hold up** (#223): a helper that reaches its 60 steps now answers with what it found instead

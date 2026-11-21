@@ -190,6 +190,11 @@ hundreds of steps, where anything that can go wrong once will. Keep these rules:
   with its images) stay whole after it (`Compacted::kept`). It isn't done again until the conversation grew
   (`WORTH_COMPACTING`): with a small window that would be every step. A summary that fails doesn't end the turn,
   and a conversation too long to summarize is cut down for the request (`shrink`), never the log.
+- **A summary's `tail` replays events as they were** (`Compacted::tail`, `Session::tail_within`): it starts at one of
+  the model's steps after the first since the last summary, so every call keeps its result; it takes in the
+  unanswered messages (`kept` is 0 then); and a conversation that still doesn't fit is summarized again without it.
+  Anything that copies or cuts a log (`Session::fork`) keeps every event before a `Compacted`, titles too: `tail`
+  counts them.
 - **The context is weighed without trusting the provider**: no token count means characters (`Session::weight`),
   a window guessed too large shows as the provider's "too long" (`llm::is_overflow`), and that is cured by a
   summary, not shown as an error.
@@ -205,6 +210,23 @@ hundreds of steps, where anything that can go wrong once will. Keep these rules:
 - **A tool can't take the turn down**: a panic in one fails its call (`catch_unwind` in `Agent::call`), a panic
   anywhere else ends the turn with an error and leaves the chat usable (`agent.rs` `crashed`), and a command that
   times out or is stopped is killed with what it started (`hooks::Tree`).
+
+## DevCat Agent: tools, commands and settings
+
+- **Calls run side by side only when that can't change the outcome** (`Tool::concurrent`): read, glob, grep and
+  read-only git; approvals and PreToolUse hooks still go one at a time (`Agent::prepare`), results stay in call order,
+  and with PostToolUse hooks nothing runs side by side (a hook that stops the agent must find the later calls not run).
+  A new tool opts in only if that holds for every input it says yes to.
+- **What the model is sent about tools comes from the log** (`agent::active_tools`, `Registry::declared`): with many
+  MCP tools only the ones found with `tool_search` or used go along, in the registry's order. Don't keep that state in
+  the agent: a chat opened again must declare the same tools.
+- **Slash commands are text, never programs** (`commands.rs`): a template from a repository doesn't run its
+  `` !`command` `` lines; what it asks for goes to the model as the message's context, and the log keeps what the user
+  typed. Ghost chats have none.
+- **Editing a message forks the chat** (`agent_fork`, `Session::fork`): the original stays as it was. Not for ghost
+  chats (a copy would outlive them), not while the agent works, and not from the phone dispatcher.
+- **Effort is only sent when the user chose it** (`LlmConfig::effort`): Auto sends nothing, because servers that don't
+  reason may refuse the field. `None` in `agent_send` keeps the chat's choice (phone, jobs, chat apps).
 
 ## Agent bots and notification channels (`integrations/`)
 
