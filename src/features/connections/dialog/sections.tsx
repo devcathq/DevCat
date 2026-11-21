@@ -736,10 +736,16 @@ const AI_ACCESS: { value: McpAccess; label: string }[] = [
 function AiAccessRow({ cfg, set }: Pick<SectionProps, "cfg" | "set">) {
   const project = useConnections((s) => s.projects.find((p) => p.id === cfg.projectId));
   // saved before the setting: the project's "Allow writes from MCP" decides
-  const own = cfg.mcpAccess ?? (project?.mcpWrites ? "full" : "read");
+  // an SSH session logs in as the user: off until they turn it on (agent_tools/ssh.rs)
+  const ssh = cfg.kind === "ssh";
+  const own = cfg.mcpAccess ?? (ssh ? "off" : project?.mcpWrites ? "full" : "read");
   const value: McpAccess = cfg.readOnly && own === "full" ? "read" : own;
   const options = cfg.readOnly ? AI_ACCESS.filter((o) => o.value !== "full") : AI_ACCESS;
-  const hint = value === "off" ? "Hidden from every agent: they don't see this connection at all."
+  const hint = ssh
+    ? value === "off" ? "Agents can't use this session (the default)."
+      : value === "read" ? "Agents on this computer (DevCat Agent; Claude Code, Codex… over MCP) may read and search files on this server, logging in as this session does. Never from a phone or a chat app."
+      : "Agents may also run commands and change files on this server, logging in with this session's key or saved password. DevCat Agent asks you first; over MCP the agent's own permission settings decide."
+    : value === "off" ? "Hidden from every agent: they don't see this connection at all."
     : value === "read" ? "Agents read schemas and run queries that only read; anything that may change data is refused."
     : "Agents over MCP may also change data (INSERT, UPDATE, DELETE, DDL, Redis writes).";
   return (
@@ -767,7 +773,7 @@ export function AdvancedSection({ cfg, set, setOpt }: SectionProps) {
           <Checkbox label="Read-only connection" checked={cfg.readOnly} onChange={(v) => set({ readOnly: v, ...(v && cfg.mcpAccess === "full" ? { mcpAccess: "read" as const } : {}) })} />
         </Row>
       )}
-      {cfg.kind !== "ssh" && <AiAccessRow cfg={cfg} set={set} />}
+      <AiAccessRow cfg={cfg} set={set} />
       <NetworkRow cfg={cfg} set={set} setOpt={setOpt} />
       {isDb && (
         <Row label="Driver options" hint="Extra key/value options passed to the driver.">

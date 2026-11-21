@@ -629,6 +629,10 @@ export interface AgentContext {
   hooks?: string[];
   /** Hooks found but not allowed for this folder yet: they don't run until the user allows them. */
   hooksReview?: { files: string[]; commands: string[]; skipped: string[]; digest: string } | null;
+  /** The folder is on an SSH host (its name): the agent's files and commands are there. */
+  host?: string | null;
+  /** That folder as the host resolved it (`ssh://…/home/me/app` for `ssh://…/~/app`). */
+  hostFolder?: string | null;
 }
 /** `live`: while a turn runs, its events so far (after `events`); `seq`: the number of the last one
  *  (later `agent-event`s carry higher ones). */

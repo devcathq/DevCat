@@ -88,9 +88,28 @@ pub fn system_prompt_with_home(env: &Environment<'_>, home: Option<&Path>) -> St
 
 /// The rule files found, as one section (project rules after the user's own).
 pub fn rules(cwd: &Path, home: Option<&Path>) -> Option<String> {
+    let mut project = Vec::new();
+    for name in PROJECT_RULES {
+        let p = cwd.join(name);
+        if p.is_dir() {
+            for f in sorted_files(&p, &["md", "mdc"]) {
+                if let Ok(t) = std::fs::read_to_string(&f) {
+                    project.push((rel(cwd, &f), strip_front_matter(&t).to_string()));
+                }
+            }
+        } else if let Ok(t) = std::fs::read_to_string(&p) {
+            project.push((name.to_string(), t));
+        }
+    }
+    rules_section(home, &project)
+}
+
+/// The user's rule files in `home`, then the project's (`(label, text)`, in [`PROJECT_RULES`]
+/// order), as one section.
+fn rules_section(home: Option<&Path>, project: &[(String, String)]) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut total = 0usize;
-    let mut add = |label: String, text: String| {
+    let mut add = |label: String, text: &str| {
         let text = text.trim();
         if text.is_empty() || total >= MAX_RULES {
             return;
@@ -102,23 +121,58 @@ pub fn rules(cwd: &Path, home: Option<&Path>) -> Option<String> {
     if let Some(home) = home {
         for name in USER_RULES {
             if let Ok(t) = std::fs::read_to_string(home.join(name)) {
-                add(format!("~/{name} (your rules for every project)"), t);
+                add(format!("~/{name} (your rules for every project)"), &t);
             }
         }
     }
-    for name in PROJECT_RULES {
-        let p = cwd.join(name);
-        if p.is_dir() {
-            for f in sorted_files(&p, &["md", "mdc"]) {
-                if let Ok(t) = std::fs::read_to_string(&f) {
-                    add(rel(cwd, &f), strip_front_matter(&t).to_string());
-                }
-            }
-        } else if let Ok(t) = std::fs::read_to_string(&p) {
-            add(name.to_string(), t);
-        }
+    for (label, text) in project {
+        add(label.clone(), text);
     }
     (!parts.is_empty()).then(|| format!("# Rules\nInstructions the user and the project wrote for coding agents. Follow them.\n\n{}", parts.join("\n\n")))
+}
+
+/// Where the agent works when the project is on another machine, an SSH host: its file tools,
+/// `shell` and `git` act there (the caller gives it tools that do).
+pub struct RemoteEnvironment<'a> {
+    /// The host, as the user knows it (a saved session's name, or `user@host`).
+    pub host: &'a str,
+    /// The project folder, as a path on the host.
+    pub folder: &'a str,
+    pub os: &'a str,
+    pub shell: &'a str,
+    pub date: &'a str,
+    /// The project's rule files, read on the host: `(label, text)` in [`PROJECT_RULES`] order (a
+    /// folder's files by name, front matter removed: see [`rule_text`]).
+    pub rules: &'a [(String, String)],
+}
+
+/// The system prompt for a project on an SSH host. The user's own rules come from `home` on this
+/// computer; skills don't: `read` can't reach their files here.
+pub fn system_prompt_remote(env: &RemoteEnvironment<'_>, home: Option<&Path>) -> String {
+    let h = env.host;
+    let mut sections = vec![IDENTITY.to_string(), WORKING.to_string()];
+    sections.push(format!(
+        "# Environment\n\
+- The project is on another machine, {h}, reached over SSH. `read`, `write`, `edit`, `glob`, `grep`, `shell` and `git` all act on {h}, not on the user's computer.\n\
+- Project folder on {h} (the working directory): {}\n\
+- Operating system on {h}: {}\n\
+- Shell used by the `shell` tool on {h}: {}\n\
+- Paths are paths on {h}: relative to the project folder, absolute, or `~/…` for the home folder there.\n\
+- `web_fetch` and DevCat's connection tools (databases, clusters) run on the user's computer, not on {h}.\n\
+- Files the user attaches are copied to {h}; their paths there are in the message.\n\
+- Today's date: {}",
+        env.folder, env.os, env.shell, env.date
+    ));
+    if let Some(r) = rules_section(home, env.rules) {
+        sections.push(r);
+    }
+    sections.join("\n\n")
+}
+
+/// A rule file's text as the prompt takes it: a file from a rules folder (`.cursor/rules/x.mdc`)
+/// without its front matter.
+pub fn rule_text(label: &str, text: &str) -> String {
+    if PROJECT_RULES.contains(&label) { text.to_string() } else { strip_front_matter(text).to_string() }
 }
 
 /// A skill: instructions for one kind of task, loaded when it's needed.
@@ -243,6 +297,21 @@ mod tests {
         assert!(pos.windows(2).all(|w| w[0] < w[1]), "rules out of order");
         assert!(!p.contains("globs:"));
         let _ = (std::fs::remove_dir_all(proj), std::fs::remove_dir_all(home));
+    }
+
+    #[test]
+    fn a_remote_project_says_where_it_is_and_takes_the_rules_read_there() {
+        let home = tmp();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/CLAUDE.md"), "Answer in English.").unwrap();
+        let rules = vec![("AGENTS.md".to_string(), "Use tabs.".to_string()), (".cursor/rules/a.mdc".to_string(), rule_text(".cursor/rules/a.mdc", "---\nglobs: x\n---\nNo default exports."))];
+        let env = RemoteEnvironment { host: "edge", folder: "/srv/app", os: "Linux", shell: "bash", date: "2026-11-21", rules: &rules };
+        let p = system_prompt_remote(&env, Some(&home));
+        assert!(p.contains("Project folder on edge (the working directory): /srv/app") && p.contains("Operating system on edge: Linux"));
+        let pos: Vec<usize> = ["Answer in English.", "## AGENTS.md\nUse tabs.", "## .cursor/rules/a.mdc\nNo default exports."].iter().map(|s| p.find(s).unwrap_or_else(|| panic!("missing {s}"))).collect();
+        assert!(pos.windows(2).all(|w| w[0] < w[1]));
+        assert!(!p.contains("globs:") && !p.contains("# Skills"));
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

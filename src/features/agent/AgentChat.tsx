@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, Ghost, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, Webhook, X,
+  ArrowUp, Ban, Ghost, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Server, Square, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
@@ -18,6 +18,7 @@ import { GHOST_SUGGESTIONS, HARNESS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLa
 import { fmtCost } from "../claude/util";
 import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
 import { useClaude } from "../claude/store";
+import { isRemote } from "../../lib/remotePath";
 import { historyFor, remember } from "./history";
 
 export default function AgentChat({ tabId, cwd, connId = null, ghost = false, provider, visible, onReview }: { tabId: string; cwd: string; connId?: string | null; ghost?: boolean; provider: AiProvider; visible: boolean; onReview: () => void }) {
@@ -267,6 +268,7 @@ function ContextLine({ tabId }: { tabId: string }) {
   const ctx = useAgent((s) => s.chats[tabId]?.context);
   if (!ctx) return null;
   const parts: ReactNode[] = [];
+  if (ctx.host) parts.push(<span key="host" title={`Files, commands and git run on ${ctx.host} over SSH`} className="flex items-center gap-1"><Server className="size-3" />{ctx.host} over SSH</span>);
   if (ctx.rules.length) parts.push(<span key="r" title={ctx.rules.join("\n")} className="flex items-center gap-1"><BookOpen className="size-3" />{ctx.rules.length === 1 ? ctx.rules[0] : `${ctx.rules.length} rule files`}</span>);
   if (ctx.skills.length) parts.push(<span key="s" title={ctx.skills.join("\n")}>{ctx.skills.length} skill{ctx.skills.length === 1 ? "" : "s"}</span>);
   for (const m of ctx.mcp) parts.push(<span key={`m${m.name}`} className="flex items-center gap-1"><Plug className="size-3" />{m.name} ({m.tools} tool{m.tools === 1 ? "" : "s"})</span>);
@@ -606,7 +608,9 @@ function TurnEnd({ item }: { item: Extract<Item, { kind: "end" }> }) {
 /** Files the agent changed that are still changed in the project: the ones Review shows. */
 function EditedFiles({ items, tabId, cwd, onReview }: { items: Item[]; tabId: string; cwd: string; onReview: () => void }) {
   const git = useClaude((s) => s.tabs[tabId]?.git ?? null);
-  const files = useMemo(() => stillChanged(editedFiles(items), git, cwd), [items, git, cwd]);
+  // on an SSH host: the folder as the host resolved it (`~` becomes /home/me)
+  const base = useAgent((s) => s.chats[tabId]?.context?.hostFolder) ?? cwd;
+  const files = useMemo(() => stillChanged(editedFiles(items), git, base), [items, git, base]);
   if (!files.length) return null;
   const plus = files.reduce((n, [, f]) => n + f.plus, 0);
   const minus = files.reduce((n, [, f]) => n + f.minus, 0);
@@ -819,7 +823,7 @@ function Composer({ tabId, cwd, visible, provider }: { tabId: string; cwd: strin
               {POLICIES.map((p) => <option key={p.id} value={p.id}>{p.label}: {p.hint}</option>)}
             </select>
           </label>
-          <SandboxChip tabId={tabId} />
+          {!isRemote(cwd) && <SandboxChip tabId={tabId} />}
           <label className="relative flex h-7 max-w-[240px] cursor-pointer items-center gap-1.5 rounded-full bg-hover/70 px-2.5 text-[12px] text-muted hover:text-fg"
             title={models.length ? `Model for the next messages (${chat.providerName})` : `${chat.providerName}: ${chat.model}`}>
             <Cpu className="size-3.5 shrink-0" /><span className="truncate">{chat.model}</span>

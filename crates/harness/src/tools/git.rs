@@ -59,7 +59,7 @@ impl Tool for Git {
         } else {
             a
         };
-        let args: Vec<String> = ["--no-pager", "-c", "color.ui=false", "-c", "core.quotePath=false"].iter().map(|s| s.to_string()).chain(a).collect();
+        let args: Vec<String> = BASE.iter().map(|s| s.to_string()).chain(a).collect();
         // the sandbox's guard lives until git has started
         let (mut cmd, _guard) = match crate::sandbox::command("git", &args, &ctx.cwd, ctx.sandbox, false) {
             Ok(c) => c,
@@ -72,7 +72,7 @@ impl Tool for Git {
         }
         // no prompt can wait for an answer that never comes: credentials, editors (commit without -m,
         // rebase -i), and no optional locks, so reading doesn't get in the way of the user's own git
-        cmd.env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "devcat-agent-no-editor").env("GIT_SEQUENCE_EDITOR", "devcat-agent-no-editor").env("GIT_OPTIONAL_LOCKS", "0");
+        cmd.envs(ENV.iter().copied());
         match run_process(cmd, ctx, TIMEOUT, "git").await {
             Ok((text, code)) => exit_output(text, code),
             Err(e) => e,
@@ -80,8 +80,19 @@ impl Tool for Git {
     }
 }
 
+/// Before every call's own arguments: no pager, no colours, paths as they are.
+pub const BASE: &[&str] = &["--no-pager", "-c", "color.ui=false", "-c", "core.quotePath=false"];
+
+/// For every call: no prompt can wait for an answer that never comes (credentials, editors: commit
+/// without -m, rebase -i), and no optional locks, so reading doesn't get in the way of the user's
+/// own git. A reading call adds `GIT_NO_LAZY_FETCH=1` (see [`Git`]).
+pub const ENV: &[(&str, &str)] = &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_EDITOR", "devcat-agent-no-editor"), ("GIT_SEQUENCE_EDITOR", "devcat-agent-no-editor"), ("GIT_OPTIONAL_LOCKS", "0")];
+
+/// The `git config --get-regexp` pattern for what a reading call must know about (see [`risky_config`]).
+pub const RISKY_CONFIG: &str = r"^(filter\..*\.(clean|smudge|process)|remote\..*\.promisor|extensions\.partialclone)$";
+
 /// `args` as strings, starting with the subcommand.
-fn args(input: &Value) -> Result<Vec<String>, ToolOutput> {
+pub fn args(input: &Value) -> Result<Vec<String>, ToolOutput> {
     let list = input.get("args").and_then(Value::as_array).ok_or_else(|| ToolOutput::err("Missing required parameter `args`: a list such as [\"status\", \"--short\"]."))?;
     let a: Vec<String> = list.iter().map(|v| v.as_str().map(String::from)).collect::<Option<_>>().ok_or_else(|| ToolOutput::err("`args` must be a list of strings."))?;
     match a.first() {
@@ -95,7 +106,7 @@ fn args(input: &Value) -> Result<Vec<String>, ToolOutput> {
 /// below. Git accepts option abbreviations (`--verb` for `--verbose`) and short options bunched
 /// together (`-iO<cmd>`), so options aren't matched by their start: each must be one of these,
 /// spelled out, and short ones are taken one letter at a time. Anything else asks.
-fn read_only(a: &[String]) -> bool {
+pub fn read_only(a: &[String]) -> bool {
     let (sub, rest) = (a[0].as_str(), &a[1..]);
     let opts = |lists: &[&[&str]]| options(rest, lists);
     let list_mode = |pos: &[String]| rest.iter().any(|s| s == "-l" || s == "--list") || pos.is_empty();
@@ -310,13 +321,27 @@ const LFS: &[&str] = &["git-lfs clean -- %f", "git-lfs smudge -- %f", "git-lfs f
 /// config. The config is only text an in-project edit can change, so it can't decide what runs
 /// without asking. Fails rather than run when it can't make sure.
 async fn harmless(a: &[String], ctx: &ToolCtx) -> Result<Vec<String>, ToolOutput> {
+    let config = risky_config(ctx).await?;
+    let lazy_off = if config.iter().any(|(k, v)| partial(k, v)) { lazy_fetch_can_be_off().await } else { true };
+    harmless_with(a, &config, lazy_off)
+}
+
+/// A key of [`RISKY_CONFIG`] that makes the repository a partial clone.
+fn partial(key: &str, value: &str) -> bool {
+    key == "extensions.partialclone" || (key.starts_with("remote.") && key.ends_with(".promisor") && truthy(value))
+}
+
+/// [`harmless`] for a repository whose [`RISKY_CONFIG`] entries are `config`, and a git that can
+/// (`lazy_off`, 2.45+) or can't turn lazy fetching off. Shared with git run elsewhere (on an SSH
+/// host), which reads its config and version there.
+pub fn harmless_with(a: &[String], config: &[(String, String)], lazy_off: bool) -> Result<Vec<String>, ToolOutput> {
     let mut set = vec!["core.fsmonitor=false".to_string(), "log.showSignature=false".into(), "diff.submodule=short".into(), "status.submoduleSummary=false".into()];
     set.extend(["gpg.program", "gpg.ssh.program", "gpg.x509.program"].map(|k| format!("{k}={NO_GPG}")));
-    for (key, value) in risky_config(ctx).await? {
+    for (key, value) in config {
         // a partial clone fetches missing objects from its promisor remote (over ssh, with the
         // config's core.sshCommand); GIT_NO_LAZY_FETCH stops that, from git 2.45 on
-        if key == "extensions.partialclone" || (key.starts_with("remote.") && key.ends_with(".promisor") && truthy(&value)) {
-            if !lazy_fetch_can_be_off().await {
+        if partial(key, value) {
+            if !lazy_off {
                 return Err(ToolOutput::err(format!("This repository is a partial clone (`{key}`): reading a missing object would fetch it from the remote, and this git (older than 2.45) can't be told not to. Run it with `shell` instead, which asks the user.")));
             }
             continue;
@@ -368,7 +393,7 @@ async fn lazy_fetch_can_be_off() -> bool {
 }
 
 /// "git version 2.49.0.windows.1" -> (2, 49).
-fn git_version(s: &str) -> Option<(u32, u32)> {
+pub fn git_version(s: &str) -> Option<(u32, u32)> {
     let mut n = s.trim().strip_prefix("git version ")?.split('.');
     Some((n.next()?.parse().ok()?, n.next()?.parse().ok()?))
 }
@@ -377,7 +402,7 @@ fn git_version(s: &str) -> Option<(u32, u32)> {
 /// filter commands, and whether it's a partial clone (`remote.*.promisor`, `extensions.partialClone`).
 async fn risky_config(ctx: &ToolCtx) -> Result<Vec<(String, String)>, ToolOutput> {
     let mut cmd = tokio::process::Command::new("git");
-    cmd.args(["config", "-z", "--get-regexp", r"^(filter\..*\.(clean|smudge|process)|remote\..*\.promisor|extensions\.partialclone)$"]).current_dir(&ctx.cwd).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null()).kill_on_drop(true);
+    cmd.args(["config", "-z", "--get-regexp", RISKY_CONFIG]).current_dir(&ctx.cwd).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null()).kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let out = match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
@@ -387,8 +412,12 @@ async fn risky_config(ctx: &ToolCtx) -> Result<Vec<(String, String)>, ToolOutput
         Ok(Err(e)) => return Err(ToolOutput::err(format!("Couldn't run git: {e}"))),
         Err(_) => return Err(ToolOutput::err("Reading the repository's config took too long.")),
     };
-    // `-z`: "key\nvalue" entries, each ended by NUL
-    Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter_map(|e| e.split_once('\n')).map(|(k, v)| (k.to_string(), v.to_string())).collect())
+    Ok(config_entries(&out.stdout))
+}
+
+/// `git config -z` output: "key\nvalue" entries, each ended by NUL.
+pub fn config_entries(out: &[u8]) -> Vec<(String, String)> {
+    String::from_utf8_lossy(out).split('\0').filter_map(|e| e.split_once('\n')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
 #[cfg(test)]

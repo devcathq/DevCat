@@ -5,6 +5,7 @@ mod agent;
 mod agent_bridge;
 mod agent_jobs;
 mod agent_notes;
+mod agent_ssh;
 mod agent_tools;
 mod ai;
 mod bookmarks;
