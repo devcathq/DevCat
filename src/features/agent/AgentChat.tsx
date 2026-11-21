@@ -4,7 +4,7 @@
 // carries the permission mode, model and token use.
 import clsx from "clsx";
 import {
-  ArrowUp, Ban, Ghost, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, Webhook, X,
+  ArrowUp, Ban, Ghost, BookOpen, ClipboardList, Layers, Database, ListTodo, Circle, CircleCheck, CircleDot, FoldVertical, Bot, Brain, Check, ChevronDown, ChevronRight, Cpu, FilePen, File as FileIcon, MessageCircleQuestion, Paperclip, Pencil, Plug, TriangleAlert, Upload, GitCompare, Container, Shield, ShieldAlert, ShieldCheck, ShieldOff, Square, Webhook, X,
 } from "lucide-react";
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, Empty, Spinner } from "../../components/ui";
@@ -16,7 +16,7 @@ import { DRAG_PATHS } from "../files/format";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
 import { GHOST_SUGGESTIONS, HARNESS, POLICIES, SUBAGENT, SUGGESTIONS, allowAllLabel, focusSuggestions, approvalTitle, basename, chatCost, contextWindow, describe, diffRows, editChanges, editedFiles, fmtDuration, fmtTokens, helperProgress, hookLabel, retryLabel, stillChanged, str, summarize, toBlocks, todoList, type Item, type ToolItem, type ToolStatus } from "./model";
 import { fmtCost } from "../claude/util";
-import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
+import { answer, answerQuestion, attach, clearDraft, closeChat, connectionModels, dismissError, editMessage, loadSandbox, openChat, send, setModel, setPolicy, setSandbox, stop, trustHooks, unattach, useAgent, useSandbox } from "./store";
 import { useClaude } from "../claude/store";
 import { historyFor, remember } from "./history";
 
@@ -182,16 +182,32 @@ function Working({ items }: { items: Item[] }) {
   return <div className="flex items-center gap-2 text-[12px] text-muted"><Spinner className="size-3.5" />Working…</div>;
 }
 
+/** A message the user sent. "Edit" goes back to it: a new chat with the conversation before it
+ *  and the message in the chat box to change (this chat stays as it is, in Sessions). */
+function UserMessage({ item, tabId }: { item: Extract<Item, { kind: "user" }>; tabId: string }) {
+  const canEdit = useAgent((s) => {
+    const c = s.chats[tabId];
+    return !!c?.sessionId && !c.busy && !c.context?.ghost && !item.queued;
+  });
+  return (
+    <div className="group flex flex-col items-end gap-1.5">
+      {item.attachments.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">{item.attachments.map((p) => <AttachmentChip key={p} path={p} />)}</div>}
+      {item.text && <div className={clsx("max-w-[85%] rounded-2xl rounded-br-md bg-raised px-3.5 py-2 text-[13px] whitespace-pre-wrap text-fg", item.queued && "opacity-60")}>{item.text}</div>}
+      {item.queued && <span className="text-[11px] text-faint">Sent while it works: it reads this after its current step</span>}
+      {canEdit && (
+        <button onClick={() => void editMessage(tabId, item.key)} title="Go back to this message and write it again, in a new chat (this one stays as it is)"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-faint opacity-0 transition-opacity group-hover:opacity-100 hover:text-fg focus-visible:opacity-100">
+          <Pencil className="size-3" />Edit
+        </button>
+      )}
+    </div>
+  );
+}
+
 const ItemView = memo(function ItemView({ item, tabId, cwd, working }: { item: Item; tabId: string; cwd: string; working: boolean }) {
   switch (item.kind) {
     case "user":
-      return (
-        <div className="flex flex-col items-end gap-1.5">
-          {item.attachments.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">{item.attachments.map((p) => <AttachmentChip key={p} path={p} />)}</div>}
-          {item.text && <div className={clsx("max-w-[85%] rounded-2xl rounded-br-md bg-raised px-3.5 py-2 text-[13px] whitespace-pre-wrap text-fg", item.queued && "opacity-60")}>{item.text}</div>}
-          {item.queued && <span className="text-[11px] text-faint">Sent while it works: it reads this after its current step</span>}
-        </div>
-      );
+      return <UserMessage item={item} tabId={tabId} />;
     case "answer":
       return <Answer item={item} cwd={cwd} />;
     case "tool":

@@ -848,6 +848,58 @@ pub async fn agent_rename(session_id: String, title: String) -> AppResult<()> {
     Ok(())
 }
 
+/// Go back to one of the user's messages (`text`, the `nth` with that text, from 0) to say
+/// something else: a new chat with the conversation before it, which this returns the id of. The
+/// chat it came from stays as it was. Not for a ghost chat (it keeps nothing, and a copy would
+/// be kept), nor while the agent works (stop it first: the log is still being written).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn agent_fork(session_id: String, text: String, nth: usize) -> AppResult<String> {
+    if !valid_id(&session_id) {
+        return Err(AppError::msg("Not a DevCat Agent chat"));
+    }
+    if is_ghost(&session_id) {
+        return Err(AppError::msg("A ghost chat keeps nothing, so it can't be copied from an earlier message. Edit the message in a new ghost chat instead."));
+    }
+    let fork = |session: &Session| {
+        let at = session.user_message(&text, nth).ok_or_else(|| AppError::msg("That message isn't in the chat's log (it may not have been sent yet)."))?;
+        let title = format!("{} (edited)", session.title().trim_end_matches(" (edited)"));
+        Ok::<_, AppError>((at, title))
+    };
+    let open = RUNS.lock().get(&session_id).cloned();
+    let new = match open {
+        Some(run) => {
+            if run.busy.load(Ordering::SeqCst) {
+                return Err(AppError::msg("The agent is working: stop it first, then edit the message."));
+            }
+            let g = run.turn.try_lock().map_err(|_| AppError::msg("The agent is working: stop it first, then edit the message."))?;
+            let (at, title) = fork(&g.1)?;
+            g.1.fork(dir()?, at, &title).await
+        }
+        None => {
+            let path = dir()?.join(format!("{session_id}.jsonl"));
+            if !path.exists() {
+                return Err(AppError::msg("That chat isn't saved yet: send a message first"));
+            }
+            let session = Session::open(&path).await.map_err(|e| AppError::msg(e.to_string()))?;
+            let (at, title) = fork(&session)?;
+            session.fork(dir()?, at, &title).await
+        }
+    }
+    .map_err(|e| AppError::msg(e.to_string()))?;
+    // what goes with the log: the helpers' logs (for the trace) and the sandbox setting
+    let (from, to) = (dir()?.join(format!("{session_id}.agents")), new.path().with_extension("agents"));
+    if let Ok(mut rd) = tokio::fs::read_dir(&from).await {
+        let _ = tokio::fs::create_dir_all(&to).await;
+        while let Ok(Some(e)) = rd.next_entry().await {
+            let _ = tokio::fs::copy(e.path(), to.join(e.file_name())).await;
+        }
+    }
+    if sandbox_saved(&session_id) {
+        let _ = sandbox_save(&new.id, true);
+    }
+    Ok(new.id)
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }

@@ -195,6 +195,63 @@ impl Session {
         &self.path
     }
 
+    /// A new session in `dir` with this one's events before `before` (an index into
+    /// [`Session::events`]), as they were written (their times too), and `title` as its title
+    /// (when not empty: the last title wins):
+    /// going back to an earlier message to say something else, while this chat stays as it is.
+    /// The events are copied from the file, so this session must be the file's only writer
+    /// right now. A cut in the middle of a turn (a message sent while the agent worked) is told
+    /// to the model with the next message, like a turn that was stopped.
+    pub async fn fork(&self, dir: &Path, before: usize, title: &str) -> Result<Session> {
+        let before = before.clamp(1, self.events.len());
+        let text = tokio::fs::read_to_string(&self.path).await?;
+        // one line for each event (`open` cut a torn last line off)
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        if lines.len() < self.events.len() {
+            return Err(Error::Session(format!("{} has fewer lines than events: it's being written", self.path.display())));
+        }
+        let mut s = Session::create(dir, &self.cwd).await?;
+        let mut out = String::new();
+        for (e, line) in self.events[..before].iter().zip(&lines).skip(1) {
+            // every one, titles too: a summary's `tail` counts the events before it
+            if !matches!(e, SessionEvent::Meta { .. }) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        let mut f = tokio::fs::OpenOptions::new().append(true).open(&s.path).await?;
+        f.write_all(out.as_bytes()).await?;
+        f.flush().await?;
+        drop(f);
+        s.events.extend(self.events[1..before].iter().cloned());
+        let mid_turn = match s.events.iter().rev().find(|e| matches!(e, SessionEvent::Assistant { .. } | SessionEvent::ToolResults { .. } | SessionEvent::Interrupted { .. })) {
+            Some(SessionEvent::Assistant { content, .. }) => content.iter().any(|b| matches!(b, Block::ToolUse { .. })),
+            Some(SessionEvent::ToolResults { .. }) => true,
+            _ => false,
+        };
+        if mid_turn {
+            s.append(SessionEvent::Interrupted { reason: "The user went back to an earlier message in the middle of your work and wrote this one instead".into() }).await?;
+        }
+        let title: String = title.trim().chars().take(120).collect();
+        if !title.is_empty() {
+            s.append(SessionEvent::Title { title }).await?;
+        }
+        Ok(s)
+    }
+
+    /// Index in [`Session::events`] of the `nth` (from 0) message the user wrote whose text,
+    /// without the list of attached files the app adds, is `text`.
+    pub fn user_message(&self, text: &str, nth: usize) -> Option<usize> {
+        let own = |t: &str| t.split("\n\nAttached files:").next().unwrap_or(t).trim().to_string();
+        let want = own(text);
+        self.events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, SessionEvent::User { text, hook: None, .. } if own(text) == want || (want.is_empty() && own(text) == "See the attached files.")))
+            .nth(nth)
+            .map(|(i, _)| i)
+    }
+
     /// Keep the whole output of a tool call that was too long to send, in `<id>.out/` next to the
     /// session file, so the model can read it in parts. Returns the file.
     pub async fn save_output(&self, tool_use_id: &str, text: &str) -> Result<PathBuf> {
@@ -643,6 +700,42 @@ mod tests {
         // the next summary's tail is taken from after this one only
         s.append(SessionEvent::Assistant { content: vec![Block::Text { text: "ok".into() }], model: "m".into(), usage: Usage::default() }).await.unwrap();
         assert_eq!(s.tail_within(100_000), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_fork_has_the_conversation_up_to_a_message_and_the_original_stays() {
+        let dir = tmp();
+        let mut s = Session::create(&dir, "/proj").await.unwrap();
+        let said = |t: &str| SessionEvent::Assistant { content: vec![Block::Text { text: t.into() }], model: "m".into(), usage: Usage::default() };
+        s.append(SessionEvent::user("first", vec![])).await.unwrap();
+        s.append(said("one")).await.unwrap();
+        s.append(SessionEvent::Title { title: "Mine".into() }).await.unwrap();
+        s.append(SessionEvent::user("second\n\nAttached files:\n- /a.png (1 KB)", vec![])).await.unwrap();
+        s.append(said("two")).await.unwrap();
+        s.append(SessionEvent::user("first", vec![])).await.unwrap();
+        assert_eq!(s.user_message("second", 0), Some(4));
+        assert_eq!(s.user_message("first", 1), Some(6));
+        assert_eq!((s.user_message("first", 2), s.user_message("nope", 0)), (None, None));
+        let f = s.fork(&dir, 4, "Mine (fork)").await.unwrap();
+        assert_ne!(f.id, s.id);
+        let m = f.messages();
+        assert_eq!(m.iter().map(|m| m.text()).collect::<Vec<_>>(), vec!["first", "one"]);
+        assert_eq!(f.title(), "Mine (fork)");
+        // on disk the same, with the times the events were first written
+        let again = Session::open(f.path()).await.unwrap();
+        assert_eq!(again.events(), f.events());
+        let line = |p: &Path, n: usize| std::fs::read_to_string(p).unwrap().lines().nth(n).unwrap().to_string();
+        assert_eq!(line(f.path(), 1), line(s.path(), 1));
+        assert_eq!(s.events().len(), 7);
+        // cut while the agent worked: the model hears that its work stopped there
+        s.append(SessionEvent::Assistant { content: vec![Block::ToolUse { id: "t".into(), name: "read".into(), input: json!({}) }], model: "m".into(), usage: Usage::default() }).await.unwrap();
+        s.append(SessionEvent::ToolResults { results: vec![Block::ToolResult { tool_use_id: "t".into(), content: "x".into(), is_error: false }], usage: Usage::default(), took_ms: vec![] }).await.unwrap();
+        s.append(SessionEvent::user("sent while it worked", vec![])).await.unwrap();
+        let mut f = s.fork(&dir, 9, "").await.unwrap();
+        f.append(SessionEvent::user("something else", vec![])).await.unwrap();
+        let last = f.messages().pop().unwrap();
+        assert!(last.text().contains("went back to an earlier message") && last.text().contains("something else"), "{}", last.text());
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -281,6 +281,29 @@ export async function trustHooks(tabId: string, digest: string) {
   }
 }
 
+/** Go back to one of the user's messages (`key`: its item) to write it again: the tab shows a new
+ *  chat with the conversation before it, and the message in the chat box. The chat it came from is
+ *  kept as it was (in Sessions). */
+export async function editMessage(tabId: string, key: string) {
+  const c = useAgent.getState().chats[tabId];
+  if (!c?.sessionId || c.busy) return;
+  const at = c.items.findIndex((i) => i.key === key);
+  const it = c.items[at];
+  if (!it || it.kind !== "user") return;
+  const nth = c.items.slice(0, at).filter((i) => i.kind === "user" && !i.queued && i.text === it.text).length;
+  try {
+    const id = await api.agentFork(c.sessionId, it.text, nth);
+    const old = c.sessionId;
+    // the tab's chat changes (AgentChat opens it); what was written comes back to the chat box
+    patch(tabId, () => ({ draft: it.text, attachments: it.attachments }));
+    useTabs.getState().update(tabId, { sessionId: id } as never);
+    lastSeq.delete(old);
+    await api.agentClose(old).catch(() => {});
+  } catch (e) {
+    patch(tabId, () => ({ error: errMsg(e) }));
+  }
+}
+
 /** Rename a saved chat; its open tab and chat take the new name. */
 export async function renameChat(sessionId: string, title: string) {
   await api.agentRename(sessionId, title);
