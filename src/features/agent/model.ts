@@ -3,7 +3,6 @@
 // desktop chat (./AgentChat.tsx) and the phone / browser version (mobile/src/screens/agentchat.tsx),
 // so nothing here may import Tauri.
 import { AppWindow, Bot, Boxes, Database, DatabaseBackup, DatabaseZap, FileDown, FilePen, FilePlus, FileText, FolderSearch, GitBranch, Globe, ListTodo, MessageCircleQuestion, NotebookPen, Plug, ScrollText, Search, SquareTerminal, StickyNote, Wrench } from "lucide-react";
-import { isRemote, remoteParts, remoteUri } from "../../lib/remotePath";
 import type { AgentApprovalRequest, AgentBlock, AgentContext, AgentLiveEvent, AgentModel, AgentPolicy, AgentQuestion, AgentSessionEvent, AgentUsage } from "../../lib/types";
 
 export type ToolStatus = "pending" | "approval" | "question" | "running" | "done" | "error" | "denied";
@@ -556,12 +555,13 @@ export function stillChanged(files: [string, { plus: number; minus: number }][],
   const root = norm(git.root);
   const changed = new Set(git.files.map((f) => norm(`${root}/${f.path}`)));
   const base = norm(cwd);
-  // in a folder on an SSH host the agent writes the host's paths (`/srv/app/x`, `~/x`)
-  const host = remoteParts(cwd);
-  const onHost = (p: string) => (host && (p.startsWith("/") || p.startsWith("~")) ? remoteUri(host.dest, host.port, p) : p);
+  // in a folder on an SSH host the agent writes the host's paths (`/srv/app/x`, `~/x`): on the
+  // same `ssh://dest[:port]` (lib/remotePath.ts, not imported here: the phone's build shares this file)
+  const host = /^ssh:\/\/[^/]+/.exec(cwd)?.[0];
+  const onHost = (p: string) => (host && (p.startsWith("/") || p.startsWith("~")) ? `${host}${p.startsWith("/") ? p : `/${p}`}` : p);
   return files.filter(([p]) => {
     p = onHost(p);
-    const abs = /^([a-z]:)?[\\/]/i.test(p) || isRemote(p) ? norm(p) : norm(`${base}/${p}`);
+    const abs = /^([a-z]:)?[\\/]/i.test(p) || p.startsWith("ssh://") ? norm(p) : norm(`${base}/${p}`);
     return changed.has(abs);
   });
 }
