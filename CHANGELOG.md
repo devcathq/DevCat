@@ -12,6 +12,13 @@ Plain Markdown only: the app's dialog doesn't render HTML tags.
 
 ## Unreleased
 
+- **Claude Code in an SSH folder without Claude Code on the server**: a Claude Code tab in an SSH session's folder
+  used to fail with "claude: not found" (exit 127) when the server doesn't have it. Now the Claude Code on this
+  computer starts instead and works on the server through DevCat's SSH tools: it reads, searches, runs commands and
+  edits files there, and nothing is installed on the server. This needs the session's **AI / MCP access** set to
+  Read or Full (Edit connection → Advanced); the tab says so when it's off. A server that has Claude Code runs its
+  own, as before.
+
 ## 0.34.0 - 2026-11-22
 
 - **DevCat Agent in folders on SSH hosts** (#228): a chat opened in a folder of an SSH session (or any `ssh://` folder) now

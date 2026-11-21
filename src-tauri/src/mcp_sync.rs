@@ -212,6 +212,29 @@ pub fn run_config(project: Option<&str>, folder: &Path) -> AppResult<Value> {
     Ok(json!({ "mcpServers": { NAME: { "type": "stdio", "command": exe, "args": args, "env": {} } } }))
 }
 
+/// `--mcp-config` for Claude Code on this computer working on an SSH session's server
+/// (`claude/ssh_claude.rs`): `devcat mcp` as an agent of the window gets it (not unattended), in
+/// the session's project, so its `ssh_*` tools reach that session.
+pub fn ssh_config(project: Option<&str>, folder: &Path) -> AppResult<Value> {
+    let (exe, data_dir) = program()?;
+    let mut args = vec!["mcp".to_string()];
+    if let Some(id) = project {
+        args.extend(["--project".to_string(), id.to_string()]);
+    }
+    args.extend(["--folder".to_string(), folder.to_string_lossy().to_string()]);
+    if let Some(d) = data_dir {
+        args.extend(["--data-dir".to_string(), d]);
+    }
+    Ok(json!({ "mcpServers": { NAME: { "type": "stdio", "command": exe, "args": args, "env": {} } } }))
+}
+
+/// A folder of DevCat's own (`<data>/<name>`), made if missing.
+pub fn data_folder(name: &str) -> AppResult<PathBuf> {
+    let d = DATA_DIR.get().ok_or_else(|| AppError::msg("DevCat isn't ready yet"))?.join(name);
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
+}
+
 /// `--mcp-config` for Claude Code answering a mention in a room (`rooms_agent.rs`): `devcat mcp
 /// --room <id>`, which serves that room's agent tools and nothing else (`Scope::room`).
 pub fn room_config(room: &str) -> AppResult<Value> {

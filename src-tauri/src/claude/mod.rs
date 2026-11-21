@@ -165,6 +165,7 @@ pub(crate) mod locate;
 pub mod pty;
 pub mod remote;
 pub mod sftp;
+pub mod ssh_claude;
 pub mod ssh_forward;
 
 #[allow(dead_code)]

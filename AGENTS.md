@@ -64,6 +64,10 @@ Two ways an agent works on a server, both desktop-only, nothing installed on the
   too, and a chat app gets no approval or question buttons for it (`integrations::bridge`, `press` checks again):
   it's answered on the computer. `ssh_grep` also drops hits in secret-like files, and `ssh_read` checks what a link
   points to on the host (`Host::real_path`).
+- **A Claude Code tab in a session's folder, the server without `claude`** (`claude/ssh_claude.rs`, from `pty::open`
+  with origin "desktop" only): this computer's Claude Code starts in `<data>/ssh-work/<session id>` with `devcat mcp`
+  for the session's project (`mcp_sync::ssh_config`) and a system prompt sending its work to the `ssh_*` tools. Same
+  opt-in: the session's AI access must be Read or Full, else the tab tells the user how to turn it on.
 
 ## Connections over MCP
 

@@ -29,7 +29,7 @@ mod network;
 mod rabbitmq;
 mod ssh;
 mod workspace;
-pub use ssh::lines as ssh_lines;
+pub use ssh::{access as ssh_access, lines as ssh_lines};
 pub use workspace::OpenedQuery;
 
 use crate::db::{ExecOptions, QueryResult, TableRef};

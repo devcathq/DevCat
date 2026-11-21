@@ -216,7 +216,24 @@ pub(crate) async fn open(
     origin: &str,
 ) -> AppResult<String> {
     // A folder on an SSH host (ssh://…): the program runs there, through the system ssh.
-    let remote = super::remote::Target::parse(cwd);
+    let mut remote = super::remote::Target::parse(cwd);
+    let shown = cwd;
+    // Claude Code in an SSH session's folder, and the server hasn't got it: this computer's Claude
+    // Code works there through DevCat's ssh tools instead (ssh_claude.rs). From the window only.
+    let mut local_dir = None;
+    if origin == "desktop"
+        && is_claude(program.as_deref())
+        && let Some(t) = &remote
+        && t.session.is_some()
+    {
+        t.ready().await?;
+        if let Some(l) = super::ssh_claude::local_for(t).await? {
+            args.extend(l.args);
+            local_dir = Some(l.cwd.to_string_lossy().into_owned());
+            remote = None;
+        }
+    }
+    let cwd = local_dir.as_deref().unwrap_or(cwd);
     if remote.is_none() && !Path::new(cwd).is_dir() {
         return Err(AppError::msg(format!("Not a directory: {cwd}")));
     }
@@ -260,7 +277,8 @@ pub(crate) async fn open(
     }
     let info = PtyInfo {
         id: id.clone(),
-        cwd: cwd.to_string(),
+        // the tab's folder, also when Claude Code runs here for it
+        cwd: shown.to_string(),
         program: program_label(program.as_deref()),
         agent,
         origin: origin.to_string(),
